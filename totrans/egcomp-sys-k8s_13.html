@@ -1,0 +1,565 @@
+<html><head></head><body>
+		<div id="_idContainer145">
+			<h1 id="_idParaDest-243" class="chapter-number"><a id="_idTextAnchor246"/>13</h1>
+			<h1 id="_idParaDest-244"><a id="_idTextAnchor247"/>Geolocalization Applications Using GPS, NoSQL, and K3s Clusters</h1>
+			<p>One of the growing use cases for edge computing is the implementation of a system for tracking cargos and logistics. Sometimes, this tracking involves monitoring and getting metrics that can be used to optimize packages’ delivery times, reduce gas consumption, and so on. One of the important technologies that you can use for this is the <strong class="bold">Global Positioning System</strong> (<strong class="bold">GPS</strong>). GPS <a id="_idIndexMarker976"/>can help you to obtain the coordinates of an object when it is moving in real time. This, together with Kubernetes at the edge, results in a powerful combination of technologies to create geolocalization systems, also called geo-tracking systems.</p>
+			<p>In this chapter, we’re going to cover the following main topics:</p>
+			<ul>
+				<li>Understanding how GPS is used in a geo-tracking system</li>
+				<li>Using Redis to store GPS coordinates data</li>
+				<li>Using MongoDB to store your devices’ tracking data</li>
+				<li>Creating services to monitor your devices in real time using GPS</li>
+				<li>Configuring your Raspberry Pi to track your device using GPS</li>
+				<li>Visualizing your devices using Leaflet library in real time</li>
+				<li>Deploying a real-time map and report application to track your devices</li>
+			</ul>
+			<h1 id="_idParaDest-245"><a id="_idTextAnchor248"/>Technical requirements</h1>
+			<p>To deploy our databases in this chapter, you need the following:</p>
+			<ul>
+				<li>A single node K3s cluster using an ARM device. In this case, we are going to use the Raspberry Pi 4B model with 8 GB. We are going to use the Raspberry Pi OS lite (64-bit) operating system with no desktop environment.</li>
+				<li>Multiple VK-162 G-Mouse USB GPS dongle navigation modules for your edge Raspberry devices.</li>
+				<li>A battery bank and a USB 2.0 A-Male to USB C cable. You can also power your Raspberry Pi with your car’s USB charger port.</li>
+				<li>A Kubernetes cluster hosted in your public cloud provider (AWS, Azure, or GCP) or your private cloud.</li>
+				<li>Basic knowledge of programming, especially Python and JavaScript.</li>
+				<li>Clone the repository at <a href="https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch13">https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch13</a> if you want to run the YAML configuration by using <strong class="source-inline">kubectl apply</strong> instead of copying the code from the book. Take a look at the <strong class="source-inline">python</strong> directory inside the <strong class="source-inline">code</strong> directory and the <strong class="source-inline">yaml</strong> directory for YAML configurations inside the <strong class="source-inline">ch13</strong> directory.</li>
+			</ul>
+			<p>With this, you can start to implement your geolocation system using edge computing. Let’s start to understand how GPS works in our first section.</p>
+			<h1 id="_idParaDest-246"><a id="_idTextAnchor249"/>Understanding how GPS is used in a geo-tracking system</h1>
+			<p>For this<a id="_idIndexMarker977"/> chapter, our goal will be<a id="_idIndexMarker978"/> to build a geolocation system, also called a geo-tracking system. This means that we are going to build a system that gets GPS coordinates or positions from vehicles. In our use case, we are assuming that our vehicles will be used to deliver packages. Our vehicles will be equipped with a Raspberry Pi device and a GPS module. This hardware will collect GPS coordinates, using latitude and longitude to send them to the cloud. Then, our application will show the live positions of all the vehicles and a report to show the route of vehicles within a date range. In general, these are the main features that our geo-tracking system will have:</p>
+			<ul>
+				<li>A real-time map showing the position of all delivery vehicles</li>
+				<li>A map showing the nearby delivery stops of each vehicle</li>
+				<li>A report that shows delivery routes for a vehicle between a date range</li>
+			</ul>
+			<p>This geo-tracking system is represented using the following diagram:</p>
+			<div>
+				<div id="_idContainer137" class="IMG---Figure">
+					<img src="image/B16945_13_01.jpg" alt="Figure 13.1 – A geolocation application edge diagram&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 13.1 – A geolocation application edge diagram</p>
+			<p>Now, let’s <a id="_idIndexMarker979"/>explain <a id="_idIndexMarker980"/>how<a id="_idIndexMarker981"/> this geo-tracking system is implemented by describing the edge computing layers:</p>
+			<ul>
+				<li><strong class="bold">Cloud layer</strong>: Here, we are going to install a Kubernetes cluster in our preferred cloud provider. Inside this cluster, we are going to install three main applications. The GPS server will receive requests from the vehicles. It will also save the collected positions in Redis for the real-time map and the logs in MongoDB for the report that shows delivery routes. Finally, we will have the frontend application that contains the web application to show the real-time map and the report.</li>
+				<li><strong class="bold">Near edge</strong>: This layer represents all the information that will move from the far edge to the near edge using the LTE network. This means that all the GPS information will be sent across the internet to its final destination, the cloud layer. </li>
+				<li><strong class="bold">Far edge</strong>: Here, we are going to find the vehicles equipped with a Raspberry Pi; this device will use a GPS module and an internet connection to send the GPS coordinates. Our Raspberry Pi will have K3s installed. Inside this K3s single-node cluster, we are going to find the GPS reader. This application is going to read GPS information and send it to the cloud. However, you can also include additional applications to add more functionalities – for example, showing an OLED screen with GPS information or other processed data, such as velocity, using the GPS coordinates to calculate it. Hence, this part represents the local process at the edge. </li>
+			</ul>
+			<p>To connect the Raspberry Pi to the internet, you can use a 5G or 4G LTE module or your smartphone, which already includes this kind of module. To simplify the example, we are going<a id="_idIndexMarker982"/> to use the access point from a smartphone to share the internet with the Raspberry Pi device.</p>
+			<ul>
+				<li><strong class="bold">Tiny edge</strong>: Here, we are going to find the GPS module that our edge device will use to get GPS coordinates. Our GPS module is going to use the <strong class="bold">Global Navigation Satellite System</strong> (<strong class="bold">GNSS</strong>), which<a id="_idIndexMarker983"/> is a global system of satellites that gives you GPS coordinates. This will be the main data used in our implementation. You can also use an LTE 5G/4G module with GPS integrated to speed up GPS module initialization to capture GPS coordinates, but this could be expensive compared with the VK-162 G-Mouse USB module. In this case, we are going to use the VK-162 module to simplify the implementation and reduce costs for this prototype implementation.</li>
+			</ul>
+			<p>In summary, our <a id="_idIndexMarker984"/>vehicle <a id="_idIndexMarker985"/>on the far edge is going to read information from the GPS module on the tiny edge. After reading the information and doing some processing, the information will be sent to the cloud layer using the near edge. Once all the information is received, it will be stored in Redis and Mongo to show the real-time map and the report using the frontend application.</p>
+			<h1 id="_idParaDest-247"><a id="_idTextAnchor250"/>Using Redis to store GPS coordinates data</h1>
+			<p>As we <a id="_idIndexMarker986"/>explained<a id="_idIndexMarker987"/> in <a href="B16945_10_Final_PG.xhtml#_idTextAnchor198"><em class="italic">Chapter 10</em></a>, <em class="italic">SQL and NoSQL Databases at the Edge</em>, Redis is a key-value database that is pretty lightweight when using resources. Redis exclusively uses RAM memory to store its data but can persist when using snapshot configuration, which basically stores this data on the disk. Redis can also store geolocation data, storing GPS coordinates and tuples with latitude and longitude values. Redis stores this information with the field’s latitude, longitude, and a name. Redis also calls this <a id="_idIndexMarker988"/>data a <strong class="bold">geospacial index</strong>. Redis also includes the ability to return coordinates close to a circular area with this type of data. In this use case, Redis will be used to calculate all this information. For this specific use case, we are going to use the <strong class="source-inline">GEOADD</strong> and <strong class="source-inline">GEOSEARCH</strong> commands to implement our geolocalization application. But first, let’s install Redis in the cloud to store some geolocation data. For this, follow these steps:</p>
+			<ol>
+				<li>First, let’s create a <strong class="bold">PersistentVolumeClaim</strong> for Redis to persist data:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: PersistentVolumeClaim</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: db-pv-claim-1</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  accessModes:</strong></p><p class="source-code"><strong class="bold">    - ReadWriteOnce</strong></p><p class="source-code"><strong class="bold">  resources:</strong></p><p class="source-code"><strong class="bold">    requests:</strong></p><p class="source-code"><strong class="bold">      storage: 5Gi</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Now, create a ConfigMap to configure Redis to use an authentication password:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: ConfigMap</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: redis-configmap</strong></p><p class="source-code"><strong class="bold">data:</strong></p><p class="source-code"><strong class="bold">  redis-config: |</strong></p><p class="source-code"><strong class="bold">    dir /data</strong></p><p class="source-code"><strong class="bold">    requirepass YOUR_PASSWORD</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Create the deployment <a id="_idIndexMarker989"/>for<a id="_idIndexMarker990"/> Redis <a id="_idIndexMarker991"/>using the previous <strong class="bold">ConfigMap</strong> called <strong class="source-inline">redis-configmap</strong> and mounted as the <strong class="source-inline">redis.conf</strong> file. We also <a id="_idIndexMarker992"/>use the <strong class="bold">PersistentVolumeClaim</strong> called <strong class="source-inline">db-pv-claim-1</strong>, and some resource limits for the deployment setting the CPU and memory. Let’s create the deployment by running the following command:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: redis</strong></p><p class="source-code"><strong class="bold">  name: redis</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: redis</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: redis</strong></p><p class="source-code"><strong class="bold">    spec: </strong></p><p class="source-code"><strong class="bold">      containers: </strong></p><p class="source-code"><strong class="bold">      - name: redis</strong></p><p class="source-code"><strong class="bold">        image: redis:6.2 </strong></p><p class="source-code"><strong class="bold">        command: </strong></p><p class="source-code"><strong class="bold">          - redis-server </strong></p><p class="source-code"><strong class="bold">          - /redisconf/redis.conf </strong></p><p class="source-code"><strong class="bold">        ports: </strong></p><p class="source-code"><strong class="bold">        - containerPort: 6379 </strong></p><p class="source-code"><strong class="bold">        resources: </strong></p><p class="source-code"><strong class="bold">          limits: </strong></p><p class="source-code"><strong class="bold">            cpu: "0.2"</strong></p><p class="source-code"><strong class="bold">            memory: "128Mi" </strong></p><p class="source-code"><strong class="bold">        volumeMounts: </strong></p><p class="source-code"><strong class="bold">        - mountPath: "/data" </strong></p><p class="source-code"><strong class="bold">          name: redis-storage </strong></p><p class="source-code"><strong class="bold">        - mountPath: /redisconf </strong></p><p class="source-code"><strong class="bold">          name: config</strong></p><p class="source-code"><strong class="bold">      volumes:</strong></p><p class="source-code"><strong class="bold">        - name: config </strong></p><p class="source-code"><strong class="bold">          configMap: </strong></p><p class="source-code"><strong class="bold">            name: redis-configmap </strong></p><p class="source-code"><strong class="bold">            items: </strong></p><p class="source-code"><strong class="bold">            - key: redis-config </strong></p><p class="source-code"><strong class="bold">              path: redis.conf </strong></p><p class="source-code"><strong class="bold">        - name: redis-storage</strong></p><p class="source-code"><strong class="bold">          persistentVolumeClaim: </strong></p><p class="source-code"><strong class="bold">            claimName: db-pv-claim-1</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This time, we are not going to use an image for ARM 64 bits.</p>
+			<ol>
+				<li value="4">Now, create <a id="_idIndexMarker993"/>the service for Redis by <a id="_idIndexMarker994"/>opening port <strong class="source-inline">6379</strong>:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: redis</strong></p><p class="source-code"><strong class="bold">  name: redis</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 6379</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 6379</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: redis</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>Now, we have <a id="_idIndexMarker995"/>Redis <a id="_idIndexMarker996"/>installed. Let’s move to install Mongo to store log information with this data.</p>
+			<h1 id="_idParaDest-248"><a id="_idTextAnchor251"/>Using MongoDB to store your device’s tracking data</h1>
+			<p>MongoDB is<a id="_idIndexMarker997"/> a document-oriented NoSQL database that <a id="_idIndexMarker998"/>stores the information using JSON format. It also has the capability to store location data. In this use case, we are going to use MongoDB to store our geolocation data; this means storing all coordinates (latitude and longitude) that the GPS captures on the devices for later reports. MongoDB can perform some special manipulation for geolocation data, but in this case, we will use it just to store data in JSON format. To install MongoDB in the cloud, follow the next steps:</p>
+			<ol>
+				<li value="1">Create a <strong class="bold">PersistentVolumeClaim</strong> for MongoDB, to persist data:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: PersistentVolumeClaim</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: db-pv-claim-2</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  accessModes:</strong></p><p class="source-code"><strong class="bold">    - ReadWriteOnce</strong></p><p class="source-code"><strong class="bold">  #storageClassName: your_driver</strong></p><p class="source-code"><strong class="bold">  resources:</strong></p><p class="source-code"><strong class="bold">    requests:</strong></p><p class="source-code"><strong class="bold">      storage: 5Gi</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">You can change the storage class if you install Longhorn or another storage driver, or if you are using the storage class provided by your cloud provider. Just uncomment the <strong class="source-inline">storageClassName</strong> line by removing the <strong class="source-inline">#</strong> character.</p>
+			<ol>
+				<li value="2">Deploy <a id="_idIndexMarker999"/>your <a id="_idIndexMarker1000"/>custom configuration to enable clients to connect to MongoDB:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: ConfigMap</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: mongo-configmap</strong></p><p class="source-code"><strong class="bold">data:</strong></p><p class="source-code"><strong class="bold">  mongod-conf: |</strong></p><p class="source-code"><strong class="bold">    dbpath=/var/lib/mongodb</strong></p><p class="source-code"><strong class="bold">    logpath=/var/log/mongodb/mongodb.log</strong></p><p class="source-code"><strong class="bold">    logappend=true</strong></p><p class="source-code"><strong class="bold">    bind_ip = 0.0.0.0</strong></p><p class="source-code"><strong class="bold">    port = 27017</strong></p><p class="source-code"><strong class="bold">    journal=true</strong></p><p class="source-code"><strong class="bold">    auth = true</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This exposes MongoDB to listening in port <strong class="source-inline">27017</strong> across the network.</p>
+			<ol>
+				<li value="3">Create the deployment using the <strong class="bold">ConfigMap</strong> called <strong class="source-inline">mongo-configmap</strong>, our <strong class="bold">PersistentVolumeClaim</strong>, and the <strong class="source-inline">MONGO_INITDB_ROOT_USERNAME</strong>, <strong class="source-inline">MONGO_INITDB_ROOT_PASSWORD</strong>, and <strong class="source-inline">MONGO_INITDB_DATABASE</strong> variables that set <a id="_idIndexMarker1001"/>the<a id="_idIndexMarker1002"/> initial root username, an additional user to connect and their passwords to be used when connecting to MongoDB:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: mongo</strong></p><p class="source-code"><strong class="bold">  name: mongo</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: mongo</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: mongo</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - name: mongo</strong></p><p class="source-code"><strong class="bold">        image: mongo:4.4</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: MONGO_INITDB_ROOT_USERNAME</strong></p><p class="source-code"><strong class="bold">          value: "admin"</strong></p><p class="source-code"><strong class="bold">        - name: MONGO_INITDB_ROOT_PASSWORD</strong></p><p class="source-code"><strong class="bold">          value: "YOUR_PASSWORD"</strong></p><p class="source-code"><strong class="bold">        - name: MONGO_INITDB_DATABASE</strong></p><p class="source-code"><strong class="bold">          value: "mydatabase"</strong></p><p class="source-code"><strong class="bold">        ports:</strong></p><p class="source-code"><strong class="bold">        - containerPort: 27017</strong></p><p class="source-code"><strong class="bold">        resources:</strong></p><p class="source-code"><strong class="bold">          limits:</strong></p><p class="source-code"><strong class="bold">            cpu: "0.2"</strong></p><p class="source-code"><strong class="bold">            memory: "200Mi"</strong></p><p class="source-code"><strong class="bold">        volumeMounts:</strong></p><p class="source-code"><strong class="bold">        - mountPath: "/data/db"</strong></p><p class="source-code"><strong class="bold">          name: mongo-storage</strong></p><p class="source-code"><strong class="bold">        - mountPath: /mongoconf</strong></p><p class="source-code"><strong class="bold">          name: config</strong></p><p class="source-code"><strong class="bold">      volumes:</strong></p><p class="source-code"><strong class="bold">        - name: config</strong></p><p class="source-code"><strong class="bold">          configMap:</strong></p><p class="source-code"><strong class="bold">            name: mongo-configmap</strong></p><p class="source-code"><strong class="bold">            items:</strong></p><p class="source-code"><strong class="bold">            - key: mongod-conf</strong></p><p class="source-code"><strong class="bold">              path: mongod.conf</strong></p><p class="source-code"><strong class="bold">        - name: mongo-storage</strong></p><p class="source-code"><strong class="bold">          persistentVolumeClaim:</strong></p><p class="source-code"><strong class="bold">            claimName: db-pv-claim-2</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">We are using some values directly to configure the deployment to simplify the example. But it’s a best practice to use secrets to protect sensitive data. You can explore <a href="B16945_10_Final_PG.xhtml#_idTextAnchor198"><em class="italic">Chapter 10</em></a>, <em class="italic">SQL and NoSQL Databases at the Edge</em>, for more examples. We are also using version 4.4 in case you want to install MongoDB on an ARM device.</p>
+			<ol>
+				<li value="4">Now, create the service that exposes your MongoDB deployment as a service accessible inside<a id="_idIndexMarker1003"/> the<a id="_idIndexMarker1004"/> cluster (MongoDB uses port <strong class="source-inline">27017</strong> to connect):<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: mongo</strong></p><p class="source-code"><strong class="bold">  name: mongo</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 27017</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 27017</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: mongo</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>Now, your MongoDB database has been installed. So, let’s deploy our GPS server application that<a id="_idIndexMarker1005"/> will<a id="_idIndexMarker1006"/> store data in Redis and our MongoDB in the next section.</p>
+			<h1 id="_idParaDest-249"><a id="_idTextAnchor252"/>Creating services to monitor your devices in real time using GPS</h1>
+			<p>In our use case, we<a id="_idIndexMarker1007"/> are <a id="_idIndexMarker1008"/>going to deploy a service that sends data from our edge device after some processing in the cloud. The goal of this use case is to have a global geolocation system for multiple vehicles delivering packages, showing their location in real time. For this, we are going to create a <strong class="source-inline">gps-server</strong> deployment that stores all the coordinates for our units in Redis and Mongo. We are going to use the Python Flask library to create this service. Let’s explore the main sections of the following pseudocode mixed with Python:</p>
+			<pre class="source-code">
+&lt;imported libraries&gt;
+&lt;app_initialization&gt;
+&lt;CORS configuration&gt;
+ 
+def redisCon():
+&lt;return Redis connection object&gt;
+ 
+@app.route("/client/&lt;cid&gt;/position", methods=["POST"])
+def setPosition(cid):
+   &lt;Call redisCon&gt;
+   &lt;Store of data in a Redis hash data type using 
+    the fields cid,lat,lng
+    in the hash key named client:{cid}:position&gt;
+   &lt;set the expiration of the key&gt;
+   &lt;call the tracking-server in /client/{cid}/position
+    to store the position in Mongo&gt;
+   return  {"client_id":cid,"setPosition":"done"}
+  
+@app.route("/clients/positions/unit/&lt;unit&gt;/r/&lt;radius&gt;"
+          ,methods=["GET"])
+def getPositions(unit,radius):
+   &lt;Call redisCon&gt;
+   &lt;Search for client:*:position keys&gt;
+      &lt;Search the near geospacial index for
+       the current position&gt;
+     &lt;Add the position to data Array&gt;
+   &lt;Returns the near positions for each unit in JSON&gt;
+    return jsonify({"clients":data})
+ 
+@app.route("/client/&lt;cid&gt;/stops", methods=["POST"])
+def setStops(cid):
+   &lt;Call redisCon&gt;
+   &lt;GET json values stops to set&gt;
+   &lt;Store the stops in the key client:{cid}:stops &gt;
+    return jsonify({"setStops":"done"})
+&lt;App initialization in port 3000&gt;</pre>
+			<p>Let’s focus on the<a id="_idIndexMarker1009"/> following <a id="_idIndexMarker1010"/>functions:</p>
+			<ul>
+				<li><strong class="bold">redisCon</strong>: This function<a id="_idIndexMarker1011"/> sets the Redis connection. This application is going to use the Redis service created in the <em class="italic">Using Redis to store GPS coordinates data</em> section.</li>
+				<li><strong class="bold">setPosition</strong>: Each time our <a id="_idIndexMarker1012"/>application receives the <strong class="source-inline">/client/&lt;cid&gt;/position</strong> URL, the function will get the <strong class="source-inline">&lt;cid&gt;</strong> value that represents a connected client that sends information to this service – in this case, our delivery vehicles. Every time the information is received, it is stored in the key with the form <strong class="source-inline">client:{cid}:position</strong> inside Redis, and stores the latitude as a <strong class="source-inline">lat</strong> variable, the longitude as <strong class="source-inline">lng</strong>, and the client ID or vehicle number as <strong class="source-inline">cid</strong>. It also sets an expiration time as 180 seconds or 3 minutes. After calling the tracking server to store this coordinate in MongoDB, it returns the following JSON response: <strong class="source-inline">{"client_id":cid,"setPosition":"done"}</strong>.</li>
+				<li><strong class="bold">getPositions</strong>: Each <a id="_idIndexMarker1013"/>time our application receives the <strong class="source-inline">/clients/positions/unit/&lt;unit&gt;/r/&lt;radius&gt;</strong> URL, the function connects to Redis and gets all the keys with the form <strong class="source-inline">client:&lt;cid&gt;:position</strong>, which contains the current GPS position of each vehicle. Then gets the near stops to this position, using the Redis command <strong class="source-inline">geosearch</strong>. The returned JSON will look like: <strong class="source-inline">{"clients":[{"cid":1,"lat":0.0,"lng":0.0,"near":["stop1"]}]}</strong>.</li>
+				<li><strong class="bold">setStops</strong>: Each time our<a id="_idIndexMarker1014"/> application receives the <strong class="source-inline">/client/&lt;cid&gt;/stops</strong> URL, the function will get <strong class="source-inline">&lt;cid&gt;</strong> and store all the positions as a geospatial index in the key with the <strong class="source-inline">client:{cid}:stops</strong> form. Inside this key, each position will be stored with the name sent as part of the JSON data using <strong class="source-inline">curl</strong>. These stops are stored for 10 hours by default because the stops have to be completed during a workday. These stops will be near to the vehicle <a id="_idIndexMarker1015"/>with the <strong class="source-inline">cid</strong> number. </li>
+			</ul>
+			<p>After understanding <a id="_idIndexMarker1016"/>the<a id="_idIndexMarker1017"/> code, let’s deploy our GPS server application in the next section.</p>
+			<h2 id="_idParaDest-250"><a id="_idTextAnchor253"/>Deploying gps-server to store GPS coordinates</h2>
+			<p>The <strong class="source-inline">gps-server</strong> application<a id="_idIndexMarker1018"/> will receive<a id="_idIndexMarker1019"/> the GPS coordinates from your edge devices. For this, we have to deploy it and expose it using a load balancer. To deploy the <strong class="source-inline">gps-server</strong> application, follow the following steps:</p>
+			<ol>
+				<li value="1">Create the deployment for the GPS server:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: gps-server</strong></p><p class="source-code"><strong class="bold">  name: gps-server</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: gps-server</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: gps-server</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/gps_server</strong></p><p class="source-code"><strong class="bold">        name: gps-server</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_HOST</strong></p><p class="source-code"><strong class="bold">          value: "redis"</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_AUTH</strong></p><p class="source-code"><strong class="bold">          value: "YOUR_PASSWORD"</strong></p><p class="source-code"><strong class="bold">        - name: ENDPOINT</strong></p><p class="source-code"><strong class="bold">          value: "http://tracking-server:3000"          </strong></p><p class="source-code"><strong class="bold">        resources: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This<a id="_idIndexMarker1020"/> deployment<a id="_idIndexMarker1021"/> uses the following variables:</p>
+			<ul>
+				<li><strong class="bold">REDIS_HOST</strong>: This is<a id="_idIndexMarker1022"/> the name of the Redis service; this variable can be customized to fit your needs.</li>
+				<li><strong class="bold">REDIS_AUTH</strong>: This is the password to connect to the Redis service.</li>
+				<li><strong class="bold">ENDPOINT</strong>: This is the URL of <strong class="source-inline">tracking-server</strong> – in this case, the URL matches the<a id="_idIndexMarker1023"/> internal <strong class="source-inline">tracking-server</strong> service in port <strong class="source-inline">3000</strong>.</li>
+			</ul>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check the code and create your own container, refer to this link: <a href="https://github.com/sergioarmgpl/containers/tree/main/gps-server/src">https://github.com/sergioarmgpl/containers/tree/main/gps-server/src</a>.</p>
+			<ol>
+				<li value="2">Create the service as a LoadBalancer; this IP address will be used in our GPS reader<a id="_idIndexMarker1024"/> services for each unit or <a id="_idIndexMarker1025"/>truck:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: gps-server</strong></p><p class="source-code"><strong class="bold">  name: gps-server-lb</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 3000</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 3000</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: gps-server</strong></p><p class="source-code"><strong class="bold">  type: LoadBalancer</strong></p><p class="source-code"><strong class="bold">status:</strong></p><p class="source-code"><strong class="bold">  loadBalancer: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Get the load balancer IP for our <strong class="source-inline">gps-server</strong> deployment with the following command:<p class="source-code"><strong class="bold">$ GPS_SERVER_IP="$(kubectl get svc gps-server-lb  -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"</strong></p></li>
+			</ol>
+			<p>You can see the value of the <strong class="source-inline">GPS_SERVER_IP</strong> environment variable by running the following:</p>
+			<p class="source-code"><strong class="bold">$ echo $GPS_SERVER_IP</strong></p>
+			<p>Note that it takes some time after the IP address of the load balancer is provisioned. You can check the state of the services by running the following:</p>
+			<p class="source-code"><strong class="bold">$ kubectl get svc gps-server-lb</strong></p>
+			<p>Wait until <strong class="source-inline">EXTERNAL_IP</strong> is provisioned. Also, note the <strong class="source-inline">$GPS_SERVER_IP</strong> value, which will be used to configure the <strong class="source-inline">gps-reader</strong> application on each edge device.</p>
+			<p>Now, you can <a id="_idIndexMarker1026"/>set <a id="_idIndexMarker1027"/>the stops for the first vehicle, represented with value <strong class="source-inline">1</strong>. For this, follow the next steps:</p>
+			<ol>
+				<li value="1">Use curl to store the stops:<p class="source-code"><strong class="bold">$ curl -X POST -H "Accept: application/json" \</strong></p><p class="source-code"><strong class="bold">-H "Content-Type: application/json" \</strong></p><p class="source-code"><strong class="bold">--data '{</strong></p><p class="source-code"><strong class="bold">    "stops":[</strong></p><p class="source-code"><strong class="bold">    {"name":"stop1","lat":1.633518,"lng": -90.591706},</strong></p><p class="source-code"><strong class="bold">    {"name":"stop2","lat":2.631566,"lng": -91.591529},</strong></p><p class="source-code"><strong class="bold">    {"name":"stop3","lat":3.635043,"lng": -92.589982}</strong></p><p class="source-code"><strong class="bold">    ]</strong></p><p class="source-code"><strong class="bold">}' http://$GPS_SERVER_IP:3000/client/1/stops</strong></p></li>
+				<li>This will return the following:<p class="source-code"><strong class="bold">{"setStops":"done"}</strong></p></li>
+			</ol>
+			<p>Now, we have the <strong class="source-inline">gps-server</strong> application deployed and exposed using a load balancer. Let’s <a id="_idIndexMarker1028"/>deploy our <strong class="source-inline">tracking-server</strong>, the<a id="_idIndexMarker1029"/> one that stores logs about the received GPS positions.</p>
+			<h2 id="_idParaDest-251"><a id="_idTextAnchor254"/>Creating a service to log GPS positions and enable real-time tracking for your devices</h2>
+			<p>Our <strong class="source-inline">tracking-server</strong> application <a id="_idIndexMarker1030"/>will be in charge of<a id="_idIndexMarker1031"/> logging all the received coordinates for each vehicle. This information will be used to show the route of a vehicle in the desired time range using the <strong class="source-inline">frontend</strong> application. Before deploying <strong class="source-inline">tracking-server</strong>, let’s understand the code of this application:</p>
+			<pre class="source-code">
+&lt;Imported libraries&gt; 
+&lt;Application initialization&gt; 
+&lt;CORS configuration&gt; 
+ 
+def mongoCon():
+    &lt;return Mongo connection with tracking collection set&gt;  
+ 
+@app.route("/client/&lt;cid&gt;/position", methods=["POST"]) 
+def storePosition(cid): 
+    &lt;Get the position JSON values to store it 
+     in the tracking collection&gt; 
+    &lt;Get current time and store it using UTC&gt; 
+    &lt;Call MongoCon function&gt;
+    &lt;Store data in the format:
+     {"cid":XX,"lat":XX,"lng":XX,"ts":XXXXXXX,"dtxt":XXXXXX}
+     Inside the tracking collection in the database 
+     called mydatabase&gt; 
+    &lt;return JSON {"client_id":cid,"positionStored":"done"}&gt;
+ 
+@app.route("/client/&lt;cid&gt;/positions/s/&lt;sdate&gt;/e/&lt;edate&gt;" 
+           ,methods=["GET"]) 
+def getPositions(cid,sdate,edate): 
+    &lt;Get the start date to query in the format
+     dd-mm-yy-HH:MM:SS and convert it into UTC&gt;
+    &lt;get the end date to query in the format
+    dd-mm-yy-HH:MM:SS and convert it into UTC&gt;
+    &lt;Call MongoCon function&gt;
+    &lt;Query the tracking collection to get the
+     tracking data for a unit
+     or truck between the time range&gt; 
+    &lt;Return the positions in an array called data&gt; 
+    return jsonify({"tracking":data}) 
+ 
+&lt;App initialization in port 3000&gt;</pre>
+			<p>In this code we can find the following functions:</p>
+			<ul>
+				<li><strong class="bold">MongoCon</strong>: This <a id="_idIndexMarker1032"/>function connects to MongoDB and <a id="_idIndexMarker1033"/>returns a<a id="_idIndexMarker1034"/> MongoDB object connection, with the collection set to the <strong class="source-inline">tracking</strong> value.</li>
+				<li><strong class="bold">storePosition</strong>: Each time <a id="_idIndexMarker1035"/>our application receives a <strong class="source-inline">POST</strong> request in the <strong class="source-inline">/client/&lt;cid&gt;/position</strong> URL, the function will store the received GPS position in the <strong class="source-inline">{"cid":1,"lat":0.0,"lng":0.0,"ts":166666666,"dtxt":"01-01-22-23:59:59"}</strong> format. <strong class="source-inline">cid</strong> represents the client ID or the number of the vehicle, <strong class="source-inline">lat</strong> and <strong class="source-inline">lng</strong> are used to store the GPS position, <strong class="source-inline">ts</strong> represents the timestamp generated when the coordinate was received, and <strong class="source-inline">dtxt</strong> is the date in text format to reduce transformation time from the timestamp format to the UNIX date format. Once this data is stored in the database, <strong class="source-inline">mydatabase</strong> returns the next JSON: <strong class="source-inline">{"client_id":cid,"positionStored":"done"}</strong>.</li>
+				<li><strong class="bold">getPositions</strong>: Each <a id="_idIndexMarker1036"/>time our application receives a <strong class="source-inline">GET</strong> request in the URL with the <strong class="source-inline">/client/&lt;cid&gt;/positions/s/&lt;sdate&gt;/e/&lt;edate&gt;</strong> form, it returns a JSON response with all the GPS positions between the starting date, <strong class="source-inline">sdate</strong>, and the ending date, <strong class="source-inline">edate</strong>. For this, <strong class="source-inline">tracking-server</strong> connects to Mongo and returns the result of performing this query in this time range. The information will be returned in the following format:<p class="source-code">{ </p><p class="source-code">    "tracking":[</p><p class="source-code">        {"lat":0.0,"lng":0.0,"ts":166666666</p><p class="source-code">        ,"dtxt":"01-01-22-23:59:59"}</p><p class="source-code">    ] </p><p class="source-code">}</p></li>
+			</ul>
+			<p>Now we<a id="_idIndexMarker1037"/> know<a id="_idIndexMarker1038"/> how the <strong class="source-inline">tracking-server</strong> application works. Let’s deploy this application in the next section.</p>
+			<h2 id="_idParaDest-252"><a id="_idTextAnchor255"/>Deploying tracking-server to store logs from GPS coordinates to be used for vehicles routing report </h2>
+			<p>Our <strong class="source-inline">tracking-server</strong> will be <a id="_idIndexMarker1039"/>used <a id="_idIndexMarker1040"/>in our <strong class="source-inline">frontend</strong> application to show the route of a vehicle within the desired time range. Let’s deploy <a id="_idIndexMarker1041"/>our <a id="_idIndexMarker1042"/>application with the following steps:</p>
+			<ol>
+				<li value="1">Deploy <strong class="source-inline">tracking-server</strong> by running the following:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: tracking-server</strong></p><p class="source-code"><strong class="bold">  name: tracking-server</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: tracking-server</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: tracking-server</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/tracking_server</strong></p><p class="source-code"><strong class="bold">        name: tracking-server</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: MONGO_URI</strong></p><p class="source-code"><strong class="bold">          value: "mongodb://admin:YOUR_PASSWORD@mongo/mydatabase?authSource=admin"</strong></p><p class="source-code"><strong class="bold">        - name: MONGO_DB</strong></p><p class="source-code"><strong class="bold">          value: "mydatabase"</strong></p><p class="source-code"><strong class="bold">        - name: TIMEZONE</strong></p><p class="source-code"><strong class="bold">          value: "America/Guatemala"</strong></p><p class="source-code"><strong class="bold">        resources: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This<a id="_idIndexMarker1043"/> deployment <a id="_idIndexMarker1044"/>uses the following environment variables:</p>
+			<ul>
+				<li><strong class="bold">MONGO_URI</strong>: This is the full URI that contains a string to be used to authenticate in MongoDB. It has the <strong class="source-inline">mongodb://USER:PASWORD@HOST/DATABASE?authSource=admin</strong> format. You can customize these credentials and store <strong class="source-inline">MONGO_URI</strong> as a secret.</li>
+				<li><strong class="bold">MONGO_DB</strong>: This is the database created in MongoDB to store the tracking collection.</li>
+				<li><strong class="bold">TIMEZONE</strong>: This is the time zone used to get the time when the GPS coordinate is stored in the <strong class="source-inline">tracking</strong> collection of MongoDB. Note that our Python code uses the <strong class="source-inline">pytz</strong> library and the ISO 3166 convention for country names. Check the <em class="italic">Further reading</em> section for more information to set your country’s time zone correctly. In this case, we set the country to <strong class="source-inline">America/Guatemala</strong>.</li>
+			</ul>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">You can find out more about the URI on the following page: <a href="https://www.mongodb.com/docs/manual/reference/connection-string">https://www.mongodb.com/docs/manual/reference/connection-string</a>. Remember that we are using hardcoded values to simplify the example, but it’s best practice to use secrets. Check out <a href="B16945_10_Final_PG.xhtml#_idTextAnchor198"><em class="italic">Chapter 10</em></a>, <em class="italic">SQL and NoSQL Databases at the Edge</em>, for more details. To check out the code and create your own version of <strong class="source-inline">tracking-server</strong>, refer to the following link: <a href="https://github.com/sergioarmgpl/containers/tree/main/tracking-server/src">https://github.com/sergioarmgpl/containers/tree/main/tracking-server/src</a>.</p>
+			<ol>
+				<li value="2">Create a service as <a id="_idIndexMarker1045"/>a<a id="_idIndexMarker1046"/> ClusterIP for <strong class="source-inline">tracking-server</strong> to call it inside <strong class="source-inline">gps-server</strong>:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: tracking-server</strong></p><p class="source-code"><strong class="bold">  name: tracking-server</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 3000</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 3000</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: tracking-server</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">status:</strong></p><p class="source-code"><strong class="bold">  loadBalancer: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Create a service as a LoadBalancer for <strong class="source-inline">tracking-server</strong> to call it in our viewer <a id="_idIndexMarker1047"/>application, which<a id="_idIndexMarker1048"/> is accessible over the internet:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: tracking-server</strong></p><p class="source-code"><strong class="bold">  name: tracking-server-lb</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 3000</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 3000</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: tracking-server</strong></p><p class="source-code"><strong class="bold">  type: LoadBalancer</strong></p><p class="source-code"><strong class="bold">status:</strong></p><p class="source-code"><strong class="bold">  loadBalancer: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Get the load balancer IP of our <strong class="source-inline">tracking-server</strong> deployment with the following command:<p class="source-code"><strong class="bold">$ TRACKING_SERVER_IP="$(kubectl get svc tracking-server-lb -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"</strong></p></li>
+			</ol>
+			<p>You can see the value of the <strong class="source-inline">TRACKING_SERVER_IP</strong> environment variable by running the following:</p>
+			<p class="source-code"><strong class="bold">$ echo $TRACKING_SERVER_IP</strong></p>
+			<p>The <strong class="source-inline">tracking-server</strong> application <a id="_idIndexMarker1049"/>has been deployed. Now, let’s configure our<a id="_idIndexMarker1050"/> device to run our reader application.</p>
+			<h1 id="_idParaDest-253"><a id="_idTextAnchor256"/>Configuring your Raspberry Pi to track your device 
+using GPS</h1>
+			<p>Before <a id="_idIndexMarker1051"/>using the GPS module on your <a id="_idIndexMarker1052"/>Raspberry Pi, you have to follow the following steps:</p>
+			<ol>
+				<li value="1">Install the Raspberry Pi OS Lite (64-bit) on your device; you can check out <a href="B16945_02_Final_PG.xhtml#_idTextAnchor036"><em class="italic">Chapter 2</em></a>, <em class="italic">K3s Installation and Configuration</em>, for more details.</li>
+				<li>Log in to your device and set an initial user name and password.</li>
+				<li>Run <strong class="source-inline">raspi-config</strong> with the following command:<p class="source-code"><strong class="bold">$ sudo raspi-config</strong></p></li>
+			</ol>
+			<p>You will see a screen like the following:</p>
+			<div>
+				<div id="_idContainer138" class="IMG---Figure">
+					<img src="image/B16945_13_02.jpg" alt="Figure 13.2 – The raspi-config main menu&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 13.2 – The raspi-config main menu</p>
+			<ol>
+				<li value="4">To <a id="_idIndexMarker1053"/>configure <a id="_idIndexMarker1054"/>the wireless network, go to the <strong class="bold">System Options</strong> | <strong class="bold">Wireless LAN</strong> menu.</li>
+				<li>You will see a <strong class="bold">Choose the country where your Raspberry will be used</strong> message, and then click <strong class="bold">Ok</strong>.</li>
+				<li>After that, the <strong class="bold">Wireless LAN country</strong> message will appear. Select your country and then c<a id="_idTextAnchor257"/>lick <strong class="bold">Ok</strong>.</li>
+				<li>The <strong class="bold">Please Enter SSID</strong> message will appear. Click <strong class="bold">Ok</strong> and press <strong class="bold">Enter</strong>.</li>
+				<li>Now, the <strong class="bold">Please Enter passphrase</strong> message will appear. Click <strong class="bold">Ok</strong> and press <em class="italic">Enter</em>.</li>
+				<li>Upon returning to the main menu, select <strong class="bold">Finish</strong> and press <em class="italic">Enter</em> to exit.</li>
+				<li>Activate the SSH, choosing the <strong class="bold">Interface Options</strong> | <strong class="bold">SSH</strong> menu. This will show the <strong class="bold">Would you like the SSH server to be enabled?</strong> message. Choose <strong class="bold">Yes</strong> and press <em class="italic">Enter</em>. After that, the <strong class="bold">The SSH server is enabled</strong> message will appear.</li>
+				<li>To check the IP of your Raspberry Pi, run the following command:<p class="source-code"><strong class="bold">$ ifconfig -a</strong></p></li>
+			</ol>
+			<p>The<a id="_idIndexMarker1055"/> output<a id="_idIndexMarker1056"/> will look like the following:</p>
+			<div>
+				<div id="_idContainer139" class="IMG---Figure">
+					<img src="image/B16945_13_03.jpg" alt="Figure 13.3 – The ifconfig output&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 13.3 – The ifconfig output</p>
+			<p>Take note of the IP address next to the word <strong class="source-inline">inet</strong> word in the <strong class="source-inline">wlan0</strong> network interface; this will be the IP address of your Raspberry Pi.</p>
+			<ol>
+				<li value="12">Log in to your device using the previous IP address found using SSH:<p class="source-code"><strong class="bold">$ ssh YOUR_USER@RASPBERRY_IP</strong></p></li>
+				<li>Add the next kernel parameters to enable the use of container by adding these values in the <strong class="source-inline">/boot/cmdline.txt</strong> file; remember that you need root permissions to modify this file:<p class="source-code"><strong class="bold">cgroup_memory=1 cgroup_enable=memory</strong></p></li>
+				<li>Connect your VK-162 G-Mouse GPS module to one of the USB ports of your Raspberry; after some seconds, the <strong class="source-inline">/dev/ttyACM0</strong> device will be ready to be used.</li>
+				<li>Restart your device to apply these changes:<p class="source-code"><strong class="bold">$ sudo shutdown -r now</strong></p></li>
+				<li>(<em class="italic">Optional</em>) If you <a id="_idIndexMarker1057"/>want to <a id="_idIndexMarker1058"/>configure other features, log in to your device and run the following:<p class="source-code"><strong class="bold">$ sudo raspi-config</strong></p></li>
+				<li>(<em class="italic">Optional</em>) Activate <a id="_idIndexMarker1059"/>the <strong class="bold">Inter-Integrated Circuit</strong> (<strong class="bold">I2C</strong>) support in your device – for example, to connect an OLED screen, go to the <strong class="bold">Interface Options</strong> | <strong class="bold">I2C</strong> menu after running <strong class="source-inline">raspi-config</strong>.</li>
+				<li>(<em class="italic">Optional</em>) Then, a dialog will show <strong class="bold">Would you like the ARM I2C interface to be enabled?</strong>. Select <strong class="bold">Yes</strong> and press <em class="italic">Enter</em>.</li>
+				<li>(<em class="italic">Optional</em>) After the previous dialog, the <strong class="bold">The ARM I2C interface is enabled</strong> message will appear. Press <em class="italic">Enter</em> to choose the <strong class="bold">Ok </strong>button.</li>
+				<li>(<em class="italic">Optional</em>) Upon returning to the main menu, select <strong class="bold">Finish</strong> and press <em class="italic">Enter</em> to exit.</li>
+				<li>To finish, let’s install K3s by running the following:<p class="source-code"><strong class="bold">$ curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644" sh -s -</strong></p></li>
+				<li>Run the following command to see whether your K3s single-node cluster is running:<p class="source-code"><strong class="bold">$ kubectl get nodes</strong></p></li>
+			</ol>
+			<p>This will show something like the following:</p>
+			<div>
+				<div id="_idContainer140" class="IMG---Figure">
+					<img src="image/B16945_13_04.jpg" alt="Figure 13.4 – The kubectl get nodes output&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 13.4 – The kubectl get nodes output</p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">You can find out more about how to use <strong class="source-inline">raspi-config</strong> at the following link: <a href="https://geek-university.com/raspi-config">https://geek-university.com/raspi-config</a>.</p>
+			<p>Now, you have<a id="_idIndexMarker1060"/> your <a id="_idIndexMarker1061"/>Raspberry Pi installed with Raspberry Pi OS Lite, which is ready to be used together with your GPS module. In the next section, let’s move to deploy the GPS reader application.</p>
+			<h2 id="_idParaDest-254"><a id="_idTextAnchor258"/>Understanding the GPS reader code to send GPS coordinates</h2>
+			<p>Now, the<a id="_idIndexMarker1062"/> only remaining part is to<a id="_idIndexMarker1063"/> install <strong class="source-inline">gps-reader</strong> in the K3s single-node cluster installed on your Raspberry. This application will run as a container using the Kubernetes Pods. However, before installing our <strong class="source-inline">gps-reader</strong> application, let’s understand the code first:</p>
+			<pre class="source-code">
+&lt;Imported libraries&gt;
+while True:
+   &lt;Set serial Device /dev/ttyACM0 with baud rate 9600&gt;
+   ser=serial.Serial(device, baudrate=9600, timeout=0.5)
+   &lt;Set the PynMEA2 reader&gt;
+   &lt;Read data from the device&gt;
+   
+   &lt;Read for GRPMC lines&gt;
+    &lt;Extract latitude, longitude&gt; 
+    &lt;Call /client/{cid}/position from GPS Server
+     To store the position in Redis&gt;
+    &lt;If cannot read data show
+     "No GPS data to send"&gt;</pre>
+			<p>The previous code contains an infinite loop that reads the output of the <strong class="source-inline">/dev/ttyACM0</strong> device <a id="_idIndexMarker1064"/>every half second. Our VK-162 G-Mouse GPS module uses the <strong class="bold">National Marine Electronics Association</strong> (<strong class="bold">NMEA</strong>) specification to represent GPS coordinates. The previous code scans the output to look for the <strong class="source-inline">GRPMC</strong> field to get the latitude<a id="_idIndexMarker1065"/> and<a id="_idIndexMarker1066"/> longitude coordinates using the <strong class="source-inline">PynMEA2</strong> library. Once the library extracts the coordinates, it calls the GPS server endpoint to store the current GPS position of the vehicle in Redis and log it in MongoDB.</p>
+			<p>Be aware that the GPS module delays a little bit after the module starts receiving a GPS coordinate. It could take some minutes before the GPS module starts to receive GPS coordinates.</p>
+			<p>To see what your device is doing, run the <strong class="source-inline">cat /dev/ttyACM0</strong> command. If the module is not receiving coordinates yet, it will show something like the following:</p>
+			<pre class="source-code">
+<strong class="bold">$GPRMC,052326.00,V,,,,,,,,,,N*7D</strong>
+<strong class="bold">$GPVTG,,,,,,,,,N*30</strong>
+<strong class="bold">$GPGGA,052326.00,,,,,0,00,99.99,,,,,,*66</strong>
+<strong class="bold">$GPGSA,A,1,,,,,,,,,,,,,99.99,99.99,99.99*30</strong>
+<strong class="bold">$GPTXT,01,01,01,NMEA unknown msg*58</strong>
+<strong class="bold">$GPTXT,01,01,01,NMEA unknown msg*58</strong>
+<strong class="bold">$GPGSV,1,1,02,01,,,30,22,,,36*7C</strong>
+<strong class="bold">$GPGLL,,,,,052326.00,V,N*4A</strong></pre>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">The <strong class="source-inline">GPRMC</strong> or <strong class="source-inline">GPGLL</strong> fields are empty in some parts when the module is not receiving coordinates. These missing values contain the latitude and longitude obtained by the GPS module.</p>
+			<p>When the<a id="_idIndexMarker1067"/> device<a id="_idIndexMarker1068"/> starts to receive data, you will see something like the following:</p>
+			<pre class="source-code">
+<strong class="bold">$GPRMC,054003.00,A,1437.91511,N,09035.52679,W,0.077,,020622,,,D*6D</strong>
+<strong class="bold">$GPVTG,,T,,M,0.077,N,0.142,K,D*21</strong>
+<strong class="bold">$GPGGA,054003.00,1437.91511,N,09035.52679,W,2,06,2.54,1668.7,M,-4.9,M,,0000*68</strong>
+<strong class="bold">$GPGSA,A,3,22,01,48,31,32,21,,,,,,,3.95,2.54,3.02*02</strong>
+<strong class="bold">$GPTXT,01,01,01,NMEA unknown msg*58</strong>
+<strong class="bold">$GPGSV,4,1,13,01,18,301,33,10,49,124,11,16,20,189,12,21,29,276,24*74</strong>
+<strong class="bold">$GPGSV,4,2,13,22,39,008,32,23,18,135,,25,19,052,11,26,47,169,09*79</strong>
+<strong class="bold">$GPGSV,4,3,13,27,02,204,18,31,64,342,30,32,35,037,29,46,43,252,*7A</strong>
+<strong class="bold">$GPGSV,4,4,13,48,47,250,30*40</strong>
+<strong class="bold">$GPGLL,1437.91511,N,09035.52679,W,054003.00,A,D*70</strong></pre>
+			<p>The <strong class="source-inline">GPGLL</strong> line contains all the information about latitude and longitude that we are looking for. </p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">Depending on your device configuration, the <strong class="source-inline">GPRMC</strong> line can include the elevation data. In the previous output, the elevation information is not configured, so the line will not include this information, but the device can be configured to get the elevation information too.</p>
+			<p>Now, we know how our application reads information from the GPS module. Let’s deploy<a id="_idIndexMarker1069"/> our<a id="_idIndexMarker1070"/> application in our device with K3s installed. </p>
+			<h2 id="_idParaDest-255"><a id="_idTextAnchor259"/>Deploying gps-reader to send GPS coordinates to the cloud</h2>
+			<p>One advantage <a id="_idIndexMarker1071"/>of using K3s is <a id="_idIndexMarker1072"/>that if your application is complex, you can deploy your application separated as modules or microservices, and you can update these pieces without affecting the others. In this case, we are only using one piece called <strong class="source-inline">gps-reader</strong>. This application reads the GPS module from the device using a Pod. In this case, we are using a configuration that enables us to read the <strong class="source-inline">/dev</strong> folder from the device with just the necessary permissions to access the <strong class="source-inline">/dev/ttyACM0</strong> device, where the GPS module shows the GPS coordinates. This device can change, depending on the GPS module that you are using. </p>
+			<p>To create a reader on your device, run the following steps:</p>
+			<ol>
+				<li value="1">Create the <strong class="source-inline">gps-reader</strong> Pod to start reading GPS coordinates from your module: <p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Pod</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: gps-reader</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  containers:</strong></p><p class="source-code"><strong class="bold">  - image: sergioarmgpl/gps_reader</strong></p><p class="source-code"><strong class="bold">    name: gpsreader</strong></p><p class="source-code"><strong class="bold">    imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">    env:</strong></p><p class="source-code"><strong class="bold">    - name: DEVICE</strong></p><p class="source-code"><strong class="bold">      value: "/dev/ttyACM0"</strong></p><p class="source-code"><strong class="bold">    - name: CLIENT_ID</strong></p><p class="source-code"><strong class="bold">      value: "1"</strong></p><p class="source-code"><strong class="bold">    - name: ENDPOINT</strong></p><p class="source-code"><strong class="bold">      value: "http://&lt;GPS_SERVER_IP&gt;:3000"</strong></p><p class="source-code"><strong class="bold">    securityContext:</strong></p><p class="source-code"><strong class="bold">      privileged: true</strong></p><p class="source-code"><strong class="bold">      capabilities:</strong></p><p class="source-code"><strong class="bold">        add: ["SYS_ADMIN"]</strong></p><p class="source-code"><strong class="bold">    volumeMounts:</strong></p><p class="source-code"><strong class="bold">    - mountPath: /dev</strong></p><p class="source-code"><strong class="bold">      name: dev-volume</strong></p><p class="source-code"><strong class="bold">  volumes:</strong></p><p class="source-code"><strong class="bold">  - name: dev-volume</strong></p><p class="source-code"><strong class="bold">    hostPath:</strong></p><p class="source-code"><strong class="bold">      path: /dev</strong></p><p class="source-code"><strong class="bold">      type: Directory</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This Pod <a id="_idIndexMarker1073"/>will <a id="_idIndexMarker1074"/>use the following environment variables:</p>
+			<ul>
+				<li><strong class="bold">DEVICE</strong>: This contains <a id="_idIndexMarker1075"/>the virtual device where the GPS module is listening. This could be different, depending on the GPS module that you are using. Check the <em class="italic">Further reading</em> section for more information.</li>
+				<li><strong class="bold">CLIENT_ID</strong>: This is the vehicle number that this reader will represent in the system – in this case, 1, the first vehicle.</li>
+				<li><strong class="bold">ENDPOINT</strong>: This is the endpoint of the GPS server. You have to use the value obtained<a id="_idIndexMarker1076"/> in the <strong class="source-inline">GPS_SERVER_IP</strong> variable in the <em class="italic">Deploying gps-server to store GPS coordinates</em> section.</li>
+			</ul>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check the code and create your own container of <strong class="source-inline">gps-reader</strong>, refer to the following link: <a href="https://github.com/sergioarmgpl/containers/tree/main/gps-reader/src">https://github.com/sergioarmgpl/containers/tree/main/gps-reader/src</a>. If you want to use an OLED screen to show information, refer to the following link: <a href="https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/blob/main/ch13/code/python/oled.py">https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/blob/main/ch13/code/python/oled.py</a>. The code uses the OLED included in the Raspberry Pi 4B keyestudio Complete RFID Starter kit. </p>
+			<ol>
+				<li value="2">You<a id="_idIndexMarker1077"/> can <a id="_idIndexMarker1078"/>check whether your device is reading information by running the following:<p class="source-code"><strong class="bold">$ kubectl logs pod/gps-reader -f</strong></p></li>
+			</ol>
+			<p>If you’re not sure whether you have access to your device, the way to test is by looking at the frontend and checking whether the device appears on the map.</p>
+			<p>The output will look like the following:</p>
+			<p class="source-code"><strong class="bold">&lt;Response [200]&gt;</strong></p>
+			<p class="source-code"><strong class="bold">{'lat': 11.6318615, 'lng': -80.59205166666666, 'cid': '1'}</strong></p>
+			<ol>
+				<li value="3">Press <em class="italic">Ctrl</em> + <em class="italic">C</em> to cancel.</li>
+				<li>Write <strong class="source-inline">exit</strong> and press <em class="italic">Enter</em> to exit from your Raspberry.</li>
+			</ol>
+			<p>Now, we have all the backend services running and receiving data, but we need to <a id="_idIndexMarker1079"/>visualize<a id="_idIndexMarker1080"/> this information. Let’s move to the next section to deploy the <strong class="source-inline">frontend</strong> application.</p>
+			<h1 id="_idParaDest-256"><a id="_idTextAnchor260"/>Visualizing your devices using Open Street Maps in 
+real time</h1>
+			<p>Our application<a id="_idIndexMarker1081"/> has two parts, one<a id="_idIndexMarker1082"/> that visualizes the GPS coordinates of the vehicles and their near stops in real time and one that shows the past routes of the vehicle within a time range. So, let’s understand first the code of the geo-tracking map showing the devices in real time.</p>
+			<h2 id="_idParaDest-257"><a id="_idTextAnchor261"/>Understanding the geo-tracking map visualizer code</h2>
+			<p>Let’s start with a map<a id="_idIndexMarker1083"/> showing all the vehicles with their coordinates and near stops. We are using HTML, JavaScript, jQuery and the Leaflet library to create the map. Let’s look at the code of the map:</p>
+			<pre class="source-code">
+&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt; 
+&lt;head&gt; 
+&lt;Load Javascript libraries&gt; 
+&lt;Load page styles&gt;   
+&lt;body&gt;
+    &lt;div id='map'&gt;&lt;/div&gt; 
+&lt;script&gt; 
+    &lt;Load Map in an initial GPS position&gt;
+    var marker 
+    var markers = [] 
+    var osm = L.tileLayer( 
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {  
+        &lt;Set Open Street Map Initial 
+        Configuration using Leaflet&gt;
+    });  
+ 
+    osm.addTo(map);     
+    setInterval(() =&gt; {  
+        $.getJSON("URL",
+        function(pos) {  
+            &lt;Delete current markers&gt; 
+            &lt;Get current positions for each unit or truck&gt; 
+            &lt;For each position set a marker 
+             in the map calling
+             the function markPosition&gt; 
+        });  
+    }, 5000);  
+ 
+    function markPosition(cid,lat,lng,near)  
+    {  
+        &lt;Create a maker in the map with 
+        Latitude, Longitude, Unit number and near destinies&gt; 
+    } 
+&lt;/script&gt; 
+&lt;/body&gt; 
+&lt;/html&gt;</pre>
+			<p>Our page loads some JavaScript libraries and CSS styles. After that, it loads an initial GPS position to show the map. This map is loaded in the <strong class="source-inline">&lt;div id='map'&gt;&lt;/div&gt;</strong> code.</p>
+			<p>The important functions in this code are the following:</p>
+			<ul>
+				<li><strong class="bold">setInterval</strong>: This <a id="_idIndexMarker1084"/>function uses jQuery to call the endpoint of <strong class="source-inline">gps-server</strong> to get all the GPS coordinates. To do this, the <strong class="source-inline">setInterval</strong> function calls the <strong class="source-inline">http://GPS_SERVER_IP:3000/clients/positions/unit/km/r/0.1</strong> URL, which returns the current GPS coordinates of each vehicle and their nearby stops in a radius of 0.1 kilometers. To do this, call the <strong class="source-inline">markPosition</strong> function every 5 seconds and send the client ID or vehicle number (<strong class="source-inline">cid</strong>), latency (<strong class="source-inline">lat</strong>), longitude (<strong class="source-inline">lng</strong>), and the <strong class="source-inline">near</strong> variable with the name of the stops. This function creates a mark object in the map.</li>
+				<li><strong class="bold">markPosition</strong>: This function <a id="_idIndexMarker1085"/>creates a Leaflet mark object with a PopUp window in the map. This function also resets the map when it’s called.</li>
+			</ul>
+			<p>This application <a id="_idIndexMarker1086"/>basically loads all the necessary libraries and calls the <strong class="source-inline">setInterval</strong> function to refresh the map every 5 seconds by calling the <strong class="source-inline">markPosition</strong> function. It is important to set an initial GPS position to center the map; this is customizable in the YAML file used to deploy the <strong class="source-inline">frontend</strong> application. Once the map is initialized, it will show all the tracked objects after 5 seconds:</p>
+			<div>
+				<div id="_idContainer141" class="IMG---Figure">
+					<img src="image/B16945_13_05.jpg" alt="Figure 13.5 – A map showing two tracked devices using GPS&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 13.5 – A map showing two tracked devices using GPS</p>
+			<p>If the connected<a id="_idIndexMarker1087"/> devices are not sending data to the map, it will show an empty map; in this case, <em class="italic">Figure 13.5</em> shows two devices connected and sending data. Now, let’s say, for example, that we are using the device or vehicle number 2 – in this case, represented as the second <strong class="source-inline">CID</strong> (client ID). If you click on the blue mark, it will show the current <strong class="source-inline">Latitude</strong> and <strong class="source-inline">Longitude</strong> coordinates and the near destinations or stops of the tracked vehicle. In this case, we set two stops, <strong class="source-inline">galeno_encinal</strong> and <strong class="source-inline">la_torre_encinal</strong>, which are 0.1 km from the current position of the tracked vehicle. If you click on the blue mark, you will see something like this:</p>
+			<div>
+				<div id="_idContainer142" class="IMG---Figure">
+					<img src="image/B16945_13_06.jpg" alt="Figure 13.6 – Near destinations showed when clicking the blue mark&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 13.6 – Near destinations showed when clicking the blue mark</p>
+			<p>This information is calculated every 5 seconds, updating the nearest position of your tracked vehicle<a id="_idIndexMarker1088"/> in real time. You can customize the code to fit your needs; this is just a quick-start example to build a geo-tracking system using GPS. Let’s look at how our vehicles routes report works to show the collected data from the tracked vehicles.</p>
+			<h2 id="_idParaDest-258"><a id="_idTextAnchor262"/>Understanding the vehicles routes report</h2>
+			<p>This application<a id="_idIndexMarker1089"/> creates a blue line, showing the tracking log stored in MongoDB. This represents the route of the vehicle within a date or time range. Before we take an in-depth look into how it works, let’s explore first the code of this page:</p>
+			<pre class="source-code">
+&lt;!DOCTYPE html&gt; 
+&lt;html lang="en"&gt;  
+&lt;head&gt;  
+&lt;Load Javascript libraries&gt;  
+&lt;Load page styles&gt;    
+&lt;body&gt;
+    &lt;form&gt;
+        &lt;input id="cid" name="cid"&gt;&lt;/input&gt;
+        &lt;input id="sdate" name="sdate"&gt;&lt;/input&gt; 
+        &lt;input id="edate" name="edate"&gt;&lt;/input&gt; 
+        &lt;button onclick="loadMap()"&gt;&lt;/button&gt; 
+    &lt;/form&gt; 
+    &lt;div id='map'&gt;&lt;/div&gt; 
+&lt;script&gt;  
+    &lt;Load Map in an initial GPS position&gt; 
+    var tiles = L.tileLayer(  
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', 
+    {   
+        &lt;Set Open Street Map Initial  
+        Configuration using Leaflet&gt; 
+    }).addTo(map);   
+ 
+    function onEachFeature(feature, layer) { 
+            &lt;Set a popup with the line visualizing the route 
+            of the vehicle&gt; 
+    } 
+ 
+    var trip;
+ 
+    function loadMap(){ 
+        $.getJSON(&lt;DYNAMIC_URL&gt;, function(pos) { 
+            var coordinates = [];
+            &lt;Creating an array with the coordinates 
+            between the time range&gt; 
+            this.trip = { 
+            &lt;The array with the coordinates and fields 
+            to visualize in the map&gt; 
+            }; 
+            var tripLayer = L.geoJSON(this.trip, { 
+                &lt;Get the trip data and visualize it 
+                into the map&gt; 
+            }).addTo(map); 
+        }); 
+    } 
+&lt;/script&gt;  
+&lt;/body&gt; 
+&lt;/html&gt;</pre>
+			<p>Let’s analyze <a id="_idIndexMarker1090"/>the next code sections:</p>
+			<ul>
+				<li><strong class="bold">trip</strong>: This variable contains all the coordinates to draw a line in the map with the routes covered by the vehicle within a time range.</li>
+				<li><strong class="bold">form</strong>: This is an HTML form used to generate the dynamic called to get all the GPS positions between a selected time range.</li>
+				<li><strong class="bold">DINAMIC_URL</strong>: This is a dynamic URL used to call <strong class="source-inline">tracking-server</strong> and get all the GPS positions. This URL has the following structure: <strong class="source-inline">http://TRACKING_SERVER_IP:3000/client/2/positions/s/25-05-22-04:39:58/e/25-05-22-04:40:00</strong>.</li>
+				<li><strong class="bold">onEachFeature</strong>: This is a function that creates a line with the GPS positions of the vehicle.</li>
+				<li><strong class="bold">LoadMap</strong>: This is a function that is called after clicking on the load button of the form to show the routes covered within a time range for a vehicle.</li>
+			</ul>
+			<p>In general, this <a id="_idIndexMarker1091"/>report page is generated when the <strong class="bold">Show Route History</strong> button is clicked, showing the route of the vehicle on the map as follows:</p>
+			<div>
+				<div id="_idContainer143" class="IMG---Figure">
+					<img src="image/B16945_13_07.jpg" alt="Figure 13.7 – Vehicles Routes Report&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 13.7 – Vehicles Routes Report</p>
+			<p>Our <strong class="source-inline">tracking-server</strong> service is configured to store and query the log tracking information of the<a id="_idIndexMarker1092"/> vehicles within a time range using the timestamp captured when data arrives. This application is also configured to use localization times and UTC in different countries. This is a basic implementation of the vehicles routes report that you can customize.</p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To know more about what is UTC time, you can check the next link: <a href="https://www.timeanddate.com/time/aboututc.html">https://www.timeanddate.com/time/aboututc.html</a>.</p>
+			<p>Another feature that this map has is that when you click on the map, it can show some information. In this case, we are showing a sample message, but you can customize it to show additional information, such as the time when the vehicle was in a particular position:</p>
+			<div>
+				<div id="_idContainer144" class="IMG---Figure">
+					<img src="image/B16945_13_08.jpg" alt="Figure 13.8 – Route information of the vehicle when clicking on the map&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 13.8 – Route information of the vehicle when clicking on the map</p>
+			<p>To reset the report, you have to reload the page. With this, we are ready to deploy our frontend <a id="_idIndexMarker1093"/><a id="_idIndexMarker1094"/>application, which contains the real time map and this report, so finally, we can access the final application. To do this, let’s move on to the next section.</p>
+			<h1 id="_idParaDest-259"><a id="_idTextAnchor263"/>Deploying a real-time map and report application to track your devices</h1>
+			<p>Now we have <a id="_idIndexMarker1095"/>all the things <a id="_idIndexMarker1096"/>ready, so<a id="_idIndexMarker1097"/> we <a id="_idIndexMarker1098"/>have to deploy the front application that contains our real time map and the report page. To do this, we use a simple Flask application with Python using templates; here is the code:</p>
+			<pre class="source-code">
+&lt;imported libraries&gt;
+&lt;app_initialization&gt;
+&lt;CORS configuration&gt;
+@app.route("/")
+def map():
+   return render_template(&lt;Render map.html
+                           Using environment variables) 
+@app.route("/report")
+def report():
+   return render_template(&lt;Render report.html
+                           using environment variables&gt;)
+&lt;Starting the application on port 3000&gt;</pre>
+			<p>This application renders the <strong class="source-inline">map.html</strong> page, which loads the Leaflet library to show the maps using the initial latitude and longitude variables. It also sets  the endpoint of the <strong class="source-inline">gps-server</strong> that <a id="_idIndexMarker1099"/>is called inside this<a id="_idIndexMarker1100"/> static page. To <a id="_idIndexMarker1101"/>deploy<a id="_idIndexMarker1102"/> this application, follow these steps:</p>
+			<ol>
+				<li value="1">Create the deployment by running the following:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f - </strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: frontend</strong></p><p class="source-code"><strong class="bold">  name: frontend</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: frontend</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: frontend</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/frontend</strong></p><p class="source-code"><strong class="bold">        name: tracking-server</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: LATITUDE</strong></p><p class="source-code"><strong class="bold">          value: "&lt;YOUR_LATITUDE_COORDINATE&gt;"</strong></p><p class="source-code"><strong class="bold">        - name: LONGITUDE</strong></p><p class="source-code"><strong class="bold">          value: "&lt;YOUR_LONGITUDE_COORDINATE&gt;"</strong></p><p class="source-code"><strong class="bold">        - name: GPS_SERVER</strong></p><p class="source-code"><strong class="bold">          value: "&lt;YOUR_GPS_SERVER_IP&gt;"</strong></p><p class="source-code"><strong class="bold">        - name: TRACKING_SERVER</strong></p><p class="source-code"><strong class="bold">          value: "&lt;YOUR_TRACKING_SERVER_IP&gt;"</strong></p><p class="source-code"><strong class="bold">        resources: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This <a id="_idIndexMarker1103"/>deployment has<a id="_idIndexMarker1104"/> the<a id="_idIndexMarker1105"/> following environment<a id="_idIndexMarker1106"/> variables:</p>
+			<ul>
+				<li><strong class="bold">LATITUDE</strong>: The initial GPS latitude coordinate to center your map</li>
+				<li><strong class="bold">LONGITUDE</strong>: The initial GPS longitude coordinate to center your map</li>
+				<li><strong class="bold">GPS_SERVER</strong>: The IP address endpoint of the <strong class="source-inline">gps-server</strong> application.</li>
+				<li><strong class="bold">TRACKING_SERVER</strong>: The IP address endpoint of your <strong class="source-inline">tracking-server</strong> application.</li>
+			</ul>
+			<p>With these variables, you configure the initial loaded GPS coordinate to center the map and the endpoints to be called by the pages, to show the real-time map of the report routes of the <strong class="source-inline">frontend</strong> application.</p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check out the code and create your own container of <strong class="source-inline">frontend</strong>, refer to the following link: <a href="https://github.com/sergioarmgpl/containers/tree/main/frontend/src">https://github.com/sergioarmgpl/containers/tree/main/frontend/src</a>. To get some initial GPS coordinates to center the map when loading, refer to this website: <a href="https://www.gps-coordinates.net">https://www.gps-coordinates.net</a>.</p>
+			<ol>
+				<li value="2">Create <a id="_idIndexMarker1107"/>a load balancer<a id="_idIndexMarker1108"/> service for your application:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: frontend</strong></p><p class="source-code"><strong class="bold">  name: frontend-lb</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 3000</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 3000</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: frontend</strong></p><p class="source-code"><strong class="bold">  type: LoadBalancer</strong></p><p class="source-code"><strong class="bold">status:</strong></p><p class="source-code"><strong class="bold">  loadBalancer: {} </strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Get the load balancer IP of our <strong class="source-inline">frontend</strong> deployment with the following command:<p class="source-code"><strong class="bold">$ FRONTEND_IP="$(kubectl get svc frontend-lb  -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"</strong></p></li>
+			</ol>
+			<p>You <a id="_idIndexMarker1109"/>can<a id="_idIndexMarker1110"/> see<a id="_idIndexMarker1111"/> the<a id="_idIndexMarker1112"/> value of the <strong class="source-inline">FRONTEND_IP</strong> environment variable by running the following:</p>
+			<p class="source-code"><strong class="bold">$ echo $FRONTEND_IP</strong></p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">We used a <strong class="source-inline">LoadBalancer</strong> service type to simplify the implementation, but a cheaper solution would be to use ingress definitions to expose the applications. You can explore the following link for more information: <a href="https://kubernetes.io/docs/concepts/services-networking/ingress">https://kubernetes.io/docs/concepts/services-networking/ingress</a>.</p>
+			<ol>
+				<li value="4">Now, access your application as <strong class="source-inline">http://&lt;FRONTEND_IP&gt;:3000</strong> in your browser. The important endpoints of the URL are the following:<ul><li><strong class="bold">Geo-tracking map</strong>: <strong class="source-inline">http://&lt;FRONTEND_IP&gt;:3000</strong></li><li><strong class="bold">Vehicles routes report</strong>: <strong class="source-inline">http://&lt;FRONTEND_IP&gt;:3000/report</strong></li></ul></li>
+				<li>Now, turn on your Raspberry Pi device in your vehicle and wait until your device starts sending GPS coordinates. Don’t forget to set your stops for each device. After some seconds or a couple of minutes, your map will start to show your devices in real time. </li>
+				<li>Record some data by driving your equipped vehicle with your Raspberry Pi device and then test your reports.</li>
+			</ol>
+			<p>Now, our simple geolocation system is ready and running. After finishing this chapter, it is<a id="_idIndexMarker1113"/> important<a id="_idIndexMarker1114"/> to <a id="_idIndexMarker1115"/>mention<a id="_idIndexMarker1116"/> that this is just a basic example that you can extend to fit your needs. Now, it’s time to recap what we learned. </p>
+			<h1 id="_idParaDest-260"><a id="_idTextAnchor264"/>Summary</h1>
+			<p>In this chapter, we learned how to take advantage of MongoDB and Redis to store and query GPS coordinates to build a basic geolocalization system. We also learned how to integrate a GPS module to an edge device and send information to the cloud to finally visualize how a vehicle is moving in real time on a map, showing the near stops in a circle area, and simulating in that way a basic tracking delivery system. This shows how to implement a simple use case using geolocalization and how edge devices moving in real time interact in a geolocalization system. In the next chapter, we are going to learn how to use machine learning and computer vision to create a small smart traffic project.</p>
+			<h1 id="_idParaDest-261"><a id="_idTextAnchor265"/>Questions</h1>
+			<p>Here are a few questions to validate your new knowledge:</p>
+			<ul>
+				<li>How can I use GPS technologies to create a geolocalization system?</li>
+				<li>How can I use Redis to store GPS coordinates and do queries with this data?</li>
+				<li>How can I use MongoDB to store logs for a geolocalization system?</li>
+				<li>How can I design a real-time application that shows the GPS positions of moving vehicles?</li>
+				<li>How can I use edge computing and K3s to create a distributed system to track vehicles?</li>
+			</ul>
+			<h1 id="_idParaDest-262"><a id="_idTextAnchor266"/>Further reading</h1>
+			<p>You can refer to the following references for more information on the topics covered in this chapter:</p>
+			<ul>
+				<li>VK-162 G-Mouse GPS module: <a href="https://www.amazon.com/Navigation-External-Receiver-Raspberry-Geekstory/dp/B078Y52FGQ">https://www.amazon.com/Navigation-External-Receiver-Raspberry-Geekstory/dp/B078Y52FGQ</a></li>
+				<li>Redis geospatial index commands: <a href="https://redis.io/commands/?group=geo">https://redis.io/commands/?group=geo</a></li>
+				<li>Geospatial data: <a href="https://www.mongodb.com/docs/manual/geospatial-queries">https://www.mongodb.com/docs/manual/geospatial-queries</a></li>
+				<li><em class="italic">Positioning chips and modules</em>: <a href="https://www.u-blox.com/en/positioning-chips-and-modules">https://www.u-blox.com/en/positioning-chips-and-modules</a></li>
+				<li><em class="italic">Basics of Hash Tables</em>: <a href="https://www.hackerearth.com/practice/data-structures/hash-tables/basics-of-hash-tables/tutorial">https://www.hackerearth.com/practice/data-structures/hash-tables/basics-of-hash-tables/tutorial</a></li>
+				<li><em class="italic">Find Arduino Port on Windows, Mac, and Linux</em>: <a href="https://www.mathworks.com/help/supportpkg/arduinoio/ug/find-arduino-port-on-windows-mac-and-linux.html">https://www.mathworks.com/help/supportpkg/arduinoio/ug/find-arduino-port-on-windows-mac-and-linux.html</a></li>
+				<li>raspi-config: <a href="https://geek-university.com/raspi-config">https://geek-university.com/raspi-config</a></li>
+				<li><em class="italic">GPS – NMEA sentence information</em>: <a href="http://aprs.gids.nl/nmea">http://aprs.gids.nl/nmea</a></li>
+				<li><em class="italic">Leaflet – an open source JavaScript library for mobile-friendly interactive maps</em>: <a href="https://leafletjs.com">https://leafletjs.com</a></li>
+				<li><em class="italic">GPS Coordinates</em>: <a href="https://www.gps-coordinates.net">https://www.gps-coordinates.net</a></li>
+				<li><em class="italic">Epoch and Unix Timestamp Conversion Tools</em>: <a href="https://www.epochconverter.com">https://www.epochconverter.com</a></li>
+				<li>pytz timezones Library: <a href="https://pypi.org/project/pytz">https://pypi.org/project/pytz</a></li>
+				<li>Country codes: <a href="https://www.iban.com/country-codes">https://www.iban.com/country-codes</a></li>
+			</ul>
+		</div>
+	</body></html>

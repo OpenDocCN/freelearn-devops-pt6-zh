@@ -1,0 +1,612 @@
+<html><head></head><body>
+		<div id="_idContainer153">
+			<h1 id="_idParaDest-263" class="chapter-number"><a id="_idTextAnchor267"/>14</h1>
+			<h1 id="_idParaDest-264"><a id="_idTextAnchor268"/>Computer Vision with Python and K3s Clusters</h1>
+			<p><strong class="bold">Artificial intelligence</strong> (<strong class="bold">AI</strong>) is commonly used to substitute activities that humans do every day. It can <a id="_idIndexMarker1117"/>give systems the intelligence to operate autonomously without human intervention in most cases. <strong class="bold">Computer vision</strong> (<strong class="bold">CV</strong>) is a subcategory of AI that focuses on detecting objects in videos and images. CV is often used to detect traffic in a city. This chapter focuses on building a basic smart traffic system that consists of detecting objects such as cars, trucks, and pedestrians when a vehicle is moving. For this, the system uses the OpenCV, TensorFlow, and scikit-learn Python libraries and a camera to perform computer vision at the edge on a Raspberry Pi. This system also shows locally to drivers a map within the detected objects, and it also implements a public map for global detected object visualization. This public map can be used as a real-time traffic state map that municipalities can use.</p>
+			<p>In this chapter, we’re going to cover the following main topics:</p>
+			<ul>
+				<li>Computer vision and smart traffic systems</li>
+				<li>Using Redis <a id="_idIndexMarker1118"/>to store temporary object <strong class="bold">Global Positioning System</strong> (<strong class="bold">GPS</strong>) positions</li>
+				<li>Deploying a computer vision service to detect car obstacles using OpenCV, TensorFlow Lite, and scikit-learn</li>
+				<li>Deploying the edge application to visualize warnings based on computer vision</li>
+				<li>Deploying a global visualizer for the smart traffic system</li>
+			</ul>
+			<h1 id="_idParaDest-265"><a id="_idTextAnchor269"/>Technical requirements</h1>
+			<p>To deploy our computer vision system in this chapter, you will need the following:</p>
+			<ul>
+				<li>A Kubernetes <a id="_idIndexMarker1119"/>cluster hosted in your public cloud <a id="_idIndexMarker1120"/>provider (<strong class="bold">Amazon Web Services</strong> (<strong class="bold">AWS</strong>), Azure, <strong class="bold">Google Cloud Platform</strong> (<strong class="bold">GCP</strong>)).</li>
+				<li>A Raspberry <a id="_idIndexMarker1121"/>Pi 4B with an 8-GB micro <strong class="bold">Secure Digital</strong> (<strong class="bold">SD</strong>) card with a <a id="_idIndexMarker1122"/>small-monitor <strong class="bold">liquid-crystal display</strong> (<strong class="bold">LCD</strong>) screen to use in a car.</li>
+				<li>A Logitech C922 PRO webcam, recommended because of its quality and support on Linux.</li>
+				<li>Multiple VK-162 G-Mouse USB GPS Dongle Navigation modules, for your edge Raspberry devices.</li>
+				<li>Basic knowledge of AI.</li>
+				<li><strong class="source-inline">kubectl</strong> configured to be used in your local machine for your Kubernetes cloud cluster to avoid using the <strong class="source-inline">--kubeconfig</strong> parameter.</li>
+				<li>Clone the <a href="https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch14">https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch14</a> repository <a id="_idIndexMarker1123"/>if you want to run the <strong class="bold">YAML Ain’t Markup Language</strong> (<strong class="bold">YAML</strong>) configuration by using <strong class="source-inline">kubectl apply</strong> instead of copying the code from the book. Take a look at the <strong class="source-inline">python</strong> directory inside the <strong class="source-inline">code</strong> directory and the <strong class="source-inline">yaml</strong> directory for YAML configurations that are inside the <strong class="source-inline">ch14</strong> directory.</li>
+			</ul>
+			<p>With this, you can deploy Prometheus and Grafana to start experiment monitoring in edge environments.</p>
+			<h1 id="_idParaDest-266"><a id="_idTextAnchor270"/>Computer vision and smart traffic systems</h1>
+			<p>AI is an <a id="_idIndexMarker1124"/>area of computer science that consists of simulating human <a id="_idIndexMarker1125"/>intelligence using mathematics, statistics, linguistics, computer science, and other sciences. AI can also be defined as the study of rational agents, as depicted in the following diagram:</p>
+			<div>
+				<div id="_idContainer146" class="IMG---Figure">
+					<img src="image/B16945_14_01.jpg" alt="Figure 14.1 – Agents&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.1 – Agents</p>
+			<p>Taking <em class="italic">Figure 14.1</em> as a reference, an agent receives perceptions coming from the environment. These perceptions are captured by sensors, and this information is processed to perform an action using <a id="_idIndexMarker1126"/>effectors. Actions are decided by internal rules installed <a id="_idIndexMarker1127"/>inside the agent. These actions involve the use of effectors such as arms, legs, or wheels, for example. </p>
+			<p>These internal <a id="_idIndexMarker1128"/>rules can be implemented using different <strong class="bold">machine learning</strong> (<strong class="bold">ML</strong>) paradigms <a id="_idIndexMarker1129"/>such as <strong class="bold">supervised learning</strong> (<strong class="bold">SL</strong>), <strong class="bold">unsupervised learning</strong> (<strong class="bold">UL</strong>), and <strong class="bold">reinforcement learning</strong> (<strong class="bold">RL</strong>). </p>
+			<p>ML is a type <a id="_idIndexMarker1130"/>of AI that uses historical data as input to do predictions. Computer <a id="_idIndexMarker1131"/>vision is a subset of ML applied to image and video analysis using predictions. In our chapter, we are going to do predictions about what our agent is capturing using a camera and take decisions according to that information, but we are going to apply computer vision to create a smart traffic system. Let’s have a look at the following diagram, which shows how our system will be implemented to create a smart traffic system using computer vision at the edge:</p>
+			<div>
+				<div id="_idContainer147" class="IMG---Figure">
+					<img src="image/B16945_14_02.jpg" alt="Figure 14.2 – Smart traffic system using computer vision&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.2 – Smart traffic system using computer vision</p>
+			<p>Smart traffic <a id="_idIndexMarker1132"/>systems are often used by municipalities to improve safety, and traffic flow on streets in a cost-effective way. Our system can be used in <a id="_idIndexMarker1133"/>two modes. The static mode uses a camera in a static location point in the city, and the dynamic mode uses a car to scan traffic where the car is moving. We are going to use the dynamic mode. Now, let’s explain our system using the layers of the edge computing systems, as follows:</p>
+			<ul>
+				<li><strong class="bold">Cloud layer</strong>: Here, we <a id="_idIndexMarker1134"/>are going to use an <strong class="bold">application programming interface</strong> (<strong class="bold">API</strong>) called <strong class="bold">Traffic Manager</strong> that <a id="_idIndexMarker1135"/>stores all detected <a id="_idIndexMarker1136"/>objects <a id="_idIndexMarker1137"/>at the edge in a Redis instance. The data stored will contain the type of object—car, truck, and person—which represents a level 1 warning on our system and the GPS coordinates. This means that a vehicle driver will be warned of previously detected objects by other drivers. Our API will store the GPS position of these objects, which potentially could be obstacles for a vehicle. This layer will also include a frontend application <a id="_idIndexMarker1138"/>called <strong class="bold">Traffic Map Public</strong> that shows the objects detected on a map. This application could be used by the municipality to monitor all traffic across the city.</li>
+				<li><strong class="bold">Near edge</strong>: This <a id="_idIndexMarker1139"/>layer has the <strong class="bold">fourth-generation</strong> (<strong class="bold">4G</strong>)/<strong class="bold">fifth-generation</strong> (<strong class="bold">5G</strong>) <strong class="bold">Long-Term Evolution</strong> (<strong class="bold">LTE</strong>) mobile <a id="_idIndexMarker1140"/>network <a id="_idIndexMarker1141"/>used to send <a id="_idIndexMarker1142"/>information to the internet. This layer will transport information collected at the edge to send it to the cloud layer.</li>
+				<li><strong class="bold">Far edge</strong>: Our far <a id="_idIndexMarker1143"/>edge has a Raspberry Pi that will process the information <a id="_idIndexMarker1144"/>captured by a camera. This device has installed K3s as a single node cluster to manage all services that the system uses. K3s can brings automation to the system. K3s can easily update and maintain the system and can extend the system to use more nodes. These additional nodes can be used to add multiple cameras for object detection at multiple angles. The computer vision application that runs in the cluster consists of two displays and two APIs. One display runs outside K3s but in the same device as a Python script, and it’s the service that captures the video. This service consists of a Python program that captures video and detects objects using OpenCV and a precompiled model for TensorFlow Lite for object detection. Here is where computer vision occurs. The system uses a small LCD touchscreen connected to the device. The other display is a frontend application that runs on a browser; it shows detected objects across a map, not only showing these locally but also showing all detected objects by all vehicles in a radius of 500 meters. Detected <a id="_idIndexMarker1145"/>objects will be classified by the Inference API, which classifies objects according to their level of warning for a driver. These warnings are represented at three levels: levels 1 and 2 represent a warning, and level 3 could be ignored as an obstacle for a driver. The Inference API contains a precompiled decision tree to do classification. The <strong class="bold">GPS Queue</strong> API manages <a id="_idIndexMarker1146"/>all GPS coordinates and periodically sends information about detected objects that represent a warning to the cloud to be shown to other drivers. The whole application uses the Display, Traffic Map, Inference, and GPS Queue components to process and visualize detected objects. The GPS Queue service is based on the GPS service created in <a href="B16945_05_Final_PG.xhtml#_idTextAnchor097"><em class="italic">Chapter 5</em></a>, <em class="italic">K3s Homelab for Edge Computing Experiments</em>, with some modifications. Something important to consider is that you can accelerate your object <a id="_idIndexMarker1147"/>detection by using an external device that <a id="_idIndexMarker1148"/>accelerates <strong class="bold">neural network</strong> (<strong class="bold">NN</strong>) processing. Some devices that you can consider are the Coral USB Accelerator from Google, the <a id="_idIndexMarker1149"/>Rock Pi neural compute stick <strong class="bold">Universal Serial Bus</strong> (<strong class="bold">USB</strong>), and the NVIDIA Jetson Nano. These devices accelerate the NN processing of OpenCV by delegating processing to a dedicated <a id="_idIndexMarker1150"/>processing unit sometimes called a <strong class="bold">graphics processing unit</strong> (<strong class="bold">GPU</strong>) or a <strong class="bold">Tensor Processing Unit</strong> (<strong class="bold">TPU</strong>). The <a id="_idIndexMarker1151"/>OpenCV library uses TensorFlow Lite models, so the use of these devices can increase the number of <strong class="bold">frames per second</strong> (<strong class="bold">FPS</strong>) analyzed <a id="_idIndexMarker1152"/>that have some GPU that can be used by TensorFlow Lite, which is designed to run on edge devices to accelerate your video analysis. For more information, check the <em class="italic">Further reading</em> section.</li>
+				<li><strong class="bold">Tiny edge</strong>: Here, we <a id="_idIndexMarker1153"/>can find an LCD screen to <a id="_idIndexMarker1154"/>display all detected objects in real time and warnings for the driver. You can also find the VK-162 G-Mouse GPS module here.</li>
+			</ul>
+			<p>To summarize <a id="_idIndexMarker1155"/>this workflow, our vehicle first captures <a id="_idIndexMarker1156"/>images with its camera; then, the video frames or images are captured using OpenCV and classified using TensorFlow Lite, then are classified according to their level of warning representation for the drivers by the Inference API. This information is shown locally in the LCD and browser. The GPS coordinate data sent to the cloud is shown in a public web frontend application in the cloud. So now, let’s get started in building a basic smart traffic system to alert drivers.</p>
+			<h1 id="_idParaDest-267"><a id="_idTextAnchor271"/>Using Redis to store temporary object GPS positions</h1>
+			<p>We <a id="_idIndexMarker1157"/>are going to use Redis to store <a id="_idIndexMarker1158"/>our GPS coordinates for all detected objects using computer vision. This is a basic configuration to deploy Redis for this purpose. This Redis instance must be deployed in the cloud. As we explained in <a href="B16945_13_Final_PG.xhtml#_idTextAnchor246"><em class="italic">Chapter 13</em></a>, <em class="italic">Geolocalization Applications Using GPS, NoSQL, and K3s Clusters</em>, we are going to use a geospatial index to represent our data. The difference will be that we are going to implement temporary storage of data using a <strong class="bold">time-to-live</strong> (<strong class="bold">TTL</strong>) feature <a id="_idIndexMarker1159"/>that auto-expires keys in Redis. For this, we are going to continuously watch hash keys in Redis if they still exist. For each detected object, the type and level of warning are stored in a hash key, and a coordinate will be added in a geospatial sorted set. Then, a TTL is configured for the hash key. If this hash key expires, it will be removed from a geospatial set called <strong class="source-inline">traffic</strong>, which stores all traffic objects detected by other drivers. In this way, we implemented a kind of garbage functionality to remove old detected objects during traffic hours. The reason is that the detected objects are relevant just for a certain amount of time, then have to be deleted. So, let’s install our Redis deployment by following the next steps:</p>
+			<ol>
+				<li value="1">Create a <strong class="bold">PersistentVolumeClaim</strong> for Redis to persist our data, like so:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: PersistentVolumeClaim</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: db-pv-claim</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  accessModes:</strong></p><p class="source-code"><strong class="bold">    - ReadWriteOnce</strong></p><p class="source-code"><strong class="bold">  resources:</strong></p><p class="source-code"><strong class="bold">    requests:</strong></p><p class="source-code"><strong class="bold">      storage: 5Gi</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Now, create <a id="_idIndexMarker1160"/>a <strong class="bold">ConfigMap</strong> <a id="_idIndexMarker1161"/>to configure Redis to use an authentication password, as follows:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: ConfigMap</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: redis-configmap</strong></p><p class="source-code"><strong class="bold">data:</strong></p><p class="source-code"><strong class="bold">  redis-config: |</strong></p><p class="source-code"><strong class="bold">    dir /data</strong></p><p class="source-code"><strong class="bold">    requirepass YOUR_PASSWORD</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Create a deployment for Redis using the previous <strong class="source-inline">redis-configmap</strong> <strong class="bold">ConfigMap</strong> and the <strong class="source-inline">db-pv-claim-1</strong> <strong class="bold">PersistentVolumeClaim</strong> with some resource limits, using the following command:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: redis</strong></p><p class="source-code"><strong class="bold">  name: redis</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: redis</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: redis</strong></p><p class="source-code"><strong class="bold">    spec: </strong></p><p class="source-code"><strong class="bold">      containers: </strong></p><p class="source-code"><strong class="bold">      - name: redis</strong></p><p class="source-code"><strong class="bold">        image: redis:6.2 </strong></p><p class="source-code"><strong class="bold">        command: </strong></p><p class="source-code"><strong class="bold">          - redis-server </strong></p><p class="source-code"><strong class="bold">          - /redisconf/redis.conf </strong></p><p class="source-code"><strong class="bold">        ports: </strong></p><p class="source-code"><strong class="bold">        - containerPort: 6379 </strong></p><p class="source-code"><strong class="bold">        resources: </strong></p><p class="source-code"><strong class="bold">          limits: </strong></p><p class="source-code"><strong class="bold">            cpu: "0.2"</strong></p><p class="source-code"><strong class="bold">            memory: "128Mi" </strong></p><p class="source-code"><strong class="bold">        volumeMounts: </strong></p><p class="source-code"><strong class="bold">        - mountPath: "/data" </strong></p><p class="source-code"><strong class="bold">          name: redis-storage </strong></p><p class="source-code"><strong class="bold">        - mountPath: /redisconf </strong></p><p class="source-code"><strong class="bold">          name: config</strong></p><p class="source-code"><strong class="bold">      volumes:</strong></p><p class="source-code"><strong class="bold">        - name: config </strong></p><p class="source-code"><strong class="bold">          configMap: </strong></p><p class="source-code"><strong class="bold">            name: redis-configmap </strong></p><p class="source-code"><strong class="bold">            items: </strong></p><p class="source-code"><strong class="bold">            - key: redis-config </strong></p><p class="source-code"><strong class="bold">              path: redis.conf </strong></p><p class="source-code"><strong class="bold">        - name: redis-storage</strong></p><p class="source-code"><strong class="bold">          persistentVolumeClaim: </strong></p><p class="source-code"><strong class="bold">            claimName: db-pv-claim-1</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Now, create <a id="_idIndexMarker1162"/>a service <a id="_idIndexMarker1163"/>for Redis opening port <strong class="source-inline">6379</strong>, like so:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: redis</strong></p><p class="source-code"><strong class="bold">  name: redis</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 6379</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 6379</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: redis</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>We now <a id="_idIndexMarker1164"/>have Redis installed. Let’s <a id="_idIndexMarker1165"/>move on to deploying our computer vision service at the far edge, in the next section. </p>
+			<h1 id="_idParaDest-268"><a id="_idTextAnchor272"/>Deploying a computer vision service to detect car obstacles using OpenCV, TensorFlow Lite, and scikit-learn</h1>
+			<p>In <a id="_idIndexMarker1166"/>this section, we <a id="_idIndexMarker1167"/>are going to explore how to configure the object detection system that runs at <a id="_idIndexMarker1168"/>the edge with all <a id="_idIndexMarker1169"/>its components. This <a id="_idIndexMarker1170"/>section <a id="_idIndexMarker1171"/>also shows how to configure the public web application running in the cloud that stores and shows information about all detected objects at the edge. Let’s start by first configuring our Raspberry Pi device in the next section.</p>
+			<h2 id="_idParaDest-269"><a id="_idTextAnchor273"/>Preparing your Raspberry Pi to run the computer vision application</h2>
+			<p>Before <a id="_idIndexMarker1172"/>installing our software, we <a id="_idIndexMarker1173"/>have to prepare our device to run it. For this, let’s start to configure our Raspberry Pi 4B following the next steps:</p>
+			<ol>
+				<li value="1">Install Raspbian Pi OS (32 bit) using Debian Bullseye, released at least from 2022-04-04. The code to run the TensorFlow Lite model in this chapter has to run on an ARMv7 device to support the Coral USB Accelerator device and the LCD screen. ARM64 is not supported yet.</li>
+				<li>Depending on your webcam, you have to install drivers. In this case, we are using the Logitech C922 PRO webcam, which is automatically detected by Raspbian.</li>
+				<li>Connect and configure your GPS module. In this case, our VK-162 G-Mouse module is autodetected by Raspbian too.</li>
+				<li>Configure the network to use a wireless connection, to install all the necessary packages to run the application. Later, you can reconfigure your wireless connection to connect to your access point in your smartphone, but you have to delete the previous connection in the <strong class="source-inline">/etc/wpa_supplicant/wpa_supplicant.conf</strong> file.</li>
+				<li>Install <a id="_idIndexMarker1174"/>the drivers of your LCD screen. In this case, we are using the Miuzei <strong class="bold">High-Definition Multimedia Interface</strong> (<strong class="bold">HDMI</strong>). This will flip the screen horizontally and activate the touch feature (this will be the last step once all the things are configured). You can check the repository at <a href="https://github.com/goodtft/LCD-show.git">https://github.com/goodtft/LCD-show.git</a>, and you can use any LCD screen.</li>
+				<li>Before installing K3s, remember to activate the CGROUPS in the <strong class="source-inline">/boot/cmdline.txt</strong> file, then add the next flags at the end of the line:<p class="source-code"><strong class="bold">cgroup_memory=1 cgroup_enable=memory</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">For more information about CGROUPS visit this link: <a href="https://man7.org/linux/man-pages/man7/cgroups.7.html">https://man7.org/linux/man-pages/man7/cgroups.7.html</a></p>
+			<ol>
+				<li value="7">Get your current <strong class="bold">Internet Protocol</strong> (<strong class="bold">IP</strong>) address by running <strong class="source-inline">ifconfig</strong>, then take a look at the <strong class="source-inline">wlan0</strong> interface, as follows:<p class="source-code"><strong class="bold">$ ifconfig wlan0</strong></p></li>
+				<li>Install K3s by running the following command:<p class="source-code"><strong class="bold">$ MASTER_IP=YOUR_PRIVATE_IP</strong></p><p class="source-code"><strong class="bold">$ curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644" sh -s -</strong></p></li>
+				<li>Now, you <a id="_idIndexMarker1175"/>can test if <a id="_idIndexMarker1176"/>everything is working by running the following command:<p class="source-code"><strong class="bold">$ kubectl get nodes</strong></p></li>
+			</ol>
+			<p>This will return your unique node running.</p>
+			<p>Now, our edge device is ready to be used to run our service that performs computer vision at the edge. For this, let’s move on to the next section.</p>
+			<h2 id="_idParaDest-270"><a id="_idTextAnchor274"/>Deploying the inference service to detect objects</h2>
+			<p>The <strong class="source-inline">inference</strong> service <a id="_idIndexMarker1177"/>is used in this scenario to do predictions <a id="_idIndexMarker1178"/>and to classify if an object <a id="_idIndexMarker1179"/>represents an obstacle for a driver. We use the next table for that:</p>
+			<div>
+				<div id="_idContainer148" class="IMG---Figure">
+					<img src="image/B16945_14_Table_01.jpg" alt=""/>
+				</div>
+			</div>
+			<p>For example, a car identified by the id <strong class="source-inline">1</strong> in the <strong class="source-inline">n</strong> field represents a level 1 of warning, so all the <a id="_idIndexMarker1180"/>objects with <strong class="source-inline">warning_level</strong> equal to 1 or 2 will be recorded as potential objects that can obstruct <a id="_idIndexMarker1181"/>traffic or represent danger for the driver. If an object is classified with the value 1000, the object doesn’t represent any danger, so it is not recorded.</p>
+			<p>The source code of this service consists of two files: <strong class="source-inline">index.py</strong> and <strong class="source-inline">create_model.py</strong>. The <strong class="source-inline">index.py</strong> file contains a basic API to return predictions by calling the model to predict using the <strong class="source-inline">/predict</strong> path. It has basic code to load the precompiled ML model. The <strong class="source-inline">create_model.py</strong> file contains code to train and generate a model that will be used for this API using <strong class="source-inline">index.py</strong>. The code looks like this:</p>
+			<pre class="source-code">
+import pandas as pd
+from sklearn import tree
+from joblib import dump
+df = pd.read_csv("safety_rules.csv",sep=',', header='infer', encoding='latin-1')
+df = df.drop(['object'], axis=1)
+df.head()
+feature_cols = ["n"]
+X = df.loc[:, feature_cols]
+y = df.warning_level
+clf = tree.DecisionTreeRegressor()
+model = clf.fit(X, y)
+dump(clf, 'safety_rules.model')</pre>
+			<p>Here, we <a id="_idIndexMarker1182"/>read our <strong class="source-inline">safety_rules.csv</strong> <strong class="bold">comma-separated values</strong> (<strong class="bold">CSV</strong>) file with the rules inside. After, that the information in this file is converted into a DataFrame and the column object is removed from this DataFrame using <strong class="source-inline">drop</strong>. In AI, you have to represent texts as values. Our object column has a numeric representation in the n column, so the column object can be ignored. The data loaded from the CSV file is represented as a Pandas DataFrame that is used in scikit-learn as the source of data to generate a decision tree. A decision tree <a id="_idIndexMarker1183"/>is an ML algorithm that can use <a id="_idIndexMarker1184"/>classified data to do predictions using the data structure of trees for predictions. So, it is one of the simplest methods to do predictions using ML. After the DataFrame is loaded, scikit-learn does its training processes to generate a <strong class="source-inline">safety_rules.model</strong> model that could be used later in the API for predictions. Every time you build the container, the model is updated by calling the <strong class="source-inline">create_model.py</strong> file inside the <strong class="source-inline">Dockerfile</strong> of this API. Now, the serving code for the API will look like this:</p>
+			<pre class="source-code">
+&lt;Import Flask and Scikit Learn libraries&gt;
+def loadModel():
+    &lt;Load the model safety_rules.model&gt;
+    &lt;Assign the loaded model to the variable clf&gt;
+@app.route('/predict', methods=["POST"])
+def predict():
+    &lt;Use clf variable to call the prediction method&gt;
+    &lt;Return the prediction using JSON format&gt;
+&lt;Inference service initialization on port 3000 by default&gt;</pre>
+			<p>By <a id="_idIndexMarker1185"/>calling the <strong class="source-inline">/predict</strong> <strong class="bold">Uniform Resource Locator</strong> (<strong class="bold">URL</strong>), you <a id="_idIndexMarker1186"/>can get predictions from the model based on the rules set in the <strong class="source-inline">safety_rules.csv</strong> file. You <a id="_idIndexMarker1187"/>can add more values to classify your images by adding new values in the file and regenerating the container with the new model.</p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check the code and update the model, check the next link: <a href="https://github.com/sergioarmgpl/containers/tree/main/inference/src">https://github.com/sergioarmgpl/containers/tree/main/inference/src</a>.</p>
+			<p>Now, let’s <a id="_idIndexMarker1188"/>deploy our <strong class="source-inline">inference</strong> service in our <strong class="bold">Advanced RISC Machine</strong> (<strong class="bold">ARM</strong>) device by following the next steps:</p>
+			<ol>
+				<li value="1">Create a deployment for the <strong class="source-inline">inference</strong> API, as follows:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: inference</strong></p><p class="source-code"><strong class="bold">  name: inference</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: inference</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: inference</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/inference</strong></p><p class="source-code"><strong class="bold">        name: inference</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        resources: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Let’s <a id="_idIndexMarker1189"/>port forward the service running, like so:<p class="source-code"><strong class="bold">$ kubectl port-forward --address 0.0.0.0 deploy/inference 3000:3000</strong></p></li>
+				<li>Now, let’s <a id="_idIndexMarker1190"/>call the <strong class="source-inline">inference</strong> API to get some predictions. Let’s use an object detected and classified as <strong class="source-inline">other</strong> with the number 6; it will return a warning level of 3 based on the prediction table. The code is illustrated in the following snippet:<p class="source-code"><strong class="bold">$ curl --header "Content-Type: application/json" \</strong></p><p class="source-code"><strong class="bold">--request POST --data '{"data":[6]}' \</strong></p><p class="source-code"><strong class="bold">http://localhost:3000/predict</strong></p></li>
+			</ol>
+			<p>This will return the following output:</p>
+			<p class="source-code"><strong class="bold">{</strong></p>
+			<p class="source-code"><strong class="bold">  "prediction": 3.0</strong></p>
+			<p class="source-code"><strong class="bold">}</strong></p>
+			<p>Our <a id="_idIndexMarker1191"/>inference service is now running, ready <a id="_idIndexMarker1192"/>to be called inside our device to classify the detected images. Let’s continue deploying the <strong class="source-inline">gps-queue</strong> service in the next section.</p>
+			<h2 id="_idParaDest-271"><a id="_idTextAnchor275"/>Deploying the gps-queue service to store GPS coordinates</h2>
+			<p>The <strong class="source-inline">gps-queue</strong> service <a id="_idIndexMarker1193"/>is composed of several containers <a id="_idIndexMarker1194"/>dedicated to a specific <a id="_idIndexMarker1195"/>task. First, initialize an <strong class="source-inline">init</strong> container called <strong class="source-inline">init-gps-queue</strong> that adds an initial value of <strong class="source-inline">-1</strong> inside the <strong class="source-inline">/tmp/gps</strong> file. This file stores the last GPS coordinate generated. Then, the <strong class="source-inline">gps-queue</strong> container is in charge of reading the GPS coordinates from our GPS module, so it needs permission to access the <strong class="source-inline">/dev</strong> folder from the host. Once the GPS coordinate <a id="_idIndexMarker1196"/>is read, it is stored in <strong class="source-inline">/tmp/gps</strong>. After this, the <strong class="source-inline">sync-traffic-events</strong> container calls the <strong class="source-inline">gps-api</strong> container every 30 seconds by default using the <strong class="source-inline">http://localhost:3000/traffic</strong> endpoint, which sends the detected objects with their warning classification and GPS coordinate to the <strong class="source-inline">http://&lt;TRAFFIC_MANAGER_IP&gt;:5000</strong> public endpoint, which stores this information for some time to be shown in the <strong class="source-inline">traffic-map-public</strong> service that has public access to show the objects detected by other vehicles. Before deploying our service, let’s explore a little bit the code of the <strong class="source-inline">gps-queue</strong> container, as follows:</p>
+			<pre class="source-code">
+&lt;Import necessary Python libraries to read the GPS module&gt;
+ 
+&lt;cid variable to set a unique client id for these coordinates&gt;
+&lt;device variable to set where the GPS module will be read in /dev&gt;
+&lt;ser variable to configure the serial communication with the GPS module&gt;
+ 
+&lt;Initializing the device to read information&gt;
+ 
+while True:
+   &lt;Read the Coordinate and store it into /tmp/gps&gt;</pre>
+			<p>This <a id="_idIndexMarker1197"/>code configures the GPS module and stores the coordinate in the <strong class="source-inline">/tmp/gps</strong> file, which is shared by the <strong class="source-inline">gps-queue</strong> and <strong class="source-inline">gps-api</strong> containers. It uses a <strong class="source-inline">cid</strong> variable <a id="_idIndexMarker1198"/>to associate <a id="_idIndexMarker1199"/>each GPS coordinate with a unique client <strong class="bold">identifier</strong> (<strong class="bold">ID</strong>) that could be used for customizations to create your own system. The information will be stored in the next format: </p>
+			<pre class="source-code">
+{'lat': &lt;LATITUDE_VALUE&gt;,'lng':&lt;LONGITUDE_VALUE&gt;,'cid':&lt;CLIENT_ID&gt;}</pre>
+			<p>Now, let’s explore the code inside the <strong class="source-inline">gps-api</strong> container, as follows:</p>
+			<pre class="source-code">
+&lt;Import the necessary Python libraries to run this code&gt; 
+&lt;Set traffic_events variable to accumulate detected objects for a time period&gt;
+&lt;Flask and CORS configuration&gt;
+ 
+@app.route("/gps", methods=["GET"])
+def getGPSCoordinate():
+  &lt;Read coordinate form /tmp/gps&gt;
+  &lt;Return the GPS coordinate as JSON as 
+  {'lat': &lt;LATITUDE_VALUE&gt;,'lng':&lt;LONGITUDE_VALUE&gt;
+  ,'cid':&lt;CLIENT_ID&gt;} 
+  &gt;
+ 
+@app.route("/traffic/event", methods=["POST"])
+def registerTrafficEvent():
+   &lt;Read last GPS coordinate from /tmp/gps&gt;
+   &lt;Get object type and warning classification
+    from the computer vision service&gt;
+   &lt;Generate the Timestamp value for the new detected object&gt;
+   &lt;Assign to a variable the warning, Latitude, Longitude 
+    and timestamp information for the object&gt;
+   &lt;Add this information to the traffic_events array 
+    to store it temporary the value&gt;
+   &lt;Return the object ide and that the request was processed&gt;
+   
+@app.route("/traffic", methods=["GET"])
+def syncTrafficEvents():
+   &lt;Filter similar objects stored in the 
+    traffic_events array&gt;
+   &lt;Send the filtered array using JSON format to the
+    endpoint http://&lt;TRAFFIC_MANAGER:5000&gt;/traffic/1
+    to store this information and get it locally and
+    public by calling the endpoint
+    http://&lt;TRAFFIC_MANAGER:5000&gt;/traffic&gt;
+    &lt;Return that the information syncTrafficEvents
+     was processed&gt;
+   
+&lt;GPS Queue service initialization on port 3000 by default&gt;</pre>
+			<p>As <a id="_idIndexMarker1200"/>an explanation, the <strong class="source-inline">/gps</strong> path <a id="_idIndexMarker1201"/>of this API <a id="_idIndexMarker1202"/>returns the value of the last GPS coordinate stored in <strong class="source-inline">/tmp/gps</strong>, and the  <strong class="source-inline">/traffic/event</strong> path receives the object detected from the edge device running the <strong class="source-inline">detect.py</strong> program. This happens every second. Then, the information is stored temporarily in the <strong class="source-inline">traffic_events</strong> array. Inside the Pod, the <strong class="source-inline">sync-traffic-events</strong> container calls the <strong class="source-inline">/traffic</strong> endpoint of the API running inside the <strong class="source-inline">gps-api</strong> container, which filters the <strong class="source-inline">traffic_events</strong> array to have just unique objects detected because the edge program gets a maximum of eight detected objects per video-frame analysis. Once the array is filtered, it is sent to the <strong class="bold">Traffic Manager</strong> service that is running in the cloud by calling its endpoint at <strong class="source-inline">http://&lt;TRAFFIC_MANAGER:5000&gt;/traffic/1</strong>. This information is requested later by the <strong class="bold">Traffic Map Public</strong> web application using the <strong class="source-inline">http://&lt;TRAFFIC_MANAGER:5000&gt;/traffic</strong> URL, which shows the globally stored objects detected from all the devices in a map using the Leaflet library.</p>
+			<p>To deploy this service, execute the following steps:</p>
+			<ol>
+				<li value="1">Create a deployment for the GPS queue, like so:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: gps-queue</strong></p><p class="source-code"><strong class="bold">  name: gps-queue</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: gps-queue</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: gps-queue</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      initContainers:</strong></p><p class="source-code"><strong class="bold">      - image: busybox:1.34</strong></p><p class="source-code"><strong class="bold">        name: init-gps-queue</strong></p><p class="source-code"><strong class="bold">        command: ['sh', '-c', "echo '-1' &gt;&gt; /tmp/gps"]</strong></p><p class="source-code"><strong class="bold">        securityContext:</strong></p><p class="source-code"><strong class="bold">          runAsUser: 1</strong></p><p class="source-code"><strong class="bold">        volumeMounts:</strong></p><p class="source-code"><strong class="bold">        - name: tmp</strong></p><p class="source-code"><strong class="bold">          mountPath: /tmp</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/gps_queue</strong></p><p class="source-code"><strong class="bold">        name: gps-queue</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: DEVICE</strong></p><p class="source-code"><strong class="bold">          value: "/dev/ttyACM0"</strong></p><p class="source-code"><strong class="bold">        securityContext:</strong></p><p class="source-code"><strong class="bold">          privileged: true</strong></p><p class="source-code"><strong class="bold">          capabilities:</strong></p><p class="source-code"><strong class="bold">            add: ["SYS_ADMIN"]</strong></p><p class="source-code"><strong class="bold">        volumeMounts:</strong></p><p class="source-code"><strong class="bold">        - mountPath: /dev</strong></p><p class="source-code"><strong class="bold">          name: dev-volume</strong></p><p class="source-code"><strong class="bold">        - name: tmp</strong></p><p class="source-code"><strong class="bold">          mountPath: /tmp</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/gps_api</strong></p><p class="source-code"><strong class="bold">        name: gps-api</strong></p><p class="source-code"><strong class="bold">        ports:</strong></p><p class="source-code"><strong class="bold">        - containerPort: 3000</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: ENDPOINT</strong></p><p class="source-code"><strong class="bold">          value: "http://&lt;TRAFFIC_MANAGER_IP&gt;:5000"</strong></p><p class="source-code"><strong class="bold">        securityContext:</strong></p><p class="source-code"><strong class="bold">          runAsUser: 1</strong></p><p class="source-code"><strong class="bold">        volumeMounts:</strong></p><p class="source-code"><strong class="bold">        - name: tmp</strong></p><p class="source-code"><strong class="bold">          mountPath: /tmp</strong></p><p class="source-code"><strong class="bold">      - image: curlimages/curl</strong></p><p class="source-code"><strong class="bold">        name: sync-traffic-events</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: URL</strong></p><p class="source-code"><strong class="bold">          value: "http://localhost:3000/traffic"</strong></p><p class="source-code"><strong class="bold">        - name: DELAY</strong></p><p class="source-code"><strong class="bold">          value: "30"</strong></p><p class="source-code"><strong class="bold">        command: [ "sh", "-c"]</strong></p><p class="source-code"><strong class="bold">        args:</strong></p><p class="source-code"><strong class="bold">        - while :; do</strong></p><p class="source-code"><strong class="bold">            curl ${URL};</strong></p><p class="source-code"><strong class="bold">            sleep ${DELAY};</strong></p><p class="source-code"><strong class="bold">          done;</strong></p><p class="source-code"><strong class="bold">      volumes:</strong></p><p class="source-code"><strong class="bold">      - name: dev-volume</strong></p><p class="source-code"><strong class="bold">        hostPath:</strong></p><p class="source-code"><strong class="bold">          path: /dev</strong></p><p class="source-code"><strong class="bold">          type: Directory</strong></p><p class="source-code"><strong class="bold">      - name: tmp</strong></p><p class="source-code"><strong class="bold">        emptyDir: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check the code and create your own containers, you can check the next links: </p>
+			<p class="callout"><a href="https://github.com/sergioarmgpl/containers/tree/main/gps-api/src">https://github.com/sergioarmgpl/containers/tree/main/gps-api/src</a> and <a href="https://github.com/sergioarmgpl/containers/tree/main/gps-queue/src">https://github.com/sergioarmgpl/containers/tree/main/gps-queue/src</a></p>
+			<p>Let’s <a id="_idIndexMarker1203"/>pay attention <a id="_idIndexMarker1204"/>to the variables that this deployment uses in its containers. These are <a id="_idIndexMarker1205"/>explained in more detail here:</p>
+			<ul>
+				<li><strong class="source-inline">gps-queue</strong>:<ul><li><strong class="source-inline">DEVICE</strong>: Configures the device where your GPS module is detected. For the VK-162 G-Mouse module, the default value used is <strong class="source-inline">/dev/ttyACM0</strong>.</li></ul></li>
+				<li><strong class="source-inline">gps-api</strong>:<ul><li><strong class="source-inline">ENDPOINT</strong>: Configures the public endpoint where all detected objects with GPS coordinates and warnings are stored. This is the public service that stores the coordinates. By default, this is <strong class="source-inline">http://&lt;TRAFFIC_MANAGER_IP&gt;:5000</strong>.</li></ul></li>
+				<li><strong class="source-inline">sync-traffic-events</strong>:<ul><li><strong class="source-inline">URL</strong>: Contains the local URL called periodically to send information about all detected objects. This will call the API configured in the <strong class="source-inline">gps-api</strong> container. By default, this is <strong class="source-inline">http://localhost:3000/traffic</strong>.</li><li><strong class="source-inline">DELAY</strong>: Configures the amount of time to wait to send the last objects detected with their information. By default, this is 30, which represents the time in seconds.</li></ul></li>
+			</ul>
+			<p>These values could be used to customize the behavior of the service that processes the objects detected and its GPS coordinates.</p>
+			<ol>
+				<li value="2">If you want to test the endpoints of this service, you can run inside your edge device <strong class="source-inline">port-forward</strong> to access the API using the <strong class="source-inline">curl</strong> command, like so:<p class="source-code"><strong class="bold">$ kubectl port-forward --address 0.0.0.0 deploy/gps-queue 3001:3000</strong></p></li>
+			</ol>
+			<p>For example, you can execute the following command: </p>
+			<p class="source-code"><strong class="bold">$ curl http://localhost:3001/gps</strong></p>
+			<p>It will return something like this:</p>
+			<p class="source-code"><strong class="bold">{'lat': &lt;LATITUDE_VALUE&gt;,'lng':&lt;LONGITUDE_VALUE&gt;</strong></p>
+			<p class="source-code"><strong class="bold">  ,'cid':&lt;CLIENT_ID&gt;}</strong></p>
+			<p>We <a id="_idIndexMarker1206"/>have now deployed the <strong class="source-inline">gps-queue</strong> service and it’s ready to be used. It’s time to deploy our local web application <a id="_idIndexMarker1207"/>that will show <a id="_idIndexMarker1208"/>detected objects at the edge using our edge device equipped with a camera. For this, we <a id="_idIndexMarker1209"/>have to solve the <strong class="bold">Cross-Origin Resource Sharing</strong> (<strong class="bold">CORS</strong>) restriction call that happens when it calls the <strong class="source-inline">traffic-manager</strong> public API from the local <strong class="source-inline">traffic-map</strong> application. CORS is a mechanism that allows or restricts resources on a web page to be requested from a domain outside the current one. In this scenario, it’s called a public API from a local web application. So, let’s move on to the next section to create a simple proxy to resolve this issue.</p>
+			<h2 id="_idParaDest-272"><a id="_idTextAnchor276"/>Deploying traffic-manager to store GPS coordinates</h2>
+			<p>The <strong class="source-inline">traffic-manager</strong> service <a id="_idIndexMarker1210"/>receives detected <a id="_idIndexMarker1211"/>objects with their GPS coordinates and warning-level classification. This API <a id="_idIndexMarker1212"/>runs in the cloud, and it’s called periodically by the edge device while it’s moving and detecting objects. This service consists of two containers: one that gives an API to recollect objects detected, and another that is in charge of auto-expiring detected objects and global traffic information. This is because traffic is constantly changing during the day. You can configure <a id="_idIndexMarker1213"/>these values to fit your own scenario. Let’s explore first the code of the API <a id="_idIndexMarker1214"/>in the <strong class="source-inline">traffic-manager</strong> container, as follows:</p>
+			<pre class="source-code">
+&lt;Import the necessary Python libraries to run this code&gt; 
+  
+&lt;Flask and CORS configuration&gt; 
+ 
+&lt;Set time to expire the traffic and objects by setting the values of the variables ttl_trf, ttl_obj&gt;
+ 
+def redisCon():
+   &lt;Set and return the Redis connection&gt;
+ 
+@app.route("/traffic/1", methods=["POST"])
+def setBulkTrafficObjects():
+   &lt;Get the Redis connection calling redisCon()&gt;
+   &lt;Get detected objects from the POST request&gt;
+   &lt;Omit to store similar detected objects in a 
+   5 meters radius&gt;
+   &lt;Set a hash value to store type and warning 
+    level for each object&gt;
+   &lt;Set expiring time for each hash stored&gt;
+   &lt;Return that the operation was successful {"setTrafficObject":"done"}&gt;
+ 
+@app.route("/traffic/unit/&lt;unit&gt;/r/&lt;radius&gt;"+
+"/lat/&lt;lat&gt;/lng/&lt;lng&gt;", methods=["GET"])
+def getTrafficObjects(unit,radius,lat,lng):
+   &lt;Get the Redis connection calling redisCon()&gt;
+   &lt;Get the objects detected and its metadata
+   from the previous stored hash
+   in the radius configured in the request&gt;
+   &lt;Return that the operation was successful and 
+   the objects found
+   in the next format:
+   {"getTrafficObjects":"done",
+    "objects":data
+   }&gt;
+ 
+&lt;Service initialization on port 3000 by default&gt;</pre>
+			<p>This <a id="_idIndexMarker1215"/>container has two endpoints with the <strong class="source-inline">/traffic/1</strong> path. This service stores <a id="_idIndexMarker1216"/>detected objects at the edge by creating a hash key with the form <strong class="source-inline">object:&lt;object-id&gt;:data</strong> that stores the type and the warning level, and in the <strong class="source-inline">traffic</strong> geospatial set stores the GPS coordinate. An expiration time to the <strong class="source-inline">traffic</strong> key is set or renewed, and for the new <strong class="source-inline">object:&lt;object-id&gt;:data</strong> hash key, the expiration time is set too. After calling the <strong class="source-inline">/traffic/unit/&lt;unit&gt;/r/&lt;radius&gt;/lat/&lt;lat&gt;/lng/&lt;lng&gt;</strong> path, the call returns near detected objects in the radius defined in the request. This is a public service that all the edge devices will access periodically to send updates of objects detected while they are moving. Now, let’s explore the code of the <strong class="source-inline">autoexpire</strong> container, as follows:</p>
+			<pre class="source-code">
+&lt;Import all the necessary libraries&gt;
+&lt;Set Redis connection in an r variable&gt;
+ 
+while True:
+    &lt;Get all the objects inside the traffic sorted set&gt;
+    &lt;Check if each member of the set has its hash value&gt;
+    &lt;If not remove the member of the sorted set&gt;
+    &lt;Wait until the configured delay ends to
+    Update the set again&gt;</pre>
+			<p>This <a id="_idIndexMarker1217"/>container basically checks if each member of the traffic geospatial set has metadata <a id="_idIndexMarker1218"/>available in the <strong class="source-inline">object:&lt;object-id&gt;:data</strong> hash key. If none exists, this means that the object passed the maximum amount of time to be relevant in the traffic, which means that it has expired too, and then this code removes the member from the sorted set. This process is called periodically after waiting for a certain number of seconds that are configured by the <strong class="source-inline">DELAY</strong> variable. </p>
+			<p>To deploy the <strong class="source-inline">traffic-manager</strong> service, proceed as follows:</p>
+			<ol>
+				<li value="1">Create a deployment for the GPS server, like so:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: traffic-manager</strong></p><p class="source-code"><strong class="bold">  name: traffic-manager</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: traffic-manager</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: traffic-manager</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/autoexpire</strong></p><p class="source-code"><strong class="bold">        name: autoexpire</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_HOST</strong></p><p class="source-code"><strong class="bold">          value: "redis"</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_AUTH</strong></p><p class="source-code"><strong class="bold">          value: "YOUR_PASSWORD"</strong></p><p class="source-code"><strong class="bold">        - name: DELAY</strong></p><p class="source-code"><strong class="bold">          value: "30"</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/traffic_manager</strong></p><p class="source-code"><strong class="bold">        name: traffic-manager</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_HOST</strong></p><p class="source-code"><strong class="bold">          value: "redis"</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_AUTH</strong></p><p class="source-code"><strong class="bold">          value: "YOUR_PASSWORD"</strong></p><p class="source-code"><strong class="bold">        - name: TTL_TRAFFIC</strong></p><p class="source-code"><strong class="bold">          value: "900"</strong></p><p class="source-code"><strong class="bold">        - name: TTL_OBJECT</strong></p><p class="source-code"><strong class="bold">          value: "180"</strong></p><p class="source-code"><strong class="bold">        resources: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This <a id="_idIndexMarker1219"/>deployment <a id="_idIndexMarker1220"/>uses the following variables:</p>
+			<ul>
+				<li><strong class="source-inline">REDIS_HOST</strong>: This is the name of the Redis service. This variable can be customized to fit your needs.</li>
+				<li><strong class="source-inline">REDIS_AUTH</strong>: This is the password to connect to the Redis service.</li>
+				<li><strong class="source-inline">TTL_TRAFFIC</strong>: This is the URL of the <strong class="source-inline">tracking-server</strong> service. In this case, the URL matches the internal <strong class="source-inline">tracking-server</strong> service on port <strong class="source-inline">3000</strong>.</li>
+				<li><strong class="source-inline">TTL_OBJECT</strong>: This is the URL of the <strong class="source-inline">tracking-server</strong> service. in this case, the URL matches the internal <strong class="source-inline">tracking-server</strong> service on port <strong class="source-inline">3000</strong>.</li>
+				<li><strong class="source-inline">DELAY</strong>: This is the time to wait to check if a member inside the traffic geospatial sorted set expired.</li>
+			</ul>
+			<p>By configuring these variables, you can customize the behavior of this deployment.</p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check the code and create your own containers, you can check the next links: </p>
+			<p class="callout"><a href="https://github.com/sergioarmgpl/containers/tree/main/traffic-manager/src">https://github.com/sergioarmgpl/containers/tree/main/traffic-manager/src</a> and <a href="https://github.com/sergioarmgpl/containers/tree/main/autoexpire/src">https://github.com/sergioarmgpl/containers/tree/main/autoexpire/src</a></p>
+			<ol>
+				<li value="2">Now, let’s <a id="_idIndexMarker1221"/>create a service for this deployment as a <strong class="bold">LoadBalancer</strong>. This IP address <a id="_idIndexMarker1222"/>will be used in our edge device to propagate this information in the cloud to be accessible to all drivers that use this smart traffic system. The code is illustrated in the following snippet:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: traffic-manager</strong></p><p class="source-code"><strong class="bold">  name: traffic-manager-lb</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 5000</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 3000</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: traffic-manager</strong></p><p class="source-code"><strong class="bold">  type: LoadBalancer</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Get <a id="_idIndexMarker1223"/>the load balancer IP address for your <strong class="source-inline">traffic-manager</strong> deployment <a id="_idIndexMarker1224"/>with the following command:<p class="source-code"><strong class="bold">$ TRAFFIC_MANAGER_IP="$(kubectl get svc traffic-manager-lb  -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"</strong></p></li>
+			</ol>
+			<p>You can see the value of the <strong class="source-inline">TRAFFIC_MANAGER_IP</strong> environment variable by running the following command:</p>
+			<p class="source-code"><strong class="bold">$ echo $TRAFFIC_MANAGER_IP</strong></p>
+			<p>Note that it takes some time after the IP address of the load balancer is provisioned. You can check the state of the services by running the following command:</p>
+			<p class="source-code"><strong class="bold">$ kubectl get svc traffic-manager-lb</strong></p>
+			<p>Wait until the <strong class="source-inline">EXTERNAL_IP</strong> environment variable is provisioned.</p>
+			<p>Also, take note that the <strong class="source-inline">$TRAFFIC_MANAGER_IP</strong> value will be used to configure the <strong class="source-inline">proxy</strong> service in the edge device.</p>
+			<ol>
+				<li value="4">(<em class="italic">Optional</em>) If you want to test this API to insert an object manually, run the following command:<p class="source-code"><strong class="bold">$ curl -X POST -H "Accept: application/json" \</strong></p><p class="source-code"><strong class="bold">-H "Content-Type: application/json" \</strong></p><p class="source-code"><strong class="bold">--data '{</strong></p><p class="source-code"><strong class="bold">    "object":"person",</strong></p><p class="source-code"><strong class="bold">    "warning":1,</strong></p><p class="source-code"><strong class="bold">    "position":{"lat":1.633518,"lng": -90.591706}</strong></p><p class="source-code"><strong class="bold">}' http://$TRAFFIC_MANAGER_IP:3000/traffic/1</strong></p></li>
+			</ol>
+			<p>This <a id="_idIndexMarker1225"/>will return the following output:</p>
+			<p class="source-code"><strong class="bold">{</strong></p>
+			<p class="source-code"><strong class="bold">  "setTrafficObject": "done"</strong></p>
+			<p class="source-code"><strong class="bold">}</strong></p>
+			<ol>
+				<li value="5">(<em class="italic">Optional</em>) To get <a id="_idIndexMarker1226"/>all detected objects in a radius of 0.1 kilometers, run the following command:<p class="source-code"><strong class="bold">$ curl -X GET -H "Accept: application/json" \</strong></p><p class="source-code"><strong class="bold">http://$TRAFFIC_MANAGER_IP:3000/traffic/objects/unit/km/r/0.1/lat/1.633518/lng/-90.5917</strong></p></li>
+			</ol>
+			<p>This will return the following output:</p>
+			<p class="source-code"><strong class="bold">{</strong></p>
+			<p class="source-code"><strong class="bold">  "getTrafficObjects": [</strong></p>
+			<p class="source-code"><strong class="bold">    "person"</strong></p>
+			<p class="source-code"><strong class="bold">  ]</strong></p>
+			<p class="source-code"><strong class="bold">}</strong></p>
+			<p>Now, our <strong class="source-inline">traffic-manager</strong> API is running in the cloud. Let’s move on to use this API in our edge device using a proxy to prevent CORS restrictions when calling the API, in the next section.</p>
+			<h2 id="_idParaDest-273"><a id="_idTextAnchor277"/>Deploying a simple proxy to bypass CORS</h2>
+			<p>The <strong class="source-inline">proxy</strong> service <a id="_idIndexMarker1227"/>is used to bypass the CORS <a id="_idIndexMarker1228"/>restriction that occurs when <a id="_idIndexMarker1229"/>a local website running on a private network tries to call a public API using a public API address. Using a proxy to forward requests to this public <a id="_idIndexMarker1230"/>site could be one possible and simple solution to solve this. Another one is to modify the request headers on the API call and add the necessary headers to bypass the CORS restriction. In this case, we are going to use a proxy build with Flask to forward all local <strong class="source-inline">GET</strong> requests to the <strong class="source-inline">traffic-manager</strong> API, which is a public API deployed in the cloud and is accessible over the internet. Let’s explore the code a little bit before deploying the <strong class="source-inline">proxy</strong> service, as follows:</p>
+			<pre class="source-code">
+from flask import Flask,request,redirect,Response
+import os
+import requests
+app = Flask(__name__)
+url = os.environ['URL']
+ 
+@app.route('/&lt;path:path&gt;',methods=['GET'])
+def proxy(path):
+   global url
+   r = requests.get(f'{url}/{path}')
+   excluded_headers = ['content-encoding'
+   , 'content-length', 'transfer-encoding'
+   , 'connection']
+   headers = [(name, value) for (name, value) in 
+   r.raw.headers.items() if name.lower() not in 
+   excluded_headers]
+   response = Response(r.content, r.status_code, headers)
+   return response
+ 
+if __name__ == '__main__':
+   app.run(debug = False,port=5000)</pre>
+			<p>This <a id="_idIndexMarker1231"/>code basically receives all <strong class="source-inline">GET</strong> requests <a id="_idIndexMarker1232"/>on any path <a id="_idIndexMarker1233"/>and forwards the requests with all the important headers to the URL defined in the environment variable. This API is accessible using port <strong class="source-inline">5000</strong>. Now, let’s move on to deploy this simple proxy to forward all calls from our local <strong class="bold">Traffic Map</strong> web application to the public <strong class="bold">Traffic Manager</strong> service as though it is running locally in the same host where <strong class="bold">Traffic Map</strong> is running. To deploy the <strong class="source-inline">proxy</strong> service, execute the following steps:</p>
+			<ol>
+				<li value="1">Create a deployment for the GPS server, like so:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: proxy</strong></p><p class="source-code"><strong class="bold">  name: proxy</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: proxy</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: proxy</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/proxy</strong></p><p class="source-code"><strong class="bold">        name: proxy</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: URL</strong></p><p class="source-code"><strong class="bold">          value: "http://&lt;TRAFFIC_MANAGER_IP&gt;:5000"</strong></p><p class="source-code"><strong class="bold">        resources: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This <a id="_idIndexMarker1234"/>deployment <a id="_idIndexMarker1235"/>uses <a id="_idIndexMarker1236"/>the following variables:</p>
+			<ul>
+				<li><strong class="source-inline">URL</strong>: This variable has the URL where the proxy is going to redirect all <strong class="source-inline">GET</strong> requests received by the proxy in port <strong class="source-inline">5000</strong>. This URL will be the <strong class="source-inline">traffic-manager</strong> public IP address using the format <strong class="source-inline">http://&lt;TRAFFIC_MANAGER_IP&gt;:5000</strong>.</li>
+			</ul>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check the code and create your own container, you can check the next link: <a href="https://github.com/sergioarmgpl/containers/tree/main/proxy/src">https://github.com/sergioarmgpl/containers/tree/main/proxy/src</a>. This small proxy is a custom implementation that you can implement using languages other than Python to have all the control in your implementation. You can also use solutions such as using NGINX with a <strong class="source-inline">proxy_pass</strong> configuration, and so on.</p>
+			<ol>
+				<li value="2">You <a id="_idIndexMarker1237"/>can test <a id="_idIndexMarker1238"/>the proxy by running something <a id="_idIndexMarker1239"/>like this:<p class="source-code"><strong class="bold">$ curl http://localhost:5000/&lt;REMOTE_PATH&gt;</strong></p></li>
+			</ol>
+			<p>Here, the remote path could be <strong class="source-inline">/traffic</strong>, which is a URL where the <strong class="bold">Traffic Manager</strong> service returns all objects globally detected by drivers.</p>
+			<p>Now our proxy is running, let’s deploy our <strong class="bold">Traffic Map</strong> web application to show the detected objects that represent warnings for drivers in the next section.</p>
+			<h1 id="_idParaDest-274"><a id="_idTextAnchor278"/>Deploying the edge application to visualize warnings based on computer vision</h1>
+			<p>Our <a id="_idIndexMarker1240"/>visual application <a id="_idIndexMarker1241"/>consists of two parts: the first one is a web application that shows all data from all drivers using the smart traffic system, and the other one is a desktop application that shows the detected objects in real time. So, let’s start installing our web application to visualize objects detected by different drivers in the next section.</p>
+			<h2 id="_idParaDest-275"><a id="_idTextAnchor279"/>Installing the Traffic Map application to visualize objects detected by drivers</h2>
+			<p>We <a id="_idIndexMarker1242"/>have now set up the necessary APIs to visualize what our device detected. We <a id="_idIndexMarker1243"/>have to continue deploying our web application to visualize this object on a map. This is where our <strong class="bold">Traffic Map</strong> application comes in handy. But let’s explore the code first before deploying it, as follows:</p>
+			<pre class="source-code">
+&lt;imported libraries&gt;
+&lt;app_initialization&gt;
+&lt;CORS configuration&gt;
+@app.route("/")
+def map():
+   return render_template(&lt;Render map.html
+                           Using environment variables
+                           GPS_QUEUE,TRAFFIC_MANAGER,
+                           LATITUDE and LONGITUDE&gt;) 
+&lt;Starting the web application on port 3000&gt;</pre>
+			<p>This is similar to the previous web application map used in <a href="B16945_13_Final_PG.xhtml#_idTextAnchor246"><em class="italic">Chapter 13</em></a>, <em class="italic">Geolocalization Applications using GPS, NoSQL, and K3s Clusters</em>, but this one calls the GPS Queue service to get the current GPS coordinate that is running in the edge device and get data from the public endpoint of the <strong class="bold">Traffic Manager</strong> service that has to be accessed by using our custom <strong class="source-inline">proxy</strong> service to prevent CORS access restrictions. It also has the option to center the map at the beginning every time the page is loaded.</p>
+			<p>The web part uses the <strong class="source-inline">map.html</strong> file with the following code:</p>
+			<pre class="source-code">
+&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+&lt;Load Javascript libraries&gt;
+&lt;Load page styles&gt;
+&lt;body&gt;
+    &lt;div id='map'&gt;&lt;/div&gt;
+&lt;script&gt;
+    &lt;Load Map in an initial GPS position&gt;
+    var marker
+    var markers = []
+    var osm = L.tileLayer(
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {  
+        &lt;Set Open Street Map Initial
+        Configuration using Leaflet&gt;
+    });   
+    osm.addTo(map);      
+    setInterval(() =&gt; {
+        $.getJSON("http://{{ GPS_QUEUE }}:3001/gps", 
+        function(gps) {   
+            &lt;Delete current markers&gt;
+            &lt;Get current position of your device 
+             and show it in the map&gt;
+                $.getJSON(
+                  "http://{{ TRAFFIC_MANAGER }}:5000"+
+                  "/traffic/unit/km/r/0.5/lat/&lt;LATITUDE&gt;"
+                  "/lng/&lt;LONGITUDE&gt;", function(pos) {
+                &lt;This gets all the detected objects 
+                in a radius of 0.5 km&gt;
+                &lt;For each object returned show it in 
+                the map using 
+                markPosition(object,lat,lng,o_type,warning)
+                function&gt;
+                });
+        });
+    }, 5000);
+ 
+    &lt;Configure the icons to visualize if an object is a
+    person, car or a truck&gt;
+    function markPosition(object,lat,lng,o_type,warning)
+    {
+        &lt;Create a maker with the appropriate Icon showing
+        the object name, latitude, longitude, type of object
+        and warning level&gt;
+    }  
+&lt;/script&gt;  
+&lt;/body&gt;
+&lt;/html&gt;</pre>
+			<p>This <a id="_idIndexMarker1244"/>code basically <a id="_idIndexMarker1245"/>centers the map with initial latitude and longitude coordinates, shows the current position of the device in a blue globe, and shows the detected objects with icons, showing the object name, the GPS coordinates, the type of object, and the warning level. It should look something like this:</p>
+			<div>
+				<div id="_idContainer149" class="IMG---Figure">
+					<img src="image/B16945_14_03.jpg" alt="Figure 14.3 – Driver current position&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.3 – Driver current position</p>
+			<p>This <a id="_idIndexMarker1246"/>shows the driver’s current position in real time, while the vehicle is moving. The <a id="_idIndexMarker1247"/>other possible visualization shows how detected objects appear across the map. This information is requested using the <strong class="source-inline">proxy</strong> service to visualize all detected objects <a id="_idIndexMarker1248"/>by other drivers. This could represent a kind of <strong class="bold">augmented reality</strong> (<strong class="bold">AR</strong>), something similar to what Waze does with its application. The visualization looks like this:</p>
+			<div>
+				<div id="_idContainer150" class="IMG---Figure">
+					<img src="image/B16945_14_04.jpg" alt="Figure 14.4 – Detected object’s current position and warning message&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.4 – Detected object’s current position and warning message</p>
+			<p>If you <a id="_idIndexMarker1249"/>click inside the detected object, it will show the current GPS coordinate, the type of object, and a warning message. There are several objects included <a id="_idIndexMarker1250"/>in this default implementation. The implementation includes car, truck, and person detection as possible obstacles and potential warnings for a driver. You can see the following icons on the map:</p>
+			<div>
+				<div id="_idContainer151" class="IMG---Figure">
+					<img src="image/B16945_14_05.jpg" alt="Figure 14.5 – Car, truck, and person icons shown in Traffic Map"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.5 – Car, truck, and person icons shown in Traffic Map</p>
+			<p>By default, our web application updates the objects every 5 seconds within a radius of 0.5 kilometers. Those values can be customized to satisfy your own solution. Now, let’s deploy <a id="_idIndexMarker1251"/>our Traffic <a id="_idIndexMarker1252"/>Map web application by executing the next commands:</p>
+			<ol>
+				<li value="1">Create a <strong class="source-inline">traffic-map</strong> deployment by running the following command:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f - </strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: traffic-map</strong></p><p class="source-code"><strong class="bold">  name: traffic-map</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: traffic-map</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: traffic-map</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/traffic_map</strong></p><p class="source-code"><strong class="bold">        name: traffic-map</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: LATITUDE</strong></p><p class="source-code"><strong class="bold">          value: "&lt;YOUR_LATITUDE_COORDINATE&gt;"</strong></p><p class="source-code"><strong class="bold">        - name: LONGITUDE</strong></p><p class="source-code"><strong class="bold">          value: "&lt;YOUR_LONGITUDE_COORDINATE&gt;"</strong></p><p class="source-code"><strong class="bold">        - name: GPS_QUEUE</strong></p><p class="source-code"><strong class="bold">          value: "localhost" #&lt;GPS_QUEUE_IP&gt;</strong></p><p class="source-code"><strong class="bold">        - name: TRAFFIC_MANAGER</strong></p><p class="source-code"><strong class="bold">          value: "&lt;TRAFFIC_MANAGER_IP&gt;"</strong></p><p class="source-code"><strong class="bold">        resources: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This <a id="_idIndexMarker1253"/>deployment <a id="_idIndexMarker1254"/>has the following environment variables:</p>
+			<ul>
+				<li><strong class="source-inline">LATITUDE</strong>: Initial GPS latitude coordinate to center your map.</li>
+				<li><strong class="source-inline">LONGITUDE</strong>: Initial GPS longitude coordinate to center your map.</li>
+				<li><strong class="source-inline">GPS_QUEUE</strong>: IP address endpoint of the <strong class="source-inline">gps-queue</strong> service. In this case, because this runs locally, it is set by default as <strong class="source-inline">localhost</strong>.</li>
+				<li><strong class="source-inline">TRAFFIC_MANAGER</strong>: IP address endpoint of your <strong class="bold">Traffic Manager</strong> application. In this case, because of the use of the <strong class="source-inline">proxy</strong> service, we can call it using <strong class="source-inline">localhost</strong>, which prevents the CORS restriction.</li>
+			</ul>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check the code and create your own container of <strong class="source-inline">traffic_map</strong>, you can check the next link: </p>
+			<p class="callout"><a href="https://github.com/sergioarmgpl/containers/tree/main/traffic-map/src">https://github.com/sergioarmgpl/containers/tree/main/traffic-map/src</a></p>
+			<p>We <a id="_idIndexMarker1255"/>have now deployed the <strong class="bold">Traffic Map</strong> web application on our edge device. Let’s <a id="_idIndexMarker1256"/>move on to run our object detection system at the edge to perform our computer vision, in the next section.</p>
+			<h2 id="_idParaDest-276"><a id="_idTextAnchor280"/>Detecting objects with computer vision using OpenCV, TensorFlow Lite, and scikit-learn</h2>
+			<p>The <a id="_idIndexMarker1257"/>service that performs computer <a id="_idIndexMarker1258"/>vision is contained <a id="_idIndexMarker1259"/>in the <strong class="source-inline">detect.py</strong> file. This <a id="_idIndexMarker1260"/>will run <a id="_idIndexMarker1261"/>on our edge <a id="_idIndexMarker1262"/>device. Let’s explore <a id="_idIndexMarker1263"/>the <a id="_idIndexMarker1264"/>code <a id="_idIndexMarker1265"/>inside this file before preparing our device to run this program, as follows:</p>
+			<pre class="source-code">
+&lt;Imported libraries to run OpenCV in TensorFlow Lite&gt;
+ 
+#Array to map detected objects
+obj_values = {"car":1,"cat":2,"person":3
+,"dog":4,"semaphore":5,"truck":6,"other":1000}
+ 
+def run():
+  &lt;Initialize Video Capture for the camera&gt;
+  &lt;Set screen size to capture&gt;
+  &lt;Initialize the object detection model&gt;
+  #Array to store detected objects
+  items = []
+  while Camera is Opened:
+    detection_result = detector.detect(input_tensor)
+    items.clear()
+    &lt;store detected objects in the items arrays&gt;
+    &lt;Show the FPS evaluated&gt;
+    &lt;Count objects detected per type of object&gt;
+    &lt;Get the classification of each object calling
+    /predict endpoint from the gps-api&gt;
+    if the warning count of the group &lt;= 2:
+        &lt;A real warning is detected
+        we push this information calling
+        /traffic/event and warning is incremented&gt;
+    if warning:
+       &lt;show unique objects found
+       warning is set to zero&gt;
+    else:
+       &lt;show No warnings&gt;
+ 
+    if &lt;ESC key is pressed&gt;:
+      &lt;break the cycle&gt;
+    &lt;Set cv2 window size to show the capture&gt;
+  &lt;Close the Camera Capture&gt;
+  &lt;Destroy all windows&gt;
+ 
+def main():
+  &lt;Parse parameters to run the program&gt;
+  &lt;Call run() function to start analyzing video capture&gt;
+ 
+if __name__ == '__main__':
+  &lt;call the main() function of the program&gt;</pre>
+			<p>This <a id="_idIndexMarker1266"/>code starts the video capture <a id="_idIndexMarker1267"/>and then sends <a id="_idIndexMarker1268"/>this image in a format <a id="_idIndexMarker1269"/>that TensorFlow <a id="_idIndexMarker1270"/>Lite can <a id="_idIndexMarker1271"/>analyze. TensorFlow <a id="_idIndexMarker1272"/>Lite detects coordinates where objects are detected and classifies the objects with <a id="_idIndexMarker1273"/>a label that is their name. This program will use the <strong class="source-inline">efficientdet_lite0_edgetpu_metadata.tflite</strong> model. In this case, we are <a id="_idIndexMarker1274"/>focusing on the car, person, dog, semaphore, and truck objects. These objects represent obstacles for drivers and represent a level of warning. If the detected object is different than these objects, it’s classified as <strong class="source-inline">other</strong> and it’s omitted as a warning. If you want to add more objects to the list, you just have to modify the <strong class="source-inline">obj_values</strong> array with new values, as in the following example:</p>
+			<pre class="source-code">
+obj_values = {"car":1,..,"other_object":7,..."other":1000}</pre>
+			<p>In <a id="_idIndexMarker1275"/>each loop of this program, the <a id="_idIndexMarker1276"/>detected objects <a id="_idIndexMarker1277"/>are counted by groups <a id="_idIndexMarker1278"/>and stored <a id="_idIndexMarker1279"/>in the <strong class="source-inline">items</strong> array. Then, if <a id="_idIndexMarker1280"/>one of these groups detects more than one object and the group is one of the identified objects in the <strong class="source-inline">obj_values</strong> array, the detected objects in the group are counted as potential <a id="_idIndexMarker1281"/>object obstacles that represent warnings for drivers. To calculate the warning level, the <a id="_idIndexMarker1282"/>script calls the <strong class="source-inline">inference</strong> API, and then, if a warning is detected, it calls <a id="_idIndexMarker1283"/>the <strong class="source-inline">traffic-map</strong> service using the <strong class="source-inline">proxy</strong> service previously installed using the <strong class="source-inline">http://localhost:5000/traffic/event</strong> URL. Every time the proxy is called, the requests will be sent to the public endpoint of the <strong class="source-inline">traffic-manager</strong> service deployed in the cloud. Then, after the object analysis, the <strong class="source-inline">items</strong> array is cleared and the output summarizing the detected objects is shown in a blue box using OpenCV. It will look like this:</p>
+			<div>
+				<div id="_idContainer152" class="IMG---Figure">
+					<img src="image/B16945_14_06.jpg" alt="Figure 14.6 – Object detection screen&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.6 – Object detection screen</p>
+			<p>This <a id="_idIndexMarker1284"/>output also shows the <a id="_idIndexMarker1285"/>detected objects marked <a id="_idIndexMarker1286"/>with a red rectangle <a id="_idIndexMarker1287"/>with the name <a id="_idIndexMarker1288"/>of the detected <a id="_idIndexMarker1289"/>object. In the upper-left <a id="_idIndexMarker1290"/>corner, you will see the number of FPS analyzed. Our warning box will show two types <a id="_idIndexMarker1291"/>of messages: either the group of objects found (for example, <strong class="bold">person, car found</strong>) or that <a id="_idIndexMarker1292"/>there are no detected objects—this will show the message <strong class="bold">No warnings</strong>. The service closes if you press the <em class="italic">Esc</em> key. To install the object detection service in your edge device, execute the following steps:</p>
+			<ol>
+				<li value="1">Connect your edge device to a network that you can access.</li>
+				<li>Log in to your edge device, like so:<p class="source-code"><strong class="bold">$ ssh your_user@&lt;EDGE_DEVICE_IP&gt;</strong></p></li>
+			</ol>
+			<p>You <a id="_idIndexMarker1293"/>can get the IP address <a id="_idIndexMarker1294"/>of your <a id="_idIndexMarker1295"/>device by running <a id="_idIndexMarker1296"/>the following <a id="_idIndexMarker1297"/>command:</p>
+			<p class="source-code"><strong class="bold">$ ifconfig wlan0</strong></p>
+			<p>You <a id="_idIndexMarker1298"/>can run <a id="_idIndexMarker1299"/>it by connecting your device to an HDMI screen and connecting a keyboard <a id="_idIndexMarker1300"/>and mouse to your device.</p>
+			<ol>
+				<li value="3">Clone <a id="_idIndexMarker1301"/>the repository by running the following code:<p class="source-code"><strong class="bold">$ git clone https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes</strong></p><p class="source-code"><strong class="bold">$ cd Edge-Computing-Systems-with-Kubernetes/ch14/code/python/object_detection</strong></p></li>
+				<li>Install missing dependencies to run OpenCV and the camera, like so:<p class="source-code"><strong class="bold">$ /bin/bash install_deps.sh</strong></p></li>
+				<li>Configure the device to run the object detection program, as follows:<p class="source-code"><strong class="bold">$ /bin/bash setup.sh</strong></p></li>
+				<li>Run the script to install desktop shortcuts, like so:<p class="source-code"><strong class="bold">$ /bin/bash install_shortcuts.sh</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">Take a look at the files with a <strong class="source-inline">.desktop</strong> extension that call the <strong class="source-inline">run.sh</strong> script and the files with a <strong class="source-inline">.desktop</strong> extension that start the detection application and the local web Traffic Map application. These files are located in the <strong class="source-inline">ch14/code/python/object_detection</strong> directory.</p>
+			<ol>
+				<li value="7">Test the installation by clicking on the new <strong class="bold">Detector</strong> desktop shortcut.</li>
+				<li>Test the local Traffic Map application by clicking on the <strong class="bold">Traffic</strong> desktop shortcut. This will open Chromium at <strong class="source-inline">http://localhost:5000</strong>.</li>
+				<li>Reconfigure <a id="_idIndexMarker1302"/>your wireless <a id="_idIndexMarker1303"/>network <a id="_idIndexMarker1304"/>to use <a id="_idIndexMarker1305"/>the <a id="_idIndexMarker1306"/>access <a id="_idIndexMarker1307"/>point connection <a id="_idIndexMarker1308"/>of your <a id="_idIndexMarker1309"/>smartphone and reset your  <strong class="source-inline">/etc/wpa_supplicant/wpa_supplicant.conf</strong> configuration file by removing <a id="_idIndexMarker1310"/>the <strong class="source-inline">network {}</strong> entries to use your smartphone internet connection.</li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">For more information, you can check the next link: </p>
+			<p class="callout"><a href="https://wiki.archlinux.org/title/wpa_supplicant">https://wiki.archlinux.org/title/wpa_supplicant</a></p>
+			<ol>
+				<li value="10">Now, you can configure your touchscreen. In this case, we are using the Miuzei LCD 4.0-inch HDMI display, which flips the screen. For this, execute the following commands:<p class="source-code"><strong class="bold">$ sudo rm –rf LCD-show</strong></p><p class="source-code"><strong class="bold">$ git clone https://github.com/goodtft/LCD-show.git</strong></p><p class="source-code"><strong class="bold">$ chmod –R 755 LCD-show</strong></p><p class="source-code"><strong class="bold">$ cd LCD-show</strong></p><p class="source-code"><strong class="bold">$ sudo ./MPI4008-show</strong></p></li>
+				<li>Now, restart <a id="_idIndexMarker1311"/>your <a id="_idIndexMarker1312"/>device by <a id="_idIndexMarker1313"/>running the following command:<p class="source-code"><strong class="bold">$ sudo restart</strong></p></li>
+				<li>Now, access the <strong class="bold">Detect</strong> shortcut to start the service to detect objects.</li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">You <a id="_idIndexMarker1314"/>can accelerate the video-frame <a id="_idIndexMarker1315"/>analysis <a id="_idIndexMarker1316"/>by uncommenting the <strong class="source-inline">--enableEdgeTPU</strong> flag in the  <strong class="source-inline">ch14/code/python/object_detection/run.sh</strong> file. Our detection code is based <a id="_idIndexMarker1317"/>on the <a id="_idIndexMarker1318"/>official <a id="_idIndexMarker1319"/>Tensor Flow example that uses the Coral USB Accelerator device. This device is a TPU, which is a dedicated unit to process information using NNs. The configuration of the Coral device is out of the scope of this book. For more information, check the Coral USB Accelerator link in the <em class="italic">Further reading</em> section.</p>
+			<ol>
+				<li value="13">Start the Traffic Map application by clicking on the <strong class="bold">Traffic</strong> shortcut. If there are objects detected, they will appear 30 seconds later in the web application.</li>
+			</ol>
+			<p>The last step is to deploy a public <strong class="bold">Traffic Map</strong> application to visualize all traffic in a radius area. For this, let’s deploy the last service—<strong class="bold">Traffic Map Public</strong>—in the next section.</p>
+			<h1 id="_idParaDest-277"><a id="_idTextAnchor281"/>Deploying a global visualizer for the smart traffic system</h1>
+			<p>The <strong class="bold">Traffic Map Public</strong> service is the static version of <strong class="bold">Traffic Map</strong> that only shows detected <a id="_idIndexMarker1320"/>objects within a radius <a id="_idIndexMarker1321"/>of 5 kilometers. This service is deployed in the cloud, so you should expect the same visualization as with the <strong class="bold">Traffic Map</strong> service, but the only missing part is that it doesn’t show your real-time GPS position because it is static. The GPS position to take into consideration could be a GPS coordinate that is the center of the city that you want to monitor. In general, this web visualization could fit a static report for a municipality. The code is the same as for the <strong class="bold">Traffic Map</strong> web application, but the continuous update of the GPS position is omitted. To deploy this service, run the following commands:</p>
+			<ol>
+				<li value="1">Create a <strong class="source-inline">traffic-map</strong> deployment by running the following command:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f - </strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: traffic-map-public</strong></p><p class="source-code"><strong class="bold">  name: traffic-map-public</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: traffic-map-public</strong></p><p class="source-code"><strong class="bold">  strategy: {}</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: traffic-map-public</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/traffic_map_public</strong></p><p class="source-code"><strong class="bold">        name: traffic-map-public</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: LATITUDE</strong></p><p class="source-code"><strong class="bold">          value: "&lt;YOUR_LATITUDE_COORDINATE&gt;"</strong></p><p class="source-code"><strong class="bold">        - name: LONGITUDE</strong></p><p class="source-code"><strong class="bold">          value: "&lt;YOUR_LONGITUDE_COORDINATE&gt;"        </strong></p><p class="source-code"><strong class="bold">        - name: TRAFFIC_MANAGER</strong></p><p class="source-code"><strong class="bold">          value: "&lt;TRAFFIC_MANAGER_IP&gt;"</strong></p><p class="source-code"><strong class="bold">        resources: {}</strong></p><p class="source-code"><strong class="bold">status: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This <a id="_idIndexMarker1322"/>deployment has the <a id="_idIndexMarker1323"/>following environment variables:</p>
+			<ul>
+				<li><strong class="source-inline">LATITUDE</strong>: Initial GPS latitude coordinate to center your map.</li>
+				<li><strong class="source-inline">LONGITUDE</strong>: Initial GPS longitude coordinate to center your map.</li>
+				<li><strong class="source-inline">GPS_QUEUE</strong>: IP address endpoint of the <strong class="source-inline">gps-queue</strong> service. In this case, because this runs locally, it is set by default as <strong class="source-inline">localhost</strong>.</li>
+				<li><strong class="source-inline">TRAFFIC_MANAGER</strong>: IP address endpoint of your <strong class="bold">Traffic Manager</strong> service. In this case, because of the use of the proxy, we can call it using <strong class="source-inline">localhost</strong>, which prevents the CORS restriction.</li>
+			</ul>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To check the code and create your own container of <strong class="source-inline">traffic-map-public</strong>, you can check the next link: </p>
+			<p class="callout"><a href="https://github.com/sergioarmgpl/containers/tree/main/traffic-map-public/src">https://github.com/sergioarmgpl/containers/tree/main/traffic-map-public/src</a></p>
+			<ol>
+				<li value="2">Now, let’s create a service for this deployment as a LoadBalancer. This IP address will be the endpoint to access the Traffic Map public web application. The code is illustrated in the following snippet:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: traffic-map-public</strong></p><p class="source-code"><strong class="bold">  name: traffic-map-public-lb</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 3000</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 3000</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: traffic-map-public</strong></p><p class="source-code"><strong class="bold">  type: LoadBalancer</strong></p><p class="source-code"><strong class="bold">status:</strong></p><p class="source-code"><strong class="bold">  loadBalancer: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">To troubleshoot your deployments, you can use the <strong class="source-inline">$ kubectl logs pod/&lt;POD&gt; -f &lt;CONTAINER_NAME&gt;</strong> command. This will show you some useful outputs to troubleshoot services.</p>
+			<ol>
+				<li value="3">Get <a id="_idIndexMarker1324"/>the load balancer IP <a id="_idIndexMarker1325"/>for your <strong class="source-inline">traffic-map-public</strong> deployment with the following command:<p class="source-code"><strong class="bold">$ TRAFFIC_MAP_PUBLIC="$(kubectl get svc traffic-map-public -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"</strong></p></li>
+			</ol>
+			<p>You can see the value of the <strong class="source-inline">TRAFFIC_MAP_PUBLIC</strong> environment variable by running the following command:</p>
+			<p class="source-code"><strong class="bold">$ echo $TRAFFIC_MAP_PUBLIC</strong></p>
+			<p>Note that it takes some time after the IP address of the load balancer is provisioned. You can check the state of the services by running the following command:</p>
+			<p class="source-code"><strong class="bold">$ kubectl get svc traffic-map-public-lb</strong></p>
+			<p>Wait until the <strong class="source-inline">EXTERNAL_IP</strong> environment variable is provisioned.</p>
+			<ol>
+				<li value="4">Access the Traffic Map public application at <strong class="source-inline">http://&lt;TRAFFIC_MAP_PUBLIC&gt;:3000</strong>.</li>
+			</ol>
+			<p>Now <a id="_idIndexMarker1326"/>everything is running, try to fill <a id="_idIndexMarker1327"/>the system with data and drive your car with your edge device to capture objects. You will then see the objects in the system in a few seconds. Take a look at the <em class="italic">Further reading</em> section, where there are a lot of materials that you can explore to create your system. But now, it’s time to summarize what we learned. Let’s move on to the <em class="italic">Summary</em> section.</p>
+			<h1 id="_idParaDest-278"><a id="_idTextAnchor282"/>Summary</h1>
+			<p>In this chapter, we learned how you can use AI to analyze video captured by cameras, to detect objects that potentially represent obstacles for drivers. This was implemented to run at the edge on a Raspberry Pi, using the power of Kubernetes with K3s. With this approach, we created a decoupled system that could be easier to upgrade using containers. We also learned how this kind of system can be used in real-world scenarios to monitor traffic behavior to improve driver safety. Across this implementation, we also learned how this kind of system is distributed across the edge and the cloud to process and show information locally to drivers to improve their driving experience. In the last chapter, we are going to give an easy method to organize and design fast your own edge computing system using a diagram called the edge computing design system canvas.</p>
+			<h1 id="_idParaDest-279"><a id="_idTextAnchor283"/>Questions</h1>
+			<p>Here are a few questions to validate your new knowledge:</p>
+			<ul>
+				<li>How are AI, ML, and computer vision related to each other to design smart traffic systems?</li>
+				<li>How do TensorFlow Lite and scikit-learn work to detect objects and perform predictions?</li>
+				<li>How does computer vision work running at the edge?</li>
+				<li>How can you distribute data across the edge and the cloud?</li>
+				<li>How can you use Python to build a computer vision system?</li>
+				<li>How can you use K3s to design distributed systems that detect objects in real time?</li>
+			</ul>
+			<h1 id="_idParaDest-280"><a id="_idTextAnchor284"/>Further reading</h1>
+			<p>You can refer to the following references for more information on the topics covered in this chapter:</p>
+			<ul>
+				<li><em class="italic">What is artificial intelligence (AI)?</em>: <a href="https://www.techtarget.com/searchenterpriseai/definition/AI-Artificial-Intelligence">https://www.techtarget.com/searchenterpriseai/definition/AI-Artificial-Intelligence</a></li>
+				<li><em class="italic">Agents in Artificial Intelligence</em>: <a href="https://www.geeksforgeeks.org/agents-artificial-intelligence">https://www.geeksforgeeks.org/agents-artificial-intelligence</a> and <a href="https://www.educba.com/agents-in-artificial-intelligence">https://www.educba.com/agents-in-artificial-intelligence</a></li>
+				<li><em class="italic">Smart Traffic Management: Optimizing Your City’s Infrastructure Spend</em>: <a href="https://www.digi.com/blog/post/smart-traffic-management-optimizing-spend">https://www.digi.com/blog/post/smart-traffic-management-optimizing-spend</a></li>
+				<li><em class="italic">Markers with Custom Icons</em>: <a href="https://leafletjs.com/examples/custom-icons">https://leafletjs.com/examples/custom-icons</a></li>
+				<li><em class="italic">MLOps Using Argo and K3s</em>: <a href="https://github.com/sergioarmgpl/mlops-argo-k3s">https://github.com/sergioarmgpl/mlops-argo-k3s</a></li>
+				<li><em class="italic">YOLO and Tiny-YOLO object detection on the Raspberry Pi and Movidius NCS</em>: <a href="https://pyimagesearch.com/2020/01/27/yolo-and-tiny-yolo-object-detection-on-the-raspberry-pi-and-movidius-ncs">https://pyimagesearch.com/2020/01/27/yolo-and-tiny-yolo-object-detection-on-the-raspberry-pi-and-movidius-ncs</a></li>
+				<li><em class="italic">TensorFlow Lite example apps</em>: <a href="https://www.tensorflow.org/lite/examples">https://www.tensorflow.org/lite/examples</a></li>
+				<li><em class="italic">TensorFlow Hub</em>: <a href="https://tfhub.dev">https://tfhub.dev</a></li>
+				<li>Get models for TensorFlow Lite: <a href="https://www.tensorflow.org/lite/models">https://www.tensorflow.org/lite/models</a></li>
+				<li><em class="italic">Edge Analytics in Transportation and Logistics Space: A Case Study</em>: <a href="https://www.skillsire.com/read-blog/174_edge-analytics-in-transportation-and-logistics-space-a-case-study.html">https://www.skillsire.com/read-blog/174_edge-analytics-in-transportation-and-logistics-space-a-case-study.html</a></li>
+				<li><em class="italic">Tutorial to set up TensorFlow Object Detection API on the Raspberry Pi</em>: <a href="https://github.com/EdjeElectronics/TensorFlow-Object-Detection-on-the-Raspberry-Pi">https://github.com/EdjeElectronics/TensorFlow-Object-Detection-on-the-Raspberry-Pi</a></li>
+				<li><em class="italic">TensorFlow-Lite-Object-Detection-on-Android-and-Raspberry-Pi</em>: <a href="https://github.com/EdjeElectronics/TensorFlow-Lite-Object-Detection-on-Android-and-Raspberry-Pi">https://github.com/EdjeElectronics/TensorFlow-Lite-Object-Detection-on-Android-and-Raspberry-Pi</a></li>
+				<li><em class="italic">TensorFlow Lite Python object detection example with Raspberry Pi</em>: <a href="https://github.com/tensorflow/examples/tree/master/lite/examples/object_detection/raspberry_pi">https://github.com/tensorflow/examples/tree/master/lite/examples/object_detection/raspberry_pi</a></li>
+				<li><em class="italic">Python Project – Real-time Human Detection &amp; Counting</em>: <a href="https://data-flair.training/blogs/python-project-real-time-human-detection-counting">https://data-flair.training/blogs/python-project-real-time-human-detection-counting</a></li>
+				<li>Coral USB Accelerator: <a href="https://coral.ai/products/accelerator">https://coral.ai/products/accelerator</a></li>
+				<li>Edge TPU simple camera examples: <a href="https://github.com/google-coral/examples-camera">https://github.com/google-coral/examples-camera</a></li>
+				<li><em class="italic">Use NGINX as a Reverse Proxy</em>: <a href="https://www.linode.com/docs/guides/use-nginx-reverse-proxy">https://www.linode.com/docs/guides/use-nginx-reverse-proxy</a></li>
+				<li><em class="italic">Movidius on Mac OS</em>: <a href="https://github.com/acharroux/Movidius-On-MacOS">https://github.com/acharroux/Movidius-On-MacOS</a></li>
+				<li><em class="italic">NCS-Pi-Stream</em>: <a href="https://github.com/HanYangZhao/NCS-Pi-Stream">https://github.com/HanYangZhao/NCS-Pi-Stream</a></li>
+				<li><em class="italic">Intel® Neural Compute Stick 2 (Intel® NCS2)</em>: <a href="https://www.intel.com/content/www/us/en/developer/tools/neural-compute-stick/overview.html">https://www.intel.com/content/www/us/en/developer/tools/neural-compute-stick/overview.html</a></li>
+				<li><em class="italic">Deep Surveillance with Deep Learning – Intelligent Video Surveillance Project</em>: <a href="https://data-flair.training/blogs/deep-surveillance-with-deep-learning-intelligent-video-surveillance-project">https://data-flair.training/blogs/deep-surveillance-with-deep-learning-intelligent-video-surveillance-project</a></li>
+				<li><em class="italic">Road Lane line detection – Computer Vision Project in Python</em>: <a href="https://data-flair.training/blogs/road-lane-line-detection">https://data-flair.training/blogs/road-lane-line-detection</a></li>
+				<li><em class="italic">Raspberry Pi and Movidius NCS Face Recognition</em>: <a href="https://pyimagesearch.com/2020/01/06/raspberry-pi-and-movidius-ncs-face-recognition">https://pyimagesearch.com/2020/01/06/raspberry-pi-and-movidius-ncs-face-recognition</a></li>
+				<li><em class="italic">OpenVINO, OpenCV, and Movidius NCS on the Raspberry Pi</em>: <a href="https://pyimagesearch.com/2019/04/08/openvino-opencv-and-movidius-ncs-on-the-raspberry-pi">https://pyimagesearch.com/2019/04/08/openvino-opencv-and-movidius-ncs-on-the-raspberry-pi</a></li>
+				<li><em class="italic">Speed up predictions on low-power devices using Neural Compute Stick and OpenVINO</em>: <a href="https://towardsdatascience.com/speed-up-predictions-on-low-power-devices-using-neural-compute-stick-and-openvino-98f3ae9dcf41">https://towardsdatascience.com/speed-up-predictions-on-low-power-devices-using-neural-compute-stick-and-openvino-98f3ae9dcf41</a></li>
+				<li><em class="italic">Deep Learning with Movidius NCS (pt.4) Installing NCSDK on a Rock64</em>: <a href="https://www.youtube.com/watch?v=AXzIYk7-lr8">https://www.youtube.com/watch?v=AXzIYk7-lr8</a></li>
+				<li><em class="italic">Glyph-based video visualization on Google Map for surveillance in smart cities</em>: <a href="https://jivp-eurasipjournals.springeropen.com/articles/10.1186/s13640-017-0175-4">https://jivp-eurasipjournals.springeropen.com/articles/10.1186/s13640-017-0175-4</a></li>
+				<li><em class="italic">Looking-In and Looking-Out of a Vehicle: Computer-Vision-Based Enhanced Vehicle Safety</em>: <a href="https://escholarship.org/content/qt2g6313r2/qt2g6313r2_noSplash_81ae2290f201a6b25e8eecc8a1142845.pdf?t=lnpgaj">https://escholarship.org/content/qt2g6313r2/qt2g6313r2_noSplash_81ae2290f201a6b25e8eecc8a1142845.pdf?t=lnpgaj</a></li>
+				<li><em class="italic">Install Touch Screen and Touch Calibration Program for Raspberry Pi</em>: <a href="https://www.gechic.com/en/raspberry-pi-install-touch-monitor-and-touch-calibrator-driver">https://www.gechic.com/en/raspberry-pi-install-touch-monitor-and-touch-calibrator-driver</a></li>
+				<li><em class="italic">Rotating a Raspberry Pi 4 Touch Monitor</em>: <a href="https://www.interelectronix.com/rotating-raspberry-pi-4-touch-monitor.html">https://www.interelectronix.com/rotating-raspberry-pi-4-touch-monitor.html</a></li>
+				<li><em class="italic">Calibrating Touchscreen</em>: <a href="https://wiki.archlinux.org/title/Calibrating_Touchscreen">https://wiki.archlinux.org/title/Calibrating_Touchscreen</a></li>
+			</ul>
+		</div>
+	</body></html>

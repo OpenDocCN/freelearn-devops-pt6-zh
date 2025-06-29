@@ -1,0 +1,948 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div id="_idContainer157">
+<h1 class="chapter-number" id="_idParaDest-138"><a id="_idTextAnchor235"/>7</h1>
+<h1 id="_idParaDest-139"><a id="_idTextAnchor236"/>Demystifying Kubernetes Networking</h1>
+<p>This chapter will use the Kubernetes networking model to describe some core concepts, as well as how to configure Kubernetes networking on the cluster nodes and network policies. We will also learn about how to configure Ingress controllers and Ingress resources, how to configure and leverage CoreDNS, and how to choose an appropriate container network interface plugin. This content covered in this chapter makes up about 20% of the CKA exam.</p>
+<p>In this chapter, we’re going to cover the following topics: </p>
+<ul>
+<li>Understanding the Kubernetes networking model </li>
+<li>Configuring Kubernetes networking on the cluster nodes</li>
+<li>Configuring network policies</li>
+<li>Configuring Ingress controllers and Ingress resources</li>
+<li>Configuring and leveraging CoreDNS</li>
+<li>Choosing an appropriate container network interface plugin</li>
+</ul>
+<h1 id="_idParaDest-140"><a id="_idTextAnchor237"/>Technical requirements </h1>
+<p>To get started, we need to make sure your local machine meets the following technical requirements:</p>
+<ul>
+<li>A compatible Linux host. We recommend a Debian-based Linux distribution such as Ubuntu 18.04 or later.</li>
+<li>Make sure your host machine has at least 2 GB RAM, 2 CPU cores, and about 20 GB of free disk space.</li>
+</ul>
+<h1 id="_idParaDest-141"><a id="_idTextAnchor238"/>Understanding the Kubernetes networking model</h1>
+<p>Kubernetes is designed<a id="_idIndexMarker501"/> to facilitate the desired state management to host containerized workloads – these workloads take advantage of sharable compute resources. Kubernetes networking resolves the challenge of how to allow different Kubernetes components to communicate with each other and applications on Kubernetes to communicate with other applications, as well as the services outside of the Kubernetes cluster.</p>
+<p>Hence, the official documentation summarizes those networking challenges as container-to-container, pod-to-pod, pod-to-service, external-to-service, and node-to-node communications. Now, we are going to break them down one-by-one in this section. <a id="_idTextAnchor239"/></p>
+<h2 id="_idParaDest-142"><a id="_idTextAnchor240"/>Container-to-container communication</h2>
+<p>Container-to-container<a id="_idIndexMarker502"/> communication<a id="_idIndexMarker503"/> mainly refers to the communication between containers inside a pod – a multi-container pod is a good example of this. A multi-container pod is a pod that contains multiple containers and is seen as a single unit. Within a pod, every container shares the networking, which includes the IP address and network ports so that those containers can communicate with one another through <strong class="source-inline">localhost</strong> or<a id="_idIndexMarker504"/> standard <strong class="bold">inter-process communications</strong> (<strong class="bold">IPC</strong>) such as SystemV semaphores or POSIX shared memory. All listening ports are accessible to other containers in the pod even if they’re not exposed outside the pod. </p>
+<p>The following figure shows how those containers share a local network with each other inside the same pod: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer119">
+<img alt="Figure 7.1 – Multiple containers sharing the pod networking  " height="511" src="image/Figure_7.01_B18201.jpg" width="731"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.1 – Multiple containers sharing the pod networking </p>
+<p>The following is an example called <strong class="source-inline">multi-container-pod.yaml</strong> that shows how to create<a id="_idIndexMarker505"/> multi-containers<a id="_idIndexMarker506"/> in a pod. In this pod, it contains <strong class="source-inline">nginx</strong> and <strong class="source-inline">busybox</strong> – two containers where <strong class="source-inline">busybox</strong> is a sidecar container that calls <strong class="source-inline">nginx</strong> through port <strong class="source-inline">80</strong> on <strong class="source-inline">localhost:</strong> </p>
+<pre class="source-code">
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-container-pod
+  labels:
+      app: multi-container
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+    ports:
+    - containerPort: 80
+  - name: busybox-sidecar
+    image: busybox:latest
+    command: ['sh', '-c', 'while true; do sleep 3600; done;']</pre>
+<p>Let’s deploy this <strong class="source-inline">yaml</strong> file by using the <strong class="source-inline">kubectl apply -f multi-container-pod.yaml</strong> command, and the following shows the pod has been created: </p>
+<p class="source-code">pod/multi-container-pod created</p>
+<p>We can<a id="_idIndexMarker507"/> use the<a id="_idIndexMarker508"/> following command to check whether we could talk to the <strong class="source-inline">nginx</strong> container from the sidecar <strong class="source-inline">busybox</strong> container:</p>
+<p class="source-code">kubectl exec multi-container-pod -c busybox-sidecar -- wget http://localhost:80</p>
+<p>The following output proves that both containers can talk to each other: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer120">
+<img alt="Figure 7.2 – Connecting to the nginx container from the busybox sidecar " height="90" src="image/Figure_7.02_B18201.jpg" width="1064"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.2 – Connecting to the nginx container from the busybox sidecar</p>
+<p class="callout-heading">Important Note</p>
+<p class="callout">A quicker way to create a single container pod by command is by using the following command: </p>
+<p class="callout"><strong class="source-inline">kubectl run nginx --image=nginx:latest --port=80</strong></p>
+<p class="callout">Then, you can use the <strong class="source-inline">kubectl get pods –o yaml</strong> command to export the YAML content, and edit the <strong class="source-inline">yaml</strong> file to add another container. </p>
+<p>To double-check that we did indeed get the <strong class="source-inline">nginx</strong> main page from the <strong class="source-inline">busybox</strong> sidecar container, we will use the following command:</p>
+<p class="source-code">kubectl exec multi-container-pod -c busybox-sidecar -- cat index.xhtml</p>
+<p>The <a id="_idIndexMarker509"/>output should look similar to what is shown in <em class="italic">Figure 7.3</em>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer121">
+<img alt="Figure 7.3 – Checking out the downloaded html page in the busybox container  " height="434" src="image/Figure_7.03_B18201.jpg" width="947"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.3 – Checking out the downloaded html page in the busybox container </p>
+<p>To learn<a id="_idIndexMarker510"/> more about <a id="_idIndexMarker511"/>multi-container pods to see how those containers share storage and networking, refer to <a href="B18201_04.xhtml#_idTextAnchor080"><em class="italic">Chapter 4</em></a>, <em class="italic">Application Scheduling and Lifecycle Manag<a id="_idTextAnchor241"/>ement</em>. </p>
+<h2 id="_idParaDest-143"><a id="_idTextAnchor242"/>Pod-to-pod communication</h2>
+<p>In<a id="_idIndexMarker512"/> Kubernetes, each<a id="_idIndexMarker513"/> pod has been given a unique IP address based on the <strong class="source-inline">podCIDR</strong> range of that worker node. Although this IP assignment is not permanent, as the pod eventually fails or restarts, the new pod will be assigned a new IP address. By default, pods can communicate with all pods on all nodes through pod networking without setting<a id="_idIndexMarker514"/> up <strong class="bold">Network Address Translation</strong> (<strong class="bold">NAT</strong>). This is also where we set up host networking. All pods can communicate with each other without NAT. </p>
+<p>Let’s deploy a <strong class="source-inline">nginx</strong> pod by using the following command: </p>
+<p class="source-code">kubectl run nginx --image=nginx –-port=8080</p>
+<p>The following output shows the pod has been created:</p>
+<p class="source-code">pod/nginx created</p>
+<p>To verify whether the pod has been assigned an IP address, you can use the <strong class="source-inline">kubectl get pod nginx -o wide</strong> command to check the IP address of the <strong class="source-inline">nginx</strong> pod. The output is similar to the following: </p>
+<p class="source-code">  NAME    READY   STATUS             RESTARTS   AGE   IP           </p>
+<p class="source-code">NODE       NOMINATED NODE   READINESS GATES</p>
+<p class="source-code">nginx   1/1     running   0          34s   172.17.0.4   </p>
+<p class="source-code">minikube   &lt;none&gt;           &lt;none&gt;</p>
+<p>You can use<a id="_idIndexMarker515"/> the following command<a id="_idIndexMarker516"/> to check all pods available in the default namespace and their assigned IP addresses: </p>
+<p class="source-code">k get pods -o wide</p>
+<p>Notice the <strong class="source-inline">IP</strong> column in the following output – it indicates an IP address of <strong class="source-inline">172.17.0.3</strong> for the <strong class="source-inline">multi-container-pod</strong> pod and <strong class="source-inline">172.17.0.4</strong> for the <strong class="source-inline">nginx</strong> pod. These IP addresses assigned to those pods are in the same <strong class="source-inline">podCIDR</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer122">
+<img alt="Figure 7.4 – Checking out the IP addresses of the pods " height="76" src="image/Figure_7.04_B18201.jpg" width="1033"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.4 – Checking out the IP addresses of the pods</p>
+<p>The preceding screenshot also indicates that both pods are on the same node, <strong class="source-inline">minikube</strong>, according to the <strong class="source-inline">NODE</strong> column. We could check the <strong class="source-inline">podCIDR</strong> assigned to the pod by using the following command:</p>
+<p class="source-code">kubectl get node minikube -o json | jq .spec.podCIDR</p>
+<p>The output, which looks as follows, shows the <strong class="source-inline">podCIDR</strong>: </p>
+<p class="source-code">10.244.0.0/24</p>
+<p>From the preceding command output, we can see it does not have the same CIDR as the pods. That’s because we tested on a <strong class="source-inline">minikube</strong> cluster. When we start a vanilla <strong class="source-inline">minikube</strong> installation with the <strong class="source-inline">minikube start</strong> command without specifying additional parameters for the CNI network plugin, it sets the default value as <strong class="source-inline">auto</strong>. It chooses a <strong class="source-inline">kindnet</strong> plugin to use, which creates a bridge and then adds the host and the container to it. We’ll get to know how to set up a CNI plugin and network policy later in this chapter. To get to know more about <strong class="source-inline">kindnet</strong>, visit the following link: <a href="https://github.com/aojea/kindnet">https://github.com/aojea/kindnet</a>. </p>
+<p>Kubernetes components such as system daemons and <strong class="source-inline">kubelet</strong> can communicate with all pods on the same node. Understanding the connectivity between pods is required for the CKA exam. You can check out the official documentation about cluster networking if you<a id="_idIndexMarker517"/> want<a id="_idIndexMarker518"/> to learn more here: <a href="https://kubernetes.io/docs/concepts/cluster-administration/networking/#the-kubernetes-network-model">https://kubernetes.io/docs/concepts/cluster-administration/networking/#the-kubernetes-network-model</a>.</p>
+<h2 id="_idParaDest-144"><a id="_idTextAnchor243"/>Pod-to-service and external-to-service communications</h2>
+<p>Effective <a id="_idIndexMarker519"/>communication<a id="_idIndexMarker520"/> between<a id="_idIndexMarker521"/> pods and services entails<a id="_idIndexMarker522"/> letting the service expose an application running on a set of pods. The service accepts traffic from both inside and outside of the cluster. The set of pods can load - balance across them – each pod is assigned its own IP address and a single DNS. </p>
+<p>Similar to pod-to-service, the challenge with external-to-service communication challenge is also resolved by the service. Service types such as a <strong class="source-inline">NodePort</strong> or a <strong class="source-inline">LoadBalancer</strong> can receive traffic from outside the Kubernetes cluster. </p>
+<p>Let’s now take a look at different <em class="italic">service type<a id="_idTextAnchor244"/>s</em> and <em class="italic">endpoints</em>. </p>
+<h3>An overview of Kubernetes service types </h3>
+<p>There are a few <a id="_idIndexMarker523"/>types of publishing services in the Kubernetes networking space that are very important. This is different from a headless service. You can visit this link if you want to learn about headless services, which is out of the scope of the CKA exam: <a href="https://kubernetes.io/docs/concepts/services-networking/service/#headless-services">https://kubernetes.io/docs/concepts/services-networking/service/#headless-services</a>.</p>
+<p>The following are the most important types of publishing services that frequently appear in the CKA exam: </p>
+<table class="No-Table-Style _idGenTablePara-1" id="table001-2">
+<colgroup>
+<col/>
+<col/>
+<col/>
+</colgroup>
+<thead>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Service type</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Description</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Example</strong></p>
+</td>
+</tr>
+</thead>
+<tbody>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="source-inline">ClusterIP</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>A default service type for Kubernetes. For internal communications, exposing the service makes it reachable within the cluster. </p>
+</td>
+<td class="No-Table-Style">
+<p>Checking out the pod address by using the <strong class="source-inline">kubectl get pod mypod -o wide</strong> – the internal IP is <strong class="source-inline">172.17.0.4</strong></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="source-inline">NodePort</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>For both internal and external communication. <strong class="source-inline">NodePort</strong> exposes the service on a static port on each worker node – meanwhile, a <strong class="source-inline">ClusterIP</strong> is created for it, and it is used for internal communication, requesting the IP address of the node with an open port – for example, <strong class="source-inline">&lt;nodeIP&gt;:&lt;port&gt;</strong> for external communication.</p>
+</td>
+<td class="No-Table-Style">
+<p>Connecting to a worker node VM with the public IP address <strong class="source-inline">192.0.2.0</strong> from port <strong class="source-inline">80</strong></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="source-inline">LoadBalancer</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>This works for cloud providers, as it’s backed by their respective load balancer offerings. Underneath <strong class="source-inline">LoadBalancer</strong>, <strong class="source-inline">ClusterIP</strong> and <strong class="source-inline">NodePort</strong> are created, which are used for internal and external communication. </p>
+</td>
+<td class="No-Table-Style">
+<p>Checking out the services for a Kubernetes distribution from a cloud provider such as <strong class="bold">Azure Kubernetes Service</strong> (<strong class="bold">AKS</strong>) or <strong class="bold">Google Kubernetes Engine</strong> (<strong class="bold">GKE</strong>) by using <strong class="source-inline">kubectl get service mysvc -n mynamespace</strong> – the internal IP is <strong class="source-inline">172.17.0.4</strong></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="source-inline">ExternalName</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>Maps the service to the contents with a CNAME record with its value. It allows external traffic access through it. </p>
+</td>
+<td class="No-Table-Style">
+<p>For example, <strong class="source-inline">my.packt.example.com</strong></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p>To learn more about the differences between publishing services and headless services, check here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types. Now, let’s take a look at each of those <a id="_idIndexMarker524"/>services in this section. <a id="_idTextAnchor245"/></p>
+<h3>ClusterIP </h3>
+<p><strong class="source-inline">ClusterIP</strong> is the<a id="_idIndexMarker525"/> default <a id="_idIndexMarker526"/>Kubernetes service type for internal communications. In the case of a pod or <strong class="source-inline">ClusterIP</strong>, the pod is reachable inside the Kubernetes cluster. However, it is still possible to allow external traffic to access the <strong class="source-inline">ClusterIP</strong> via <strong class="source-inline">kube-proxy</strong>, which creates <strong class="source-inline">iptables</strong> entries. It comes in handy in some use cases, such as displaying Kubernetes dashboards. <em class="italic">Figure 7.5</em> describes how the network traffic load - balances (round-robin) and routes to the pod. Then, it goes through <strong class="source-inline">ClusterIP</strong> or other services before hitting the pods: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer123">
+<img alt="Figure 7.5 – ClusterIP and kube-proxy  " height="673" src="image/Figure_7.05_B18201.jpg" width="568"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.5 – ClusterIP and kube-proxy </p>
+<p>Through the <a id="_idIndexMarker527"/>preceding <a id="_idIndexMarker528"/>diagram, we get a first look at how the service works with the pods. Let’s go ahead and deploy an application and do a deeper dive. To create a deployment called <strong class="source-inline">nginx</strong> and with the <strong class="source-inline">replicas</strong> number of <strong class="source-inline">2</strong>, use the following command: </p>
+<p class="source-code">kubectl create deployment nginx --image=nginx --replicas=2</p>
+<p>We can track down the process of deployment by the following command: </p>
+<p class="source-code">kubectl get deploy nginx -o wide</p>
+<p>Once we do, we should be able to see the following output: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer124">
+<img alt="Figure 7.6 – The available nginx replica counts " height="45" src="image/Figure_7.06_B18201.jpg" width="819"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.6 – The available nginx replica counts</p>
+<p>From the preceding output, we can see that two copies of the <strong class="source-inline">nginx</strong> pod are up and running, just to get a better understanding of those pods. We can see how those <strong class="source-inline">nginx</strong> pods are presented in the default namespace. </p>
+<p>Note that we’re doing the test in the <strong class="source-inline">default</strong> namespace for simplicity. You can add the <strong class="source-inline">-n</strong> flag to work with deployment and pods in a different namespace. Refer to <a href="B18201_04.xhtml#_idTextAnchor080"><em class="italic">Chapter 4</em></a>, <em class="italic">Application Scheduling and Lifecycle Management,</em> to see how the application deployment in Kubernetes works. Go and try the following command: </p>
+<p class="source-code">kubectl get pods</p>
+<p>The output will <a id="_idIndexMarker529"/>return <a id="_idIndexMarker530"/>all the available pods in the <strong class="source-inline">default</strong> namespace: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer125">
+<img alt="Figure 7.7 – The available nginx pods in the default namespace " height="86" src="image/Figure_7.07_B18201.jpg" width="657"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.7 – The available nginx pods in the default namespace</p>
+<p>Now, we’re exposing these pods to the Kubernetes cluster. We’re using the following command to create a service called <strong class="source-inline">melon-service</strong>: </p>
+<p class="source-code"> kubectl expose deployment nginx --type=ClusterIP --port 8080 --name=melon-service --target-port 80</p>
+<p>From the preceding command, we can see that we have created a <strong class="source-inline">ClusterIP</strong> type of service. We can specify the following flags: </p>
+<ul>
+<li><strong class="source-inline">type</strong> is the type of service – in our case, it is <strong class="source-inline">ClusterIP</strong>. We’ll take a look at <strong class="source-inline">NodePort</strong> and <strong class="source-inline">LoadBalancer</strong> in the next sections of this chapter. </li>
+<li><strong class="source-inline">port</strong> is the port that the service serves on. </li>
+<li><strong class="source-inline">target-port</strong> is the port on the container to which the service redirects the traffic. </li>
+</ul>
+<p class="callout-heading">Important Note</p>
+<p class="callout">Understanding those command flags will help you use them smoothly; I recommend remembering this command so that you can quickly recall it during the actual CKA exam. You can also refer to the following link (<a href="https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#expose">https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#expose</a>) to understand whether other flags will help you along the way.</p>
+<p>The output of the previous command should look similar to the following: </p>
+<p class="source-code">service/melon-service exposed</p>
+<p>The preceding command is executed successfully based on this output. Now, let’s go to the default namespace and check out all the available services using the <strong class="source-inline">kubectl get svc</strong> command – this will give you the following output: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer126">
+<img alt="Figure 7.8 – The available nginx pods in the default namespace " height="65" src="image/Figure_7.08_B18201.jpg" width="757"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.8 – The available nginx pods in the default namespace</p>
+<p>The<a id="_idIndexMarker531"/> preceding <a id="_idIndexMarker532"/>output shows the <strong class="source-inline">ClusterIP</strong> type has been created with an IP address of <strong class="source-inline">10.102.194.57</strong> and this service serves on a port of <strong class="source-inline">8080</strong>. </p>
+<p>What we did in this section to create a new <strong class="source-inline">ClusterIP</strong> service by using the <strong class="source-inline">kubectl expose</strong> command can also be done using the following YAML manifest file: </p>
+<pre class="source-code">
+ apiVersion: v1
+ kind: Service
+ metadata:
+   name: melon-service
+ spec:
+   type: ClusterIP
+<strong class="bold">   selector: </strong>
+<strong class="bold">     app: nginx</strong>
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 80</pre>
+<p>From the preceding YAML definition, we can see there’s a section called <strong class="source-inline">selector</strong>. This section has a key-value pair, <strong class="source-inline">app:nginx</strong>, that has a label sector. Usually, we use a selector to map the service with the pods. Here’s the YAML definition of the <strong class="source-inline">nginx</strong> deployment<a id="_idIndexMarker533"/> if <a id="_idIndexMarker534"/>we didn’t go for the <strong class="source-inline">kubectl</strong> command: </p>
+<pre class="source-code">
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+<strong class="bold">  selector:</strong>
+<strong class="bold">    matchLabels:</strong>
+<strong class="bold">      app: nginx</strong>
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        ports:
+<strong class="bold">        - containerPort: 80</strong></pre>
+<p>From the preceding YAML definition, we can see that there is a section to specify the selector and we used the same key-value pair, <strong class="source-inline">app: nginx</strong>, to map the <strong class="source-inline">ClusterIP</strong> specification so that it worked as expected. Refer to <a href="B18201_04.xhtml#_idTextAnchor080"><em class="italic">Chapter 4</em></a><em class="italic">, Application Scheduling and Lifecycle Management,</em> to learn more about label sectors. </p>
+<p class="callout-heading">Important Note</p>
+<p class="callout">As we mentioned before, the CKA exam is about time management, so it will be much more efficient to use commands to achieve the goal.</p>
+<p>A corresponding endpoints object can achieve what we have discussed without using a selector. You can use<a id="_idIndexMarker535"/> the <a id="_idIndexMarker536"/>following commands to get the endpoints of <strong class="source-inline">melon-service</strong>: </p>
+<p class="source-code">k get ep melon-service</p>
+<p>The following is the output of the preceding command: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer127">
+<img alt="Figure 7.9 – Display the endpoints of the nginx pods in the default namespace " height="44" src="image/Figure_7.09_B18201.jpg" width="501"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.9 – Display the endpoints of the nginx pods in the default namespace</p>
+<p>As you can see, there’s nothing specific in the YAML definition file that we defined here. We can compare the service definition by exporting its YAML definition using the following command: </p>
+<p class="source-code">kubectl get svc  melon-service -o yaml</p>
+<p>We will be able to see the exported output as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer128">
+<img alt="Figure 7.10 – The definition of the nginx service in the default namespace " height="561" src="image/Figure_7.10_B18201.jpg" width="460"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.10 – The definition of the nginx service in the default namespace</p>
+<p>Comparing<a id="_idIndexMarker537"/> this <a id="_idIndexMarker538"/>exported definition with what we have walked through in this section using <strong class="source-inline">kubectl</strong> and a YAML definition will help you understand the services in Kubernetes better. Now, let’s take a look at another important service in Kubernetes, called <strong class="source-inline">No<a id="_idTextAnchor246"/>dePort</strong>. </p>
+<h3>NodePort </h3>
+<p><strong class="source-inline">NodePort</strong> opens <a id="_idIndexMarker539"/>ports<a id="_idIndexMarker540"/> on the Kubernetes nodes, which usually are de facto virtual machines. <strong class="source-inline">NodePort</strong> exposes access through the IP of the nodes and, with the opened port, makes the application accessible from outside of the Kubernetes cluster. The network traffic is forwarded from the ports to the service. <strong class="source-inline">kube-proxy</strong> allocates a port in the range <strong class="source-inline">30000</strong> to <strong class="source-inline">32767</strong> on every node – it works as shown in the following figure: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer129">
+<img alt="Figure 7.11 – A NodePort in Kubernetes " height="823" src="image/Figure_7.11_B18201.jpg" width="657"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.11 – A NodePort in Kubernetes</p>
+<p>With the preceding diagram, we get a closer look at how <strong class="source-inline">NodePort</strong> works with the pods. Let’s go ahead and create a deployment called <strong class="source-inline">webfront-app</strong> with a <strong class="source-inline">replicas</strong> number of <strong class="source-inline">2</strong> using the following command: </p>
+<p class="source-code">kubectl create deployment webfront-app --image=nginx --replicas=2</p>
+<p>If it’s created successfully, you will see the following output: </p>
+<p class="source-code">deployment.apps/webfront-app created</p>
+<p>Then, we can go ahead and use the following command to expose a web frontend using <strong class="source-inline">NodePort</strong>: </p>
+<p class="source-code">kubectl expose deployment webfront-app --port=8080 --target-port=80 --type=NodePort</p>
+<p>The following output shows that we have exposed <strong class="source-inline">webfront-app</strong> successfully: </p>
+<p class="source-code">service/webfront-app exposed</p>
+<p>Note that if<a id="_idIndexMarker541"/> you<a id="_idIndexMarker542"/> don’t provide a target port, it is assumed to be the same as the container port. Also note that if you don’t provide a node port, a free port in the range between <strong class="source-inline">30000</strong> and <strong class="source-inline">32767</strong> is automatically allocated.</p>
+<p>Now, let’s check all the services that we have just created. As we didn’t specify the name in the previous command, the service name is presumed to be the same as the application name:</p>
+<p class="source-code">kubectl get svc webfront-app -o wide</p>
+<p>The output should look as follows:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer130">
+<img alt="Figure 7.12 – The webfront-app NodePort in the default namespace " height="42" src="image/Figure_7.12_B18201.jpg" width="955"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.12 – The webfront-app NodePort in the default namespace</p>
+<p>From the preceding output, we can see the port is exposed at <strong class="source-inline">31400</strong>, which is in the range of <strong class="source-inline">30000</strong> to <strong class="source-inline">32767</strong> on the node, and the target port is <strong class="source-inline">80</strong>, which is opened at the container level. So, let’s get the node IP by using the following command: </p>
+<p class="source-code">kubectl get node -o wide</p>
+<p>The key part of your output is as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer131">
+<img alt="Figure 7.13 – The internal IP of the webfront-app NodePort  " height="43" src="image/Figure_7.13_B18201.jpg" width="726"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.13 – The internal IP of the webfront-app NodePort </p>
+<p>From the preceding output, we are getting the internal IP of the node, as we’re testing locally, so we can use the internal IP and port in conjunction to connect to <strong class="source-inline">webfront-app</strong>: </p>
+<p class="source-code">192.168.65.4:31400</p>
+<p>Let’s deploy a new <strong class="source-inline">nginx</strong> pod called <strong class="source-inline">sandbox-nginx</strong> to test out the connectivity by using the following command: </p>
+<p class="source-code">kubectl run -it sandbox --image=nginx --rm --restart=Never -- curl -Is http://192.168.65.4:31400</p>
+<p>The output<a id="_idIndexMarker543"/> is<a id="_idIndexMarker544"/> similar to the following: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer132">
+<img alt="Figure 7.14 – The internal IP of the webfront-app NodePort " height="221" src="image/Figure_7.14_B18201.jpg" width="491"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.14 – The internal IP of the webfront-app NodePort</p>
+<p>In the actual CKA exam, you’ll be working on a few different VMs. In case you need to connect to the application deployed on that node, you can use the following command to get the external IPs of all nodes: </p>
+<p class="source-code"> kubectl get nodes -o <strong class="bold">jsonpath='{.items[*].status.addresses[?( @.type=="ExternalIP")].address}'</strong></p>
+<p>Similarly, if you want to get the internal IPs of all nodes, you can use the following command: </p>
+<p class="source-code"> kubectl get nodes -o jsonpath='{.items[*].status.addresses[?( @.type==<strong class="bold">" InternalIP "</strong>)].address}'</p>
+<p>In the actual exam, you can also connect to that node using the internal IP, and then use the following command, which will give you the same result: </p>
+<p class="source-code">curl -Is http://192.168.65.4:31400</p>
+<p>In the case that you have a public IP address of the node VM that you can ping from your local environment, you can use the following command: </p>
+<p class="source-code">curl -Is http://&lt;node external IP&gt;:&lt;node port&gt;</p>
+<p class="callout-heading">Tips and Tricks </p>
+<p class="callout">Some important <strong class="source-inline">JSONPath</strong> commands can be found on the Kubernetes cheat sheets here if you need some help: <a href="https://kubernetes.io/docs/reference/kubectl/cheatsheet/#viewing-finding-resources">https://kubernetes.io/docs/reference/kubectl/cheatsheet/#viewing-finding-resources</a>.</p>
+<p>What we did in<a id="_idIndexMarker545"/> this <a id="_idIndexMarker546"/>section to create a new <strong class="source-inline">NodePort</strong> service by using the <strong class="source-inline">kubectl expose</strong> command can also be done using the following YAML manifest file: </p>
+<pre class="source-code">
+apiVersion: v1
+kind: Service
+metadata:
+  name: webfront-app
+  labels:
+    app: webfront-app
+spec:
+  ports:
+  - port: 8080
+    targetPort: 80
+  selector:
+    app: webfrontapp
+  type: NodePort</pre>
+<p>Public cloud providers often support an external load balancer, which we can define as <strong class="source-inline">LoadBalancer</strong> when <a id="_idIndexMarker547"/>working <a id="_idIndexMarker548"/>with Kubernetes. Now, let’s take a look at it in the following section. </p>
+<h3>LoadBalancer </h3>
+<p><strong class="source-inline">LoadBalancer</strong> is a<a id="_idIndexMarker549"/> standard<a id="_idIndexMarker550"/> way to connect a service from outside of the cluster. In this case, a network load balancer redirects all external traffic to a service, as shown in the following figure, and each service gets its own IP address. It allows the service to load - balance the network traffic across applications:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer133">
+<img alt="Figure 7.15 – LoadBalancer in Kubernetes " height="669" src="image/Figure_7.15_B18201.jpg" width="561"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.15 – LoadBalancer in Kubernetes</p>
+<p><strong class="source-inline">LoadBalancer</strong> is not <a id="_idIndexMarker551"/>a popular<a id="_idIndexMarker552"/> topic in the CKA exam, as it only works in a cloud environment or another environment that supports external load balancers. Deploying the <strong class="source-inline">LoadBalancer</strong> service to get a public IP is commonly used in managed <a id="_idIndexMarker553"/>Kubernetes <a id="_idIndexMarker554"/>distributions <a id="_idIndexMarker555"/>such as <strong class="bold">Azure Kubernetes Service</strong> (<strong class="bold">AKS</strong>), <strong class="bold">Elastic Kubernetes Service</strong> (<strong class="bold">EKS</strong>), and <strong class="bold">Google Kubernetes Engine</strong> (<strong class="bold">GKE</strong>). <strong class="source-inline">LoadBalancer</strong> is the default outbound type for AKS – the following is a sample YAML definition in that regard: </p>
+<pre class="source-code">
+apiVersion: v1
+kind: Service
+metadata:
+  name: packt-svc
+spec:
+<strong class="bold">  type: LoadBalancer</strong>
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: my-packt-app</pre>
+<p>We could also use the <strong class="source-inline">kubectl expose</strong> command to do so: </p>
+<p class="source-code">kubectl expose deployment nginx --port=80 --target-port=8080 \</p>
+<p class="source-code">        --name=packt-svc --<strong class="bold">type=LoadBalancer</strong></p>
+<p>The output of <a id="_idIndexMarker556"/>the<a id="_idIndexMarker557"/> preceding command is as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer134">
+<img alt="Figure 7.16 – LoadBalancer output in Kubernetes " height="122" src="image/Figure_7.16_B18201.jpg" width="888"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.16 – LoadBalancer output in Kubernetes</p>
+<p>Since I was testing LoadBalancer in Docker Desktop with WSL2, it was not supported – the preceding output shows that <strong class="source-inline">EXTERNAL-IP</strong> is <strong class="source-inline">localhost</strong>. Although, when I was working on AKS, it showed the real public IP address. Refer to this link to see what worked out for me: <a href="https://docs.microsoft.com/en-us/azure/aks/load-balancer-standard">https://docs.microsoft.com/en-us/azure/aks/loa<span id="_idTextAnchor247"/>d-balancer-standard</a>. </p>
+<h3>ExternalName</h3>
+<p><strong class="source-inline">ExternalName</strong> maps the <a id="_idIndexMarker558"/>service<a id="_idIndexMarker559"/> to the contents with a CNAME record with its value. It allows external traffic to access it. The following is the sample YAML definition for <strong class="source-inline">ExternalName</strong>: </p>
+<pre class="source-code">
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-packt-svc
+  namespace: prod
+spec:
+<strong class="bold">  type: ExternalName</strong>
+<strong class="bold">  externalName: my.melonapp.packt.com</strong></pre>
+<p>Note that the preceding <strong class="source-inline">ExternalName</strong> type is defined as <strong class="source-inline">my.melonapp.packt.com</strong> – we could use the <strong class="source-inline">nslookup</strong> command to check <strong class="source-inline">my-packt-svc.default,svc.cluster.local</strong>. This returns the CNAME record for <strong class="source-inline">my.melonapp.packt.com</strong>. We’ll dive deeper into how the DNS in Kubernetes works <a id="_idTextAnchor248"/>later in this chapter. </p>
+<h3>Check services and endpoints</h3>
+<p>In this<a id="_idIndexMarker560"/> section, we<a id="_idIndexMarker561"/> have worked on all four of the common <a id="_idIndexMarker562"/>service<a id="_idIndexMarker563"/> types in Kubernetes. In case we need to quickly check all the services across all namespaces, we can use the following command: </p>
+<p class="source-code">kubectl get services --all-namespaces</p>
+<p>Alternatively, we can use the following command: </p>
+<p class="source-code">kubectl get svcs -A</p>
+<p>The following shows the output for the preceding command: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer135">
+<img alt="Figure 7.17 – Getting all the services across different namespaces  " height="146" src="image/Figure_7.17_B18201.jpg" width="1096"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.17 – Getting all the services across different namespaces </p>
+<p>The preceding screenshot lists services across namespaces, as well as their <strong class="source-inline">ClusterIP</strong> and port information. If you want to check out a specific service, you can use the following: </p>
+<p class="source-code">kubectl get svc &lt;service-name&gt; -n &lt;namespace&gt;</p>
+<p>The example of the preceding command is <strong class="source-inline">kubectl get svc kube-dns -n kube-system</strong>, which<a id="_idIndexMarker564"/> will give you the service information. You <a id="_idIndexMarker565"/>can also go one step further <a id="_idIndexMarker566"/>to <a id="_idIndexMarker567"/>check the details by using the <strong class="source-inline">kubectl describe svc</strong> command: </p>
+<p class="source-code">kubectl describe svc kube-dns -n kube-system</p>
+<p>The output of the preceding command is as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer136">
+<img alt="Figure 7.18 – Checking the service details  " height="480" src="image/Figure_7.18_B18201.jpg" width="563"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.18 – Checking the service details </p>
+<p>For<a id="_idIndexMarker568"/> the <a id="_idIndexMarker569"/>endpoints, we can use the following command <a id="_idIndexMarker570"/>to<a id="_idIndexMarker571"/> check the endpoint of the service:</p>
+<p class="source-code">kubectl get endpoints melon-service</p>
+<p>It can also be as follows:</p>
+<p class="source-code">NAME            ENDPOINTS                   AGE</p>
+<p class="source-code">melon-service   10.1.0.32:80,10.1.0.33:80   5h7m</p>
+<p>In case we’d like to check out all the endpoints across the different namespaces, we have the following: </p>
+<p class="source-code">kubectl get ep --all-namespaces</p>
+<p>The output of the preceding command will list all the endpoints across different namespaces: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer137">
+<img alt="Figure 7.19 – Getting all the endpoints across different namespaces  " height="163" src="image/Figure_7.19_B18201.jpg" width="941"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.19 – Getting all the endpoints across different namespaces </p>
+<p>The same principle also applies to listing all the endpoints by namespace. When you want to check out a specific service, you can use the following: </p>
+<p class="source-code">kubectl get ep &lt;service-name&gt; -n &lt;namespace&gt;</p>
+<p>We have talked<a id="_idIndexMarker572"/> about <a id="_idIndexMarker573"/>how to work with services and endpoints <a id="_idIndexMarker574"/>in<a id="_idIndexMarker575"/> Kubernetes, which covers pod-to-service communication. Now, let’s get into node-to-node<a id="_idTextAnchor249"/> communication in the next section. </p>
+<h2 id="_idParaDest-145"><a id="_idTextAnchor250"/>Node-to-node communication</h2>
+<p>Within a <a id="_idIndexMarker576"/>cluster, each node<a id="_idIndexMarker577"/> is registered by the <strong class="source-inline">kubelet</strong> agent to the master node, and each node is assigned a node IP address so they can communicate with each other. </p>
+<p>To verify this, you can use the <strong class="source-inline">kubectl get node -o wide</strong> command to check the internal IP of each node. The output is similar to the following, in which you’ll notice an <strong class="source-inline">internal-IP</strong> for the worker node: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer138">
+<img alt="Figure 7.20 – Checking out the node IP and further information  " height="58" src="image/Figure_7.20_B18201.jpg" width="1324"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.20 – Checking out the node IP and further information </p>
+<p>From the preceding screenshot, we can see the internal IP of the current node is <strong class="source-inline">192.168.49.2</strong>. In the case that we have multiple nodes, we can ping each node from the node within the same network. We need to ensure the connectivity between master nodes and worker nodes, so the workloads get to be scheduled to the worker node. In this regard, a good understanding of how to configure the hosting network for Kubernetes <a id="_idIndexMarker578"/>nodes is very <a id="_idIndexMarker579"/>important. So, let’s have a look at the co<a id="_idTextAnchor251"/>ntainer network interface plugin next. </p>
+<h1 id="_idParaDest-146"><a id="_idTextAnchor252"/>Choosing an appropriate Container Network Interface plugin</h1>
+<p>In <a href="B18201_02.xhtml#_idTextAnchor035"><em class="italic">Chapter 2</em></a>, <em class="italic">Installing and Configuring Kubernetes Clusters</em>, we talked about how to use the Calico <a id="_idIndexMarker580"/>plugin as the overlay network for our Kubernetes cluster. We can enable the <strong class="bold">Container Network Interface</strong> (<strong class="bold">CNI</strong>) for <a id="_idIndexMarker581"/>pod-to-pod communication. The CNI plugins conform to the CNI specification. Once the CNI is set up on the Kubernetes cluster, <a id="_idTextAnchor253"/>it will allocate the IP address per pod. </p>
+<h2 id="_idParaDest-147"><a id="_idTextAnchor254"/>CNI networking in Kubernetes </h2>
+<p>There’s a wide<a id="_idIndexMarker582"/> range of networking plugins working with<a id="_idIndexMarker583"/> Kubernetes on today’s market, including popular open source frameworks such as Calico, Flannel, Weave Net, and more. For more options, check out the official documentation here: <a href="https://kubernetes.io/docs/concepts/cluster-administration/addons/">https://kubernetes.io/docs/concepts/cluster-administration/addons/</a>.</p>
+<p>Taking Flannel as an example, Flannel is focused on configuring a Layer 3 network fabric designed for Kubernetes, mainly for routing packets among different containers. Flannel runs a single binary agent called <strong class="source-inline">flanneld</strong> on each host, which is responsible for allocating a subnet preconfigured address space to each host, as in the following: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer139">
+<img alt="Figure 7.21 – CNI networking in Kubernetes  " height="457" src="image/Figure_7.21_B18201.jpg" width="765"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.21 – CNI networking in Kubernetes </p>
+<p>The preceding figure demonstrates how Flannel CNI networking works. There are many options in the <a id="_idIndexMarker584"/>community – let’s take a look at the<a id="_idIndexMarker585"/> deci<a id="_idTextAnchor255"/>sion metrics about choosing the CNI plugin. </p>
+<h2 id="_idParaDest-148"><a id="_idTextAnchor256"/>Decision metrics</h2>
+<p>To make a good<a id="_idIndexMarker586"/> choice <a id="_idIndexMarker587"/>of an appropriate CNI plugin that fits your requirements, you can refer to the following table of different features from each of the CNI providers mentioned:</p>
+<table class="No-Table-Style _idGenTablePara-1" id="table002">
+<colgroup>
+<col/>
+<col/>
+<col/>
+<col/>
+<col/>
+<col/>
+<col/>
+</colgroup>
+<tbody>
+<tr class="No-Table-Style">
+<td class="No-Table-Style"/>
+<td class="No-Table-Style">
+<p><strong class="bold">Provider networking</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Encapsulation and routing </strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Support for network policies</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Datastore</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Encryption</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Ingress / Egress</strong></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="source-inline">Flannel</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>Layer 3</p>
+</td>
+<td class="No-Table-Style">
+<p>VxLAN</p>
+</td>
+<td class="No-Table-Style">
+<p>No</p>
+</td>
+<td class="No-Table-Style">
+<p>ETCD</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+<td class="No-Table-Style">
+<p>No</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="source-inline">Calico</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>Layer 3</p>
+</td>
+<td class="No-Table-Style">
+<p>BGP, eBPF</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+<td class="No-Table-Style">
+<p>ETCD</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="source-inline">Weavenet</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>Layer 2</p>
+</td>
+<td class="No-Table-Style">
+<p>VxLAN</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+<td class="No-Table-Style">
+<p>NO</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="source-inline">Canal</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>Layer 2</p>
+</td>
+<td class="No-Table-Style">
+<p>VxLAN</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+<td class="No-Table-Style">
+<p>ETCD</p>
+</td>
+<td class="No-Table-Style">
+<p>No</p>
+</td>
+<td class="No-Table-Style">
+<p>Yes</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p>For quick testing, Flannel is simple to set up. Calico and Weave Net are better options for enterprise-grade customers, as they have a wide range of capabilities. In real life, it is possible to use multiple CNI solutions in a single environment to fulfill some complex networking<a id="_idIndexMarker588"/> requirements. However, that’s out of reach of the CKA<a id="_idIndexMarker589"/> certification exam. </p>
+<p>Now let’s take a look at the Ingress controller in the next section.<a id="_idTextAnchor257"/> </p>
+<h1 id="_idParaDest-149"><a id="_idTextAnchor258"/>Configuring Ingress controllers and Ingress resources</h1>
+<p>One of the<a id="_idIndexMarker590"/> challenges <a id="_idIndexMarker591"/>of Kubernetes networking is about managing internal traffic, which is also known as east-west traffic, and external traffic, which is known as north-south traffic.</p>
+<p>There are a few different ways of getting external traffic into a Kubernetes cluster. When it comes to Layer 7 networking, Ingress exposes HTTP and HTTPS at Layer 7 routes from outside the cluster to the services within the cluste<a id="_idTextAnchor259"/>r. </p>
+<h2 id="_idParaDest-150"><a id="_idTextAnchor260"/>How Ingress and an Ingress controller works</h2>
+<p>Ingress <a id="_idIndexMarker592"/>acts as<a id="_idIndexMarker593"/> a router to route traffic to services via an Ingress-managed load balancer – then, the service distributes the traffic to different pods. From that point of view, the same IP address can be used to expose multiple services. However, our application can become more complex, especially when we need to redirect the traffic to its subdomain or even a wild domain. Ingress is here to address these challenges.</p>
+<p>Ingress works with an Ingress controller to evaluate the defined traffic rules and then determine how the traffic is being routed. The process works as shown in <em class="italic">Figure 7.22</em>: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer140">
+<img alt="Figure 7.22 – Ingress resources in Kubernetes " height="849" src="image/Figure_7.22_B18201.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.22 – Ingress resources in Kubernetes</p>
+<p>In addition to<a id="_idIndexMarker594"/> what <a id="_idIndexMarker595"/>we see here in <em class="italic">Figure 7.22</em>, Ingress also provides some key capabilities such as load balancing, SSL termination, and name-based virtual hosting.</p>
+<p>We need to deploy an Ingress controller in the Kubernetes cluster and then create Ingress resources. We are using <strong class="source-inline">ingress-nginx</strong> as an example in this section. We have a wide range of options for Ingress controllers on the market nowadays. Check out the official documentation here to get more details: <a href="https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/">https://kubernetes.io/docs/concepts/services-networking/ingress-control<span id="_idTextAnchor261"/>lers/</a>.</p>
+<h2 id="_idParaDest-151"><a id="_idTextAnchor262"/>Using multiple Ingress controllers</h2>
+<p>Note that it is <a id="_idIndexMarker596"/>also possible to deploy multiple Ingress controllers by using the Ingress class within a Kubernetes cluster. Refer to this article to get more details: <a href="https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/#using-multiple-ingress-controllers">https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/#using-multiple-ingress-controllers</a>.</p>
+<h2 id="_idParaDest-152"><a id="_idTextAnchor263"/>Work with Ingress resources </h2>
+<p>As <a id="_idIndexMarker597"/>mentioned, the <strong class="source-inline">nginx</strong> Ingress controller is one of the most popular in today’s market, so we are using it as the main example in this section. We need to deploy an Ingress controller in the Kubernetes cluster and create Ingress resources. </p>
+<p>Here, we are defining a minimal <strong class="source-inline">nginx</strong> resource with the following YAML definition: </p>
+<pre class="source-code">
+<strong class="bold">apiVersion:</strong> networking.k8s.io/v1
+<strong class="bold">kind:</strong> Ingress
+<strong class="bold">metadata:</strong>
+  <strong class="bold">name:</strong> minimal-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+<strong class="bold">spec:</strong>
+  ingressClassName: packt-nginx
+  rules:
+  - http:
+      paths:
+      - path: /packs
+        pathType: Prefix
+        backend:
+          service:
+            name: test
+            port:
+              number: 80</pre>
+<p>From the preceding YAML definition, we know that the <strong class="source-inline">apiVersion</strong>, <strong class="source-inline">kind</strong>, <strong class="source-inline">metadata</strong>, and <strong class="source-inline">spec</strong> fields are mandatory. Then, we also need an Ingress object, which contains a valid DNS subdomain name.</p>
+<p>A default <strong class="source-inline">IngressClass</strong> would look as follows: </p>
+<pre class="source-code">
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+  name: nginx-example
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: k8s.io/ingress-nginx</pre>
+<p>To learn more <a id="_idIndexMarker598"/>about how to work with Ingress, check out the official documentation: <a href="https://kubernetes.io/docs/concepts/services-networking/ingress/">https://kubernetes.io/docs/concepts/services-networking/<span id="_idTextAnchor264"/>ingress/</a>.</p>
+<h2 id="_idParaDest-153"><a id="_idTextAnchor265"/>Ingress annotations and rewrite-target</h2>
+<p>You can add<a id="_idIndexMarker599"/> Kubernetes <a id="_idIndexMarker600"/>annotations to specific Ingress objects so that you can customize their behaviors. These annotation keys and values can only be strings. The following is an example of how to add annotations to Ingress resources using <strong class="source-inline">nginx</strong> as an example:</p>
+<pre class="source-code">
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+<strong class="bold">  annotations:</strong>
+<strong class="bold">    nginx.ingress.kubernetes.io/rewrite-target: /</strong>
+  name: packt-ingress
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: book.packt.com
+    http:
+      paths:
+      - path: /packt-book
+        pathType: Prefix
+        backend:
+          service:
+            name: packt-svc
+            port:
+              number: 80</pre>
+<p>There are<a id="_idIndexMarker601"/> many<a id="_idIndexMarker602"/> annotations available for <strong class="source-inline">nginx</strong> – you can<a id="_idIndexMarker603"/> check them out by visiting the following page: <a href="https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/">https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/</a>. </p>
+<p>Different Ingress controllers provide different capabilities, often using annotations and <strong class="source-inline">rewrite-target</strong> to rewrite the default behavior. You can check out here to learn how to rewrite<a id="_idIndexMarker604"/> behaviors for <strong class="source-inline">nginx</strong> Ingress controllers: <a href="https://kubernetes.github.io/ingress-nginx/examples/rewrite/#rewrite-target">https://kubernetes.github.io/ingress-nginx/examples/rewrite/#rewrite-target</a>. </p>
+<p>We touched on the domain name and subdomain name in this section. Now, it’s a good time to talk about how the DNS domain hostname works in Kubernetes. Let’s get right into it in the<a id="_idTextAnchor266"/> next section: </p>
+<h1 id="_idParaDest-154"><a id="_idTextAnchor267"/>Configuring and leveraging CoreDNS</h1>
+<p>As mentioned <a id="_idIndexMarker605"/>earlier in<a id="_idIndexMarker606"/> this chapter, nodes, pods, and services are assigned their own IP addresses in the Kubernetes cluster. Kubernetes runs a <strong class="bold">Domain Name System</strong> (<strong class="bold">DNS</strong>) <a id="_idIndexMarker607"/>server implementation that maps the name of the service to its IP address via DNS records. So, you can reach out to the services with a consistent DNS name instead of using its IP address. This comes in very handy in the context of microservices. All microservices running in the current Kubernetes cluster can reference the service name to communicate with each other. </p>
+<p>The DNS server mainly supports the following three types of DNS records, which are also the most common<a id="_idIndexMarker608"/> ones: </p>
+<ul>
+<li><strong class="bold">A</strong> or <strong class="bold">AAAA records</strong> for forward <a id="_idIndexMarker609"/>lookups that map a DNS <a id="_idIndexMarker610"/>name to an IP address. A record maps a DNS name to an IPv4 address, whereas an AAAA record allows mapping a DNS name to an IPv6 address. </li>
+<li><strong class="bold">SRV records</strong> for port<a id="_idIndexMarker611"/> lookups so that connections are<a id="_idIndexMarker612"/> established between a service and a hostname. </li>
+<li><strong class="bold">PTR records</strong> for reversing<a id="_idIndexMarker613"/> IP address lookups, which is the opposite<a id="_idIndexMarker614"/> function of A and AAAA records. It matches IP addresses to a DNS name. For example, a PTR record for an IP address of <strong class="source-inline">172.0. 0.10</strong> would be stored under the <strong class="source-inline">10.0. 0.172.in-addr.arpa</strong> DNS zone. </li>
+</ul>
+<p>Knowing these basic DNS concepts will help us get a better understanding of DNS in Kubernetes. </p>
+<p>In Kubernetes 1.21, <strong class="source-inline">kubeadm</strong> removed support for <strong class="source-inline">kube-dns</strong> for DNS replication. CoreDNS <a id="_idIndexMarker615"/>is now becoming the default DNS service. CoreDNS is an extensible DNS server that can serve as a Kubernetes cluster DNS. It is a <strong class="bold">Cloud-Native Computing Foundation</strong> (<strong class="bold">CNCF</strong>) graduated project, as it’s stable and already has use cases running in a production environment successfully. You can check out the version of CoreDNS installed by <strong class="source-inline">kubeadm</strong> for Kubernetes in the past from here: <a href="https://github.com/coredns/deployment/blob/master/kubernetes/CoreDNS-k8s_version.md">https://github.com/coredns/deployment/blob/master/kubernetes/CoreDNS-k8s_version.md</a>.</p>
+<p>If your Kubernetes cluster is not on CoreDNS yet, here is an official end-to-end guide to help you migrate<a id="_idIndexMarker616"/> to CoreDNS smoothly and avoid backward - incompatible <a id="_idIndexMarker617"/>configuration issues: <a href="https://github.com/coredns/deployment/blob/master/kubernetes/Upgrading_CoreDNS.md">https://github.com/coredns/deployment/blob/master/kuber<span id="_idTextAnchor268"/>netes/Upgrading_CoreDNS.md</a>. </p>
+<h2 id="_idParaDest-155"><a id="_idTextAnchor269"/>Check whether the CoreDNS server is up and running</h2>
+<p>The Kubernetes <a id="_idIndexMarker618"/>DNS server schedules a DNS pod and service on the Kubernetes cluster to check whether the DNS server is up and running on your cluster. To do this, you can simply use the following command: </p>
+<p class="source-code">kubectl get pods -n kube-system</p>
+<p>Normally, you should be able to see an output similar to the following:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer141">
+<img alt="Figure 7.23 – When multi-container pods share a network  " height="201" src="image/Figure_7.23_B18201.jpg" width="851"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.23 – When multi-container pods share a network </p>
+<p>When you’re certain that you’re on CoreDNS, you can also use the following command: </p>
+<p class="source-code">kubectl get pods -n kube-system | grep coredns</p>
+<p>The output is similar to the following: </p>
+<p class="source-code"> coredns-6d4b75cb6d-4xcmf          1/1     Running   0          82m</p>
+<p class="source-code"> coredns-6d4b75cb6d-kj6cq          1/1     Running   0          82m</p>
+<p>From the previous output, you may have noticed that we have two replicas of the CoreDNS pod. The intention was to set the default value to two copies for high availability when installing CoreDNS. To prove this, you can check out the CoreDNS deployment settings by using the <strong class="source-inline">kubectl describe</strong> command as follows: </p>
+<p class="source-code">kubectl describe deploy coredns -n kube-system </p>
+<p>The output <a id="_idIndexMarker619"/>should look similar to the following: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer142">
+<img alt="Figure 7.24 – When multi-container pods share a network  " height="901" src="image/Figure_7.24_B18201.jpg" width="1017"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.24 – When multi-container pods share a network </p>
+<p>As it’s a deployment, we could use a typical <strong class="source-inline">kubectl scale</strong> command to scale the CoreDNS deployment out and in. This comes in handy when you want to economize some cluster resources. You can scale it down to one replica using the following command: </p>
+<p class="source-code">kubectl scale deploy coredns -n kube-system --replicas=1</p>
+<p>The output should look as follows:</p>
+<p class="source-code">deployment.apps/coredns scaled</p>
+<p>You can then use the <strong class="source-inline">kubectl get deploy</strong> command to check out the number of replicas <a id="_idIndexMarker620"/>currently available in the cluster: </p>
+<p class="source-code">NAME      READY   UP-TO-DATE   AVAILABLE   AGE</p>
+<p class="source-code">coredns   1/1 1 1 11h</p>
+<p>Similarly, when you want it to be more resilient by scheduling more replicas, you can use the following command to get more replicas: </p>
+<p class="source-code">kubectl scale deploy coredns -n kube-system --replicas=4</p>
+<p>Alternatively, we can go back to check the number of the replicas by using the following command: </p>
+<p class="source-code">kubectl get pods -n kube-system</p>
+<p>As the following screenshot shows, we managed to increase the number of replicas of <strong class="source-inline">coredns</strong> from one to four: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer143">
+<img alt="Figure 7.25 – When multi-container pods share a network  " height="241" src="image/Figure_7.25_B18201.jpg" width="798"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.25 – When multi-container pods share a network </p>
+<p>The previous examples also demonstrate that those four replicas of CoreDNS are identical. We can use the <strong class="source-inline">kubectl describe</strong> command to take a closer look at either of those four <strong class="source-inline">coredns</strong> pods. The following command is an example:</p>
+<p class="source-code">k describe pod coredns-6d4b75cb6d-4h89j -n kube-system</p>
+<p>The output <a id="_idIndexMarker621"/>should look as follows:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer144">
+<img alt="Figure 7.26 – When multi-container pods share a network  " height="1323" src="image/Figure_7.26_B18201.jpg" width="1015"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.26 – When multi-container pods share a network </p>
+<p>From the preceding output, we can see CoreDNS using <strong class="source-inline">Corefile</strong> for configurations. It is located in the following location: </p>
+<p class="source-code">/etc/coredns/Corefile</p>
+<p>We can use the <strong class="source-inline">kubectl get configmaps</strong> command to inspect the content of <strong class="source-inline">Corefile</strong>. Here’s how it can be done: </p>
+<p class="source-code">kubectl get configmaps -n kube-system</p>
+<p>The output should be as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer145">
+<img alt="Figure 7.27 – When multi-container pods share a network  " height="141" src="image/Figure_7.27_B18201.jpg" width="494"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.27 – When multi-container pods share a network </p>
+<p>The preceding<a id="_idIndexMarker622"/> command shows there is <strong class="source-inline">configmap</strong> named <strong class="source-inline">coredns</strong>, so let’s use the <strong class="source-inline">kubectl describe configmap</strong> command to check out its content: </p>
+<p class="source-code">k describe configmap coredns -n kube-system</p>
+<p>The following output will show how <strong class="source-inline">Corefile</strong> looks: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer146">
+<img alt="Figure 7.28 – Corefile for CoreDNS " height="701" src="image/Figure_7.28_B18201.jpg" width="541"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.28 – Corefile for CoreDNS</p>
+<p><strong class="source-inline">Corefile</strong> is very useful when you need to customize the DNS resolution process in your Kubernetes cluster. Check out the official documentation about customizing the DNS service here: <a href="https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/#coredns-configmap-options">https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/#coredns-configmap-options</a>.</p>
+<p>Note that the Kubernetes DNS service is registered to the <strong class="source-inline">kubelet</strong> agent, so the Pods running on the cluster use the DNS server’s IP address to resolve the DNS names. <strong class="source-inline">kubelet</strong> sets the <strong class="source-inline">/etc/resolv.conf</strong> file for each pod – a DNS query for a <strong class="source-inline">myapp</strong> pod from the <strong class="source-inline">my-packt-apps</strong> namespace can be resolved using either <strong class="source-inline">myapp.my-packt-apps</strong> or <strong class="source-inline">myapp.my-packt-apps.svc.cluster.local</strong>. Now, let’s take a closer<a id="_idIndexMarker623"/> look at how the DNS hostname works for a p<a id="_idTextAnchor270"/>od in a Kubernetes cluster. </p>
+<h2 id="_idParaDest-156"><a id="_idTextAnchor271"/>Pod IPs and DNS hostnames</h2>
+<p>Kubernetes creates <a id="_idIndexMarker624"/>DNS records for pods. You can contact a pod with fully qualified, consistent DNS hostnames instead of its IP address. For a pod in Kubernetes, the DNS name follows this pattern: </p>
+<p class="source-code">&lt;your-pod-ip-address&gt;.&lt;namespace-name&gt;.pod.cluster.local</p>
+<p>Let’s deploy a pod named <strong class="source-inline">nginx</strong> using the following command: </p>
+<p class="source-code">kubectl run nginx --image=nginx –-port=8080</p>
+<p>We’ll see that the pod has been deployed successfully if you have an output similar to the following: </p>
+<p class="source-code">NAME                  READY   STATUS    RESTARTS   AGE</p>
+<p class="source-code">nginx                 1/1     Running   0          3s</p>
+<p>Let’s take a closer look at this pod: </p>
+<p class="source-code">kubectl get pod nginx -o wide</p>
+<p>The output should look as follows:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer147">
+<img alt="Figure 7.29 – When a multi-container pod shares a network  " height="45" src="image/Figure_7.29_B18201.jpg" width="1075"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.29 – When a multi-container pod shares a network </p>
+<p>From the figure, we know the IP address for the <strong class="source-inline">nginx</strong> pod is <strong class="source-inline">10.1.0.9</strong> within the cluster. From the preceding pattern, we could assume that the DNS name of this pod would look as follows: </p>
+<p class="source-code">10-1-0-9.default.pod.cluster.local</p>
+<p class="callout-heading">Important Note</p>
+<p class="callout">Note that in practice, each pod in a StatefulSet derives the hostname from the StatefulSet name. The name domain managed by this service follows this pattern: </p>
+<p class="callout"><strong class="source-inline">$(service name).$(namespace).svc.cluster.local</strong></p>
+<p class="callout">Check out the official documentation to know more: <a href="https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#stable-network-id">https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#stable-network-id</a>.</p>
+<p>Alternatively, in order to<a id="_idIndexMarker625"/> get the IP address of the <strong class="source-inline">nginx</strong> pod, you can use the <strong class="source-inline">kubectl describe pod nginx</strong> command, which will open the live detailed spec of your <strong class="source-inline">nginx</strong> pod. The section called <strong class="source-inline">IP</strong> is where you can find the pod’s IP, as in the following figure: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer148">
+<img alt="Figure 7.30 – When multi-container pods share a network  " height="503" src="image/Figure_7.30_B18201.jpg" width="1177"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.30 – When multi-container pods share a network </p>
+<p>You can deploy a pod named <strong class="source-inline">busybox</strong> with the latest Busybox container image in the <strong class="source-inline">default</strong> namespace and then execute the <strong class="source-inline">nslookup</strong> command to check out the DNS address of the <strong class="source-inline">nginx</strong> pod, as shown in the following: </p>
+<p class="source-code">kubectl run -it busybox --image=busybox:latest </p>
+<p class="source-code">kubect exec busybox -- nslookup 10.1.0.9</p>
+<p>The output should look as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer149">
+<img alt="Figure 7.31 – When multi-container pods share a network  " height="103" src="image/Figure_7.31_B18201.jpg" width="773"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.31 – When multi-container pods share a network </p>
+<p>Alternatively, you can also use the following command to achieve the same outcome. Note that we are adding two <strong class="source-inline">rm</strong> flags in the command, which will make sure the pod is deleted once we<a id="_idIndexMarker626"/> exit the shell. We also use <strong class="source-inline">--</strong> to execute the <strong class="source-inline">nslookup</strong> command directly. In this way, it allows us to do a quick test, which comes in very handy in the actual CKA exam. The command would look as follows: </p>
+<p class="source-code">kubectl run -it sandbox --image=busybox:latest --<strong class="bold">rm</strong> --restart=Never -- nslookup 10.1.0.9</p>
+<p>The output should look as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer150">
+<img alt="Figure 7.32 – When multi-container pods share a network  " height="133" src="image/Figure_7.32_B18201.jpg" width="771"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.32 – When multi-container pods share a network </p>
+<p>We notice that the only difference is that we get the <strong class="source-inline">pod "sandbox" deleted</strong> message, which indicates a pod named <strong class="source-inline">sandbox</strong> gets deleted once we exit the shell. The preceding output shows the DNS name of the <strong class="source-inline">nginx</strong> pod with the IP address <strong class="source-inline">10.96.0. 10</strong>. The PTR record returns the DNS name of this pod as <strong class="source-inline">10-1-0-9.default.pod.cluster.local</strong> just as we expected. </p>
+<p>Now, let’s get the A record of the <strong class="source-inline">nginx</strong> pod in the <strong class="source-inline">default</strong> namespace by using the following command: </p>
+<p class="source-code">kubectl run -it sandbox --image=busybox:latest --rm --restart=Never -- nslookup 10-1-0-9.default.pod.cluster.local</p>
+<p>The output is as follows: </p>
+<p class="source-code">Server:    10.96.0.10</p>
+<p class="source-code">Address 1: 10.96.0.10 kube-dns.kube-system.svc.cluster.local</p>
+<p class="source-code"> </p>
+<p class="source-code">Name:      10-1-0-9.default.pod.cluster.local</p>
+<p class="source-code">Address 1: 10.1.0.9</p>
+<p class="source-code">pod "sandbox" deleted</p>
+<p>The preceding <a id="_idIndexMarker627"/>output proves that the DNS server returns the A record of the <strong class="source-inline">nginx</strong> pod. Let’s deploy a new <strong class="source-inline">nginx</strong> pod called <strong class="source-inline">test-nginx</strong> to test out the connectivity by using the following command: </p>
+<p class="source-code">$ kubectl run -it test-nginx --image=nginx --rm --restart=Never -- curl -Is 10-1-0-9.default.pod.cluster.local</p>
+<p>The output will look as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer151">
+<img alt="Figure 7.33 – When multi-container pods share a network  " height="225" src="image/Figure_7.33_B18201.jpg" width="471"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.33 – When multi-container pods share a network </p>
+<p>The preceding screenshot with 200 responses proves that the connectivity between the <strong class="source-inline">test-nginx</strong> pod and <strong class="source-inline">nginx</strong> pod is good and we managed to use the <strong class="source-inline">curl</strong> command on the main page of <strong class="source-inline">nginx</strong> with the DNS name of the <strong class="source-inline">nginx</strong> pod. </p>
+<p>Up until this point, we have done a thorough run-through of how IP addresses and DNS work for the pods in a Kubernetes cluster. As we mentioned earlier in this chapter, Kubernetes <a id="_idIndexMarker628"/>creates DNS records not only for pods but also for services. Now, let’s take a look at how the service IP and DNS work in Kube<a id="_idTextAnchor272"/>rnetes in the next section. </p>
+<h2 id="_idParaDest-157"><a id="_idTextAnchor273"/>Service IPs and DNS hostnames</h2>
+<p>The DNS service <a id="_idIndexMarker629"/>in Kubernetes creates DNS records for services so you can contact services with consistent fully qualified DNS hostnames instead of IP addresses. Similarly, for a service in Kubernetes, the DNS follows the following pattern: </p>
+<p class="source-code">&lt;service-name&gt;.&lt;namespace-name&gt;.svc.cluster.local</p>
+<p>Knowing that the DNS server is located in the <strong class="source-inline">kube-system</strong> namespace, we can check it out by using the following command: </p>
+<p class="source-code">kubectl get svc -n kube-system</p>
+<p>The output is as follows, where we can get a look at the IP address of the DNS server in Kubernetes: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer152">
+<img alt="Figure 7.34 – When multi-container pods share a network " height="45" src="image/Figure_7.34_B18201.jpg" width="796"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.34 – When multi-container pods share a network</p>
+<p>The preceding screenshot shows the IP address of the DNS server is <strong class="source-inline">10.96.0.10</strong>. Now, let’s check out whether we can get the DNS name of the current DNS server by using the following command: </p>
+<p class="source-code">kubectl run -it sandbox --image=busybox:latest --rm --restart=Never -- nslookup 10.96.0.10</p>
+<p>The output should be as follows: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer153">
+<img alt="Figure 7.35 – When multi-container pods share a network " height="123" src="image/Figure_7.35_B18201.jpg" width="708"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.35 – When multi-container pods share a network</p>
+<p>The preceding screenshot proves that the DNS name for the DNS server follows the aforementioned pattern from this section. Here is how it looks: </p>
+<p class="source-code">kube-dns.kube-system.svc.cluster.local</p>
+<p>Let’s now take a look at exposing a service for the <strong class="source-inline">nginx</strong> pod. We’re using the following command to expose the <strong class="source-inline">ClusterIP</strong> service of the <strong class="source-inline">nginx</strong> pod on port <strong class="source-inline">80</strong>: </p>
+<p class="source-code">kubectl expose pod nginx --name=nginx-svc --port 80</p>
+<p>The following output shows that it has been exposed successfully: </p>
+<p class="source-code">service/nginx-svc exposed</p>
+<p>Based on the <a id="_idIndexMarker630"/>previous experiment with the <strong class="source-inline">kube-dns</strong> service DNS name, we can expect the <strong class="source-inline">nginx-svc</strong> service to follow the general service DNS name pattern, which will look as follows: </p>
+<p class="source-code">nginx-svc.default.svc.cluster.local</p>
+<p>Now, let’s take a look at the services currently in the <strong class="source-inline">default</strong> namespace of our Kubernetes cluster by using the following command: </p>
+<p class="source-code">kubectl get svc </p>
+<p>We can see an output similar to the following: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer154">
+<img alt="Figure 7.36 – The services in the Kubernetes default namespace  " height="62" src="image/Figure_7.36_B18201.jpg" width="699"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.36 – The services in the Kubernetes default namespace </p>
+<p>From the preceding output, we can get a closer look at <strong class="source-inline">nginx-svc</strong> by using the <strong class="source-inline">kubectl get svc nginx-svc -o wide</strong> command. The output is as follows: </p>
+<p class="source-code">NAME        TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   </p>
+<p class="source-code">AGE   SELECTOR</p>
+<p class="source-code">nginx-svc   ClusterIP   10.107.75.83   &lt;none&gt;        80/TCP    </p>
+<p class="source-code">59m  run=nginx</p>
+<p>The preceding command shows that the IP address of <strong class="source-inline">nginx-svc</strong> is <strong class="source-inline">10.107.75.83</strong>, so let’s use the <strong class="source-inline">nslookup</strong> command to check out its DNS name. Use the following command: </p>
+<p class="source-code">kubectl run -it sandbox --image=busybox:latest --rm --restart=Never -- nslookup 10.107.75.83</p>
+<p>The preceding command will give you the following output: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer155">
+<img alt="Figure 7.37 – Returning the DNS name for nginx-svc by looking up the IP address " height="123" src="image/Figure_7.37_B18201.jpg" width="765"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.37 – Returning the DNS name for nginx-svc by looking up the IP address</p>
+<p>Based on the<a id="_idIndexMarker631"/> preceding output, we can see that the DNS name for <strong class="source-inline">nginx-svc</strong> is <strong class="source-inline">nginx-svc.default.svc.cluster.local</strong>, which proves our assumption. Let’s get the DNS A record of <strong class="source-inline">nginx-service</strong> from the default namespace using the following command: </p>
+<p class="source-code">kubectl run -it sandbox --image=busybox:latest --rm --restart=Never -- nslookup nginx-svc.default.svc.cluster.local</p>
+<p>You’ll see the output is similar to the following:</p>
+<p class="source-code">Server:    10.96.0.10</p>
+<p class="source-code">Address 1: 10.96.0.10 kube-dns.kube-system.svc.cluster.local</p>
+<p class="source-code"> </p>
+<p class="source-code">Name:      nginx-svc.default.svc.cluster.local</p>
+<p class="source-code">Address 1: 10.107.75.83 nginx-svc.default.svc.cluster.local</p>
+<p class="source-code">pod "sandbox" deleted</p>
+<p>The preceding output shows the DNS server, which was what we saw earlier in this section – the <strong class="source-inline">kube-dns</strong> service with the IP address <strong class="source-inline">10.96.0.10</strong> and under the <strong class="source-inline">kube-dns.kube-system.svc.cluster.local</strong> DNS name. Also, for our <strong class="source-inline">nginx-svc</strong>, we get an IP address of <strong class="source-inline">10.107.75.83</strong> in return. </p>
+<p>Now, similar to how we tested the <strong class="source-inline">nginx</strong> pod, let’s test out the connectivity of the <strong class="source-inline">nginx</strong> service. We can use a pod called <strong class="source-inline">challenge-nginx</strong> and then run the <strong class="source-inline">curl</strong> command to see what’s coming back. The complete command is as follows: </p>
+<p class="source-code">kubectl run -it challenge-nginx --image=nginx --rm --restart=Never -- curl -Is http://nginx-svc.default.svc.cluster.local</p>
+<p>The preceding<a id="_idIndexMarker632"/> command leads to the following output: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer156">
+<img alt="Figure 7.38 – Returning the DNS name for nginx-svc by looking up the IP address " height="217" src="image/Figure_7.38_B18201.jpg" width="477"/>
+</div>
+</div>
+<p class="IMG---Caption" xml:lang="en-US">Figure 7.38 – Returning the DNS name for nginx-svc by looking up the IP address</p>
+<p>The preceding screenshot <a id="_idIndexMarker633"/>with 200 responses proves the connectivity between the <strong class="source-inline">nginx-challenge</strong> pod and the <strong class="source-inline">nginx-svc</strong> service is good, and we managed to use the <strong class="source-inline">curl</strong> command on the main page of <strong class="source-inline">nginx</strong> with the DNS name of the <strong class="source-inline">nginx</strong> service. Knowing the <strong class="source-inline">nginx</strong> service is exposed from a <strong class="source-inline">nginx</strong> pod, in real life, we could deploy a number of replicas of this <strong class="source-inline">nginx</strong> pod, and expose them with one service. The traffic is distributed throu<a id="_idTextAnchor274"/>gh the service to each pod. </p>
+<h1 id="_idParaDest-158"><a id="_idTextAnchor275"/>Summary</h1>
+<p>This chapter covered Kubernetes networking. It covered the Kubernetes networking model and core networking concepts, as well as how to choose CNI plugins. Working with the Ingress controller and configuring and leveraging CoreDNS in Kubernetes helps you understand how to manage cluster networking and controller access to the applications in Kubernetes. </p>
+<p>Make sure you have practiced these examples as you will encounter them often. Notice that this chapter covers 20% of the CKA exam content. Practicing the <strong class="source-inline">kubectl</strong> commands will help you with better time management, which leads to a greater chance of success in the CKA exam. Together with what we’ll talk about in the next chapter about monitoring and logging Kubernetes clusters and applications, you will get a better idea of how to manage Kubernetes clusters in your daily job as a Kubernete<a id="_idTextAnchor276"/>s administrator. Stay tuned!</p>
+<h1 id="_idParaDest-159"><a id="_idTextAnchor277"/>Mock CKA scenario-based practice test </h1>
+<p>You have two virtual machines, <strong class="source-inline">master-0</strong> and <strong class="source-inline">worker-0</strong>; please complete th<a id="_idTextAnchor278"/>e following mock scenarios. </p>
+<h2 id="_idParaDest-160"><a id="_idTextAnchor279"/>Scenario 1 </h2>
+<p>Deploy a new deployment, <strong class="source-inline">nginx</strong>, with the latest image of <strong class="source-inline">nginx</strong> for two replicas in a namespace called <strong class="source-inline">packt-app</strong>. The container is exposed on port <strong class="source-inline">80</strong>. Create a service type of <strong class="source-inline">ClusterIP</strong> within the same namespace. Deploy a <strong class="source-inline">sandbox-nginx</strong> pod and make a call using <strong class="source-inline">curl</strong> to verify the connect<a id="_idTextAnchor280"/>ivity to the <strong class="source-inline">nginx</strong> service. </p>
+<h2 id="_idParaDest-161"><a id="_idTextAnchor281"/>Scenario 2</h2>
+<p>Expose the <strong class="source-inline">nginx</strong> deployment with the <strong class="source-inline">NodePort</strong> service type; the container is exposed on port <strong class="source-inline">80</strong>. Use the <strong class="source-inline">test-nginx</strong> pod to make a call using <strong class="source-inline">curl</strong> to verify the connect<a id="_idTextAnchor282"/>ivity to the <strong class="source-inline">nginx</strong> service. </p>
+<h2 id="_idParaDest-162"><a id="_idTextAnchor283"/>Scenario 3</h2>
+<p>Make a call using <strong class="source-inline">wget</strong> or <strong class="source-inline">curl</strong> from the machine within the same network as that node, to verify the connectivity with the <strong class="source-inline">nginx</strong> <strong class="source-inline">NodePort</strong> servic<a id="_idTextAnchor284"/>e through the correct port. </p>
+<h2 id="_idParaDest-163"><a id="_idTextAnchor285"/>Scenario 4</h2>
+<p>Use the <strong class="source-inline">sandbox-nginx</strong> pod and <strong class="source-inline">nslookup</strong> for the IP address of the <strong class="source-inline">nginx</strong> <strong class="source-inline">NodePort</strong> ser<a id="_idTextAnchor286"/>vice. See what is returned. </p>
+<h2 id="_idParaDest-164"><a id="_idTextAnchor287"/>Scenario 5</h2>
+<p>Use the <strong class="source-inline">sandbox-nginx</strong> pod and <strong class="source-inline">nslookup</strong> for the DNS domain hostname of the <strong class="source-inline">nginx</strong> <strong class="source-inline">NodePort</strong> ser<a id="_idTextAnchor288"/>vice. See what is returned. </p>
+<h2 id="_idParaDest-165"><a id="_idTextAnchor289"/>Scenario 6</h2>
+<p>Use the <strong class="source-inline">sandbox-nginx</strong> pod and <strong class="source-inline">nslookup</strong> for the DNS domain hostname of the <strong class="source-inline">nginx</strong> pod. See what is returned. </p>
+<p>You can find all the scenario resolutions<a id="_idTextAnchor290"/> in <a href="B18201_Appendix_A.xhtml#_idTextAnchor386"><em class="italic">Appendix</em></a><em class="italic"> - Mock CKA scenario-based practice test resolutions</em> of this book.</p>
+<h1 id="_idParaDest-166"><a id="_idTextAnchor291"/>FAQs</h1>
+<ul>
+<li><em class="italic">Where can I find the latest updates about Kubernetes networking while working with Kubernetes?</em></li>
+</ul>
+<p>The Kubernetes networking <strong class="bold">Special Interest Group</strong> (<strong class="bold">SIG</strong>) has a GitHub repository that you can follow here: <a href="https://github.com/kubernetes/community/blob/master/sig-network/README.md">https://github.com/kubernetes/community/blob/master/sig-network/README.md</a>.</p>
+<ul>
+<li><em class="italic">What is the recommended official Kubernetes article for Kubernetes networking?</em></li>
+</ul>
+<p>I recommend bookmarking the official documentation about the following topics: </p>
+<ul>
+<li>Network policy: <a href="https://kubernetes.io/docs/concepts/services-networking/service/">https://kubernetes.io/docs/concepts/services-networking/service/</a></li>
+<li>Ingress: <a href="https://kubernetes.io/docs/concepts/services-networking/ingress/">https://kubernetes.io/docs/concepts/services-networking/ingress/</a></li>
+</ul>
+</div>
+</div>
+
+<div id="sbo-rt-content"><div>
+<div class="Basic-Graphics-Frame" id="_idContainer158">
+</div>
+</div>
+<div class="Content" id="_idContainer159">
+<h1 id="_idParaDest-167"><a id="_idTextAnchor292"/>Part 3: Troubleshooting</h1>
+<p>This part covers Kubernetes troubleshooting-related topics ranging from cluster- and application-level logging and monitoring to cluster components and application troubleshooting, security, and networking troubleshooting. This part covers about 30% of the CKA exam's content.</p>
+<p>This part of the book comprises the following chapters:</p>
+<ul>
+<li><a href="B18201_08.xhtml#_idTextAnchor293"><em class="italic">Chapter 8</em></a>, <em class="italic">Monitoring and Logging Kubernetes Clusters and Applications</em></li>
+<li><a href="B18201_09.xhtml#_idTextAnchor340"><em class="italic">Chapter 9</em></a>, <em class="italic">Troubleshooting Cluster Components and Applications</em></li>
+<li><a href="B18201_10.xhtml#_idTextAnchor366"><em class="italic">Chapter 10</em></a>, <em class="italic">Troubleshooting Security and Networking</em></li>
+</ul>
+</div>
+<div>
+<div id="_idContainer160">
+</div>
+</div>
+<div>
+<div id="_idContainer161">
+</div>
+</div>
+</div></body></html>

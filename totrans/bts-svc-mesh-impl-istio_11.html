@@ -1,0 +1,858 @@
+<html><head></head><body>
+		<div id="_idContainer124">
+			<h1 id="_idParaDest-162" class="chapter-number"><a id="_idTextAnchor161"/>11</h1>
+			<h1 id="_idParaDest-163"><a id="_idTextAnchor162"/>Troubleshooting and Operating Istio</h1>
+			<p>Deploying microservices involves many moving parts, including the application, the underlying Kubernetes platform, and the application network provided by Istio. It is not uncommon for the mesh to be operating in an unintended way. Istio, in its early days, was infamous for being complex and too difficult to troubleshoot. The istio community took that perception very seriously and has been working toward simplifying its installation and day-2 operations to make it easier and more reliable to use in <span class="No-Break">production-scale deployments.</span></p>
+			<p>In this chapter, we will read about the common problems you will encounter when operating istio and how to distinguish and isolate them from other issues. We will then learn how to <strong class="bold">troubleshoot</strong> these problems once they are identified. We will also explore various <strong class="bold">best practices</strong> for deploying and operating istio and how to automate the enforcement of <span class="No-Break">best practices.</span></p>
+			<p>In a nutshell, this chapter will cover the <span class="No-Break">following topics:</span></p>
+			<ul>
+				<li>Understanding interactions between <span class="No-Break">istio components</span></li>
+				<li>Inspecting and analyzing the <span class="No-Break">istio configuration</span></li>
+				<li>Troubleshooting errors using <span class="No-Break">access logs</span></li>
+				<li>Troubleshooting errors using <span class="No-Break">debug logs</span></li>
+				<li>Debugging <span class="No-Break">istio agents</span></li>
+				<li>Understanding istio’s <span class="No-Break">best practices</span></li>
+				<li>Automating best practices using <span class="No-Break">OPA Gatekeeper</span></li>
+			</ul>
+			<h1 id="_idParaDest-164"><a id="_idTextAnchor163"/>Understanding interactions between Istio components</h1>
+			<p>When troubleshooting <a id="_idIndexMarker871"/>problems with the Service Mesh, the unexpected behavior of the mesh is likely caused by one of the following <span class="No-Break">underlying issues:</span></p>
+			<ul>
+				<li>Invalid control <span class="No-Break">plane configuration</span></li>
+				<li>Invalid data <span class="No-Break">plane configuration</span></li>
+				<li>Unexpected <span class="No-Break">data plane</span></li>
+			</ul>
+			<p>In the upcoming sections, we will explore how to diagnose the underlying reason for any such unexpected behavior with the help of various diagnostic tools provided by istio. But first, let’s look at various interactions that happen inside the mesh between istiod, data planes, and <span class="No-Break">other components.</span></p>
+			<h2 id="_idParaDest-165"><a id="_idTextAnchor164"/>Exploring Istiod ports</h2>
+			<p>Istiod exposes <a id="_idIndexMarker872"/>various ports, some of which can be used for troubleshooting. In this section, we will go through those ports, and understand what they do and how they can help <span class="No-Break">with troubleshooting.</span></p>
+			<p>Let’s get started by looking at <span class="No-Break">those ports:</span></p>
+			<ul>
+				<li><strong class="bold">Port 15017</strong>: This <a id="_idIndexMarker873"/>port is exposed on istiod for sidecar injection and validation. Whenever a Pod is created in the Kubernetes cluster with the Istio injection enabled, the mutating admission controller sends a request on this port to istiod to fetch the sidecar injection template and later validate the configuration. The port is originally exposed on port <strong class="source-inline">443</strong> but is forwarded to port <strong class="source-inline">15017</strong>, which we saw in action when setting up primary <span class="No-Break">remote clusters.</span></li>
+				<li><strong class="bold">Port 15014</strong>: This <a id="_idIndexMarker874"/>port is used by Prometheus to scrape control plane metrics. You can check the metric using the <span class="No-Break">following command:</span><pre class="console">
+<strong class="bold">% kubectl -n istio-system port-forward deploy/istiod 15014 &amp;</strong>
+<strong class="bold">[1] 68745</strong>
+<strong class="bold">Forwarding from 127.0.0.1:15014 -&gt; 15014</strong></pre></li>
+			</ul>
+			<p>Then, you<a id="_idIndexMarker875"/> can fetch the metrics from <span class="No-Break">port </span><span class="No-Break"><strong class="source-inline">15014</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+<strong class="bold">% curl http://localhost:15014/metrics</strong>
+<strong class="bold">Handling connection for 15014</strong>
+<strong class="bold"># HELP citadel_server_csr_count The number of CSRs received by Citadel server.</strong>
+<strong class="bold"># TYPE citadel_server_csr_count counter</strong>
+<strong class="bold">citadel_server_csr_count 6</strong>
+<strong class="bold"># HELP citadel_server_root_cert_expiry_timestamp The unix timestamp, in seconds, when Citadel root cert will expire. A negative time indicates the cert is expired.</strong>
+<strong class="bold"># TYPE citadel_server_root_cert_expiry_timestamp gauge</strong>
+<strong class="bold">citadel_server_root_cert_expiry_timestamp 1.986355163e+09</strong>
+<strong class="bold">……….</strong></pre>
+			<ul>
+				<li><strong class="bold">Ports 15010 and 15012</strong>: These<a id="_idIndexMarker876"/> two ports serve the xDS and CA APIs. The difference is that port <strong class="source-inline">15010</strong> is insecure and port <strong class="source-inline">15012</strong> is secure so <a id="_idIndexMarker877"/>can be used for <span class="No-Break">production environments.</span></li>
+				<li><strong class="bold">Port 9876</strong>: This <a id="_idIndexMarker878"/>port exposes<a id="_idIndexMarker879"/> the <strong class="bold">ControlZ</strong> interface, which is an istiod introspection framework to inspect and manipulate the internal state of an <strong class="source-inline">istiod</strong> instance. This port is used to access the ControlZ interface either via REST API calls from within the mesh or via a dashboard, which can be accessed using the <span class="No-Break">following command:</span><pre class="console">
+<strong class="bold">% istioctl dashboard controlz deployment/istiod.istio-system</strong></pre></li>
+			</ul>
+			<p>The following is a <a id="_idIndexMarker880"/>screenshot of the <span class="No-Break">ControlZ interface:</span></p>
+			<div>
+				<div id="_idContainer122" class="IMG---Figure">
+					<img src="image/B17989_11_01.jpg" alt="Figure 11.1 – Istio ControlZ interface"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.1 – Istio ControlZ interface</p>
+			<p>The ControlZ interface<a id="_idIndexMarker881"/> can be used to inspect logging scopes, environment variables, and so on. The interface can also be used to change <span class="No-Break">logging levels.</span></p>
+			<p>In this section, we read about various ports exposed by istiod. Let’s move on to read about the ports exposed by the Istio <span class="No-Break">data plane.</span></p>
+			<h2 id="_idParaDest-166"><a id="_idTextAnchor165"/>Exploring Envoy ports</h2>
+			<p>Envoy, which is the<a id="_idIndexMarker882"/> data plane for Istio, exposes various ports for interaction with the Istio control plane and observability tools. Let’s look at those ports, what they do, and how they can help <span class="No-Break">with troubleshooting:</span></p>
+			<ul>
+				<li><strong class="bold">Port 15000</strong>: This is <a id="_idIndexMarker883"/>the Envoy admin interface, which can be used to inspect and query envoy configuration. We will read about this port in detail in the next section, <em class="italic">Inspecting and analyzing the </em><span class="No-Break"><em class="italic">Istio configuration</em></span><span class="No-Break">.</span></li>
+				<li><strong class="bold">Port 15001</strong>: This <a id="_idIndexMarker884"/>port is used for receiving all outbound traffic from the <span class="No-Break">application Pods.</span></li>
+				<li><strong class="bold">Port 15004</strong>: This <a id="_idIndexMarker885"/>port can be used to debug the data <span class="No-Break">plane configuration.</span></li>
+				<li><strong class="bold">Port 15006</strong>: All <a id="_idIndexMarker886"/>inbound application traffic from within the mesh is routed to <span class="No-Break">this port.</span></li>
+				<li><strong class="bold">Port 15020</strong>: This <a id="_idIndexMarker887"/>port provides merged metrics information from Envoy, <strong class="source-inline">istio-agent</strong>, and the application, which is then scraped <span class="No-Break">by Prometheus.</span></li>
+				<li><strong class="bold">Port 15021</strong>: This<a id="_idIndexMarker888"/> port is exposed for performing health checks of the <span class="No-Break">data plane.</span></li>
+				<li><strong class="bold">Port 15053</strong>: This<a id="_idIndexMarker889"/> port is used to serve the <span class="No-Break">DNS proxy.</span></li>
+				<li><strong class="bold">Port 15090</strong>: This <a id="_idIndexMarker890"/>port provides Envoy <span class="No-Break">telemetry information.</span></li>
+			</ul>
+			<p>In the next section, we will explore how to analyze and inspect the <span class="No-Break">Istio configuration.</span></p>
+			<h1 id="_idParaDest-167"><a id="_idTextAnchor166"/>Inspecting and analyzing the Istio configuration</h1>
+			<p>When<a id="_idIndexMarker891"/> debugging the Istio data plane, it is useful to check whether there is any configuration mismatch between the Istio control plane and the data plane. When<a id="_idIndexMarker892"/> working with multi-cluster mesh, it is a good idea to first check the connectivity between the control plane and data plane; if your Pod supports <strong class="source-inline">curl</strong>, then you can use the following command to check the connectivity between <span class="No-Break">the two:</span></p>
+			<pre class="console">
+$ kubectl exec -it curl -c curl -n chapter11 -- curl  istiod.istio-system.svc.cluster.local:15014/version
+1.16.0-8f2e2dc5d57f6f1f7a453e03ec96ca72b2205783-Clean</pre>
+			<p>To inspect the <a id="_idIndexMarker893"/>configuration, the first checkpoint can be<a id="_idIndexMarker894"/> to use the <strong class="source-inline">istioctl proxy-status</strong> command to find the synchronization state of the cluster, listener, routes, and endpoints configuration between istiod <span class="No-Break">and istio-proxy.</span></p>
+			<p>You can use the following command to check the configuration status of the <span class="No-Break">whole cluster:</span></p>
+			<pre class="console">
+% istioctl proxy-status
+NAME       CLUSTER       CDS       LDS       EDS        RDS       ECDS       ISTIOD              VERSION
+curl.chapter11
+Kubernetes     SYNCED     SYNCED     SYNCED     SYNCED        NOT SENT     istiod-58c6454c57-9nt4r     1.16.0
+envoydummy.chapter11
+Kubernetes     SYNCED     SYNCED     SYNCED     SYNCED        NOT SENT     istiod-58c6454c57-9nt4r     1.16.0
+istio-egressgateway-5bdd756dfd-bjqrg.istio-system      Kubernetes     SYNCED     SYNCED     SYNCED     NOT SENT     NOT SENT     istiod-58c6454c57-9nt4r     1.16.0
+istio-ingressgateway-67f7b5f88d-xx5fb.istio-system
+Kubernetes     SYNCED     SYNCED     SYNCED     SYNCED        NOT SENT     istiod-58c6454c57-9nt4r     1.16.0</pre>
+			<p>The following are the possible values of the <span class="No-Break">synchronization status:</span></p>
+			<ul>
+				<li><strong class="source-inline">SYNCED</strong>: Envoy has the <span class="No-Break">latest config.</span></li>
+				<li><strong class="source-inline">NOT SENT</strong>: istiod has not sent any config to Envoy; in most cases, the reason is that istiod has no config to send. In this example, the status is <strong class="source-inline">NOT SENT</strong> for the Istio Egress Gateway because there is no route information to <span class="No-Break">be synced.</span></li>
+				<li><strong class="source-inline">STALE</strong>: Envoy doesn’t have the latest config, which is an indication of a networking issue between Envoy <span class="No-Break">and istiod.</span></li>
+			</ul>
+			<p>You can <a id="_idIndexMarker895"/>check the status of a workload using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+% istioctl proxy-status envoydummy.chapter11
+Clusters Match
+Listeners Match
+Routes Match (RDS last loaded at Sat, 17 Dec 2022 11:53:31 AEDT)Access Logs</pre>
+			<p>If the Pod being<a id="_idIndexMarker896"/> investigated supports <strong class="source-inline">curl</strong>, then you can perform a dump of the <strong class="source-inline">istio-proxy</strong> configuration by fetching config from Envoy’s admin interface exposed at port <strong class="source-inline">15000</strong> using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+% kubectl exec curl -c curl -n chapter11 -- curl localhost:15000/config_dump &gt; config_dump.json</pre>
+			<p>You can selectively dump the configuration of listeners, clusters, routes, and endpoints by using the following <strong class="source-inline">istioctl </strong><span class="No-Break"><strong class="source-inline">proxy-config</strong></span><span class="No-Break"> command:</span></p>
+			<pre class="console">
+% istioctl proxy-config endpoints envoydummy.chapter11 -o json &gt; endpoints-envoydummy.json
+% istioctl proxy-config routes envoydummy.chapter11 -o json &gt; routes-envoydummy.json
+% istioctl proxy-config listener envoydummy.chapter11 -o json &gt; listener-envoydummy.json
+% istioctl proxy-config cluster envoydummy.chapter11 -o json &gt; cluster-envoydummy.json</pre>
+			<p>You can fetch the Envoy configuration from the istiod perspective and compare it with the config fetched from Envoy’s <span class="No-Break">admin interface:</span></p>
+			<pre class="console">
+% kubectl exec istiod-58c6454c57-gj6cw -n istio-system -- curl 'localhost:8080/debug/config_dump?proxyID=curl.chapter11' | jq . &gt; Chapter11/config-from-istiod-for-curl.json</pre>
+			<p>You can inspect the <strong class="source-inline">istio-proxy</strong> configuration in a Pod from a web browser using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl port-forward envoydummy -n chapter11 15000</pre>
+			<p>From the<a id="_idIndexMarker897"/> browser, you can now access the Envoy dashboard, as shown in the <span class="No-Break">following figure:</span></p>
+			<div>
+				<div id="_idContainer123" class="IMG---Figure">
+					<img src="image/B17989_11_02.jpg" alt="Figure 11.2 – Envoy dashboard"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.2 – Envoy dashboard</p>
+			<p>The Envoy dashboard is <a id="_idIndexMarker898"/>a good option to inspect values but proceed with caution when changing configuration parameters because, from this dashboard, you will be changing data plane configuration outside the purview <span class="No-Break">of istiod.</span></p>
+			<p>At the time of writing this book, <strong class="source-inline">istioctl describe</strong> is an experimental feature. It is used to describe a Pod, and if the Pod meets all the requirements to be part of the mesh, this command (when run against a Pod) can also tell whether istio-proxy in the Pod has been started or whether the Pod is part of the mesh or not. It will emit any warnings and suggestions to enable better integration of the Pod into <span class="No-Break">the mesh.</span></p>
+			<p>The following runs the <strong class="source-inline">istioctl describe</strong> command against the <span class="No-Break"><strong class="source-inline">envoydummy</strong></span><span class="No-Break"> Pod:</span></p>
+			<pre class="console">
+% istioctl x describe pod envoydummy -n chapter11
+Pod: envoydummy
+   Pod Revision: default
+   Pod Ports: 10000 (envoyproxy), 15090 (istio-proxy)
+Suggestion: add 'app' label to pod for Istio telemetry.
+--------------------
+Service: envoydummy
+   Port:  80/auto-detect targets pod port 10000
+--------------------
+Effective PeerAuthentication:
+   Workload mTLS mode: PERMISSIVE</pre>
+			<p>In the <a id="_idIndexMarker899"/>output, you can see that it is suggesting to apply the <strong class="source-inline">app</strong> label to the Pod for Istio telemetry. Istio recommends adding <strong class="source-inline">app</strong> and <strong class="source-inline">version</strong> labels <a id="_idIndexMarker900"/>explicitly to workloads in the mesh. These labels add contextual information to the metrics and telemetry collected by Istio. The output also describes some other important pieces of information, such as the service is exposed on port <strong class="source-inline">80</strong> and the endpoint is on port <strong class="source-inline">10000</strong>, the <strong class="source-inline">istio-proxy</strong> Pod is exposed at port <strong class="source-inline">15090</strong>, and <strong class="source-inline">mTLS mode</strong> is permissive. It also describes and warns about any issues with destination rules and <span class="No-Break">virtual services.</span></p>
+			<p>The following command is another example of when an incorrect virtual service configuration is applied to <strong class="source-inline">envoydummy</strong>. The correct configuration is available <span class="No-Break">at </span><span class="No-Break"><strong class="source-inline">Chapter11/04-istio-gateway-chaos.yaml</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+% kubectl apply -f Chapter11/04-istio-gateway-chaos.yaml
+gateway.networking.istio.io/chapter11-gateway configured
+virtualservice.networking.istio.io/mockshop configured
+destinationrule.networking.istio.io/envoydummy configured
+% istioctl x describe pod envoydummy -n chapter11
+Pod: envoydummy
+   Pod Revision: default
+   Pod Ports: 10000 (envoyproxy), 15090 (istio-proxy)
+--------------------
+Service: envoydummy
+   Port:  80/auto-detect targets pod port 10000
+DestinationRule: envoydummy for "envoydummy"
+   Matching subsets: v1
+      (Non-matching subsets v2)
+   No Traffic Policy
+--------------------
+Effective PeerAuthentication:
+   Workload mTLS mode: PERMISSIVE
+Exposed on Ingress Gateway http://192.168.49.2
+VirtualService: mockshop
+   WARNING: No destinations match pod subsets (checked 1 HTTP routes)
+      Warning: Route to UNKNOWN subset v3; check DestinationRule envoydummy</pre>
+			<p>The <a id="_idIndexMarker901"/>warning at the bottom of the preceding snippet clearly describes <a id="_idIndexMarker902"/>that the virtual service is routing traffic to <strong class="source-inline">UNKNOWN subset v3</strong>. To fix this problem, you need to either configure the virtual service to correct the subset defined in the destination rule or add a <strong class="source-inline">v3</strong> subset in the destination rules. The correct configuration is available <span class="No-Break">at </span><span class="No-Break"><strong class="source-inline">Chapter11/04-istio-gateway.yaml</strong></span><span class="No-Break">.</span></p>
+			<p>Another diagnostic tool to inspect and detect any misconfiguration in the mesh is <strong class="source-inline">istioctl analyze</strong>. It can be run against the whole cluster as well as against any configuration before applying it to <span class="No-Break">the mesh:</span></p>
+			<pre class="console">
+% istioctl analyze Chapter11/04-istio-gateway-chaos.yaml -n chapter11
+Error [IST0101] (VirtualService chapter11/mockshop Chapter11/04-istio-gateway-chaos.yaml:35) Referenced host+subset in destinationrule not found: "envoydummy+v3"
+Info [IST0118] (Service chapter11/envoydummy) Port name  (port: 80, targetPort: 10000) doesn't follow the naming convention of Istio port.
+Error: Analyzers found issues when analyzing namespace: chapter11.
+See https://istio.io/v1.16/docs/reference/config/analysis for more information about causes and resolutions.</pre>
+			<p>In the <a id="_idIndexMarker903"/>preceding example, <strong class="source-inline">istioctl analyze</strong> pointed out the <a id="_idIndexMarker904"/>error by analyzing the configuration file. This is very handy to validate any erroneous configuration before applying it to the mesh. In the following section, we will read about how to troubleshoot errors using envoy <span class="No-Break">access logs.</span></p>
+			<h1 id="_idParaDest-168"><a id="_idTextAnchor167"/>Troubleshooting errors using access logs</h1>
+			<p><strong class="bold">Access logs</strong> are<a id="_idIndexMarker905"/> produced by the Envoy proxy and can be directed toward the standard output of Envoy. If Istio is installed in demo mode, then access logs are enabled by<a id="_idIndexMarker906"/> default and printed to the standard output of the <strong class="source-inline">istio-proxy</strong> container. Access logs are records of traffic flow to Envoy and can be intertwined together with the access of the Ingress and Egress gateway along with all other upstream and downstream workloads in the mesh, to follow the journey of <span class="No-Break">the request.</span></p>
+			<p>By default, access logs<a id="_idIndexMarker907"/> are turned off unless you have installed Istio using the demo profile. You can check whether access logs are enabled by inspecting the Istio <span class="No-Break">config map:</span></p>
+			<pre class="console">
+% kubectl get cm/istio -n istio-system -o json | jq .data.mesh
+"<strong class="bold">accessLogFile: \"\"\</strong>ndefaultConfig:\n  discoveryAddress: istiod.istio-system.svc:15012\n  proxyMetadata: {}\n  tracing:\n    zipkin:\n      address: zipkin.istio-system:9411\nenablePrometheusMerge: true\nextensionProviders:\n- envoyOtelAls:\n    port: 4317\n    service: opentelemetry-collector.istio-system.svc.cluster.local\n  name: otel\nrootNamespace: istio-system\ntrustDomain: cluster.local"</pre>
+			<p>Access logs can be enabled via the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+% istioctl install --set profile=demo --set <strong class="bold">meshConfig.accessLogFile="/dev/stdout"</strong></pre>
+			<p>Depending <a id="_idIndexMarker908"/>on your needs and system performance <a id="_idIndexMarker909"/>requirements, you can decide to turn access logging on or off. If it is turned on and you want to disable it, you can do so by providing a blank value for the <span class="No-Break"><strong class="source-inline">accessLogFile</strong></span><span class="No-Break"> parameter:</span></p>
+			<pre class="console">
+% istioctl install --set profile=demo --set <strong class="bold">meshConfig.accessLogFile=""</strong></pre>
+			<p>The access log can also be enabled at the workload or namespace level. Assuming you have turned off access logs globally, we can turn them on selectively for the <strong class="source-inline">envoydummy</strong> workload using the <span class="No-Break"><strong class="source-inline">Telemetry</strong></span><span class="No-Break"> resource:</span></p>
+			<pre class="source-code">
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: envoy-dummy-accesslog-overwrite
+  namespace: chapter11
+spec:
+  selector:
+    matchLabels:
+      service.istio.io/canonical-name: envoydummy
+  accessLogging:
+  - providers:
+    - name: envoy
+  - disabled: false</pre>
+			<p>The configuration will turn on the access logging for the <strong class="source-inline">envoydummy</strong> Pod. The configuration is available at <strong class="source-inline">Chapter11/03-telemetry-01.yaml</strong> <span class="No-Break">on GitHub:</span></p>
+			<ol>
+				<li>Apply the configuration using the <span class="No-Break">following commands:</span><pre class="console">
+<strong class="bold">$ kubectl apply -f Chapter11/03-telemetry-01.yaml</strong>
+<strong class="bold">telemetry.telemetry.istio.io/envoy-dummy-accesslog-overwrite configured</strong></pre></li>
+				<li>Now, you <a id="_idIndexMarker910"/>can make a <strong class="source-inline">curl</strong> request to <strong class="source-inline">envoydummy</strong> from the <strong class="source-inline">curl</strong> Pod, as shown in the <span class="No-Break">following command:</span><pre class="console">
+<strong class="bold">% kubectl exec -it curl -n chapter11 -c curl -- curl envoydummy.chapter11</strong>
+<strong class="bold">Bootstrap Service Mesh Implementation with Istio</strong></pre></li>
+				<li>Next, if you<a id="_idIndexMarker911"/> check the access logs of <strong class="source-inline">istio-proxy</strong> in the <strong class="source-inline">curl</strong> and <strong class="source-inline">envoydummy</strong> Pods, you will find that there are no access logs in the <strong class="source-inline">curl</strong> Pod but there are access logs in the <span class="No-Break"><strong class="source-inline">envoydummy</strong></span><span class="No-Break"> Pod:</span><pre class="console">
+<strong class="bold">[2022-12-15T00:48:54.972Z] "GET / HTTP/1.1" 200 - via_upstream - "-" 0 48 0 0 "-" "curl/7.86.0-DEV" "2d4eec8a-5c17-9e2c-8699-27a341c21b8b" "envoydummy.chapter11" "172.17.0.9:10000" inbound|10000|| 127.0.0.6:49977 172.17.0.9:10000 172.17.0.8:56294 outbound_.80_._.envoydummy.chapter11.svc.cluster.local default</strong></pre></li>
+			</ol>
+			<p>The reason for not having any access logs in the <strong class="source-inline">curl</strong> Pod is that we turned them off globally but selectively turned them on for the <strong class="source-inline">envoydummy</strong> Pod using the <span class="No-Break"><strong class="source-inline">Telemetry</strong></span><span class="No-Break"> resource.</span></p>
+			<p>You can read more about how to configure <strong class="source-inline">accessLogging</strong> using <strong class="source-inline">Telemetry</strong> <span class="No-Break">at </span><a href="https://istio.io/latest/docs/reference/config/telemetry/#AccessLogging"><span class="No-Break">https://istio.io/latest/docs/reference/config/telemetry/#AccessLogging</span></a><span class="No-Break">.</span></p>
+			<p>The default encoding of access logs is a string formatted using the <span class="No-Break">following specification:</span></p>
+			<pre class="source-code">
+[%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %RESPONSE_CODE_DETAILS% %CONNECTION_TERMINATION_DETAILS% \"%UPSTREAM_TRANSPORT_FAILURE_REASON%\" %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% \"%REQ(X-FORWARDED-FOR)%\" \"%REQ(USER-AGENT)%\" \"%REQ(X-REQUEST-ID)%\" \"%REQ(:AUTHORITY)%\" \"%UPSTREAM_HOST%\" %UPSTREAM_CLUSTER% %UPSTREAM_LOCAL_ADDRESS% %DOWNSTREAM_LOCAL_ADDRESS% %DOWNSTREAM_REMOTE_ADDRESS% %REQUESTED_SERVER_NAME% %ROUTE_NAME%\n</pre>
+			<p>A detailed definition of each of these fields is available <span class="No-Break">at </span><a href="https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage"><span class="No-Break">https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage</span></a><span class="No-Break">.</span></p>
+			<p>Access logs<a id="_idIndexMarker912"/> can also be configured to be displayed in JSON format, which <a id="_idIndexMarker913"/>can be achieved by setting <strong class="source-inline">accessLogEncoding</strong> <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">JSON</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+% istioctl install --set profile=demo --set meshConfig.accessLogFile="" --set meshConfig.accessLogFormat="" --set meshConfig.accessLogEncoding="JSON"</pre>
+			<p>Once set, the access log will be displayed in JSON format, which I have simplified for ease <span class="No-Break">of reading:</span></p>
+			<pre class="source-code">
+{
+   "duration":0,
+   "start_time":"2022-12-15T01:03:02.725Z",
+   "bytes_received":0,
+   "authority":"envoydummy.chapter11",
+   "upstream_transport_failure_reason":null,
+   "upstream_cluster":"inbound|10000||",
+   "x_forwarded_for":null,
+   "response_code_details":"via_upstream",
+   "upstream_host":"172.17.0.9:10000",
+   "user_agent":"curl/7.86.0-DEV",
+   "request_id":"a56200f2-da0c-9396-a168-8dfddf8b623f",
+   "response_code":200,
+   "route_name":"default",
+   "method":"GET",
+   "downstream_remote_address":"172.17.0.8:45378",
+   "upstream_service_time":"0",
+   "requested_server_name":"outbound_.80_._.envoydummy.chapter11.svc.cluster.local",
+   "protocol":"HTTP/1.1",
+   "path":"/",
+   "bytes_sent":48,
+   "downstream_local_address":"172.17.0.9:10000",
+   "connection_termination_details":null,
+   "response_flags":"-",
+   "upstream_local_address":"127.0.0.6:42313"
+}</pre>
+			<p>In the access logs, there<a id="_idIndexMarker914"/> is a field called <strong class="source-inline">response_flags</strong> (as seen in the preceding code snippet), which is a very useful piece of <a id="_idIndexMarker915"/>information when troubleshooting via <span class="No-Break">access logs.</span></p>
+			<p>Next, we will learn about response flags by injecting some errors in the <span class="No-Break"><strong class="source-inline">envoydummy</strong></span><span class="No-Break"> Pod:</span></p>
+			<ol>
+				<li value="1">Let’s first turn on access logs for the <strong class="source-inline">curl</strong> Pod using the <span class="No-Break">following command:</span><pre class="console">
+<strong class="bold">% kubectl apply -f Chapter11/03-telemetry-02.yaml</strong>
+<strong class="bold">telemetry.telemetry.istio.io/curl-accesslog-overwrite created</strong></pre></li>
+				<li>Then, delete the <strong class="source-inline">envoydummy</strong> Pod but keep the <span class="No-Break"><strong class="source-inline">envoydummy</strong></span><span class="No-Break"> service:</span><pre class="console">
+<strong class="bold">% kubectl delete po envoydummy -n chapter11</strong>
+<strong class="bold">pod "envoydummy" deleted</strong></pre></li>
+				<li>Now, the <a id="_idIndexMarker916"/>service is broken, and you will <a id="_idIndexMarker917"/>not be able to <span class="No-Break">use </span><span class="No-Break"><strong class="source-inline">curl</strong></span><span class="No-Break">:</span><pre class="console">
+<strong class="bold">% kubectl exec -it curl -n chapter11 -c curl -- curl envoydummy.chapter11</strong>
+<strong class="bold">no healthy upstream</strong></pre></li>
+				<li>Check the access logs for the <span class="No-Break"><strong class="source-inline">curl</strong></span><span class="No-Break"> Pod:</span><pre class="console">
+<strong class="bold">% kubectl logs -f curl -n chapter11 -c istio-proxy | grep response_flag</strong>
+<strong class="bold">{"path":"/","response_code":503,"method":"GET","upstream_cluster":"outbound|80||envoydummy.chapter11.svc.cluster.local","user_agent":"curl/7.86.0-DEV","connection_termination_details":null,"authority":"envoydummy.chapter11","x_forwarded_for":null,"upstream_transport_failure_reason":null,"downstream_local_address":"10.98.203.175:80","bytes_received":0,"requested_server_name":null,"response_code_details":"no_healthy_upstream","upstream_service_time":null,"request_id":"4b39f4ca-ffe3-9c6a-a202-0650b0eea8ef","route_name":"default","upstream_local_address":null,"response_flags":"UH","protocol":"HTTP/1.1","start_time":"2022-12-15T03:49:38.504Z","duration":0,"upstream_host":null,"downstream_remote_address":"172.17.0.8:52180","bytes_sent":19}</strong></pre></li>
+			</ol>
+			<p>The value of <strong class="source-inline">response_flags</strong> is <strong class="source-inline">UH</strong>, which means there is no healthy upstream host in the upstream cluster. Possible values of <strong class="source-inline">response_flag</strong> are shown in the following table and referenced <span class="No-Break">from </span><a href="https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage"><span class="No-Break">https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage</span></a><span class="No-Break">:</span></p>
+			<table id="table001-1" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Name</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Description</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UH</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>No healthy upstream hosts in the upstream cluster in addition to a 503 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UF</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Upstream connection failure in addition to a 503 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UO</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Upstream overflow (circuit breaking) in addition to a 503 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">NR</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>No route configured for a given request in addition to a 404 response code, or no matching filter chain for a <span class="No-Break">downstream connection</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">URX</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request was rejected because the upstream retry limit (HTTP) or maximum connect attempts (TCP) <span class="No-Break">was reached</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">NC</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Upstream cluster <span class="No-Break">not found</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">DT</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>A request or connection exceeded <strong class="source-inline">max_connection_duration</strong> <span class="No-Break">or </span><span class="No-Break"><strong class="source-inline">max_downstream_connection_duration</strong></span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 11.1 – Response flag values for HTTP and TCP connections</p>
+			<p>The <a id="_idIndexMarker918"/>following <a id="_idIndexMarker919"/>table describes the value of the response flag for <span class="No-Break">HTTP connections:</span></p>
+			<table id="table002" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Name</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Description</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">DC</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Downstream <span class="No-Break">connection termination</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">LH</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Local service failed health check request in addition to a 503 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UT</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Upstream request timeout in addition to a 504 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">LR</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Connection local reset in addition to a 503 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UR</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Upstream remote reset in addition to a 503 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UC</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Upstream connection termination in addition to a 503 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">DI</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request processing was delayed for a period specified via <span class="No-Break">fault injection</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">FI</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request was aborted with a response code specified via <span class="No-Break">fault injection</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">RL</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request was rate-limited locally by the HTTP rate limit filter in addition to a 429 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UAEX</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request was denied by the external <span class="No-Break">authorization service</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">RLSE</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request was rejected because there was an error in the rate <span class="No-Break">limit service</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">IH</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request was rejected because it set an invalid value for a strictly-checked header, in addition to a 400 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">SI</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Stream idle timeout in addition to a 408 or 504 <span class="No-Break">response code</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">DPE</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The downstream request had an HTTP <span class="No-Break">protocol error</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UPE</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The upstream response had an HTTP <span class="No-Break">protocol error</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">UMSDR</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The upstream request reached max <span class="No-Break">stream duration</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">OM</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The overload manager terminated <span class="No-Break">the request</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">DF</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request was terminated due to a DNS <span class="No-Break">resolution failure</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 11.2 – Response flag values for HTTP connections</p>
+			<p>Response flags <a id="_idIndexMarker920"/>are very useful in troubleshooting<a id="_idIndexMarker921"/> access logs and good indicators of what might have gone wrong with the upstream systems. With that knowledge, let’s move our focus to how Istio debug logs can be used <span class="No-Break">for troubleshooting.</span></p>
+			<h1 id="_idParaDest-169"><a id="_idTextAnchor168"/>Troubleshooting errors using debug logs</h1>
+			<p>Istio components<a id="_idIndexMarker922"/> support a flexible logging <a id="_idIndexMarker923"/>scheme for <strong class="bold">debug</strong> logs. The debug log levels can be changed from a high level to a very verbose level to get details of what’s happening in the Istio control and data planes. The following two sections will describe the process for <a id="_idIndexMarker924"/>changing the log level for the Istio data and control planes. Let’s dive <span class="No-Break">right in!</span></p>
+			<h2 id="_idParaDest-170"><a id="_idTextAnchor169"/>Changing debug logs for the Istio data plane</h2>
+			<p>The following<a id="_idIndexMarker925"/> are various log levels for the<a id="_idIndexMarker926"/> Istio data plane – that is, the <span class="No-Break">Envoy sidecar:</span></p>
+			<ul>
+				<li><strong class="source-inline">trace</strong>: Highest verbose <span class="No-Break">log messages</span></li>
+				<li><strong class="source-inline">debug</strong>: Very verbose <span class="No-Break">log messages</span></li>
+				<li><strong class="source-inline">info</strong>: Informative messages to know about Envoy’s <span class="No-Break">execution state</span></li>
+				<li><strong class="source-inline">warning/warn</strong>: Events that indicate problems and may lead to <span class="No-Break">error events</span></li>
+				<li><strong class="source-inline">error</strong>: Error events that are important and may impair some of Envoy’s capability but will not make Envoy <span class="No-Break">completely non-functional</span></li>
+				<li><strong class="source-inline">critical</strong>: Severe error events that may cause Envoy to <span class="No-Break">stop functioning</span></li>
+				<li><strong class="source-inline">off</strong>: Produces <span class="No-Break">no logs</span></li>
+			</ul>
+			<p>The log levels<a id="_idIndexMarker927"/> can be changed using the following<a id="_idIndexMarker928"/> <span class="No-Break">command format:</span></p>
+			<pre class="console">
+istioctl proxy-config log [&lt;type&gt;/]&lt;name&gt;[.&lt;namespace&gt;] [flags]</pre>
+			<p>An example of such a command is <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+% istioctl proxy-config log envoydummy.chapter11 -n chapter11 --level debug</pre>
+			<p>This way of changing log levels doesn’t require a restart of the Pods. As discussed in the <em class="italic">Exploring istiod ports</em> section earlier in this chapter, the log levels can also be changed using the <span class="No-Break">ControlZ interface.</span></p>
+			<h2 id="_idParaDest-171"><a id="_idTextAnchor170"/>Changing log levels for the Istio control plane</h2>
+			<p>The <a id="_idIndexMarker929"/>Istio control plane supports the following<a id="_idIndexMarker930"/> <span class="No-Break">log levels:</span></p>
+			<ul>
+				<li><strong class="source-inline">none</strong>: Produces <span class="No-Break">no logs</span></li>
+				<li><strong class="source-inline">error</strong>: Produces <span class="No-Break">only errors</span></li>
+				<li><strong class="source-inline">warn</strong>: Produces <span class="No-Break">warning messages</span></li>
+				<li><strong class="source-inline">info</strong>: Produces detailed information for <span class="No-Break">normal conditions</span></li>
+				<li><strong class="source-inline">debug</strong>: Produces the maximum amount of <span class="No-Break">log messages</span></li>
+			</ul>
+			<p>Each component inside istiod categorizes the logs based on the type of message being logged. These categories are <a id="_idIndexMarker931"/>called <strong class="bold">scopes</strong>. Using scopes, we can control the logging of messages across all components in istiod. Messages that cannot be categorized into a scope are logged under a default scope. In Istio 1.16.0, there are 25 scopes: <strong class="source-inline">ads</strong>, <strong class="source-inline">adsc</strong>, <strong class="source-inline">all</strong>, <strong class="source-inline">analysis</strong>, <strong class="source-inline">authn</strong>, <strong class="source-inline">authorization</strong>, <strong class="source-inline">ca</strong>, <strong class="source-inline">cache</strong>, <strong class="source-inline">cli</strong>, <strong class="source-inline">default</strong>, <strong class="source-inline">installer</strong>, <strong class="source-inline">klog</strong>, <strong class="source-inline">mcp</strong>, <strong class="source-inline">model</strong>, <strong class="source-inline">patch</strong>, <strong class="source-inline">processing</strong>, <strong class="source-inline">resource</strong>, <strong class="source-inline">source</strong>, <strong class="source-inline">spiffe</strong>, <strong class="source-inline">tpath</strong>, <strong class="source-inline">translator</strong>, <strong class="source-inline">util</strong>, <strong class="source-inline">validation</strong>, <strong class="source-inline">validationController</strong>, <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">wle</strong></span><span class="No-Break">.</span></p>
+			<p>The following is an example of a command used to change log levels for <span class="No-Break">various scopes:</span></p>
+			<pre class="console">
+% istioctl analyze --log_output_level validation:debug,validationController:info,ads:debug</pre>
+			<p>In this <a id="_idIndexMarker932"/>example, we are changing the log levels for the <strong class="source-inline">validation</strong> scope to <strong class="source-inline">debug</strong>, the <strong class="source-inline">validationController</strong> scope to <strong class="source-inline">info</strong>, and <strong class="source-inline">ads</strong> <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">debug</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+% istioctl admin log | grep -E 'ads|validation'
+ads                    ads debugging                                debug
+adsc                   adsc debugging                               info
+validation             CRD validation debugging                     debug
+validationController   validation webhook controller                info
+validationServer       validation webhook server                    info</pre>
+			<p>You can<a id="_idIndexMarker933"/> use <strong class="source-inline">istioctl admin log</strong> to retrieve the log level for all <span class="No-Break">Istio components:</span></p>
+			<pre class="console">
+% istioctl admin log
+ACTIVE    SCOPE      DESCRIPTION               LOG LEVEL
+ads                    ads debugging                                debug
+adsc                   adsc debugging                               info
+analysis               Scope for configuration analysis runtime     info
+authn                  authn debugging                              info
+authorization          Istio Authorization Policy                   info
+ca                     ca client                                    info
+controllers            common controller logic                      info
+default                Unscoped logging messages.                   info
+delta                  delta xds debugging                          info
+file                   File client messages                         info
+gateway                gateway-api controller                       info
+grpcgen                xDS Generator for Proxyless gRPC             info
+……</pre>
+			<p>We just <a id="_idIndexMarker934"/>looked at Envoy, which is on the <strong class="source-inline">request</strong> path<a id="_idIndexMarker935"/> of the request, but there is another critical component that is not on the <strong class="source-inline">request</strong> path but is important for smooth Envoy operations. In the next section, we will read about how to debug any issues <span class="No-Break">in istio-agent.</span></p>
+			<h1 id="_idParaDest-172"><a id="_idTextAnchor171"/>Debugging the Istio agent</h1>
+			<p>In this<a id="_idIndexMarker936"/> section, we will read how to troubleshoot any issues in the data plane caused by the misconfiguration of the Istio agent. An Istio agent may not act as expected due to a multitude of reasons; in this section, we will discuss various options to debug and troubleshoot <span class="No-Break">such issues.</span></p>
+			<p>The following command can be used to inspect the initial bootstrap configuration file that is used by Envoy to start itself and connect <span class="No-Break">with istiod:</span></p>
+			<pre class="console">
+$ istioctl proxy-config bootstrap envoydummy -n chapter11 -o json &gt;bootstrap-envoydummy.json</pre>
+			<p>The <a id="_idIndexMarker937"/>bootstrap configuration is composed of the information provided by the Istiod controller during sidecar injection via validation and the sidecar <span class="No-Break">injection webhook.</span></p>
+			<p>We can check the certificate and <strong class="source-inline">secret</strong> configured for Envoy by <strong class="source-inline">istio-agent</strong> using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+% istioctl proxy-config secret envoydummy -n chapter11
+RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                               NOT AFTER                NOT BEFORE
+default           Cert 
+Chain      ACTIVE      true     151990293406794295074718429679 77531899      20XX-12-26T01:02:53Z     20XX-12-25T01:00:53Z
+ROOTCA        CA        ACTIVE        true 177195801324177165655021729164749485784     20XX-12-11T05:19:23Z     20XX-12-14T05:19:23Z</pre>
+			<p>You can also display the detailed information in JSON format by adding <strong class="source-inline">-o json</strong> to the command. <strong class="source-inline">ROOTCA</strong> is the root certificate, and <strong class="source-inline">default</strong> is the workload certificate. When performing a multi-cluster setup, ROOTCA must match in <span class="No-Break">different clusters.</span></p>
+			<p>You can inspect the certificate values using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+% istioctl proxy-config secret envoydummy -n chapter11 -o json | jq '.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes' -r | base64 -d | openssl x509 -noout -text</pre>
+			<p>There might be other Secrets also depending on configured gateways and destination rules. In the logs, if you find that Envoy is stuck in a warning state, then that means that the correct Secret has not been loaded in Envoy. Issues related to the <strong class="source-inline">default</strong> certificate and <strong class="source-inline">ROOTCA</strong> are usually caused by connectivity issues between istio-proxy <span class="No-Break">and istiod.</span></p>
+			<p>To check that Envoy has successfully started, you can log into the <strong class="source-inline">istio-proxy</strong> container using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+% kubectl exec -it envoydummy -n chapter11 -c istio-proxy --  pilot-agent wait
+2022-12-25T05:29:44.310696Z info Waiting for Envoy proxy to be ready (timeout: 60 seconds)...
+2022-12-25T05:29:44.818220Z info Envoy is ready!</pre>
+			<p>During the <a id="_idIndexMarker938"/>bootstrap of the sidecar proxy, <strong class="source-inline">istio-agent</strong> checks the readiness of Envoy by pinging <strong class="source-inline">http://localhost:15021/healthz/ready</strong>. It also uses the same endpoint for determining the readiness of Envoy during the lifetime of the Pod. An HTTP status code of 200 means that Envoy is ready and the <strong class="source-inline">istio-proxy</strong> container is marked as initialized. If the <strong class="source-inline">istio-proxy</strong> container is in a pending state and not initializing, then that means that Envoy has not received the configuration from istiod, which can be either because of connectivity issues with istiod or a config rejected <span class="No-Break">by Envoy.</span></p>
+			<p>Errors such as the following in <strong class="source-inline">istio-proxy</strong> logs denote connectivity issues either because of the network or unavailability <span class="No-Break">of istiod:</span></p>
+			<pre class="console">
+20XX-12-25T05:58:02.225208Z     warning envoy config    StreamAggregatedResources gRPC config stream to xds-grpc closed since 49s ago: 14, connection error: desc = "transport: Error while dialing dial tcp 10.107.188.192:15012: connect: connection refused"</pre>
+			<p>If Envoy can connect with istiod, then you will find a message similar to the following in the <span class="No-Break">log files:</span></p>
+			<pre class="console">
+20XX-12-25T06:00:08.082523Z     info    xdsproxy        connected to upstream XDS server: istiod.istio-system.svc:15012</pre>
+			<p>In this section, we did a deep dive into Istio debug logs, and we looked at how to troubleshoot using the debug logs of Envoy, <strong class="source-inline">istio-agent</strong>, and the Istio control plane. In the next section, we will read about Istio’s best practices for securely managing and efficiently <span class="No-Break">operating Istio.</span></p>
+			<h1 id="_idParaDest-173"><a id="_idTextAnchor172"/>Understanding Istio’s best practices</h1>
+			<p>When operating <a id="_idIndexMarker939"/>the Service Mesh, it is advised to assume that security threats will not just originate from outside of the organization’s security boundaries but also from within the security perimeter. You should always assume that networks are not impregnable and create security controls that can secure assets, even if network boundaries are breached. In this section, we will discuss some of the various attack vectors to be mindful of when implementing <span class="No-Break">Service Mesh.</span></p>
+			<h2 id="_idParaDest-174"><a id="_idTextAnchor173"/>Examining attack vectors for the control plane</h2>
+			<p>The <a id="_idIndexMarker940"/>following list shows common strategies for initiating attacks on the <span class="No-Break">control plane:</span></p>
+			<ul>
+				<li>Causing configuration to deliberately make the control plane malfunction so that the Service Mesh becomes inoperable, thus impacting business-critical applications being managed by the mesh. This can also be a precursor to forthcoming attacks targeting Ingress or any <span class="No-Break">other applications.</span></li>
+				<li>Obtaining privileged access to be able to perform control plane and data <span class="No-Break">plane attacks.</span>
+By gaining privileged access, an attacker can then modify security policies to allow the exploitation of <span class="No-Break">the assets.</span></li>
+				<li>Eavesdropping to exfiltrate sensitive data from the control plane, or tampering and spoofing communication between data and <span class="No-Break">control planes.</span></li>
+			</ul>
+			<h2 id="_idParaDest-175"><a id="_idTextAnchor174"/>Examining attack vectors for the data plane</h2>
+			<p>The following <a id="_idIndexMarker941"/>are common strategies for initiating attacks on the <span class="No-Break">data plane:</span></p>
+			<ul>
+				<li>Eavesdropping on service-to-service communication to exfiltrate sensitive data and send it to <span class="No-Break">an attacker.</span></li>
+				<li>Masquerading as a trusted service in the mesh; the attacker can then perform man-in-the-middle attacks between service-to-service communication. By using a man-in-the-middle attack, the attacker can steal sensitive data or tamper with the communication between the services to produce a favorable outcome for <span class="No-Break">the attacker.</span></li>
+				<li>Manipulating the applications to perform <span class="No-Break">botnet attacks.</span></li>
+			</ul>
+			<p>The other <a id="_idIndexMarker942"/>component susceptible to attacks is the infrastructure hosting istio, which can be the Kubernetes cluster, virtual machines, or any other components of the underlying stack hosting istio. We will not dive into how to protect Kubernetes, as there are various books on how to secure Kubernetes clusters; one such book is <em class="italic">Learn Kubernetes Security</em>, written by Kaizhe Huang and Pranjal Jumde and published by Packt. Other best practices include protecting the Service Mesh, which we will discuss in the <span class="No-Break">following section.</span></p>
+			<h2 id="_idParaDest-176"><a id="_idTextAnchor175"/>Securing the Service Mesh</h2>
+			<p>Some <a id="_idIndexMarker943"/>best practices on how to secure the Service Mesh are <span class="No-Break">as follows:</span></p>
+			<ul>
+				<li>Deploy<a id="_idIndexMarker944"/> a <strong class="bold">web application firewall</strong> (<strong class="bold">WAF</strong>) to protect Ingress traffic. WAF implements security controls, including threats identified by <strong class="bold">Open Web Application Security Project</strong> (<strong class="bold">OWASP</strong>); you can read about <a id="_idIndexMarker945"/>OWASP at <a href="https://owasp.org/">https://owasp.org/</a>. Most cloud providers provide WAF as part of their cloud offering; some examples are <strong class="bold">AWS WAF</strong> by<a id="_idIndexMarker946"/> AWS, <strong class="bold">Cloud Armor</strong> by<a id="_idIndexMarker947"/> Google Cloud, and <strong class="bold">Azure Web Application Firewall</strong> from Azure. There are other vendors, such<a id="_idIndexMarker948"/> as Cloudflare, Akamai, Imperva, and AppTrana, who provide WAF as a SaaS offering, whereas vendors such as Fortinet and Citrix also provide self-hosted WAF offerings. WAFs are one of your first lines of defense and will take care of many attack vectors bound for Ingress to <span class="No-Break">the mesh.</span></li>
+				<li>Define policies to control access from outside the mesh to services inside the mesh. Ingress access control policies are important to prohibit unauthorized access to services. Every Ingress should be well-defined and have associated authentication and authorization policies to verify whether external requests are authorized to access services exposed by the Ingress gateway. Nevertheless, all Ingress should happen via Ingress gateways, and every Ingress should be routed via a virtual service and the destination rules associated <span class="No-Break">with it.</span></li>
+				<li>All <a id="_idIndexMarker949"/>Egress systems should be known and defined, and traffic to unknown Egress points should not be allowed. Security policies should enforce TLS origination for Egress traffic and for all Egress to happen via Egress gateways. Authorization policies should be used to control what workloads are allowed to send Egress traffic and, if allowed, all Egress endpoints should be known and approved by security administrators. Egress security policies also help prevent data exfiltration; with Egress policies, you can control traffic to known Egresses only and thus stop an attacker who has infiltrated your system from sending data to the attacker’s systems. This also stops applications within the mesh from participating in any <span class="No-Break">botnet attacks.</span></li>
+				<li>All services in the mesh should communicate over mTLS and should have associated authentication and authorization policies. By default, all service-to-service communication should be denied unless authorized via authorization policies, and any service-to-service communication should be explicitly enabled via well-defined <span class="No-Break">service identities.</span></li>
+				<li>Where a service-to-service communication is happening on behalf of an end user or system, all such communication (apart from mTLS) should also make use of JWTs. A JWT acts as a credential to prove that a service request is explicitly being made on behalf of the end user; the caller service needs to present a JWT as a credential identifying an end user, combined with authentication and authorization policies that you can enforce after determining what services can be accessed and what level of access is granted. This helps to stop any compromised application from performing data exfiltration or <span class="No-Break">service exploitation.</span></li>
+				<li>If any external long-lived authentication token is used for authenticating any subject, be it an end user or a system, then such a token should be replaced by a short-lived token. Token replacement should happen at Ingress, and then the short-lived token should be used throughout the mesh. Doing so helps prevent attacks where an attacker steals tokens and uses them for unauthorized access. Also, whereas the long-lived external attack might have many broader scopes attached to it that might be misused by a compromised application, having a short-lived token with restricted scope helps to avoid misuse <span class="No-Break">of tokens.</span></li>
+				<li>When applying exceptions to mesh or security rules, then you should proceed with caution when defining exception policies. For example, if you want to enable workload A in the mesh to allow HTTP traffic from another workload, B, then instead of explicitly allowing all HTTP traffic, you should explicitly define an exception to allow HTTP traffic from workload B, whereas all other traffic should be on <span class="No-Break">HTTPS only.</span></li>
+				<li>Access<a id="_idIndexMarker950"/> to istiod must be restricted and controlled. Firewall rules should restrict access to the control plane to known sources. The rule should cater to human operators as well the data plane’s access to the control plane in single and <span class="No-Break">multi-cluster setups.</span></li>
+				<li>All workloads being managed by the Service Mesh should be managed by the Service Mesh only <a id="_idIndexMarker951"/>via <strong class="bold">role-based access control</strong> (<strong class="bold">RBAC</strong>) policies for the Kubernetes environment and user groups for non-Kubernetes workloads. Kubernetes administrators should carefully define RBAC policies for application users and mesh administrators and allow only the latter to make any changes to the mesh. Mesh operators should be further classified according to the operations they are authorized to perform. For example, mesh users with permission to deploy applications in a namespace should not have access to <span class="No-Break">other namespaces.</span></li>
+				<li>Restrict what repositories are accessible to users from where images can be pulled <span class="No-Break">for deployment.</span></li>
+			</ul>
+			<p>In this section, we <a id="_idIndexMarker952"/>read about istio’s best practices; as well as this section, you should also read about best practices on the istio website at <a href="https://istio.io/latest/docs/ops/best-practices/">https://istio.io/latest/docs/ops/best-practices/</a>. The website is frequently updated based on feedback from the <span class="No-Break">istio community.</span></p>
+			<p>Even after all controls, mesh operators may accidentally misconfigure the Service Mesh, which can result in unexpected outcomes and even security breaches. One option is to enforce a stringent<a id="_idIndexMarker953"/> review and governance process for making changes, but doing so manually is expensive, time-consuming, error-prone, and often annoying. In the following section, we will read about <strong class="bold">OPA Gatekeeper</strong> and how to use it for the automation of best <span class="No-Break">practices policies.</span></p>
+			<h1 id="_idParaDest-177"><a id="_idTextAnchor176"/>Automating best practices using OPA Gatekeeper</h1>
+			<p>To avoid <a id="_idIndexMarker954"/>human errors, you can define the best practices and constraints in the form of policies that can then be enforced automatically whenever a resource is created, deleted, or<a id="_idIndexMarker955"/> updated in the cluster. Automated policy enforcement ensures consistency and adherence to best practices without compromising agility and deployment velocity. One such <a id="_idIndexMarker956"/>software is <strong class="bold">Open Policy Agent</strong> (<strong class="bold">OPA</strong>) Gatekeeper, which is an admission controller that enforces policies based on <a id="_idIndexMarker957"/>the <strong class="bold">custom resource definition</strong> (<strong class="bold">CRD</strong>), executed by OPA. OPA Gatekeeper enables the enforcement of guard rails; any istio configuration not within the guard rails is automatically rejected. It also <a id="_idIndexMarker958"/>allows <strong class="bold">cluster administrators</strong> to audit the resources in breach of best practices. Using the following steps, we <a id="_idIndexMarker959"/>will set up OPA Gatekeeper, followed by the configuration to enforce some of the best practices for istio. Let’s <span class="No-Break">get started!</span></p>
+			<ol>
+				<li value="1">Install Gatekeeper using the <span class="No-Break">following command:</span><pre class="console">
+<strong class="bold">% kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/master/deploy/gatekeeper.yaml</strong></pre></li>
+				<li>Configure Gatekeeper to sync namespaces, Pods, Services, istio CRD gateways, virtual services, destination rules, policy, and service role bindings into its cache. We have defined that in the following file available <span class="No-Break">at </span><span class="No-Break"><strong class="source-inline">Chapter11/05-GatekeeperConfig.yaml</strong></span><span class="No-Break">:</span><pre class="console">
+apiVersion: config.gatekeeper.sh/v1alpha1
+kind: Config
+metadata:
+  name: config
+  namespace: gatekeeper-system
+spec:
+  sync:
+    syncOnly:
+      - group: ""
+        version: "v1"
+        kind: "Namespace"
+      - group: ""
+        version: "v1"
+        kind: "Pod"
+      - group: ""
+        version: "v1"
+        kind: "Service"
+      - group: "networking.istio.io"
+        version: "v1alpha3"
+        kind: "Gateway"
+      - group: "networking.istio.io"
+        version: "v1alpha3"
+        kind: "VirtualService"
+      - group: "networking.istio.io"
+        version: "v1alpha3"
+        kind: "DestinationRule"
+      - group: "authentication.istio.io"
+        version: "v1alpha1"
+        kind: "Policy"
+      - group: "rbac.istio.io"
+        version: "v1alpha1"
+        kind: "ServiceRoleBinding"</pre></li>
+				<li>Now, apply the configuration using the <span class="No-Break">following command:</span><pre class="console">
+<strong class="bold">% kubectl apply -f Chapter11/05-GatekeeperConfig.yaml</strong>
+<strong class="bold">config.config.gatekeeper.sh/config created</strong></pre></li>
+			</ol>
+			<p>This completes the installation of Gatekeeper; next, we will <span class="No-Break">configure constraints.</span></p>
+			<p>We <a id="_idIndexMarker960"/>will start with<a id="_idIndexMarker961"/> a simple policy for ensuring Pod naming conventions as per istio best practices. As discussed in the <em class="italic">Inspecting and analyzing istio configuration</em> section, istio recommends adding an explicit <strong class="source-inline">app</strong> and <strong class="source-inline">version</strong> label to every Pod deployment. The <strong class="source-inline">app</strong> and <strong class="source-inline">version</strong> labels add contextual information to the metrics and telemetry that <span class="No-Break">istio collects.</span></p>
+			<p>Perform the following steps to enforce this governance rule so that any deployment not adhering to this rule is <span class="No-Break">automatically rejected:</span></p>
+			<ol>
+				<li value="1">First, we must define <strong class="source-inline">ConstraintTemplate</strong>. In the constraint template, we do <span class="No-Break">the following:</span><ul><li>Describe the policy that will be used to enforce <span class="No-Break">the constraints</span></li><li>Describe the schema of <span class="No-Break">the constraint</span></li></ul></li>
+			</ol>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Gatekeeper constraints are defined using a purpose-built, high-level declarative language called <strong class="bold">Rego</strong>. Rego<a id="_idIndexMarker962"/> is particularly used for writing OPA policies; you can read <a id="_idIndexMarker963"/>more about Rego <span class="No-Break">at </span><span class="No-Break">https://www.openpolicyagent.org/docs/latest/#rego</span><span class="No-Break">.</span></p>
+			<p>The following steps defines the constraint template and <span class="No-Break">the schema:</span></p>
+			<ol>
+				<li>We will declare a constraint template using the <span class="No-Break">OPA CRD:</span></li>
+			</ol>
+			<pre class="console">
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: istiorequiredlabels
+  annotations:
+    description: Requires all resources to contain a specified label with a value
+      matching a provided regular expression.</pre>
+			<ol>
+				<li value="2">Next, we <a id="_idIndexMarker964"/>will <a id="_idIndexMarker965"/>define <span class="No-Break">the schema:</span></li>
+			</ol>
+			<pre class="console">
+spec:
+  crd:
+    spec:
+      names:
+        kind: istiorequiredlabels
+      validation:
+        # Schema for the `parameters` field
+        openAPIV3Schema:
+          properties:
+            message:
+              type: string
+            labels:
+              type: array
+              items:
+                type: object
+                properties:
+                  key:
+                    type: string</pre>
+			<ol>
+				<li value="3">Finally, we <a id="_idIndexMarker966"/>will <a id="_idIndexMarker967"/>define <strong class="source-inline">rego</strong> to check the labels and detect <span class="No-Break">any violation:</span></li>
+			</ol>
+			<pre class="console">
+ targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package istiorequiredlabels
+        get_message(parameters, _default) = msg {
+          not parameters.message
+          msg := _default
+        }
+        get_message(parameters, _default) = msg {
+          msg := parameters.message
+        }
+        violation[{"msg": msg, "details": {"missing_labels": missing}}] {
+          provided := {label | input.review.object.metadata.labels[label]}
+          required := {label | label := input.parameters.labels[_].key}
+          missing := required - provided
+          count(missing) &gt; 0
+          def_msg := sprintf("you must provide labels: %v", [missing])
+          msg := get_message(input.parameters, def_msg)
+        }</pre>
+			<p>The configuration is available at <strong class="source-inline">Chapter11/gatekeeper/01-istiopodlabelconstraint_template.yaml</strong>. Apply the configuration using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+<strong class="bold">% kubectl apply -f Chapter11/gatekeeper/01-istiopodlabelconstraint_template.yaml</strong>
+<strong class="bold">constrainttemplate.templates.gatekeeper.sh/istiorequiredlabels created</strong></pre>
+			<ol>
+				<li value="2">Next, we <a id="_idIndexMarker968"/>will define <strong class="source-inline">constraints</strong> that are used to inform Gatekeeper that we want to<a id="_idIndexMarker969"/> enforce the constraint template named <strong class="source-inline">istiorequiredlabels</strong>, as per the configuration defined in the <strong class="source-inline">mesh-pods-must-have-app-and-version</strong> constraint. The sample file is available <span class="No-Break">at </span><span class="No-Break"><strong class="source-inline">Chapter11/gatekeeper/01-istiopodlabelconstraint.yaml</strong></span><span class="No-Break">:</span><pre class="console">
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: istiorequiredlabels
+metadata:
+  name: mesh-pods-must-have-app-and-version
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["<strong class="source-inline">Pod</strong>"]
+    <strong class="source-inline">namespaceSelector</strong>:
+      matchExpressions:
+        - <strong class="source-inline">key: istio-injection</strong>
+          operator: In
+          <strong class="source-inline">values: ["enabled"]</strong>
+  parameters:
+    message: "All pods must have an `app and version` label"
+    labels:
+      - key: app
+      - key: version</pre></li>
+			</ol>
+			<p>For the constraint configuration, we have defined the <span class="No-Break">following fields:</span></p>
+			<ul>
+				<li><strong class="source-inline">enforcementAction</strong>: This field defines the action for handling constraint violations. The field is set to <strong class="source-inline">deny</strong>, which is also the default behavior; any<a id="_idIndexMarker970"/> resource creation or update that is in violation of this constraint will be handled as per enforcement action. Other supported <strong class="source-inline">enforcementAction</strong> values include <strong class="source-inline">dryrun</strong> and <strong class="source-inline">warn</strong>. When rolling out new<a id="_idIndexMarker971"/> constraints to running clusters, the <strong class="source-inline">dryrun</strong> functionality can be helpful to test them in a running cluster without enforcing them. The <strong class="source-inline">warn</strong> enforcement action offers the same benefits as <strong class="source-inline">dryrun</strong>, such as testing constraints without enforcing them. In addition to this, it also provides immediate feedback on why that constraint would have <span class="No-Break">been denied.</span></li>
+				<li><strong class="source-inline">match</strong>: This field defines the selection criteria for identifying the objects to which the constraints will be applied. In the configuration, we have defined that the constraints should be applied to <strong class="source-inline">pod</strong> resources that are deployed in a namespace with the label of <strong class="source-inline">istio-injection</strong> and a value of <strong class="source-inline">enabled</strong>. By doing this, we can selectively apply the constraints to namespaces that are part of the mesh <span class="No-Break">data plane.</span></li>
+			</ul>
+			<ol>
+				<li value="3">Finally, we <a id="_idIndexMarker972"/>have defined the message to be displayed when constraints are violated. Apply the <span class="No-Break">following constraints:</span><pre class="console">
+<strong class="bold">% kubectl apply -f Chapter11/gatekeeper/01-istiopodlabelconstraint.yaml</strong>
+<strong class="bold">istiorequiredlabels.constraints.gatekeeper.sh/mesh-pods-must-have-app-and-version created</strong></pre></li>
+				<li>As a test, we <a id="_idIndexMarker973"/>will deploy the <strong class="source-inline">envoydummy</strong> Pod with <span class="No-Break">missing labels:</span><pre class="console">
+<strong class="bold">% kubectl apply -f Chapter11/06-envoy-proxy-chaos.yaml -n chapter11</strong>
+<strong class="bold">service/envoydummy created</strong>
+<strong class="bold">Error from server (Forbidden): error when creating "Chapter11/01-envoy-proxy.yaml": admission webhook "validation.gatekeeper.sh" denied the request: [all-must-have-owner] All pods must have an `app` label</strong></pre></li>
+			</ol>
+			<p>The deployment was verified by Gatekeeper and rejected because it is violating constraints by not having <strong class="source-inline">app</strong> and <strong class="source-inline">version</strong> labels. Please fix the labels and redeploy to check that you can successfully deploy with the <span class="No-Break">correct labels.</span></p>
+			<p>I hope this gave you some idea about how to use Gatekeeper for automating some of the best practices. We will practice one more example to give you some further confidence on how to use Gatekeeper. At first, it might appear a daunting task to define the constraints, but once you build some experience using <strong class="source-inline">rego</strong>, then you will find it simple and easy <span class="No-Break">to use.</span></p>
+			<p>As another example, let’s write another constraint to enforce port naming conventions. As per istio best practices described at <a href="https://istio.io/v1.0/docs/setup/kubernetes/spec-requirements/">https://istio.io/v1.0/docs/setup/kubernetes/spec-requirements/</a>, <strong class="source-inline">Service</strong> ports must be named. The port names must be of the <strong class="source-inline">&lt;protocol&gt;[-&lt;suffix&gt;]</strong> form, with <strong class="source-inline">http</strong>, <strong class="source-inline">http2</strong>, <strong class="source-inline">grpc</strong>, <strong class="source-inline">mongo</strong>, or <strong class="source-inline">redis</strong> as <strong class="source-inline">&lt;protocol&gt;</strong>. This is important if you want to take advantage of istio’s routing features. For example, <strong class="source-inline">name: http2-envoy</strong> and <strong class="source-inline">name: http</strong> are valid port names, but <strong class="source-inline">name: http2envoy</strong> is an <span class="No-Break">invalid name.</span></p>
+			<p>The <strong class="source-inline">rego</strong> in the <a id="_idIndexMarker974"/>constraint<a id="_idIndexMarker975"/> template will be <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+package istio.allowedistioserviceportname
+        get_message(parameters, _default) = msg {
+          not parameters.message
+          msg := _default
+        }
+        get_message(parameters, _default) = msg {
+          msg := parameters.message
+        }
+        violation[{"msg": msg, "details": {"missing_prefixes": prefixes}}] {
+          service := input.review.object
+          port := service.spec.ports[_]
+          prefixes := input.parameters.prefixes
+          not is_prefixed(port, prefixes)
+          def_msg := sprintf("service %v.%v port name missing prefix",
+            [service.metadata.name, service.metadata.namespace])
+          msg := get_message(input.parameters, def_msg)
+        }
+        is_prefixed(port, prefixes) {
+          prefix := prefixes[_]
+          startswith(port.name, prefix)
+        }</pre>
+			<p>In the <strong class="source-inline">rego</strong>, we are defining that port names should start with a prefix, and if the prefix is missing, then it <a id="_idIndexMarker976"/>should be considered <span class="No-Break">a violation.</span></p>
+			<p>The <a id="_idIndexMarker977"/>constraint is defined <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: AllowedIstioServicePortName
+metadata:
+  name: port-name-constraint
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Service"]
+    namespaceSelector:
+      matchExpressions:
+        - key: istio-injection
+          operator: In
+          values: ["enabled"]
+  parameters:
+    message: "All services declaration must have port name will one of following  prefix http-, http2-, grpc-, mongo-,redis-"
+    prefixes: ["http-", "http2-","grpc-","mongo-","redis-"]</pre>
+			<p>In the constraint, we are defining the various prefixes that are allowed and the corresponding error message to be displayed when the constraints <span class="No-Break">are violated.</span></p>
+			<p>Now, let’s apply the constraint template and configuration <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+% kubectl apply -f Chapter11/gatekeeper/02-istioportconstraints_template.yaml
+constrainttemplate.templates.gatekeeper.sh/allowedistioserviceportname created
+% kubectl apply -f Chapter11/gatekeeper/02-istioportconstraints.yaml
+allowedistioserviceportname.constraints.gatekeeper.sh/port-name-constraint configured</pre>
+			<p>After<a id="_idIndexMarker978"/> applying the<a id="_idIndexMarker979"/> config, let’s deploy <strong class="source-inline">envoydummy</strong> with incorrect names for the service ports. We will create an <strong class="source-inline">envoydummy</strong> service without specifying any port names, as described in the following <span class="No-Break">code snippet:</span></p>
+			<pre class="source-code">
+spec:
+  ports:
+  - port: 80
+    targetPort: 10000
+  selector:
+    name: envoydummy</pre>
+			<p>The file is available at <strong class="source-inline">Chapter11/07-envoy-proxy-chaos.yaml</strong>. Apply the configuration using the following code and observe the error message to see OPA Gatekeeper <span class="No-Break">in action:</span></p>
+			<pre class="console">
+% kubectl apply -f Chapter11/07-envoy-proxy-chaos.yaml
+pod/envoydummy created
+Error from server (Forbidden): error when creating "Chapter11/07-envoy-proxy-chaos.yaml": admission webhook "validation.gatekeeper.sh" denied the request: [port-name-constraint] All services declaration must have port name with one of following prefix http-, http2-, grpc-, mongo-, redis-</pre>
+			<p>In the response, you can see the error message caused by the incorrect naming of the port in the service configuration. The issue can be resolved by adding a name to the port declaration <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+spec:
+  ports:
+  - port: 80
+    targetPort: 10000
+    name: http-envoy
+  selector:
+    name: envoydummy</pre>
+			<p>OPA Gatekeeper<a id="_idIndexMarker980"/> is a powerful tool to automate the enforcement of best practices for the Service Mesh. It compensates for any misconfiguration caused by human operators and reduces the cost and<a id="_idIndexMarker981"/> time required to keep your mesh aligned with the best practices guard rails. You can read more about OPA Gatekeeper at <a href="https://open-policy-agent.github.io/gatekeeper/website/docs/">https://open-policy-agent.github.io/gatekeeper/website/docs/</a>, and there are also some good examples of Gatekeeper available <span class="No-Break">at </span><a href="https://github.com/crcsmnky/gatekeeper-istio"><span class="No-Break">https://github.com/crcsmnky/gatekeeper-istio</span></a><span class="No-Break">.</span></p>
+			<p class="callout-heading">Uninstalling OPA Gatekeeper</p>
+			<p class="callout">To uninstall<a id="_idIndexMarker982"/> OPA Gatekeeper, you may use the <span class="No-Break">following command:</span></p>
+			<p class="callout"><strong class="source-inline">% kubectl delete -</strong><span class="No-Break"><strong class="source-inline">f </strong></span><a href="https://raw.githubusercontent.com/open-policy-agent/gatekeeper/master/deploy/gatekeeper.yaml"><span class="No-Break">https://raw.githubusercontent.com/open-policy-agent/gatekeeper/master/deploy/gatekeeper.yaml</span></a></p>
+			<h1 id="_idParaDest-178"><a id="_idTextAnchor177"/>Summary</h1>
+			<p>In this chapter, we read about various troubleshooting techniques as well as best practices for configuring and operating istio. By now, you should have a good understanding of various ports exposed by istio and how they can help diagnose any errors in the mesh. You also read about debugs and access logs produced by Envoy and istiod and how they can help you pinpoint the root cause of errors. istio provides various tools in its diagnostic toolkit that are very helpful for troubleshooting and analyzing issues and errors in the <span class="No-Break">Service Mesh.</span></p>
+			<p>Security is of utmost importance when running the Service Mesh, which is why we discussed various attack vectors for the control and data planes. You should now have a good understanding of the list of controls you can put in place to secure the Service Mesh. Finally, we read about how to automate best practices using OPA Gatekeeper to catch most, if not all, non-compliant configurations. You learned how to set up OPA Gatekeeper, how to define constraint templates using Rego and constraint schema, and how to use them to catch poor configurations. I hope this chapter provides you with the confidence to troubleshoot and operate istio and use automation tools such as OPA Gatekeeper to enforce configuration hygiene in your istio Service <span class="No-Break">Mesh implementation.</span></p>
+			<p>In the next chapter, we will put the learning from this book into practice by deploying an application on <span class="No-Break">the mesh.</span></p>
+		</div>
+	</body></html>

@@ -1,0 +1,432 @@
+<html><head></head><body>
+		<div id="_idContainer039">
+			<h1 id="_idParaDest-50" class="chapter-number"><a id="_idTextAnchor049"/>3</h1>
+			<h1 id="_idParaDest-51"><a id="_idTextAnchor050"/>Understanding Istio Control and Data Planes</h1>
+			<p>The previous chapter gave you an overview of Istio, what a simple installation looks like, and how to apply a Service Mesh to a sample application. In this chapter, we will dive deeper into Istio’s control plane and data plane. We will understand the role of each of these components by going through the <span class="No-Break">following topics:</span></p>
+			<ul>
+				<li>Components of Istio <span class="No-Break">control plane</span></li>
+				<li>Deployment models for Istio <span class="No-Break">control plane</span></li>
+				<li>Envoy, the Istio <span class="No-Break">data plane</span></li>
+			</ul>
+			<p>This chapter will help you understand the Istio control plane so you can plan the installation of control planes in a production environment. After reading this chapter, you should be able to identify the various components of the Istio control plane including istiod, along with the functionality they each deliver in the overall working <span class="No-Break">of Istio.</span></p>
+			<h1 id="_idParaDest-52"><a id="_idTextAnchor051"/>Exploring the components of a control plane</h1>
+			<p>The following diagram summarizes<a id="_idIndexMarker202"/> the Istio architecture along with the interaction between various components. We used the Ingress gateway and istio-proxy in the previous chapter so we will not go into further details on those here. We will, however, unravel some of the other components of the Istio control plane not directly depicted in the <span class="No-Break">following illustration.</span></p>
+			<div>
+				<div id="_idContainer031" class="IMG---Figure">
+					<img src="image/B17989_03_01.jpg" alt="Figure 3.1 – Istio control plane"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 3.1 – Istio control plane</p>
+			<p>Before we delve into the components of the control plane, let’s first get the definition of the term out of the way – the <strong class="bold">control plane</strong> is a set of Istio services that are responsible for the operations of the Istio data plane. There is no single component that constitutes the<a id="_idIndexMarker203"/> control plane – rather, there <span class="No-Break">are several.</span></p>
+			<p>Let’s look at the first component of the Istio control plane <span class="No-Break">called istiod.</span></p>
+			<h2 id="_idParaDest-53"><a id="_idTextAnchor052"/>istiod</h2>
+			<p>istiod is one<a id="_idIndexMarker204"/> of the Istio control plane components, providing service discovery, configuration, and certificate management. In prior versions of Istio, the control plane was made up of components called Galley, Pilot, Mixer, Citadel, WebHook Injector, and so on. istiod unifies the functionality of these components (Pilot, Galley, and Citadel) into a single binary to provide simplified installation, operation, and monitoring, as well as seamless upgrades between various <span class="No-Break">Istio versions.</span></p>
+			<p>Let’s look at the <strong class="source-inline">istiod</strong> Pod running in the <span class="No-Break"><strong class="source-inline">istio-system</strong></span><span class="No-Break"> namespace:</span></p>
+			<pre class="console">
+$ kubectl get po -n istio-system
+NAME                        READY   STATUS    RESTARTS   AGE
+istio-egressgateway-84f95886c7-5gxps    1/1     Running   0          10d
+istio-ingressgateway-6cb4bb68df-qbjmq   1/1     Running   0          10d
+istiod-65fc7cdd7-r95jk                  1/1     Running   0          10d
+$ kubectl exec -it pod/istiod-65fc7cdd7-r95jk -n istio-system -- /bin/sh -c «ps -ef"
+UID          PID    PPID  C STIME TTY          TIME CMD
+istio-p+       1       0  0 Mar14 ?        00:08:26 /usr/local/bin/pilot-discovery discovery --monitoringAddr=:15014 --log_output_level=default:info --domain cluster.local --keepaliveMaxServerConnectionAge 30m</pre>
+			<p>You must have noticed that the Pod itself is running <strong class="source-inline">pilot-discovery</strong> and is based on the <span class="No-Break">following image:</span></p>
+			<pre class="console">
+$ kubectl get pod/istiod-65fc7cdd7-r95jk -n istio-system -o json | jq '.spec.containers[].image'
+"docker.io/istio/pilot:1.13.1"</pre>
+			<p>You must have also noticed that the image for the <strong class="source-inline">istiod</strong> Pod is different to the istio-proxy image inserted as a sidecar. The istiod image is based on <strong class="source-inline">pilot-discovery</strong>, whereas the sidecar is based <span class="No-Break">on </span><span class="No-Break"><strong class="source-inline">proxyv2</strong></span><span class="No-Break">.</span></p>
+			<p>The following command shows<a id="_idIndexMarker205"/> that the sidecar container is created <span class="No-Break">from </span><span class="No-Break"><strong class="source-inline">proxyv2</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+$ kubectl get pod/details-v1-7d79f8b95d-5f4td -n bookinfons -o json|jq '.spec.containers[].image'
+"docker.io/istio/examples-bookinfo-details-v1:1.16.2"
+"docker.io/istio/proxyv2:1.13.1"</pre>
+			<p>Now that we know that the <strong class="source-inline">istiod</strong> Pod is based on <strong class="source-inline">pilot-discovery</strong>, let’s look at some of the functions performed <span class="No-Break">by istiod.</span></p>
+			<h3>Configuration watch</h3>
+			<p>istiod watches Istio <strong class="bold">Custom Resource Definitions</strong> (<strong class="bold">CRDs</strong>) and any other Istio-related configuration<a id="_idIndexMarker206"/> being sent<a id="_idIndexMarker207"/> to the Kubernetes API server. Any such configuration is then processed and distributed internally to various subcomponents of istiod. You interact with Istio Service Mesh via the Kubernetes API server, but all interactions with Kubernetes API server are not necessarily destined for the <span class="No-Break">Service Mesh.</span></p>
+			<p>istiod keeps an eye on various config resources, typically Kubernetes API server resources identified by certain characteristics such as labels, namespaces, annotations, and so on. These configuration<a id="_idIndexMarker208"/> updates are then intercepted, collected, and transformed into Istio-specific formats and distributed via the <strong class="bold">Mesh Configuration Protocol</strong> (<strong class="bold">MCP</strong>) to other components of istiod. istiod also implements configuration forwarding, which we will be looking at in later chapters when we do a multi-cluster installation of Istio. For now, let’s just say that istiod can also pass configurations to another istiod instance over MCP in both pull and <span class="No-Break">push modes.</span></p>
+			<h3>API validation</h3>
+			<p>istiod also adds an admission controller<a id="_idIndexMarker209"/> to enforce the validation of Istio resources before they are accepted by the Kubernetes API server. In the previous<a id="_idIndexMarker210"/> chapter, we saw two admission<a id="_idIndexMarker211"/> controllers: the <strong class="bold">mutating webhook</strong> and the <span class="No-Break"><strong class="bold">validation webhook</strong></span><span class="No-Break">.</span></p>
+			<p>The mutating webhook is responsible for augmenting the API calls for resources such as deployments by adding configuration for Istio sidecar injection. Similarly, the validation webhook auto registers itself with the Kubernetes API server to be called for each incoming call for Istio CRDs. When such calls to add/update/delete Istio CRDs arrive at the Kubernetes API server, they are passed to the validation webhook, which then validates the incoming request and, based on the outcome of the validation, the API calls are accepted <span class="No-Break">or rejected.</span></p>
+			<h3>Istio Certificate Authority</h3>
+			<p>Istio provides comprehensive<a id="_idIndexMarker212"/> security for all communication in the mesh. All Pods are assigned <a id="_idIndexMarker213"/>an identity through the Istio PKI with x.509 key/cert in <strong class="bold">Spifee Verifiable Identity Document</strong> (<strong class="bold">SVID</strong>) format. The Istio<strong class="bold"> Certificate Authority</strong> (<strong class="bold">CA</strong>) is responsible for signing<a id="_idIndexMarker214"/> requests from node agents deployed along with istio-proxy. The Istio CA is built on top of Citadel and is responsible for approving and signing the <strong class="bold">Certificate signature requests</strong>(<strong class="bold">CSRs</strong>) sent by Istio node agents. The Istio CA also performs the rotation and revocation of certificates and keys. It offers pluggability of different CAs as well as the flexibility to use the <span class="No-Break">Kubernetes CA.</span></p>
+			<p>Some of the other functions and components of the Istio control plane are <span class="No-Break">as follows:</span></p>
+			<ul>
+				<li><strong class="bold">Sidecar injection</strong>: The Istio control plane also manages <a id="_idIndexMarker215"/>sidecar injection via <span class="No-Break">mutating webhooks.</span></li>
+				<li><strong class="bold">Istio node agent</strong>: Node agents are deployed along with Envoy<a id="_idIndexMarker216"/> and take care of communication with the Istio CA, providing the cert and keys <span class="No-Break">to Envoy.</span></li>
+				<li><strong class="bold">Identity directory and registry</strong>: The Istio control plane manages<a id="_idIndexMarker217"/> a directory of identities for various types of workloads that will be used by the Istio CA to issue key/certs for <span class="No-Break">requested identities.</span></li>
+				<li><strong class="bold">End-user context propagation</strong>: Istio provides a secure mechanism to perform<a id="_idIndexMarker218"/> end user authentication on Ingress and then propagate the user context to other services and apps within the Service Mesh. The user context is propagated in JWT format, which helps to pass on user information to services within the mesh without needing to pass the end <span class="No-Break">user credentials.</span></li>
+			</ul>
+			<p>istiod is a key control plane component performing many key functions of the control plane, but is not the only control plane component worth remembering. In the next section, we will examine other components that are not part of istiod but still important components of the Istio <span class="No-Break">control plane.</span></p>
+			<h2 id="_idParaDest-54"><a id="_idTextAnchor053"/>The Istio operator and istioctl</h2>
+			<p>The Istio operator<a id="_idIndexMarker219"/> and istioctl are both control<a id="_idIndexMarker220"/> plane components and are optional to install. Both provide administrative functions to install and configure components of the control and data planes. You have used istioctl quite a lot in the previous chapter as a command-line tool to interact with the Istio control plane to pass on instructions. The instructions can be to fetch information and create, update, or delete a configuration related to the workings of the Istio data plane. The Istio operator and istioctl essentially perform the same functions with the exception that istioctl is explicitly invoked to make a change, whereas the Istio operator functions per the <em class="italic">operator</em> framework/pattern <span class="No-Break">of Kubernetes.</span></p>
+			<p>We will not be using the Istio operator, but if you want, you can install it using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ istioctl operator init
+Installing operator controller in namespace: istio-operator using image: docker.io/istio/operator:1.13.1
+Operator controller will watch namespaces: istio-system
+ Istio operator installed
+ Installation complete</pre>
+			<p>The two main components<a id="_idIndexMarker221"/> of the Istio operator are the customer resource called <strong class="bold">IstioOperator</strong>, represented by high-level APIs, and a controller that has logic to transform the high-level API into low-level Kubernetes<a id="_idIndexMarker222"/> actions. The IstioOperator CRD wraps a second component called <strong class="bold">IstioOperatorSpec</strong>, a status field, and some <span class="No-Break">additional metadata.</span></p>
+			<p>You can use the following<a id="_idIndexMarker223"/> command to find details of the IstioOperator <strong class="bold">Custom </strong><span class="No-Break"><strong class="bold">Resource</strong></span><span class="No-Break"> (</span><span class="No-Break"><strong class="bold">CR</strong></span><span class="No-Break">):</span></p>
+			<pre class="console">
+$ kubectl get istiooperators.install.istio.io -n istio-system -o json</pre>
+			<p>You can find the output of the command <span class="No-Break">here: </span><a href="https://github.com/PacktPublishing/Bootstrap-Service-Mesh-Implementations-with-Istio/blob/main/Output%20references/Chapter%203/IstioOperator%20CR.docx"><span class="No-Break">https://github.com/PacktPublishing/Bootstrap-Service-Mesh-Implementations-with-Istio/blob/main/Output%20references/Chapter%203/IstioOperator%20CR.docx</span></a></p>
+			<p>As you can see in the output, the API is structured in line with the control plane components around the base Kubernetes<a id="_idIndexMarker224"/> resources, pilot, Ingress and Egress gateways, and finally<a id="_idIndexMarker225"/>, the optional <span class="No-Break">third-party add-ons.</span></p>
+			<div>
+				<div id="_idContainer032" class="IMG---Figure">
+					<img src="image/B17989_03_02.jpg" alt="Figure 3.2 – The Istio operator"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 3.2 – The Istio operator</p>
+			<p>The preceding diagram describes the operations of the IstioOperator, while the following describes the operations <span class="No-Break">of istioctl:</span></p>
+			<div>
+				<div id="_idContainer033" class="IMG---Figure">
+					<img src="image/B17989_03_03.jpg" alt="Figure 3.3 – istioctl"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 3.3 – istioctl</p>
+			<p>istioctl and the operator are very similar to each other except when in the <em class="italic">Actuation</em> phase. istioctl is a user-run command<a id="_idIndexMarker226"/> that takes an IstioOperator CR as input, while the controller<a id="_idIndexMarker227"/> runs whenever the in-cluster IstioOperator CR changes, but the remaining components are similar, if not <span class="No-Break">the same.</span></p>
+			<p>The following is a brief summary of the various components of the Istio operator <span class="No-Break">and istioctl:</span></p>
+			<ul>
+				<li><strong class="bold">Actuation</strong>: Triggers the validator component<a id="_idIndexMarker228"/> in response to an event, for example, a request for a CR update. For istioctl, the actuation logic is triggered by the operator invoking the istioctl CLI, which is written in Go using Cobra, a library for creating powerful <span class="No-Break">CLI applications.</span></li>
+				<li><strong class="bold">Validator</strong>: Verifies the input (the IstioOperator CR) against<a id="_idIndexMarker229"/> the original schema of <span class="No-Break">the CR.</span></li>
+				<li><strong class="bold">Config generator</strong>: In this phase, a full-blown configuration<a id="_idIndexMarker230"/> is created. The configuration includes parameters and values provided in the original event, as well as parameters that were omitted in the original event. The configuration contains the omitted parameters, along with their respective <span class="No-Break">default</span><span class="No-Break"><a id="_idIndexMarker231"/></span><span class="No-Break"> values.</span></li>
+				<li><strong class="bold">Translator and renderer</strong>: The translator maps IstioOperator’s Kubernetes resources<a id="_idIndexMarker232"/> specs to Kubernetes<a id="_idIndexMarker233"/> resources, while the renderer produces the output manifest after applying <span class="No-Break">all configurations.</span></li>
+				<li><strong class="bold">Resource Manager</strong>: This is responsible for managing<a id="_idIndexMarker234"/> the resources in the cluster. It caches the recent state of resources in a built-in cache, which is then compared with the output manifests, and every time there is a deviation or inconsistency between the state of Kubernetes objects (namespaces, CRDs, ServiceAccounts, ClusterRoles, ClusterRoleBindings, MutatingWebhookConfigurations, ValidatingWebhookConfigurations, Services, Deployments, or ConfigMaps) and the output<a id="_idIndexMarker235"/> manifest, then the Resource Manager updates them<a id="_idIndexMarker236"/> as per <span class="No-Break">the manifest.</span></li>
+			</ul>
+			<p class="callout-heading">Steps to uninstall IstioOperator</p>
+			<p class="callout">As we will not be using IstioOperator for the rest<a id="_idIndexMarker237"/> of book, I suggest uninstalling it using the <span class="No-Break">following commands:</span></p>
+			<p class="callout"><strong class="source-inline">$ istioctl </strong><span class="No-Break"><strong class="source-inline">operator remove</strong></span></p>
+			<p class="callout"><strong class="source-inline">  Removing </strong><span class="No-Break"><strong class="source-inline">Istio operator...</strong></span></p>
+			<p class="callout"><strong class="source-inline">  </strong><span class="No-Break"><strong class="source-inline">Removed Deployment:istio-operator:istio-operator.</strong></span></p>
+			<p class="callout"><strong class="source-inline">  </strong><span class="No-Break"><strong class="source-inline">Removed Service:istio-operator:istio-operator.</strong></span></p>
+			<p class="callout"><strong class="source-inline">  </strong><span class="No-Break"><strong class="source-inline">Removed ServiceAccount:istio-operator:istio-operator.</strong></span></p>
+			<p class="callout"><strong class="source-inline">  </strong><span class="No-Break"><strong class="source-inline">Removed ClusterRole::istio-operator.</strong></span></p>
+			<p class="callout"><strong class="source-inline">  </strong><span class="No-Break"><strong class="source-inline">Removed ClusterRoleBinding::istio-operator.</strong></span></p>
+			<p class="callout"><strong class="source-inline"> </strong><span class="No-Break"><strong class="source-inline">Removal complete</strong></span></p>
+			<p class="callout"><strong class="source-inline">$ kubectl delete </strong><span class="No-Break"><strong class="source-inline">ns istio-operator</strong></span></p>
+			<p class="callout"><strong class="source-inline">namespace "</strong><span class="No-Break"><strong class="source-inline">istio-operator" deleted</strong></span></p>
+			<p>We briefly looked at the istio-proxy in the previous chapter. In the next section, we will examine the Istio agent, which is one of the containers deployed in <span class="No-Break">the istio-proxy.</span></p>
+			<h2 id="_idParaDest-55"><a id="_idTextAnchor054"/>Istio agent</h2>
+			<p>The Istio agent (also called <strong class="source-inline">pilot-agent</strong>) is part of the<a id="_idIndexMarker238"/> control plane<a id="_idIndexMarker239"/> deployed in every istio-proxy to help connect to the mesh by securely passing configuration and secrets to the Envoy proxies. Let’s look at the istio-agent in one of the microservices of <strong class="source-inline">bookinfo</strong> by listing all running process in the istio-proxy sidecar <span class="No-Break">of </span><span class="No-Break"><strong class="source-inline">details-v1</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+$ kubectl exec -it details-v1-7d79f8b95d-5f4td -c istio-proxy -n bookinfons --/bin/sh -c "ps -ef"
+UID          PID    PPID  C STIME TTY          TIME CMD
+istio-p+       1       0  0 Mar14 ?        00:02:02 /usr/local/bin/<strong class="source-inline">pilot-agent</strong> p
+istio-p+      15       1  0 Mar14 ?        00:08:17 /usr/local/bin/Envoy -c etc/</pre>
+			<p>You must have noticed that pilot-agent is also running within the sidecar. pilot-agent not only bootstraps the Envoy proxy but also generates key and certificate pairs for Envoy proxies to establish the identity of Envoy proxies during <span class="No-Break">mesh communication.</span></p>
+			<p>Before we talk about the role of the Istio agent in certificate generation, let’s just briefly talk about the Istio <strong class="bold">Secret Discovery Service</strong> (<strong class="bold">SDS</strong>). The SDS simplifies certificate management and was originally<a id="_idIndexMarker240"/> created by the Envoy project to provide a flexible API to deliver secrets/certificates to the Envoy proxy. The components needing the certificates are called SDS clients<a id="_idIndexMarker241"/>, and the component <a id="_idIndexMarker242"/>generating the certificates is called the SDS server. In the Istio data plane, the Envoy proxy acts as an SDS client and the Istio agent acts as the SDS server. The communication between the SDS client and SDS server happens using the SDS API specifications, mostly implemented <span class="No-Break">over gRPC.</span></p>
+			<p>The following steps, also illustrated in <span class="No-Break"><em class="italic">Figure 3</em></span><em class="italic">.4</em>, are performed between the Istio agent, Envoy, and istiod<a id="_idIndexMarker243"/> to generate <span class="No-Break">the certificate:</span></p>
+			<ol>
+				<li>During sidecar injection, istiod passes information about the SDS, including the location of the SDS server to the <span class="No-Break">Envoy proxy.</span></li>
+				<li>Envoy sends a request to pilot-agent (SDS server) for certificate<a id="_idIndexMarker244"/> generation over a <strong class="bold">Unix domain socket</strong> (<strong class="bold">UDS</strong>) via SDS protocols. pilot-agent generates a certificate <span class="No-Break">signing request.</span></li>
+				<li>pilot-agent then communicates with istiod and provides its identity along with the certificate <span class="No-Break">signing request.</span></li>
+				<li>istiod authenticates pilot-agent and if all is OK, signs <span class="No-Break">the certificate.</span></li>
+				<li>pilot-agent passes the certificate<a id="_idIndexMarker245"/> and keys to the Envoy proxy <span class="No-Break">over UDS.</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer034" class="IMG---Figure">
+					<img src="image/B17989_03_04.jpg" alt="Figure 3.4 – Certificate generation for Envoy communication"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 3.4 – Certificate generation for Envoy communication</p>
+			<p>In this and prior sections, we covered the Istio control plane. Now it’s time to go through various options to deploy the Istio <span class="No-Break">control plane.</span></p>
+			<h1 id="_idParaDest-56"><a id="_idTextAnchor055"/>Deployment models for the Istio control plane</h1>
+			<p>In the previous chapters, we installed<a id="_idIndexMarker246"/> Istio on minikube, which is one local<a id="_idIndexMarker247"/> cluster meant for development purposes on your local workstation. When deploying Istio in enterprise environments, the deployment will be not on minikube but rather on an enterprise-grade Kubernetes cluster. The Service Mesh might run on one Kubernetes cluster or be spread across multiple Kubernetes clusters. It might also be the case that all services will be on one network or may be on different networks with no direct connectivity between them. Every organization will have a different network and infrastructure disposition, and the deployment model for Istio will <span class="No-Break">change accordingly.</span></p>
+			<p class="callout-heading">What is a cluster?</p>
+			<p class="callout">There are many definitions<a id="_idIndexMarker248"/> of a cluster depending on what context they are being referred to. In this section, when we say cluster, we are basically referring to a set of compute nodes hosting containerized applications interconnected with each other. You can also think of a cluster as a <span class="No-Break">Kubernetes cluster.</span></p>
+			<p>We will be discussing various architecture options for Istio in <span class="No-Break"><em class="italic">Chapter 8</em></span>, but for now, let’s just briefly go through various deployment models for the <span class="No-Break">control plane.</span></p>
+			<h2 id="_idParaDest-57"><a id="_idTextAnchor056"/>Single cluster with a local control plane</h2>
+			<p>All sidecar proxies across<a id="_idIndexMarker249"/> all namespaces in the cluster<a id="_idIndexMarker250"/> connect to the control plane deployed in the same cluster. Similarly, the control plane is watching, observing, and communicating with the Kubernetes API server and sidecars within the same cluster where it <span class="No-Break">is deployed.</span></p>
+			<div>
+				<div id="_idContainer035" class="IMG---Figure">
+					<img src="image/B17989_03_05.jpg" alt="Figure 3.5 – The data plane and control plane residing in the same Kubernetes cluster"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 3.5 – The data plane and control plane residing in the same Kubernetes cluster</p>
+			<p>The preceding illustration describes the deployment model we used in the previous chapter to deploy Istio. From the diagram, you can see that the Istio control plane and data plane both reside in the same Kubernetes cluster; in our case, it was minikube. istiod is installed in the <strong class="source-inline">istio-system</strong> namespace or any other namespace of your choosing. The data plane comprises various namespaces where applications are deployed along with <span class="No-Break">istio-proxy sidecars.</span></p>
+			<h2 id="_idParaDest-58"><a id="_idTextAnchor057"/>Primary and remote cluster with a single control plane</h2>
+			<p>A Service<a id="_idIndexMarker251"/> Mesh<a id="_idIndexMarker252"/> cluster, where<a id="_idIndexMarker253"/> the data plane<a id="_idIndexMarker254"/> and control plane are deployed in the same<a id="_idIndexMarker255"/> Kubernetes cluster, is also called a <em class="italic">primary cluster</em>. A cluster where the control plane<a id="_idIndexMarker256"/> is not collocated with the data plane is called a <span class="No-Break"><em class="italic">remote cluster</em></span><span class="No-Break">.</span></p>
+			<p>In this architecture, there is a primary cluster and a remote cluster both sharing a common control plane. With this model, additional configuration is required to provide interconnectivity between the control plane in the primary cluster and the data plane in the remote cluster. The connectivity<a id="_idIndexMarker257"/> between the remote<a id="_idIndexMarker258"/> cluster and primary cluster control plane<a id="_idIndexMarker259"/> can be achieved by adding an Ingress<a id="_idIndexMarker260"/> gateway to protect and route communication to the primary control plane. This is shown in the <span class="No-Break">following diagram:</span></p>
+			<div>
+				<div id="_idContainer036" class="IMG---Figure">
+					<img src="image/B17989_03_06.jpg" alt="Figure 3.6 – Uni-cluster control plane with data plane spread across multiple Kubernetes clusters"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 3.6 – Uni-cluster control plane with data plane spread across multiple Kubernetes clusters</p>
+			<p>The Istio control plane<a id="_idIndexMarker261"/> also needs to be configured to establish the <span class="No-Break">following communications:</span></p>
+			<ul>
+				<li>Communication with the remote plane Kubernetes <span class="No-Break">API server</span></li>
+				<li>Patch mutating webhooks into the remote plane to watch the namespaces configured for automated injection <span class="No-Break">of istio-proxy</span></li>
+				<li>Provide endpoints for CSR<a id="_idIndexMarker262"/> requests from Istio agents in the <span class="No-Break">remote plane</span></li>
+			</ul>
+			<h2 id="_idParaDest-59"><a id="_idTextAnchor058"/>Single cluster with an external control plane</h2>
+			<p>In this configuration, instead<a id="_idIndexMarker263"/> of running a primary<a id="_idIndexMarker264"/> cluster with the control and data planes collocated on the same Kubernetes cluster, you can separate them from each other. This is done by deploying the control plane remotely on one Kubernetes cluster and having the data plane deployed on its own dedicated Kubernetes cluster. This deployment can be seen in the <span class="No-Break">following diagram:</span></p>
+			<div>
+				<div id="_idContainer037" class="IMG---Figure">
+					<img src="image/B17989_03_07.jpg" alt="Figure 3.7 – The control plane and data plane residing in separate Kubernetes clusters"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 3.7 – The control plane and data plane residing in separate Kubernetes clusters</p>
+			<p>For security, separation of concerns, and compliance requirements such as <strong class="bold">Federal Information Processing Standards</strong> (<strong class="bold">FIPS</strong>), we can be required to deploy the Istio control plane<a id="_idIndexMarker265"/> separately from the data plane. Separating the control plane from the data plane allows the enforcement of strict traffic and access policies for control plane traffic without impacting the traffic flow of the data plane. Also, in an enterprise environment, where you have teams who can provide control planes as a managed service to project teams, then this model of deploying the control plane is <span class="No-Break">highly suitable.</span></p>
+			<p>So far, the deployment models we have discussed reside over one or many Kubernetes clusters within a shared network. Where the network is not shared, the deployment model becomes more complex. We will go through some of those deployment models, along with the ones we covered<a id="_idIndexMarker266"/> in this chapter, with some<a id="_idIndexMarker267"/> hands-on exercises in <span class="No-Break"><em class="italic">Chapter 10</em></span><span class="No-Break">.</span></p>
+			<p>In the next section, we will look at the Istio data plane and we will do that by <span class="No-Break">understanding Envoy.</span></p>
+			<h1 id="_idParaDest-60"><a id="_idTextAnchor059"/>Exploring Envoy, the Istio data plane</h1>
+			<p>Envoy is the key component<a id="_idIndexMarker268"/> of the Istio data<a id="_idIndexMarker269"/> plane. To understand the Istio data plane, it is important to understand and know <span class="No-Break">about Envoy.</span></p>
+			<p>Envoy is an open source project and CNCF graduate. You can find<a id="_idIndexMarker270"/> more details about Envoy as a CNCF project at <a href="https://www.cncf.io/projects/Envoy/">https://www.cncf.io/projects/Envoy/</a>. In this section, we will learn about Envoy and why it was selected as the service proxy for the Istio <span class="No-Break">data plane.</span></p>
+			<h2 id="_idParaDest-61"><a id="_idTextAnchor060"/>What is Envoy?</h2>
+			<p>Envoy is a lightweight, highly performant<a id="_idIndexMarker271"/> Layer 7 and Layer 4 proxy with an easy-to-use configuration system, making it highly configurable and suitable for serving as a standalone edge-proxy in the API gateway architecture pattern, as well as running as a sidecar in the Service Mesh architecture pattern. In both architecture patterns, Envoy runs in its own single process alongside the applications/services, which makes it easier to upgrade and manage and also allows Envoy to be deployed and upgraded transparently across the <span class="No-Break">entire infrastructure.</span></p>
+			<p>To understand Envoy, let’s look at the following three distinctive features that make Envoy different from other proxies<a id="_idIndexMarker272"/> <span class="No-Break">available today.</span></p>
+			<h3>Threading model</h3>
+			<p>One of the highlights of the Envoy architecture is its unique threading model. In Envoy, the majority of the threads run asynchronously without blocking each other. Instead of having one thread per connection, multiple connections share the same worker thread running in non-blocking order. The threading model helps to process requests asynchronously but in a non-blocking manner, resulting in very <span class="No-Break">high throughput.</span></p>
+			<p>Broadly, Envoy has three types <span class="No-Break">of threads:</span></p>
+			<ul>
+				<li><strong class="bold">Main thread</strong>: This owns the startup<a id="_idIndexMarker273"/> and shutdown<a id="_idIndexMarker274"/> of Envoy and xDS (more on xDS in the next section), API handling, runtime, and general process management. The main thread coordinates all management functionality in general, which does not require too much CPU. Therefore, the Envoy logic related to general management is single-threaded, making the code base simpler to write <span class="No-Break">and manage.</span></li>
+				<li><strong class="bold">Worker thread</strong>: Generally, you run a worker thread<a id="_idIndexMarker275"/> per CPU core or per hardware<a id="_idIndexMarker276"/> thread if the CPU is hyper-threaded. The worker threads open one or more network locations (ports, sockets, etc) to which downstream <a id="_idIndexMarker277"/>systems can connect; this function of Envoy is called <em class="italic">listening</em>. Each worker thread runs a non-blocking event loop to perform listening, filtering, <span class="No-Break">and forwarding.</span></li>
+				<li><strong class="bold">File flusher thread</strong>: This thread takes care of writing<a id="_idIndexMarker278"/> to files in a <span class="No-Break">non-blocking</span><span class="No-Break"><a id="_idIndexMarker279"/></span><span class="No-Break"> fashion.</span></li>
+			</ul>
+			<h3>Architecture</h3>
+			<p>Another highlight of the Envoy<a id="_idIndexMarker280"/> architecture is its filter architecture. Envoy is also an L3/L4 network proxy. It features<a id="_idIndexMarker281"/> a pluggable filter chain to write filters to perform different TCP/UDP tasks. A <strong class="bold">filter chain </strong>is basically a set of steps where the output from one step is fed into the input of the second step, and so on, just as with pipes in Linux. You can construct logic and behavior by stacking your desired filters to form a filter chain. There are many filters available out of the box to support tasks, such as raw TCP proxy, UDP proxy, HTTP proxy, and TLS client cert authentication. Envoy also supports an additional HTTP L7 filter layer. Through filters, we can perform different tasks, such as buffering, rate limiting, routing, forwarding, and <span class="No-Break">so on.</span></p>
+			<p>Envoy supports both HTTP 1.1 and HTTP 2 and can operate as a transparent proxy in both HTTP protocols. This is particularly useful when you have legacy applications that support HTTP 1.1, but when you deploy them alongside Envoy proxy, you can bridge the transformation – meaning the application can communicate over HTTP 1.1 with Envoy, which then uses HTTP 2 to communicate with others. Envoy supports a comprehensive routing subsystem that allows a very flexible routing and redirection functionality, making it suitable for building Ingress/Egress API gateways as well as being deployed as a proxy in the <span class="No-Break">sidecar pattern.</span></p>
+			<p>Envoy also supports modern <a id="_idIndexMarker282"/>protocols such as gRPC. <strong class="bold">gRPC</strong> is an open source remote<a id="_idIndexMarker283"/> procedure call framework that can run anywhere. It is widely used for service-to-service communication and is very performant and easy <span class="No-Break">to use.</span></p>
+			<h3>Configuration</h3>
+			<p>The other highlight<a id="_idIndexMarker284"/> of Envoy is how it can be configured. We can configure Envoy using static configuration files that describe the services and how to communicate with them. For advanced scenarios where statically configuring Envoy would be impractical, Envoy supports dynamic configuration and can automatically reload configuration at runtime without needing a restart. A set of discovery services called xDS can be used to dynamically configure<a id="_idIndexMarker285"/> Envoy through the network and provide Envoy information about hosts, clusters HTTP routing, listening sockets, and cryptographic material. This makes it possible to write different kind of control planes for Envoy. The control plane basically implements the specification of xDS API and keeps up-to-date information of various resources and information required to be fetched dynamically by Envoy via xDS APIs. There are many open source control plane implementations for Envoy; a couple are linked <span class="No-Break">as follows:</span></p>
+			<ul>
+				<li><a href="https://github.com/envoyproxy/go-control-plane"><span class="No-Break">https://github.com/envoyproxy/go-control-plane</span></a></li>
+				<li><a href="https://github.com/envoyproxy/java-control-plane"><span class="No-Break">https://github.com/envoyproxy/java-control-plane</span></a></li>
+			</ul>
+			<p>Various Service Mesh implementations such as Istio, Kuma, Gloo, and so on., which use Envoy as a sidecar, implement xDS APIs to provide configuration information <span class="No-Break">to Envoy.</span></p>
+			<p>Envoy also supports <span class="No-Break">the following:</span></p>
+			<ul>
+				<li><strong class="bold">Automatic retries</strong>: Envoy supports the retrying of requests<a id="_idIndexMarker286"/> any number of times or under a retry budget. The request can be configured to be retried for certain retry conditions depending on application<a id="_idIndexMarker287"/> requirement. If you want to read further about retry, head <span class="No-Break">to </span><span class="No-Break">https://www.abhinavpandey.dev/blog/retry-pattern.</span></li>
+				<li><strong class="bold">Circuit breaking</strong>: Circuit breaking is important for microservices<a id="_idIndexMarker288"/> architecture. Envoy provides circuit breaking at network level, so as to protect upstream systems across all HTTP request executions. Envoy provides various circuit breaking limits based on configurations such as maximum number of connections, maximum number of pending requests, maximum request, maximum active retries, and maximum concurrent connection pools supported by upstream systems. More details about circuit breaker pattern<a id="_idIndexMarker289"/> are available <span class="No-Break">at </span><span class="No-Break">https://microservices.io/patterns/reliability/circuit-breaker.html.</span></li>
+				<li><strong class="bold">Global rate limiting</strong>: Envoy supports global rate limiting<a id="_idIndexMarker290"/> to control downstream systems from overwhelming upstream systems. The rate limiting can be performed at the network level as well at HTTP <span class="No-Break">request level.</span></li>
+				<li><strong class="bold">Traffic mirroring</strong>: Envoy supports the shadowing<a id="_idIndexMarker291"/> of traffic from one cluster to another. This is very useful for testing as well as a myriad of other use cases, such as machine learning. An example of traffic mirroring at network level is AWS VPC, which provides options to mirror<a id="_idIndexMarker292"/> all traffic to VPC. You can read about AWS traffic mirroring <span class="No-Break">at </span><a href="https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html"><span class="No-Break">https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html</span></a><span class="No-Break">.</span></li>
+				<li><strong class="bold">Outlier detection</strong>: Envoy supports dynamically determining<a id="_idIndexMarker293"/> unhealthy upstream systems and removing them from the healthy <span class="No-Break">load-balancing set.</span></li>
+				<li><strong class="bold">Request hedging</strong>: Envoy supports request hedging<a id="_idIndexMarker294"/> to deal with tail latency by issuing requests to multiple upstream systems and returning the most appropriate response to the downstream system. You can read more<a id="_idIndexMarker295"/> about request hedging <span class="No-Break">at </span><span class="No-Break">https://medium.com/star-gazers/improving-tail-latency-with-request-hedging-700c77cabeda</span><span class="No-Break">.</span></li>
+			</ul>
+			<p>We discussed<a id="_idIndexMarker296"/> earlier how filter chain-based architecture is one of the differentiating features of Envoy. Now let’s read about those filters that make up the <span class="No-Break">filter chain.</span></p>
+			<h3>HTTP filters</h3>
+			<p>HTTP is one of the most common application<a id="_idIndexMarker297"/> protocols, and it’s not unusual<a id="_idIndexMarker298"/> for the majority of a given workload to operate over HTTP. To support HTTP, Envoy ships with various <span class="No-Break">HTTP-level filters.</span></p>
+			<p>When configuring Envoy, you will have to deal primarily with the <span class="No-Break">following configurations:</span></p>
+			<ul>
+				<li><strong class="bold">Envoy listeners</strong>: These are the ports, sockets, and any other named network locations that downstream systems <span class="No-Break">connect to</span></li>
+				<li><strong class="bold">Envoy routes</strong>: These are Envoy configurations describing how the traffic should be routed to <span class="No-Break">upstream systems</span></li>
+				<li><strong class="bold">Envoy clusters</strong>: These are logical services formed of a group of similar upstream systems to which envoy routes or forwards <span class="No-Break">the requests</span></li>
+				<li><strong class="bold">Envoy endpoints</strong>: These are individual upstream systems that <span class="No-Break">serve requests</span></li>
+			</ul>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">We will now be using Docker to play with Envoy. If you are running minikube, it will be a good idea to stop minikube now. If you don’t have<a id="_idIndexMarker299"/> Docker, you can install it by following the instructions <span class="No-Break">at </span><a href="https://docs.docker.com/get-docker/"><span class="No-Break">https://docs.docker.com/get-docker/</span></a><span class="No-Break">.</span></p>
+			<p>Armed with the knowledge<a id="_idIndexMarker300"/> we’ve obtained so far, let’s go and create some <span class="No-Break">Envoy listeners.</span></p>
+			<p>Download the <strong class="source-inline">envoy</strong> <span class="No-Break">Docker image:</span></p>
+			<pre class="console">
+$ docker pull envoyproxy/envoy:v1.22.2</pre>
+			<p>Once you have pulled the Docker image, go ahead and run the following from the Git repository of <span class="No-Break">this chapter:</span></p>
+			<pre class="console">
+docker run –rm -it -v $(pwd)/envoy-config-1.yaml:/envoy-custom.yaml -p 9901:9901 -p 10000:10000 envoyproxy/envoy:v1.22.2 -c /envoy-custom.yaml</pre>
+			<p>In the preceding command, we are mounting the <strong class="source-inline">envoy-config-1.yaml</strong> file as a volume and passing it to the Envoy container with the <strong class="source-inline">-c</strong> option. We are also exposing <strong class="source-inline">10000</strong> to the localhost, which is mapped to port <strong class="source-inline">10000</strong> of the <span class="No-Break">Envoy container.</span></p>
+			<p>Let’s now check the contents of <strong class="source-inline">envoy-config-1.yaml</strong>.The root<a id="_idIndexMarker301"/> of Envoy configuration is called bootstrap<a id="_idIndexMarker302"/> configuration. The first line describes whether it is in static or dynamic configuration. In this instance, we are proving a static configuration by <span class="No-Break">specifying </span><span class="No-Break"><strong class="source-inline">static_resources</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+Static_resources:
+  listeners:
+  - name: listener_http</pre>
+			<p>In this instance, the configuration is very straightforward. We have defined a listener called <strong class="source-inline">listener_http</strong>, which is listening on <strong class="source-inline">0.0.0.0</strong> and port <strong class="source-inline">10000</strong> for <span class="No-Break">incoming requests:</span></p>
+			<pre class="source-code">
+<strong class="bold">Listeners</strong>:
+  - name: listener_http
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 10000</pre>
+			<p>We have not applied any filter specific to the listener, but we have applied a network filter called <strong class="source-inline">HTTPConnectionManager,</strong> <span class="No-Break">or HCM:</span></p>
+			<pre class="source-code">
+Filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: chapter3-1_service</pre>
+			<p>The HCM filter is capable of translating raw bytes into HTTP-level messages. It can handle access logging, generate<a id="_idIndexMarker303"/> request IDs, manipulate headers, manage route tables, and collect<a id="_idIndexMarker304"/> statistics. Envoy also supports defining multiple HTTP-level filters within the HCM filter. We can define these HTTP filters under the <span class="No-Break"><strong class="source-inline">http_filters</strong></span><span class="No-Break"> field.</span></p>
+			<p>In the following configuration, we have applied an HTTP <span class="No-Break">router filter:</span></p>
+			<pre class="source-code">
+http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          route_config:
+            name: my_first_route_to_nowhere
+            virtual_hosts:
+            - name: dummy
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                direct_response:
+                  status: 200
+                  body:
+                    inline_string: "Bootstrap Service Mesh Implementations with Istio"</pre>
+			<p>The router filter is responsible for performing routing tasks and is also the last filter to be applied in the HTTP filter chain. The router filter defines the routes under the <strong class="source-inline">route_config</strong> field. Within the route configuration, we can match the incoming requests by looking at metadata such as the URI, headers, and so on., and based on that, we define where the traffic should be routed <span class="No-Break">or processed.</span></p>
+			<p>A top-level element in routing configuration<a id="_idIndexMarker305"/> is a virtual host. Each virtual host<a id="_idIndexMarker306"/> has a name that’s used when emitting statistics (not used for routing) and a set of domains that get routed to it. In <strong class="source-inline">envoy-config-1.yaml</strong>, for all requests, irrespective of the host header, a hardcoded response <span class="No-Break">is returned.</span></p>
+			<p>To check the output of <strong class="source-inline">envoy-config1.yaml</strong>, you can use <strong class="source-inline">curl</strong> to test <span class="No-Break">the response:</span></p>
+			<pre class="console">
+$ curl localhost:10000
+Bootstrap Service Mesh Implementations with Istio</pre>
+			<p>Let’s manipulate the virtual host definition in <strong class="source-inline">route_config</strong> of <strong class="source-inline">envoy-config1.yaml</strong> with <span class="No-Break">the following:</span></p>
+			<pre class="source-code">
+          route_config:
+            name: my_first_route_to_nowhere
+            virtual_hosts:
+            - name: acme
+              domains: ["acme.com"]
+              routes:
+              - match:
+                  prefix: "/"
+                direct_response:
+                  status: 200
+                  body:
+                    inline_string: "Bootstrap Service Mesh Implementations with Istio And Acme.com"
+            - name: ace
+              domains: ["acme.co"]
+              routes:
+              - match:
+                  prefix: "/"
+                direct_response:
+                  status: 200
+                  body:
+                    inline_string: "Bootstrap Service Mesh Implementations with Istio And acme.co"</pre>
+			<p>Here, we have defined two entries under <strong class="source-inline">virtual_hosts</strong>. If an incoming request’s host header is <strong class="source-inline">acme.com</strong>, then the routes defined in the <strong class="source-inline">acme</strong> virtual host will get processed. If the incoming request is destined for <strong class="source-inline">acme.co</strong>, then the routes defined under the <strong class="source-inline">ace</strong> virtual host will <span class="No-Break">get processed.</span></p>
+			<p>Stop the Envoy container<a id="_idIndexMarker307"/> and restart it using<a id="_idIndexMarker308"/> the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+docker run –rm -it -v $(pwd)/envoy-config-1.yaml:/envoy-custom.yaml -p 9901:9901 -p 10000:10000 envoyproxy/envoy:v1.22.2 -c /envoy-custom.yaml</pre>
+			<p>Check the output by passing different host headers <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">curl</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+$ curl -H host:acme.com localhost:10000
+Bootstrap Service Mesh Implementations with Istio And Acme.com
+$ curl -H host:acme.co localhost:10000
+Bootstrap Service Mesh Implementations with Istio And acme.co</pre>
+			<p>In most cases, you will not send a hardcoded response to HTTP requests. Realistically, you will want to route requests to real upstream services. To demonstrate this scenario, we will be making use of nginx to mock a dummy <span class="No-Break">upstream service.</span></p>
+			<p>Run the <strong class="source-inline">nginx</strong> Docker container using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+docker run -p 8080:80 nginxdemos/hello:plain-text</pre>
+			<p>Check the output from another terminal <span class="No-Break">using </span><span class="No-Break"><strong class="source-inline">curl</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+$ curl localhost:8080
+Server address: 172.17.0.3:80
+Server name: a7f20daf0d78
+Date: 12/Jul/2022:12:14:23 +0000
+URI: /
+Request ID: 1f14eb809462eca57cc998426e73292c</pre>
+			<p>We will route the request being processed by Envoy to nginx by making use of cluster subsystem configurations. Whereas<a id="_idIndexMarker309"/> the <strong class="source-inline">Listener</strong> subsystem configurations handle downstream request<a id="_idIndexMarker310"/> processing and managing the downstream request life cycle, the cluster subsystem is responsible for selecting and connecting the upstream connection to an endpoint. In the cluster configuration, we define clusters <span class="No-Break">and endpoints.</span></p>
+			<p>Let’s edit <strong class="source-inline">envoy-config-2.yaml</strong> and modify<a id="_idIndexMarker311"/> the virtual host for <strong class="source-inline">acme.co</strong> with <span class="No-Break">the</span><span class="No-Break"><a id="_idIndexMarker312"/></span><span class="No-Break"> following:</span></p>
+			<pre class="source-code">
+                - name: ace
+              domains: ["acme.co"]
+              routes:
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: nginx_service
+  clusters:
+  - name: nginx_service
+    connect_timeout: 5s
+    load_assignment:
+      cluster_name: nginx_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 172.17.0.2
+                port_value: 80</pre>
+			<p>We have removed the <strong class="source-inline">direct_response</strong> attribute and replaced it with <span class="No-Break">the following:</span></p>
+			<pre class="source-code">
+route:
+                  cluster: nginx_service</pre>
+			<p>We have added cluster to the definition, which sits at the same level as the listener configuration. In the cluster definition, we defined the endpoints. In this case, the endpoint is the <strong class="source-inline">nginx</strong> Docker container running on port <strong class="source-inline">80</strong>. Please note that we are assuming that both Envoy and nginx are running on the same <span class="No-Break">Docker network.</span></p>
+			<p>You can find the IP of the <strong class="source-inline">nginx</strong> container by inspecting the container. The config is saved in <strong class="source-inline">envoy-config-3.yaml</strong>. Please update the <strong class="source-inline">address</strong> value with the correct IP address of the nginx container and run the Envoy container with the <span class="No-Break">updated </span><span class="No-Break"><strong class="source-inline">envoy-config-3.yaml</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+$ docker run –rm -it -v $(pwd)/envoy-config-3.yaml:/envoy-custom.yaml -p 9901:9901 -p 10000:10000 envoyproxy/envoy:v1.22.2 -c /envoy-custom.yaml</pre>
+			<p>Perform the <strong class="source-inline">curl</strong> test and you will notice the response for the request destined for <strong class="source-inline">acme.co</strong> is coming from the <span class="No-Break">nginx container:</span></p>
+			<pre class="console">
+$ curl -H host:acme.com localhost:10000
+Bootstrap Service Mesh Implementations with Istio And Acme.com
+$ curl -H host:acme.co localhost:10000
+Server address: 172.17.0.2:80
+Server name: bfe8edbee142
+Date: 12/Jul/2022:13:05:50 +0000
+URI: /
+Request ID: 06bbecd3bc9901d50d16b07135fbcfed</pre>
+			<p>Envoy provides<a id="_idIndexMarker313"/> several built-in HTTP filters. You can<a id="_idIndexMarker314"/> find the complete list of HTTP filters <span class="No-Break">here: </span><a href="https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/http_filters#config-http-filters&#13;"><span class="No-Break">https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/http_filters#config-http-filters.</span></a></p>
+			<h3>Listener filters</h3>
+			<p>We read previously<a id="_idIndexMarker315"/> that the listener subsystem handles the processing of incoming requests<a id="_idIndexMarker316"/> and the response to and from downstream systems. In addition to defining which addresses and ports Envoy <em class="italic">listens</em> on for incoming requests, we can optionally configure each listener with <strong class="bold">listener filters</strong>. The listener filters operate on newly accepted sockets and can stop or subsequently continue execution to <span class="No-Break">further filters.</span></p>
+			<p>The order of the listener filters matters, as Envoy processes them sequentially right after the listener accepts a socket and before the connection is created. We use results from the listener filters to do filter matching to select appropriate network filter chains. For example, using a listener filter, we can determine the protocol type, and based on that, we might run specific network filters related to <span class="No-Break">that protocol.</span></p>
+			<p>Let’s look at a simple example of listener filters in <strong class="source-inline">envoy-config-4.yaml</strong> under <strong class="source-inline">listener_filters</strong>. You will notice that we are using <strong class="source-inline">envoy.filters.listener.http_inspector</strong> of the following <span class="No-Break">type: </span><span class="No-Break"><strong class="source-inline">type.googleapis.com/envoy.extensions.filters.listener.http_inspector.v3.HttpInspector</strong></span><span class="No-Break">.</span></p>
+			<p>The <strong class="source-inline">HTTPInspector</strong> listener filter can detect the underlying application protocol and whether it is <strong class="source-inline">HTTP/1.1</strong> or <strong class="source-inline">HTTP/2</strong>. You can<a id="_idIndexMarker317"/> read more about the <strong class="source-inline">HTTPInspector</strong> listener filter <span class="No-Break">here: </span><span class="No-Break">https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/listener_filters/http_inspector</span><span class="No-Break">.</span></p>
+			<p>In this example, we are using the listener filter to find the application protocol via the filter chain. Depending on which HTTP protocol is used by the downstream system, we then apply a variety of HTTP filters, as discussed in <span class="No-Break">previous sections.</span></p>
+			<p>You can find this example in the <strong class="source-inline">envoy-config-4.yaml</strong> file. Go ahead and apply the configuration to Envoy, but do also remember to close down the Docker containers you created for <span class="No-Break">previous examples:</span></p>
+			<pre class="console">
+$ docker run –rm -it -v $(pwd)/envoy-config-4.yaml:/envoy-custom.yaml -p 9901:9901 -p 10000:10000 envoyproxy/envoy:v1.22.2 -c /envoy-custom.yaml</pre>
+			<p>Perform <strong class="source-inline">curl</strong> with the <strong class="source-inline">HTTP 1.1</strong> and <strong class="source-inline">HTTP 2</strong> protocols, and you will see that Envoy is able to figure out the application protocol and route the request to the <span class="No-Break">correct destination:</span></p>
+			<pre class="console">
+$ curl localhost:10000 –http1.1
+HTTP1.1
+$ curl localhost:10000 –http2-prior-knowledge
+HTTP2</pre>
+			<p>As I mentioned earlier when introducing<a id="_idIndexMarker318"/> Envoy, it is highly configurable and can be configured<a id="_idIndexMarker319"/> dynamically. I believe the dynamic configurability of Envoy is what makes it so popular and makes it standout from the other proxies available today. Let’s look more into <span class="No-Break">this next!</span></p>
+			<h2 id="_idParaDest-62"><a id="_idTextAnchor061"/>Dynamic configuration via xDS APIs</h2>
+			<p>So far, in our previous<a id="_idIndexMarker320"/> examples, we have been<a id="_idIndexMarker321"/> using static configuration by specifying <strong class="source-inline">static_resources</strong> at the beginning of the config file. Every time we wanted to change the config, we had to restart the Envoy container. To avoid this, we can make use of <strong class="bold">dynamic configuration</strong>, where Envoy dynamically reloads the configuration either by reading it from disk or over <span class="No-Break">the network.</span></p>
+			<p>For dynamic configuration where Envoy fetches the configuration over the network, we need to make use of xDS APIs, which are basically a collection of various service discovery APIs related to various Envoy configurations. To make use of xDS APIs, you need to implement an application that can fetch the latest values of various Envoy configurations and then present <a id="_idIndexMarker322"/>them via gRPC # as per the xDS <em class="italic">protobuf</em> specifications (also called <em class="italic">protocol buffers</em>; you can find<a id="_idIndexMarker323"/> details about protocol<a id="_idIndexMarker324"/> buffers at <a href="https://developers.google.com/protocol-buffers">https://developers.google.com/protocol-buffers</a>, and more on gRPC at <a href="https://grpc.io/">https://grpc.io/</a>). This application is commonly<a id="_idIndexMarker325"/> referred to as the control plane. The following diagram describes <span class="No-Break">this concept.</span></p>
+			<div>
+				<div id="_idContainer038" class="IMG---Figure">
+					<img src="image/B17989_03_08.jpg" alt="Figure 3.8 – Control plane implementation of the xDS API"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 3.8 – Control plane implementation of the xDS API</p>
+			<p>Let’s see what the service discovery <span class="No-Break">APIs provide:</span></p>
+			<ul>
+				<li><strong class="bold">Secret Discovery Service </strong>(<strong class="bold">SDS</strong>): Provides secrets, such as certificates<a id="_idIndexMarker326"/> and private keys. This is required for MTLS, TLS, and <span class="No-Break">so on.</span></li>
+				<li><strong class="bold">Endpoint Discovery Service</strong> (<strong class="bold">EDS</strong>): Provides details of members<a id="_idIndexMarker327"/> of <span class="No-Break">the cluster.</span></li>
+				<li><strong class="bold">Cluster Discovery Service </strong>(<strong class="bold">CDS</strong>): Provides cluster-related information<a id="_idIndexMarker328"/> including references <span class="No-Break">to endpoints.</span></li>
+				<li><strong class="bold">Scope Route Discovery Service </strong>(<strong class="bold">SRDS</strong>): Provides route information in chunks<a id="_idIndexMarker329"/> when the route confirmation <span class="No-Break">is large.</span></li>
+				<li><strong class="bold">Listener Discovery Service </strong>(<strong class="bold">LDS</strong>): Provides details of listeners<a id="_idIndexMarker330"/> including the ports, addresses, and all <span class="No-Break">associated filters.</span></li>
+				<li><strong class="bold">Extension Config Discovery Service </strong>(<strong class="bold">ECDS</strong>): Provides extension configuration, such as HTTP<a id="_idIndexMarker331"/> filters, and so on. This API helps to fetch information independently from <span class="No-Break">the listener.</span></li>
+				<li><strong class="bold">Route Discovery Service </strong>(<strong class="bold">RDS</strong>): Provides route information including<a id="_idIndexMarker332"/> a reference to <span class="No-Break">the cluster.</span></li>
+				<li><strong class="bold">Virtual Host Discovery Service </strong>(<strong class="bold">VHDS</strong>): Provides information about the<a id="_idIndexMarker333"/> virtual <span class="No-Break">hosts .</span></li>
+				<li><strong class="bold">Runtime Discovery Service</strong> (<strong class="bold">RTDS</strong>): This service provides information about the runtime. The runtime<a id="_idIndexMarker334"/> configuration specifies a virtual filesystem tree that contains reloadable configuration elements. This virtual filesystem can be realized via a series of local filesystems, static bootstrap configuration, RTDS, and admin <span class="No-Break">console-derived overlays.</span></li>
+				<li><strong class="bold">Aggregated Discovery Service </strong>(<strong class="bold">ADS</strong>): ADS allows all APIs and their resources<a id="_idIndexMarker335"/> to be delivered via a single API interface. Through ADS APIs, you can sequence changes related to various resource types, including listeners, routes, and clusters, and deliver them via a <span class="No-Break">single stream.</span></li>
+				<li><strong class="bold">Delta Aggregated Discovery Service </strong>(<strong class="bold">DxDS</strong>): With other APIs, every time there is a resource<a id="_idIndexMarker336"/> update, the API needs to include all resources in the API response. For example, every RDS update must contain every route. If we don’t include a route, Envoy will consider the route to have been deleted. Doing updates this way results in high bandwidth usage and computational costs, especially when a lot of resources are being sent over the network. Envoy supports a delta variant of xDS where we can include only resources we want to add/remove/update to improve on <span class="No-Break">this scenario.</span></li>
+			</ul>
+			<p>We covered Envoy<a id="_idIndexMarker337"/> filters in the previous section, but note that you are not limited to the built-in filters – you can easily build new filters, as we’ll see in the <span class="No-Break">next section.</span></p>
+			<h2 id="_idParaDest-63"><a id="_idTextAnchor062"/>Extensibility</h2>
+			<p>The filter architecture of Envoy<a id="_idIndexMarker338"/> makes it highly extensible; you can make use of various filters from the filter library as part of the filter chain. When you need some functionality not available in the filter library, then Envoy also provides the flexibility to write your own custom filter, which is then dynamically loaded by Envoy and can be used like any other filter. By default, Envoy filters are written in C++, but they can also be written using Lua script<a id="_idIndexMarker339"/> or any other programming language compiled into <span class="No-Break"><strong class="bold">WebAssembly</strong></span><span class="No-Break"> (</span><span class="No-Break"><strong class="bold">Wasm</strong></span><span class="No-Break">).</span></p>
+			<p>The following is a brief description of all three options currently<a id="_idIndexMarker340"/> available for writing <span class="No-Break">Envoy filters:</span></p>
+			<ul>
+				<li><strong class="bold">Native C++ API</strong>: The most favorable option is to write<a id="_idIndexMarker341"/> native C++ filters and then package them with Envoy. But this option requires recompiling Envoy, which might not be ideal if you are not a big enterprise that wants to maintain its own version <span class="No-Break">of Envoy.</span></li>
+				<li><strong class="bold">Lua filter</strong>: Envoy provides a built-in HTTP Lua filter<a id="_idIndexMarker342"/> named <strong class="source-inline">envoy.filters.http.lua</strong> that allows you to define a Lua script either inline or as an external file, and execute it during both the request and response flows. Lua is a free, fast, portable, and powerful scripting language that runs over LuaJIT, which is a just-in-time compiler for Lua. At runtime, Envoy creates a Lua environment for each worker thread and runs Lua scripts as coroutines. As the HTTP Lua filters are executed during request and response flows, you can do <span class="No-Break">the following:</span><ul><li>Inspect and modify headers and trailers during <span class="No-Break">request/response flows</span></li><li>Inspect, block, or buffer the body during <span class="No-Break">request/response flows</span></li><li>Invoke upstream <span class="No-Break">systems asynchronously</span></li></ul></li>
+				<li><strong class="bold">Wasm filter</strong>: Last but not least is Wasm-based filters. We write these<a id="_idIndexMarker343"/> filters using our preferred programming language and then compile the code into a low-level assembly-like programming language called Wasm, which is then loaded by Envoy dynamically at runtime. Wasm is widely used in the open web, where it executes inside JavaScript virtual machines within web browsers. Envoy embeds a subset of the V8 VM (<a href="https://v8.dev/">https://v8.dev/</a>) with every worker thread to execute Wasm modules. We will read more about Wasm <a id="_idIndexMarker344"/>and do hands-on<a id="_idIndexMarker345"/> exercises in <span class="No-Break"><em class="italic">Chapter 9</em></span><span class="No-Break">.</span></li>
+			</ul>
+			<p>The ability to write custom filters makes Envoy extensible enough to implement for custom use cases. Support for Wasm-based filters brings down the learning curve of writing new filters as you<a id="_idIndexMarker346"/> can use a language you are most comfortable with. We hope that with the growing adoption of Envoy, there will be more tooling available to the developer to easily extend it using <span class="No-Break">custom filters.</span></p>
+			<h1 id="_idParaDest-64"><a id="_idTextAnchor063"/>Summary</h1>
+			<p>This chapter provided you with details about Istio control plane components including istiod and its architecture. We also read about the Istio operator, the CLI, and how certificate distribution works. The Istio control plane can be deployed in various architecture patterns, and we had an overview of some of these deployment patterns <span class="No-Break">as well.</span></p>
+			<p>After covering the Istio control plane, we read about Envoy, a lightweight, highly performant <strong class="source-inline">l3/l4/l7</strong> proxy. It provides a range of configurations via the listener and cluster subsystems to control request processing. The filter-based architecture is easy to use, as well as extensible, as new filters can be written in Lua, Wasm, or C++ and can easily be plugged into Envoy. Last but not least is the ability of Envoy to support dynamic configuration via xDS APIs. Envoy is the best choice for the Istio data plane because of its flexibility and performance when serving as a proxy, as well as its easy configurability via xDS APIs, which are implemented by the Istio control plane. The istio-proxy, as discussed in the previous chapter, is made up of Envoy and the <span class="No-Break">Istio agent.</span></p>
+			<p>In the next chapter, we will put Istio to one side and instead immerse ourselves in experiencing a real-life application. We will take the application to a production-like environment and then discuss the problems that engineers would face in building and operating such an application. In <em class="italic">Part 2</em> and <em class="italic">Part 3</em> of this book, we will make use of this application in hands-on exercises. So, sit tight and brace yourselves for the <span class="No-Break">next chapter.</span></p>
+		</div>
+	
+
+		<div id="_idContainer040" class="Content">
+			<h1 id="_idParaDest-65"><a id="_idTextAnchor064"/>Part 2: Istio in Practice</h1>
+			<p>This part describes the application of Istio and how it is used to manage application traffic, provide resiliency to applications, and secure communication between microservices. With the help of numerous hands-on examples, you will learn about various Istio traffic management concepts and use them to perform application networking. The part concludes with a chapter on observability, in which you will read about how to observe the Service Mesh and use it to understand system behavior and the underlying causes behind faults so that you can confidently troubleshoot issues and analyze the effects of <span class="No-Break">potential fixes.</span></p>
+			<p>This part contains the <span class="No-Break">following chapters:</span></p>
+			<ul>
+				<li><em class="italic">Chapter 4</em>, <em class="italic">Managing Application Traffic</em></li>
+				<li><em class="italic">Chapter 5</em>, <em class="italic">Managing Application Resiliency</em></li>
+				<li><em class="italic">Chapter 6</em>, <em class="italic">Securing Microservices Communication</em></li>
+				<li><em class="italic">Chapter 7</em>, <em class="italic">Service Mesh Observability</em></li>
+			</ul>
+		</div>
+		<div>
+			<div id="_idContainer041">
+			</div>
+		</div>
+	</body></html>

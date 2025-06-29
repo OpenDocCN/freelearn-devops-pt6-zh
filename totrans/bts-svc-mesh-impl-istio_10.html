@@ -1,0 +1,363 @@
+<html><head></head><body>
+		<div id="_idContainer121">
+			<h1 id="_idParaDest-150" class="chapter-number"><a id="_idTextAnchor149"/>10</h1>
+			<h1 id="_idParaDest-151"><a id="_idTextAnchor150"/>Deploying Istio Service Mesh for Non-Kubernetes Workloads</h1>
+			<p>Istio and Kubernetes are technologies that complement each other. Kubernetes solves the problem of managing distributed applications packaged as containers isolated from each other and deployed in a consistent environment with dedicated resources. Although Kubernetes solves container deployment, scheduling, and management, it doesn’t solve traffic management between containers. Istio complements Kubernetes by providing traffic management capabilities, adding observability, and enforcing a zero-trust <span class="No-Break">security model.</span></p>
+			<p>Istio is like a sidecar to Kubernetes; having said that, Kubernetes is a fairly new technology that got mainstream adoption approximately around 2017. From 2017 onward, most enterprises have used Kubernetes when building microservices and other cloud-native applications, but there are still many applications that are not built on Kubernetes and/or not migrated to Kubernetes; such applications are traditionally deployed on <strong class="bold">virtual machines</strong> (<strong class="bold">VMs</strong>). VMs are not just limited to traditional data centers but are also a mainstream offering from cloud providers. Organizations end up having this parallel universe of Kubernetes-based applications and VM-based applications deployed across the cloud <span class="No-Break">and on-premises.</span></p>
+			<p>In this chapter, we will read about how Istio helps to marry these two worlds of legacy and modern technologies and how can you extend Service Mesh beyond Kubernetes. In this chapter, we will cover the <span class="No-Break">following topics:</span></p>
+			<ul>
+				<li>Examining <span class="No-Break">hybrid architecture</span></li>
+				<li>Setting up a Service Mesh for <span class="No-Break">hybrid architecture</span></li>
+			</ul>
+			<h1 id="_idParaDest-152"><a id="_idTextAnchor151"/>Technical requirements</h1>
+			<p>Using the<a id="_idIndexMarker828"/> following commands, we will set up the infrastructure in Google Cloud that will be used for <span class="No-Break">hands-on exercises:</span></p>
+			<ol>
+				<li>Create a <span class="No-Break">Kubernetes cluster:</span><pre class="console">
+<strong class="bold">% gcloud container clusters create cluster1 --cluster-version latest --machine-type "e2-medium" --num-nodes "3" --network "default" --zone "australia-southeast1-a" --disk-type "pd-standard" --disk-size "30"</strong>
+<strong class="bold">kubeconfig entry generated for cluster1.</strong>
+<strong class="bold">NAME      LOCATION                MASTER_VERSION   MASTER_IP      MACHINE_TYPE  NODE_VERSION     NUM_NODES  STATUS</strong>
+<strong class="bold">cluster1  australia-southeast1-a  1.23.12-gke.100  34.116.79.135  e2-medium     1.23.12-gke.100  3          RUNNING</strong></pre></li>
+				<li>Create<a id="_idIndexMarker829"/> <span class="No-Break">a VM:</span><pre class="console">
+<strong class="bold">% gcloud compute instances create chapter10-instance --tags=chapter10-meshvm \</strong>
+<strong class="bold">  --machine-type=e2-medium --zone=australia-southeast1-b</strong>
+<strong class="bold">  --network=default --subnet=default \</strong>
+<strong class="bold">  --image-project=ubuntu-os-cloud \</strong>
+<strong class="bold">  --image=ubuntu-1804-bionic-v20221201, mode=rw, size=10</strong>
+<strong class="bold">Created [https://www.googleapis.com/compute/v1/projects/istio-book-370122/zones/australia-southeast1-b/instances/chapter10-instance].</strong>
+<strong class="bold">NAME        ZONE                    MACHINE_TYPE  PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP   STATUS</strong>
+<strong class="bold">chapter10-instance australia-southeast1-b  e2-medium                10.152.0.13  34.87.233.38  RUNNING</strong></pre></li>
+				<li>Check your <strong class="source-inline">kubectl</strong> file to find the cluster name and set <span class="No-Break"><strong class="source-inline">context</strong></span><span class="No-Break"> appropriately:</span><pre class="console">
+<strong class="bold">% kubectl config view -o json | jq .contexts</strong>
+<strong class="bold">[</strong>
+<strong class="bold">  {</strong>
+<strong class="bold">    "name": "gke_istio-book-370122_australia-southeast1-a_cluster1",</strong>
+<strong class="bold">    "context": {</strong>
+<strong class="bold">      "cluster": "gke_istio-book-370122_australia-southeast1-a_cluster1",</strong>
+<strong class="bold">      "user": "gke_istio-book-370122_australia-southeast1-a_cluster1"</strong>
+<strong class="bold">    }</strong>
+<strong class="bold">  }</strong>
+<strong class="bold">]</strong>
+<strong class="bold">% export CTX_CLUSTER1=gke_istio-book-370122_australia-southeast1-a_cluster1</strong></pre></li>
+				<li>Access<a id="_idIndexMarker830"/> the created server using <strong class="bold">SSH</strong> from the Google Cloud dashboard – you will find the <strong class="bold">SSH</strong> option in the bottom-right corner, as shown in the <span class="No-Break">following screenshot:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer114" class="IMG---Figure">
+					<img src="image/B17989_10_01.jpg" alt="Figure 10.1 – Google Cloud dashboard"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.1 – Google Cloud dashboard</p>
+			<ol>
+				<li value="5">Click on <strong class="bold">SSH</strong>, which will open <strong class="bold">SSH-in-browser</strong>, as shown in the <span class="No-Break">following figure:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer115" class="IMG---Figure">
+					<img src="image/B17989_10_02.jpg" alt="Figure 10.2 – SSH-in-browser"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.2 – SSH-in-browser</p>
+			<ol>
+				<li value="6">Find <a id="_idIndexMarker831"/>the username and then SSH from <span class="No-Break">your terminal:</span><pre class="console">
+<strong class="bold">% gcloud compute ssh anand_rai@chapter10-instance</strong></pre></li>
+				<li>Set up the firewall to allow traffic between the Kubernetes cluster and VM using the <span class="No-Break">following steps:</span><ol><li>Find the <strong class="bold">Classless Inter-Domain Routing</strong> (<strong class="bold">CIDR</strong>) of <span class="No-Break">the cluster:</span></li></ol><pre class="console">
+<strong class="bold">% CLUSTER_POD_CIDR=$(gcloud container clusters describe cluster1 --format=json --zone=australia-southeast1-a | jq -r '.clusterIpv4Cidr')</strong>
+<strong class="bold">% echo $CLUSTER_POD_CIDR</strong>
+<strong class="bold">10.52.0.0/14</strong></pre><ol><li value="2">Create <span class="No-Break">firewall rules:</span></li></ol><pre class="console">
+<strong class="bold">% gcloud compute firewall-rules create "cluster1-pods-to-chapter10vm" \</strong>
+<strong class="bold">  --source-ranges=$CLUSTER_POD_CIDR \</strong>
+<strong class="bold">  --target-tags=chapter10-meshvm  \</strong>
+<strong class="bold">  --action=allow \</strong>
+<strong class="bold">  --rules=tcp:10000</strong>
+<strong class="bold">Creating firewall...</strong><strong class="bold">⠹</strong><strong class="bold">Created [https://www.googleapis.com/compute/v1/projects/istio-book-370122/global/firewalls/cluster1-pods-to-chapter10vm].</strong>
+<strong class="bold">Creating firewall...done.</strong>
+<strong class="bold">NAME  NETWORK  DIRECTION  PRIORITY  ALLOW      DENY  DISABLED</strong>
+<strong class="bold">cluster1-pods-to-chapter10vm   default  INGRESS    1000      tcp:10000        False</strong></pre></li>
+			</ol>
+			<p>That’s all you<a id="_idIndexMarker832"/> need for the upcoming sections. We will first explore some fundamentals and then go through the <span class="No-Break">actual setup.</span></p>
+			<h1 id="_idParaDest-153"><a id="_idTextAnchor152"/>Examining hybrid architecture</h1>
+			<p>As<a id="_idIndexMarker833"/> mentioned in the introduction of this chapter, organizations have adopted Kubernetes and they run microservices and various other workloads as containers, but not all workloads are suitable for containers. So, organizations have to live with following a <span class="No-Break">hybrid architecture:</span></p>
+			<div>
+				<div id="_idContainer116" class="IMG---Figure">
+					<img src="image/B17989_10_03.jpg" alt="Figure 10.3 – Hybrid architecture"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.3 – Hybrid architecture</p>
+			<p>Appliances and legacy applications are usually deployed on bare metal servers. Monolithic applications, as well as <a id="_idIndexMarker834"/>several <strong class="bold">commercial off-the-shelf</strong> (<strong class="bold">COTS</strong>) applications, are deployed on VMs. Modern applications, as well as self-developed applications based on microservices architecture, are deployed as containers that are managed and orchestrated by platforms such as Kubernetes. All three deployment models – that is, bare metal, VMs, and containers – are spread across traditional data centers and various cloud providers. This intermingling of various application architectures <a id="_idIndexMarker835"/>and deployment patterns causes <span class="No-Break">various problems:</span></p>
+			<ul>
+				<li>Management of traffic flows between the Service Mesh and VM is challenging because neither of them has any idea of the <span class="No-Break">other’s existence</span></li>
+				<li>No operational visibility of application traffic between VM applications and applications within the <span class="No-Break">Service Mesh</span></li>
+				<li>Inconsistent governance of VMs and applications within the Service Mesh because there is no consistent way of defining and applying security policies for VM apps and apps within <span class="No-Break">the mesh</span></li>
+			</ul>
+			<p>The following is an example of how traffic flows in an environment with a VM and <span class="No-Break">Service Mesh:</span></p>
+			<div>
+				<div id="_idContainer117" class="IMG---Figure">
+					<img src="image/B17989_10_04.jpg" alt="Figure 10.4 – Traffic across Service Mesh and VM is managed separately"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.4 – Traffic across Service Mesh and VM is managed separately</p>
+			<p>A VM is <a id="_idIndexMarker836"/>treated as a separate universe. Developers have to choose one of the deployment patterns because they can’t have system components spread across VMs and containers. This is okay for legacy systems but when building applications based on microservice architecture, it is constraining to choose between VMs and containers. For example, your system may need a database that might be best suited for VM-based deployment, whereas the rest of the application might be well suited for container-based deployment. Although there are many traditional solutions to route traffic between the Service Mesh and VM, doing so results in disparate networking solutions. Luckily, Istio provides options to establish a Service Mesh for VMs. The solution is to abstract VMs under Istio constructs so that the Service Mesh operator can operate the network between containers and <span class="No-Break">VMs consistently.</span></p>
+			<p>In the next section, we will learn how to configure a Service Mesh <span class="No-Break">for VMs.</span></p>
+			<h1 id="_idParaDest-154"><a id="_idTextAnchor153"/>Setting up a Service Mesh for hybrid architecture</h1>
+			<p>In this<a id="_idIndexMarker837"/> section, we will set up the Service Mesh. But first, let’s look at the steps at a high level in the <em class="italic">Overview of the setup</em> section and then perform implementation in the <em class="italic">Setting up a demo app on a virtual </em><span class="No-Break"><em class="italic">machine</em></span><span class="No-Break"> section.</span></p>
+			<h2 id="_idParaDest-155"><a id="_idTextAnchor154"/>Overview of the setup</h2>
+			<p><strong class="bold">Envoy</strong> is<a id="_idIndexMarker838"/> a<a id="_idIndexMarker839"/> great networking software and an excellent reverse proxy; it is also widely adopted as a standalone reverse proxy. <strong class="bold">Solo.io</strong> and<a id="_idIndexMarker840"/> a few others have built API gateway solutions using Envoy, and <strong class="bold">Kong Inc.</strong> has <a id="_idIndexMarker841"/>both Kong Mesh and Kuma Service Mesh technologies, which make use of Envoy as sidecars for the <span class="No-Break">data plane.</span></p>
+			<p>Envoy, when deployed as a sidecar, has no idea about being a sidecar; it communicates to <strong class="source-inline">istiod</strong> via the xDS protocols. Istio <strong class="source-inline">init</strong> bootstraps Envoy with the right configuration and details about <strong class="source-inline">istiod</strong>, and sidecar injection mounts the right certificates, which are then used by Envoy to authenticate itself with <strong class="source-inline">istiod</strong>; once bootstrapped, it keeps fetching correct configurations via <span class="No-Break">xDS APIs.</span></p>
+			<p>Based on the same concepts, Istio packages Envoy as a sidecar for VMs. An Istio operator will need to perform the steps shown in the following figure to include a VM into the <span class="No-Break">Service Mesh:</span></p>
+			<div>
+				<div id="_idContainer118" class="IMG---Figure">
+					<img src="image/B17989_10_05.jpg" alt="Figure 10.5 – Steps to include VM into the mesh"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.5 – Steps to include VM into the mesh</p>
+			<p>The following is a brief overview of the steps we will be implementing in the <span class="No-Break">next section:</span></p>
+			<ol>
+				<li value="1">For the VM sidecar to access the Istio control plane, we need to expose <strong class="source-inline">istiod</strong> via the east-west gateway. So, we install another Ingress gateway for east-west <span class="No-Break">traffic purposes.</span></li>
+				<li>We <a id="_idIndexMarker842"/>expose <strong class="source-inline">istiod</strong> services via the east-west gateway. This and the previous step are similar to the steps required for a multi-cluster Service Mesh setup, as discussed in <span class="No-Break"><em class="italic">Chapter 8</em></span><span class="No-Break">.</span></li>
+				<li>The sidecar in the VM needs to access the Kubernetes API server but because the VM isn’t part of the cluster, it does not<a id="_idIndexMarker843"/> have access to <strong class="bold">Kubernetes credentials</strong>. To solve that problem, we will manually create a service account in Kubernetes for the VM sidecar to access the API server. We are doing it manually here, but it can be automated using an external credential management service such<a id="_idIndexMarker844"/> as <span class="No-Break"><strong class="bold">HashiCorp Vault</strong></span><span class="No-Break">.</span></li>
+				<li>The next step is the creation of <a id="_idIndexMarker845"/>the Istio <strong class="bold">workload group</strong>. <strong class="source-inline">WorkloadGroup</strong> provides specifications that are used by sidecars to bootstrap themselves. It can be shared by collections of VMs that are running similar types of workloads. In <strong class="source-inline">WorkloadGroup</strong>, you define labels through which the workload will be identified in Kubernetes as well as other nuances, such as what ports are exposed, the service account to be used, and various health check probes. To some extent, <strong class="source-inline">WorkloadGroup</strong> is similar to deployment descriptors in Kubernetes. We will look at it in more detail in the next section during <span class="No-Break">the setup.</span></li>
+				<li>The operator needs to manually generate the configuration that will be used to configure the VM and the sidecar. This step has some challenges when it comes to generating configuration for <span class="No-Break">auto-scalable VMs.</span></li>
+				<li>In this step, we need to copy the configuration from previous step to the VM at <span class="No-Break">set locations.</span></li>
+				<li>The Istio sidecar needs to <span class="No-Break">be installed.</span></li>
+				<li>Finally, the Istio sidecar needs to be started and some checks performed to ensure that it has picked up the configuration created in <span class="No-Break"><em class="italic">step 5</em></span><span class="No-Break">.</span></li>
+			</ol>
+			<p>Once the<a id="_idIndexMarker846"/> Istio sidecar is started, it will intercept the outgoing traffic and route it according to the Service Mesh rules as long as the target service endpoints, which can be VMs or Kubernetes Pods, are on the same network. The Ingress gateway is fully aware of the VM workload and can route traffic, and the same applies to any traffic inside the mesh, as shown in the <span class="No-Break">following figure:</span></p>
+			<div>
+				<div id="_idContainer119" class="IMG---Figure">
+					<img src="image/B17989_10_06.jpg" alt="Figure 10.6 – VM workload treated similarly to other workloads in the mesh"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.6 – VM workload treated similarly to other workloads in the mesh</p>
+			<p><strong class="bold">Pod connectivity</strong> assumes<a id="_idIndexMarker847"/> that the cluster network uses the same address space as standalone machines. For cloud-managed Kubernetes (Google GKE and Amazon EKS), it is the default networking mode, but for self-managed clusters, you need a networking subsystem such as Calico to implement a flat routable network address space. In the next section, we will perform the setup of Istio on VMs, so roll up your sleeves and make sure that you have completed the tasks described in the <em class="italic">Technical </em><span class="No-Break"><em class="italic">requirements</em></span><span class="No-Break"> section.</span></p>
+			<h2 id="_idParaDest-156"><a id="_idTextAnchor155"/>Setting up a demo app on a VM</h2>
+			<p>We <a id="_idIndexMarker848"/>will first install an application on the VM to mimic a VM workload/application that we can use for testing the overall setup. To do this, we need to perform the <span class="No-Break">following steps:</span></p>
+			<ol>
+				<li value="1">Set up Envoy on the VM. Follow the instructions as provided by Envoy at <a href="https://www.envoyproxy.io/docs/envoy/latest/start/install">https://www.envoyproxy.io/docs/envoy/latest/start/install</a> for the operating system you selected for creating the VM. This can be done <span class="No-Break">as follows:</span><ol><li>Install <strong class="source-inline">envoy</strong>, as shown in the following <span class="No-Break">code block:</span></li></ol><pre class="console">
+<strong class="bold">$ sudo apt update</strong>
+<strong class="bold">$ sudo apt install debian-keyring debian-archive-keyring apt-transport-https curl lsb-release</strong>
+<strong class="bold">$ curl -sL 'https://deb.dl.getenvoy.io/public/gpg.8115BA8E629CC074.key' | sudo gpg --dearmor -o /usr/share/keyrings/getenvoy-keyring.gpg</strong>
+<strong class="bold"># Verify the keyring - this should yield "OK"</strong>
+<strong class="bold">$ echo </strong>
+<strong class="bold">a077cb587a1b622e03aa4bf2f3689de14658a9497a9af2c427bba5f4cc3c4723 /usr/share/keyrings/getenvoy-keyring.gpg | sha256sum --check</strong>
+<strong class="bold">$ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/getenvoy-keyring.gpg] https://deb.dl.getenvoy.io/public/deb/debian $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/getenvoy.list</strong>
+<strong class="bold">$ sudo apt update</strong>
+<strong class="bold">$ sudo apt install getenvoy-envoy</strong></pre><ol><li value="2">Check that <strong class="source-inline">envoy</strong> is <span class="No-Break">properly installed:</span></li></ol><pre class="console">
+<strong class="bold">$ envoy --version</strong>
+<strong class="bold">envoy  version: d362e791eb9e4efa8d87f6d878740e72dc8330ac/1.18.2/clean-getenvoy-76c310e-envoy/RELEASE/BoringSSL</strong></pre></li>
+				<li>Configure<a id="_idIndexMarker849"/> Envoy to run a <span class="No-Break">dummy application:</span><ol><li>Using <strong class="bold">vi</strong> or any other editor, create <strong class="source-inline">envoy-demo.yaml</strong> and copy the contents <span class="No-Break">of </span><span class="No-Break"><strong class="source-inline">Chapter4/envoy-config-2.yaml</strong></span><span class="No-Break">.</span></li><li>Check that the contents of <strong class="source-inline">envoy-demo.yaml</strong> match what you have copied <span class="No-Break">or created.</span></li></ol></li>
+				<li>Run <strong class="source-inline">envoy</strong> with the config provided <span class="No-Break">in </span><span class="No-Break"><strong class="source-inline">envoy-demo.yaml</strong></span><span class="No-Break">:</span><pre class="console">
+<strong class="bold">$ envoy -c envoy-demo.yaml &amp;</strong>
+<strong class="bold">[2022-12-06 03:46:31.679][55335][info][main] [external/envoy/source/server/server.cc:330] initializing epoch 0 (base id=0, hot restart version=11.104)</strong></pre></li>
+				<li>Test that the application is running on <span class="No-Break">the VM:</span><pre class="console">
+<strong class="bold">$ curl localhost:10000</strong>
+<strong class="bold">V2----------Bootstrap Service Mesh Implementation with Istio----------V2</strong></pre></li>
+			</ol>
+			<p>With an application running on the VM, we can now proceed with the rest of the setup. Please note that it is not mandatory to set up the application before installing Istio on the VM. You can install the demo application on the VM at any time before or after setting up the Istio sidecar on <span class="No-Break">the VM.</span></p>
+			<h2 id="_idParaDest-157"><a id="_idTextAnchor156"/>Setting up Istio in the cluster</h2>
+			<p>We are <a id="_idIndexMarker850"/>assuming that you don’t have Istio running in the cluster, but if you have, then you can skip this section. Use the following steps to set <span class="No-Break">it up:</span></p>
+			<ol>
+				<li value="1">Configure the <strong class="source-inline">IstioOperator</strong> config file for installation, providing the cluster and network names. The file is also available <span class="No-Break">at </span><span class="No-Break"><strong class="source-inline">Chapter10/01-Cluster1.yaml</strong></span><span class="No-Break">:</span><pre class="console">
+apiVersion: install.istio.io/v1alpha1
+kind: <strong class="bold">IstioOperator</strong>
+spec:
+  values:
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: cluster1
+      network: network1</pre></li>
+				<li>Install<a id="_idIndexMarker851"/> Istio, as shown in the following <span class="No-Break">code block:</span><pre class="console">
+<strong class="bold">% istioctl install -f Chapter10/01-Cluster1.yaml --set values.pilot.env.PILOT_ENABLE_WORKLOAD_ENTRY_AUTOREGISTRATION=true --set values.pilot.env.PILOT_ENABLE_WORKLOAD_ENTRY_HEALTHCHECKS=true --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">This will install the Istio 1.16.0 default profile with ["Istio core" "Istiod" "Ingress gateways"] components into the cluster. Proceed? (y/N) y</strong>
+<strong class="bold"> Istio core installed</strong>
+<strong class="bold"> Istiod installed</strong>
+<strong class="bold"> Ingress gateways installed</strong>
+<strong class="bold"> Installation complete                                                                                                                                                                        Making this installation the default for injection and validation.</strong></pre></li>
+			</ol>
+			<p>This concludes<a id="_idIndexMarker852"/> the basic installation of Istio in the cluster. Next, we will configure Istio to make it ready for integration with Istio on <span class="No-Break">the VM.</span></p>
+			<h2 id="_idParaDest-158"><a id="_idTextAnchor157"/>Configuring the Kubernetes cluster</h2>
+			<p>In this section, we<a id="_idIndexMarker853"/> will prepare the mesh for integration with Istio <span class="No-Break">on VMs:</span></p>
+			<ol>
+				<li value="1">Install the east-west gateway to expose the <strong class="source-inline">istiod</strong> validation webhook <span class="No-Break">and services:</span><pre class="console">
+<strong class="bold">% samples/multicluster/gen-eastwest-gateway.sh \</strong>
+<strong class="bold">--mesh mesh1 --cluster cluster1 --network network1  | \</strong>
+<strong class="bold">istioctl install -y --context="${CTX_CLUSTER1}" -f -</strong>
+<strong class="bold">✔</strong><strong class="bold"> Ingress gateways installed</strong>
+<strong class="bold">✔</strong><strong class="bold"> Installation complete</strong></pre></li>
+				<li>Expose the <span class="No-Break"><strong class="source-inline">istiod</strong></span><span class="No-Break"> services:</span><pre class="console">
+<strong class="bold">% kubectl apply -n istio-system -f samples/multicluster/expose-istiod.yaml --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">gateway.networking.istio.io/istiod-gateway created</strong>
+<strong class="bold">virtualservice.networking.istio.io/istiod-vs created</strong></pre></li>
+				<li>Create a service account by following <span class="No-Break">these steps:</span><ol><li>Create a namespace to host <strong class="source-inline">WorkloadGroup</strong> <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">ServiceAccount</strong></span><span class="No-Break">:</span></li></ol><pre class="console">
+<strong class="bold">% kubectl create ns chapter10vm --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">namespace/chapter10vm created</strong></pre><ol><li value="2">Create<a id="_idIndexMarker854"/> a service account to be used by <strong class="source-inline">istiod</strong> on the VM to connect with the Kubernetes <span class="No-Break">API server:</span></li></ol><pre class="console">
+<strong class="bold">% kubectl create serviceaccount chapter10-sa -n chapter10vm --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">serviceaccount/chapter10-sa created</strong></pre></li>
+				<li>Set up <strong class="source-inline">WorkloadGroup</strong> <span class="No-Break">as follows:</span><ol><li>Use the following configuration to create a workload template; the file is also available <span class="No-Break">at </span><span class="No-Break"><strong class="source-inline">Chapter10/01-WorkloadGroup.yaml</strong></span><span class="No-Break">:</span></li></ol><pre class="console">
+apiVersion: networking.istio.io/v1alpha3
+kind: WorkloadGroup
+metadata:
+  name: "envoydummy"
+  namespace: "chapter10vm"
+spec:
+  metadata:
+    labels:
+      <strong class="bold">app: "envoydummy"</strong>
+  template:
+    serviceAccount: "chapter10-sa"
+    network: "network1"
+  probe:
+    periodSeconds: 5
+    initialDelaySeconds: 1
+    httpGet:
+      port: 10000
+      path: /</pre><ol><li value="2">Apply the configuration. This template will be used by Istio to create workload entries representing the workload running on <span class="No-Break">the VM:</span></li></ol><pre class="console">
+<strong class="bold">% kubectl --namespace chapter10vm apply -f "Chapter10/01-WorkloadGroup.yaml" --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">workloadgroup.networking.istio.io/envoyv2 created</strong></pre></li>
+			</ol>
+			<p>Before<a id="_idIndexMarker855"/> moving to the next section, let’s inspect the contents <span class="No-Break">of </span><span class="No-Break"><strong class="source-inline">WorkloadGroup.yaml</strong></span><span class="No-Break">.</span></p>
+			<p><strong class="source-inline">WorkloadGroup</strong> is a <a id="_idIndexMarker856"/>way to define the characteristics of the workload hosted in the VM and is similar to deployments in Kubernetes. <strong class="source-inline">WorkloadGroup</strong> has <a id="_idIndexMarker857"/>the <span class="No-Break">following configuration:</span></p>
+			<ul>
+				<li><strong class="source-inline">metadata</strong>: This is primarily used for defining Kubernetes labels to identify the workloads. We have set up an <strong class="source-inline">app</strong> label with the value of <strong class="source-inline">envoydummy</strong>, which we can use in the Kubernetes service description to identify the endpoints to be abstracted by <span class="No-Break">service definitions.</span></li>
+				<li><strong class="source-inline">template</strong>: This defines the values that will be copied over to the <strong class="source-inline">WorkloadEntry</strong> configuration generated by the Istio agent. The two most important values are the service account name and network name. <strong class="source-inline">ServiceAccount</strong> specifies the account name whose token will be used to generate workload identities. The network name is used to group endpoints based on their network location and to understand which endpoints are directly reachable from each other and which ones need to be connected via the east-west gateway, like the ones we set up for a multi-cluster environment in <span class="No-Break"><em class="italic">Chapter 8</em></span>. In this instance, we have allocated the value of <strong class="source-inline">network1</strong>, which is the same as what we configure in <strong class="source-inline">01-cluster1.yaml</strong> (that is <strong class="source-inline">cluster1</strong>) and the VM are on the same network and directly reachable to each other, so we don’t need any special provisions for <span class="No-Break">connecting them.</span></li>
+				<li><strong class="source-inline">probe</strong>: This<a id="_idIndexMarker858"/> is <a id="_idIndexMarker859"/>the configuration to be used to understand the health and readiness of the VM workload. Traffic is not routed to unhealthy workloads, providing a resilient architecture. In this instance, we are configuring to perform an HTTP <strong class="source-inline">Get</strong> probe with a delay of 1 second after the creation of <strong class="source-inline">WorkloadEntry</strong> and then at regular intervals of 5 seconds. You can also define success and failure thresholds, for which the default values are <strong class="source-inline">1</strong> and <strong class="source-inline">3</strong> seconds, respectively. We have configured that the endpoint on the VM is exposed on port <strong class="source-inline">10000</strong> on the <strong class="source-inline">root</strong> path and it should be used to determine the health of <span class="No-Break">the application.</span></li>
+			</ul>
+			<p>Next, let’s get started with setting up Istio on <span class="No-Break">a VM.</span></p>
+			<h2 id="_idParaDest-159"><a id="_idTextAnchor158"/>Setting up Istio on a VM</h2>
+			<p>To configure <a id="_idIndexMarker860"/>and set up Istio on a VM, we will need to perform the <span class="No-Break">following steps:</span></p>
+			<ol>
+				<li value="1">Generate a configuration for the <span class="No-Break">Istio sidecar:</span><pre class="console">
+<strong class="bold">% istioctl x workload entry configure -f "Chapter10/01-WorkloadGroup.yaml" -o . --clusterID "cluster1" --autoregister --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">Warning: a security token for namespace "chapter10vm" and service account "chapter10-vm-sa" has been generated and stored at "istio-token"</strong>
+<strong class="bold">Configuration generation into directory . was successful</strong></pre></li>
+			</ol>
+			<p>This will generate the following five files in the <span class="No-Break">current directory:</span></p>
+			<pre class="console">
+<strong class="bold">% ls</strong>
+<strong class="bold">hosts root-cert.pem istio-token cluster.env mesh.yaml</strong></pre>
+			<ol>
+				<li value="2">Copy all files to the VM home directory first, and then copy them to various folders, as <a id="_idIndexMarker861"/>shown in the following <span class="No-Break">code block:</span><pre class="console">
+<strong class="bold">% sudo mkdir -p /etc/certs</strong>
+<strong class="bold">% sudo cp "${HOME}"/root-cert.pem /etc/certs/root-cert.pem</strong>
+<strong class="bold">% sudo  mkdir -p /var/run/secrets/tokens</strong>
+<strong class="bold">% sudo cp "${HOME}"/istio-token /var/run/secrets/tokens/istio-token</strong>
+<strong class="bold">% sudo cp "${HOME}"/cluster.env /var/lib/istio/envoy/cluster.env</strong>
+<strong class="bold">% sudo cp "${HOME}"/mesh.yaml /etc/istio/config/mesh</strong>
+<strong class="bold">% sudo sh -c 'cat $(eval echo ~$SUDO_USER)/hosts &gt;&gt; /etc/hosts'</strong>
+<strong class="bold">% sudo mkdir -p /etc/istio/proxy</strong>
+<strong class="bold">% sudo chown -R istio-proxy /var/lib/istio /etc/certs /etc/istio/proxy /etc/istio/config /var/run/secrets /etc/certs/root-cert.pem</strong></pre></li>
+				<li>Install the Istio VM integration runtime. Download and install the package <span class="No-Break">from </span><a href="https://storage.googleapis.com/istio-release/releases/"><span class="No-Break">https://storage.googleapis.com/istio-release/releases/</span></a><span class="No-Break">:</span><pre class="console">
+<strong class="bold">$ curl -LO https://storage.googleapis.com/istio-release/releases/1.16.0/deb/istio-sidecar.deb</strong>
+<strong class="bold">$ sudo dpkg -i istio-sidecar.deb</strong>
+<strong class="bold">Selecting previously unselected package istio-sidecar.</strong>
+<strong class="bold">(Reading database ... 54269 files and directories currently installed.)</strong>
+<strong class="bold">Preparing to unpack istio-sidecar.deb ...</strong>
+<strong class="bold">Unpacking istio-sidecar (1.16.0) ...</strong>
+<strong class="bold">Setting up istio-sidecar (1.16.0) ...</strong></pre></li>
+				<li>Start the<a id="_idIndexMarker862"/> Istio agent on the VM and then check <span class="No-Break">the status:</span><pre class="console">
+<strong class="bold">$ sudo systemctl start istio</strong>
+<strong class="bold">$ sudo systemctl status istio</strong>
+<strong class="bold">●</strong><strong class="bold"> istio.service - istio-sidecar: The Istio sidecar</strong>
+<strong class="bold">     Loaded: loaded (/lib/systemd/system/istio.service; disabled; vendor preset: enable&gt;</strong>
+<strong class="bold">     Active: active (running) since Tue 20XX-XX-06 07:56:03 UTC; 15s ago</strong>
+<strong class="bold">       Docs: http://istio.io/</strong>
+<strong class="bold">   Main PID: 56880 (sudo)</strong>
+<strong class="bold">      Tasks: 19 (limit: 4693)</strong>
+<strong class="bold">     Memory: 39.4M</strong>
+<strong class="bold">        CPU: 1.664s</strong>
+<strong class="bold">     CGroup: /system.slice/istio.service</strong>
+<strong class="bold">             ├─56880 sudo -E -u istio-proxy -s /bin/bash -c ulimit -n 1024; INSTANCE_IP&gt;</strong>
+<strong class="bold">             ├─56982 /usr/local/bin/pilot-agent proxy</strong>
+<strong class="bold">             └─56992 /usr/local/bin/envoy -c etc/istio/proxy/envoy-rev.json --drain-tim&gt;</strong></pre></li>
+			</ol>
+			<p>This completes the installation and configuration of the Istio sidecar on <span class="No-Break">the VM.</span></p>
+			<p>Next, verify that <strong class="source-inline">WorkloadEntry</strong> is created in the <span class="No-Break"><strong class="source-inline">chapter10vm</strong></span><span class="No-Break"> namespace:</span></p>
+			<pre class="console">
+% kubectl get WorkloadEntry -n chapter10vm
+NAME                              AGE    ADDRESS
+envoydummy-10.152.0.21-network1   115s   10.152.0.21</pre>
+			<p><strong class="source-inline">WorkloadEntry</strong> is<a id="_idIndexMarker863"/> automatically created and is a sign that the VM has onboarded itself successfully into the mesh. It describes the properties of the application running on the VM and inherits the template from the <span class="No-Break"><strong class="source-inline">WorkloadGroup</strong></span><span class="No-Break"> configuration.</span></p>
+			<p>Inspect <a id="_idIndexMarker864"/>the contents of <strong class="source-inline">WorkloadEntry</strong> using the following <span class="No-Break">code block:</span></p>
+			<pre class="console">
+% kubectl get WorkloadEntry/envoydummy-10.152.0.21-network1 -n chapter10vm -o yaml</pre>
+			<p><strong class="source-inline">WorkloadEntry</strong> contains the <span class="No-Break">following </span><span class="No-Break"><a id="_idIndexMarker865"/></span><span class="No-Break">values:</span></p>
+			<ul>
+				<li><strong class="source-inline">address</strong>: This is the network address at which the application is running on the VM. This can also be DNS names. In this instance, the VM’s private IP <span class="No-Break">is </span><span class="No-Break"><strong class="source-inline">10.152.0.21</strong></span><span class="No-Break">.</span></li>
+				<li><strong class="source-inline">labels</strong>: These are inherited from the <strong class="source-inline">WorkloadGroup</strong> definition and are used to identify endpoints selected by <span class="No-Break">service definitions.</span></li>
+				<li><strong class="source-inline">locality</strong>: In a multi-data center, this field is used to identify the location of the workload at the rack level. This field is used for locality/proximity-based <span class="No-Break">load balancing.</span></li>
+				<li><strong class="source-inline">network</strong>: This value is inherited from the <span class="No-Break"><strong class="source-inline">WorkloadGroup</strong></span><span class="No-Break"> entry.</span></li>
+				<li><strong class="source-inline">serviceAccount</strong>: This value is inherited from the <span class="No-Break"><strong class="source-inline">WorkloadGroup</strong></span><span class="No-Break"> entry.</span></li>
+				<li><strong class="source-inline">status</strong>: This value specifies the health of <span class="No-Break">the application.</span></li>
+			</ul>
+			<p>By now, we have configured the Istio agent on a VM and have verified that the agent can communicate with Istiod. In the next section, we will integrate the workload on the VM with <span class="No-Break">the mesh.</span></p>
+			<h2 id="_idParaDest-160"><a id="_idTextAnchor159"/>Integrating the VM workload with the mesh</h2>
+			<p>Let’s get started<a id="_idIndexMarker866"/> with performing configurations so that the mesh can route traffic to workloads running on <span class="No-Break">the VM:</span></p>
+			<ol>
+				<li value="1">Expose the <strong class="source-inline">envoydummy</strong> app on the VM as a Kubernetes service using the following <span class="No-Break">code block:</span><pre class="console">
+apiVersion: v1
+kind: Service
+metadata:
+  name: envoydummy
+  labels:
+    app: envoydummy
+  namespace: chapter10vm
+spec:
+  ports:
+  - port: 80
+    targetPort: 10000
+    name: tcp
+  selector:
+    app: envoydummy
+---</pre></li>
+			</ol>
+			<p>The<a id="_idIndexMarker867"/> configuration is standard, and it treats the VM as a Pod that needs to be exposed by a service. Notice the labels, which match the metadata values in <strong class="source-inline">WorkloadGroup</strong> definitions. When defining the service, just assume that the VM is nothing other than a Kubernetes Pod as defined in the <strong class="source-inline">WorkloadGroup</strong> configuration file. The service description file is available at <strong class="source-inline">Chapter10/01-istio-gateway.yaml</strong>. Apply the configuration using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+<strong class="bold">% kubectl apply -f Chapter10/02-envoy-proxy.yaml -n chapter10vm</strong></pre>
+			<ol>
+				<li value="2">Next, we will deploy version v1 of the <strong class="source-inline">envoydummy</strong> application in the <span class="No-Break">Kubernetes cluster:</span><pre class="console">
+<strong class="bold">$ kubectl create ns chapter10 --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">$ kubectl label namespace chapter10 istio-injection=enabled --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">$ kubectl create configmap envoy-dummy --from-file=Chapter3/envoy-config-1.yaml -n chapter10 --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">$ kubectl create -f "Chapter10/01-envoy-proxy.yaml" --namespace=chapter10 --context="${CTX_CLUSTER1}"</strong>
+<strong class="bold">$ kubectl apply -f Chapter10/01-istio-gateway.yaml" -n chapter10 --context="${CTX_CLUSTER2}"</strong></pre></li>
+			</ol>
+			<p>Notice<a id="_idIndexMarker868"/> the <strong class="source-inline">route</strong> configuration <span class="No-Break">in </span><span class="No-Break"><strong class="source-inline">01-istio-gateway.yaml</strong></span><span class="No-Break">:</span></p>
+			<pre class="console">
+    route:
+    - destination:
+        host: <strong class="bold">envoydummy.chapter10.svc.cluster.local</strong>
+      weight: <strong class="bold">50</strong>
+    - destination:
+        host: <strong class="bold">envoydummy.chapter10vm.svc.cluster.local</strong>
+      weight: <strong class="bold">50</strong></pre>
+			<p>We are routing half of the traffic to <strong class="source-inline">envoydummy.chapter10vm.svc.cluster.local</strong>, which represents the application running in the VM, and the other half to <strong class="source-inline">envoydummy.chapter10.svc.cluster.local</strong>, which represents the application running in the <span class="No-Break">Kubernetes cluster.</span></p>
+			<p>We have configured all the steps for the integration of the VM workload with the mesh. To test the connectivity and DNS resolution of the VM, run the following command from <span class="No-Break">the VM:</span></p>
+			<pre class="console">
+$ curl envoydummy.chapter10.svc:80
+Bootstrap Service Mesh Implementation with Istio</pre>
+			<p>This shows that the VM is cognizant of endpoints exposed in the Service Mesh. You can do it the other way round, from the Kubernetes cluster of the <strong class="source-inline">curl</strong> Pod described in the <strong class="source-inline">utilities</strong> folders in the GitHub repository of this book, please make sure that it is part of the<a id="_idIndexMarker869"/> mesh and not just a Pod running <span class="No-Break">on Kubernetes.</span></p>
+			<p>Now, test it from the Istio <span class="No-Break">Ingress gateway:</span></p>
+			<pre class="console">
+% for i in {1..10}; do curl -Hhost:mockshop.com -s "http://34.87.194.86:80";echo '\n'; done
+V2----------Bootstrap Service Mesh Implementation with Istio----------V2
+Bootstrap Service Mesh Implementation with Istio
+V2----------Bootstrap Service Mesh Implementation with Istio----------V2
+Bootstrap Service Mesh Implementation with Istio
+V2----------Bootstrap Service Mesh Implementation with Istio----------V2
+Bootstrap Service Mesh m bbhgc  Mesh Implementation with Istio----------V2
+Bootstrap Service Mesh Implementation with Istio
+V2----------Bootstrap Service Mesh Implementation with Istio----------V2
+Bootstrap Service Mesh Implementation with Istio</pre>
+			<p>Now, let’s also take a peek into the Kiali dashboard and see what the graph looks like. Please install Kiali using the instructions in <span class="No-Break"><em class="italic">Chapter 7</em></span><span class="No-Break">.</span></p>
+			<div>
+				<div id="_idContainer120" class="IMG---Figure">
+					<img src="image/B17989_10_07.jpg" alt="Figure 10.7 – Kiali dashboard showing the traffic distribution to VM workload"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.7 – Kiali dashboard showing the traffic distribution to VM workload</p>
+			<p>From the <a id="_idIndexMarker870"/>preceding figure, you can see <strong class="source-inline">WorkloadEntry</strong> in the <strong class="source-inline">chapter10vm</strong> namespace represented like another Pod, just like <strong class="source-inline">envoydummyv1</strong> in the <span class="No-Break"><strong class="source-inline">chapter10</strong></span><span class="No-Break"> namespace.</span></p>
+			<p>Now that the setup is complete, let’s summarize what we’ve learned in <span class="No-Break">this chapter.</span></p>
+			<h1 id="_idParaDest-161"><a id="_idTextAnchor160"/>Summary</h1>
+			<p>VMs are an important piece of the puzzle in modern architecture and are here to stay for the foreseeable future along with containers. With Istio, you can integrate traditional workloads running on VMs into Istio Service Mesh and leverage all the benefits of traffic management and security provided by Istio. Istio support for VMs enables the inclusion of legacy applications, as well as those applications that cannot run on a container due to certain constraints in <span class="No-Break">the mesh.</span></p>
+			<p>After reading this chapter, you should be able to create a mesh for hybrid architectures. You can now install Istio on a VM and integrate workloads with the mesh along with Kubernetes-based workloads. To get yourself hardened with concepts in this chapter, practice creating multiple VMs with different versions of the <strong class="source-inline">envoydummy</strong> application and then implement traffic management via virtual services and <span class="No-Break">destination rules.</span></p>
+			<p>In the next chapter, we will read about various troubleshooting strategies and techniques to <span class="No-Break">manage Istio.</span></p>
+		</div>
+	</body></html>

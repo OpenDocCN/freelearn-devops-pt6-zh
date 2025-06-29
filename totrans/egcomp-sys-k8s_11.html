@@ -1,0 +1,442 @@
+<html><head></head><body>
+		<div id="_idContainer117">
+			<h1 id="_idParaDest-212" class="chapter-number"><a id="_idTextAnchor213"/>11</h1>
+			<h1 id="_idParaDest-213"><a id="_idTextAnchor214"/>Monitoring the Edge with Prometheus and Grafana</h1>
+			<p>One use case for edge computing is to monitor devices that get data about temperature, humidity, speed, noise, and so on. For this kind of use cases, monitoring would be critical. This chapter shows a simple use case of how to visualize data that comes from edge devices with sensors. This chapter presents a whole example of how to distribute and process data across the different layers of an edge computing system. This use case takes Prometheus and Grafana as the main components to visualize and store data from sensors and uses Mosquitto (an MQTT message broker) together with Redis to implement high availability queues to process data at the edge.</p>
+			<p>In this chapter, we’re going to cover the following main topics:</p>
+			<ul>
+				<li>Monitoring edge environments</li>
+				<li>Deploying Redis to persist Mosquitto sensor data</li>
+				<li>Installing Mosquitto to process sensor data</li>
+				<li>Processing Mosquitto topics</li>
+				<li>Installing Prometheus, a time series database</li>
+				<li>Deploying a custom exporter for Prometheus</li>
+				<li>Configuring a DHT11 sensor to send humidity and temperature weather data</li>
+				<li>Installing Grafana to create dashboards</li>
+			</ul>
+			<h1 id="_idParaDest-214"><a id="_idTextAnchor215"/>Technical requirements</h1>
+			<p>To deploy our databases in this chapter, you need the following:</p>
+			<ul>
+				<li>A single or multi-node K3s cluster that uses ARM devices with MetalLB and Longhorn storage installed. If you are using Raspberry Pi devices, you will need at least 4 GB of RAM and at least the 4B model. Each node has to have an Ubuntu ARM64 operating system in order to support the ARMv8 processor. This processor type is necessary for some deployments to run, because they use ARM64 container images.</li>
+				<li>A Kubernetes cluster hosted in your public cloud provider (AWS, Azure, or GCP) or in your private cloud.</li>
+				<li>A Raspberry Pi 4B with 2 or 4 GB for your edge device.</li>
+				<li>A Keyes DHT11 sensor or similar connected to your edge device to read temperature and humidity.</li>
+				<li><strong class="source-inline">kubectl</strong> configured to be used in your local machine for your Kubernetes cloud cluster and your edge cluster, to avoid using the <strong class="source-inline">--kubeconfig</strong> parameter.</li>
+				<li>A clone of the <a href="https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch11">https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch11</a> repository, if you want to run the YAML configuration by using <strong class="source-inline">kubectl apply</strong> instead of copying the code from the book. Take a look at the <strong class="source-inline">code</strong> directory for Python source code and the <strong class="source-inline">yaml</strong> directory for YAML configurations located inside the <strong class="source-inline">ch11</strong> directory.</li>
+			</ul>
+			<p>With this, you can deploy Prometheus and Grafana to start monitoring sensors data in edge environments.</p>
+			<h1 id="_idParaDest-215"><a id="_idTextAnchor216"/>Monitoring edge environments</h1>
+			<p>Before starting <a id="_idIndexMarker767"/>to build our monitoring system, let’s describe the system across the different layers of edge computing. For this, let’s take a look at the following diagram:</p>
+			<div>
+				<div id="_idContainer097" class="IMG---Figure">
+					<img src="image/B16945_11_01.jpg" alt="Figure 11.1 – Monitoring with edge devices&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.1 – Monitoring with edge devices</p>
+			<p>This diagram <a id="_idIndexMarker768"/>is divided into different layers. Let’s describe the different components of this use case we want to implement:</p>
+			<ul>
+				<li><strong class="bold">Tiny edge</strong>: Here you can find an edge device, in this case, a Raspberry Pi 4B. This <a id="_idIndexMarker769"/>Raspberry Pi works as an edge device that captures temperature and humidity data using a DHT11 sensor. Data is sent by running a small Python program called <strong class="source-inline">send.py</strong>. This file prepares the sensor to read data and sends the information to a queue in the Mosquitto broker.</li>
+				<li><strong class="bold">Far edge</strong>: Here is installed a K3s cluster using a Raspberry Pi 4B. Inside this cluster <a id="_idIndexMarker770"/>is installed Mosquitto. Mosquitto is a broker that uses the MQTT protocol and is designed to be lightweight, using few resources for processing. That’s the reason Mosquitto is often used in edge and IoT scenarios. You can also find a process service that listens to a Mosquitto queue called <strong class="source-inline">sensor1</strong>. Every time the process detects new data, this data is sent to a Redis queue called <strong class="source-inline">sensor1</strong> in the cloud layer. The idea is that the deployment called <strong class="source-inline">process</strong> processes the information in the format to be shown in the cloud layer. With this, you are processing data near the edge; that is the goal of edge computing.</li>
+				<li><strong class="bold">Near edge</strong>: This is the home router that connects the edge device with the K3s cluster <a id="_idIndexMarker771"/>to process data. It is also the gateway to send data to the public Redis cluster in the cloud layer.</li>
+				<li><strong class="bold">Cloud layer</strong>: Here you can find a Kubernetes cluster with Prometheus, Grafana, and Redis installed. Prometheus is used as a time series database to store <a id="_idIndexMarker772"/>data from the edge sensors, and Grafana is used to visualize data. Every time data is generated in the far edge, it is sent to Redis. Redis is used to store data coming from tiny edge sensors in a temporary queue. In this way, Redis acts as backup storage if the communication fails in the far edge or if Prometheus is down. Technically speaking, <strong class="source-inline">service1</strong> is in charge of reading this data from the <strong class="source-inline">sensor1</strong> Redis queue and exporting it to Prometheus. Prometheus calls the <strong class="source-inline">service1</strong> service endpoint to get data. So, every time that Prometheus calls the <strong class="source-inline">app1</strong> endpoint, <strong class="source-inline">service1</strong> returns data stored in Redis in a format that Prometheus can consume. Finally, when data is stored in Prometheus, the data is visualized in real time in a Grafana dashboard.</li>
+			</ul>
+			<p>As you can see, this <a id="_idIndexMarker773"/>small use case includes a whole interaction across the different edge computing layers. This use case pretends to be base code extensible to your own system needs. Now, let’s start implementing our use case, beginning with deploying Redis to persist Mosquitto sensor data.</p>
+			<h1 id="_idParaDest-216"><a id="_idTextAnchor217"/>Deploying Redis to persist Mosquitto sensor data</h1>
+			<p>To install <a id="_idIndexMarker774"/>our Redis to persist Mosquitto <a id="_idIndexMarker775"/>weather data, we are going to use Redis with persistence and a single list of messages. To deploy this Redis setup in your cluster, follow these steps:</p>
+			<ol>
+				<li>Create the PersistentVolume to persist Redis data using the <strong class="source-inline">/mnt/data</strong> directory in the node:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: PersistentVolume</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: db-pv-volume</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    type: local</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  storageClassName: manual</strong></p><p class="source-code"><strong class="bold">  capacity:</strong></p><p class="source-code"><strong class="bold">    storage: 5Gi</strong></p><p class="source-code"><strong class="bold">  accessModes:</strong></p><p class="source-code"><strong class="bold">    - ReadWriteOnce</strong></p><p class="source-code"><strong class="bold">  hostPath:</strong></p><p class="source-code"><strong class="bold">    path: "/mnt/data"</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Create <a id="_idIndexMarker776"/>a PersistentVolumeClaim using 5 GB of storage or more, depending on how many sensors <a id="_idIndexMarker777"/>and how much data you are processing:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: PersistentVolumeClaim</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: db-pv-claim</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  storageClassName: manual</strong></p><p class="source-code"><strong class="bold">  accessModes:</strong></p><p class="source-code"><strong class="bold">    - ReadWriteOnce</strong></p><p class="source-code"><strong class="bold">  resources:</strong></p><p class="source-code"><strong class="bold">    requests:</strong></p><p class="source-code"><strong class="bold">      storage: 5Gi</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">You can use the <strong class="source-inline">longhorn</strong> class if Longhorn is installed in your system. For more information, see <a href="B16945_05_Final_PG.xhtml#_idTextAnchor097"><em class="italic">Chapter 5</em></a>, <em class="italic">K3s Homelab for Edge Computing Experiments</em>.</p>
+			<ol>
+				<li value="3">Now <a id="_idIndexMarker778"/>let’s create a ConfigMap <a id="_idIndexMarker779"/>to use a custom configuration with the password <strong class="source-inline">YOUR_PASSWORD</strong> and the <strong class="source-inline">/data</strong> directory to store Redis data:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: ConfigMap</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: redis-configmap</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">data:</strong></p><p class="source-code"><strong class="bold">  redis-config: |</strong></p><p class="source-code"><strong class="bold">    dir /data</strong></p><p class="source-code"><strong class="bold">    requirepass YOUR_PASSWORD</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Create the Redis deployment using the previous ConfigMap called <strong class="source-inline">redis-configmap</strong>. This ConfigMap is mounted as a volume and its content is available <a id="_idIndexMarker780"/>using the <strong class="source-inline">redis.conf</strong> file. It also uses a PersistentVolumeClaim called <strong class="source-inline">db-pv-claim</strong> and <a id="_idIndexMarker781"/>uses resource limits for CPU and memory. Let’s create this deployment by running the following command:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    run: redis</strong></p><p class="source-code"><strong class="bold">  name: redis</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      run: redis</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        run: redis</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - name: redis</strong></p><p class="source-code"><strong class="bold">        image: redis:6.2</strong></p><p class="source-code"><strong class="bold">        command:</strong></p><p class="source-code"><strong class="bold">          - redis-server</strong></p><p class="source-code"><strong class="bold">          - /redisconf/redis.conf</strong></p><p class="source-code"><strong class="bold">        ports:</strong></p><p class="source-code"><strong class="bold">        - containerPort: 6379</strong></p><p class="source-code"><strong class="bold">        resources:</strong></p><p class="source-code"><strong class="bold">          limits:</strong></p><p class="source-code"><strong class="bold">            cpu: "0.2"</strong></p><p class="source-code"><strong class="bold">            memory: "128Mi"</strong></p><p class="source-code"><strong class="bold">        volumeMounts:</strong></p><p class="source-code"><strong class="bold">        - mountPath: "/data"</strong></p><p class="source-code"><strong class="bold">          name: redis-storage</strong></p><p class="source-code"><strong class="bold">        - mountPath: /redisconf</strong></p><p class="source-code"><strong class="bold">          name: config</strong></p><p class="source-code"><strong class="bold">      volumes:</strong></p><p class="source-code"><strong class="bold">        - name: config</strong></p><p class="source-code"><strong class="bold">          configMap:</strong></p><p class="source-code"><strong class="bold">            name: redis-configmap</strong></p><p class="source-code"><strong class="bold">            items:</strong></p><p class="source-code"><strong class="bold">            - key: redis-config</strong></p><p class="source-code"><strong class="bold">              path: redis.conf</strong></p><p class="source-code"><strong class="bold">        - name: redis-storage</strong></p><p class="source-code"><strong class="bold">          persistentVolumeClaim:</strong></p><p class="source-code"><strong class="bold">            claimName: db-pv-claim</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">You can use the <strong class="source-inline">arm64v8/redis:6.2</strong> image instead of <strong class="source-inline">redis:6.2</strong> if you plan to deploy Redis on an ARM node. </p>
+			<ol>
+				<li value="5">Now <a id="_idIndexMarker782"/>create the <strong class="source-inline">redis</strong> service, setting <a id="_idIndexMarker783"/>port <strong class="source-inline">6379</strong> in the configuration:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    run: redis</strong></p><p class="source-code"><strong class="bold">  name: redis</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 6379</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 6379</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    run: redis</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This service will be used by the exporter that Prometheus reads as <strong class="source-inline">service1</strong>.</p>
+			<ol>
+				<li value="6">Now <a id="_idIndexMarker784"/>create a <strong class="source-inline">LoadBalancer</strong> service called <strong class="source-inline">redis-lb</strong> to <a id="_idIndexMarker785"/>create a public <a id="_idIndexMarker786"/>load balancer that the <strong class="source-inline">process</strong> service can use to store data going from the far edge to the cloud layer:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    run: redis</strong></p><p class="source-code"><strong class="bold">  name: redis-lb</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 6379</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 6379</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    run: redis</strong></p><p class="source-code"><strong class="bold">  type: LoadBalancer</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This is going to create an external IP to access Redis.</p>
+			<ol>
+				<li value="7">To get <a id="_idIndexMarker787"/>the public IP generated <a id="_idIndexMarker788"/>by the previous <strong class="source-inline">LoadBalancer</strong> service, run the following command:<p class="source-code"><strong class="bold">$ EXTERNAL_IP="$(kubectl get svc redis-lb -n monitoring  -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"</strong></p></li>
+			</ol>
+			<p>This IP will be used by the deployment process.</p>
+			<p>Now our Redis is ready to be used in the far edge. Let’s install Mosquitto to send sensor data to the <strong class="source-inline">sensor1</strong> topic from Mosquitto.</p>
+			<h1 id="_idParaDest-217"><a id="_idTextAnchor218"/>Installing Mosquitto to process sensor data</h1>
+			<p>Mosquitto is an <a id="_idIndexMarker789"/>open source broker that implements the MQTT protocol, and it’s lightweight too. It was designed to be used with low-power sensors and <a id="_idIndexMarker790"/>devices. This makes Mosquitto suitable for edge computing and IoT applications. Mosquitto provides a lightweight channel of communication for edge devices and uses the publisher/subscriber pattern to send and read messages, but it is not persistent. We are going to use Redis later to give this missing temporary persistence for the data queues. Now, let’s move to install Mosquitto in our edge cluster, located at the far edge. Remember that this single node cluster is using an ARM device. To deploy Mosquitto, follow these steps:</p>
+			<ol>
+				<li value="1">Create a ConfigMap to listen over all the available network interfaces:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: ConfigMap</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: mosquitto-configmap</strong></p><p class="source-code"><strong class="bold">data:</strong></p><p class="source-code"><strong class="bold">  mosquitto-config: |</strong></p><p class="source-code"><strong class="bold">    listener 1883 0.0.0.0</strong></p><p class="source-code"><strong class="bold">    allow_anonymous true</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Now <a id="_idIndexMarker791"/>create a deployment for Mosquitto, setting the ports to <strong class="source-inline">1883</strong> for the MQTT protocol and <strong class="source-inline">9001</strong> for HTTP requests. This deployment is going to use the previously created <strong class="source-inline">mosquitto-configmap</strong>:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1 </strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: mosquitto</strong></p><p class="source-code"><strong class="bold">  name: mosquitto</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: mosquitto</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: mosquitto</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - name: mosquitto</strong></p><p class="source-code"><strong class="bold">        image: arm64v8/eclipse-mosquitto:2.0.14</strong></p><p class="source-code"><strong class="bold">        ports:</strong></p><p class="source-code"><strong class="bold">        - containerPort: 1883</strong></p><p class="source-code"><strong class="bold">          name: mqtt</strong></p><p class="source-code"><strong class="bold">        - containerPort: 9001</strong></p><p class="source-code"><strong class="bold">          name: http</strong></p><p class="source-code"><strong class="bold">        resources:</strong></p><p class="source-code"><strong class="bold">          limits:</strong></p><p class="source-code"><strong class="bold">            cpu: "0.2"</strong></p><p class="source-code"><strong class="bold">            memory: "128Mi"</strong></p><p class="source-code"><strong class="bold">        volumeMounts:</strong></p><p class="source-code"><strong class="bold">        - mountPath: /mosquitto/config </strong></p><p class="source-code"><strong class="bold">          name: config </strong></p><p class="source-code"><strong class="bold">      volumes:</strong></p><p class="source-code"><strong class="bold">        - name: config</strong></p><p class="source-code"><strong class="bold">          configMap:</strong></p><p class="source-code"><strong class="bold">            name: mosquitto-configmap</strong></p><p class="source-code"><strong class="bold">            items:</strong></p><p class="source-code"><strong class="bold">            - key: mosquitto-config</strong></p><p class="source-code"><strong class="bold">              path: mosquitto.conf </strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>You can customize the amount of RAM and CPU that this deployment is using.</p>
+			<ol>
+				<li value="3">Now create a <strong class="source-inline">ClusterIP</strong> service to expose Mosquitto, so that other services inside <a id="_idIndexMarker792"/>the cluster can connect to Mosquitto to read messages:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: mosquitto</strong></p><p class="source-code"><strong class="bold">  name: mosquitto</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - name: mqtt</strong></p><p class="source-code"><strong class="bold">    port: 1883</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 1883</strong></p><p class="source-code"><strong class="bold">  - name: http</strong></p><p class="source-code"><strong class="bold">    port: 9001</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 9001</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: mosquitto</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Now create a LoadBalancer service to expose Mosquitto, so that edge devices can <a id="_idIndexMarker793"/>connect to Mosquitto to publish messages with weather metrics. In this example, our device will publish in the <strong class="source-inline">sensor1</strong> topic:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: mosquitto</strong></p><p class="source-code"><strong class="bold">  name: mosquitto-lb</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - name: mqtt</strong></p><p class="source-code"><strong class="bold">    port: 1883</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 1883</strong></p><p class="source-code"><strong class="bold">  - name: http</strong></p><p class="source-code"><strong class="bold">    port: 9001</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 9001</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: mosquitto</strong></p><p class="source-code"><strong class="bold">  type: LoadBalancer</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>Now, let’s deploy the <strong class="source-inline">process</strong> service that sends all the weather data stored in the Mosquitto topics to the Redis database located in the cloud layer.</p>
+			<h1 id="_idParaDest-218"><a id="_idTextAnchor219"/>Processing Mosquitto topics</h1>
+			<p>We have <a id="_idIndexMarker794"/>to deploy the deployment called <strong class="source-inline">process</strong> using the <strong class="source-inline">mqttsubs</strong> container image, which sends the data published in Mosquitto to a public or private Redis instance in the cloud layer. Let’s explore the code inside this container image:</p>
+			<pre class="source-code">
+import paho.mqtt.client as mqtt
+import os
+import redis
+import sys
+ 
+mqhost = os.environ['MOSQUITTO_HOST']
+rhost = os.environ['REDIS_HOST']
+rauth = os.environ['REDIS_AUTH']
+stopic = os.environ['SENSOR_TOPIC']
+ 
+def on_connect(client, userdata, flags, rc):
+    client.subscribe(stopic)
+ 
+def on_message(client, userdata, msg):
+    r = redis.StrictRedis(host=rhost,\
+        port=6379,db=0,password=rauth,\
+        decode_responses=True)
+    r.rpush(stopic,msg.payload)
+ 
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
+client.connect(mqhost, 1883, 60)
+client.loop_forever()</pre>
+			<p class="callout-heading">Note</p>
+			<p class="callout">You can find the source of <strong class="source-inline">mqttsubs</strong> at <a href="https://github.com/sergioarmgpl/containers/tree/main/mqttsubs/src">https://github.com/sergioarmgpl/containers/tree/main/mqttsubs/src</a>.</p>
+			<p>With this <a id="_idIndexMarker795"/>code, we get the necessary values to connect to Redis, the name of the topic that we are going to use. This value will be used to push sensor data into a Redis list. Finally, <strong class="source-inline">MOSQUITTO_HOST</strong> is where this service will be listened to. What this script basically does is it start listening to the <strong class="source-inline">SENSOR_TOPIC</strong> topic called <strong class="source-inline">sensor1</strong> from Mosquitto, and when a message arrives, it is inserted into a Redis list with the same name in the cloud layer to persist the information temporarily. Redis uses port <strong class="source-inline">6379</strong> and is public but uses a password. Mosquitto is internally deployed on the far edge. This is how this service works.</p>
+			<p>To start deploying our <strong class="source-inline">process</strong> deployment, follow these steps:</p>
+			<ol>
+				<li value="1">Create a Secret to store the password to connect to Redis. Redis will be used as a way to store all the information coming from our Mosquitto deployment:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Secret</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: db-password</strong></p><p class="source-code"><strong class="bold">data:</strong></p><p class="source-code"><strong class="bold">  password: WU9VUl9QQVNTV09SRA==</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>The value of the password corresponds to the output of the next command using base64 encoding:</p>
+			<p class="source-code"><strong class="bold">$ echo "YOUR_PASSWORD" | tr -d '\n'  | base64</strong></p>
+			<ol>
+				<li value="2">Create the <strong class="source-inline">process</strong> deployment that receives data coming from a Mosquitto topic <a id="_idIndexMarker796"/>and send it to the Redis service located in the cloud layer. For this run the following command:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: process</strong></p><p class="source-code"><strong class="bold">  name: process</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: process</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: process</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/mqttsubs</strong></p><p class="source-code"><strong class="bold">        imagePullPolicy: Always</strong></p><p class="source-code"><strong class="bold">        name: mqttsubs</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: MOSQUITTO_HOST</strong></p><p class="source-code"><strong class="bold">          value: "mosquitto"</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_HOST</strong></p><p class="source-code"><strong class="bold">          value: "192.168.0.242"</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_AUTH</strong></p><p class="source-code"><strong class="bold">          valueFrom:</strong></p><p class="source-code"><strong class="bold">             secretKeyRef:</strong></p><p class="source-code"><strong class="bold">                name: db-password</strong></p><p class="source-code"><strong class="bold">                key: password</strong></p><p class="source-code"><strong class="bold">        - name: SENSOR_TOPIC</strong></p><p class="source-code"><strong class="bold">          value: "sensor1" </strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>The <a id="_idIndexMarker797"/>used variables are as follows:</p>
+			<ul>
+				<li><strong class="bold">MOSQUITTO_HOST:</strong> This is the hostname where the Mosquitto deployment is listening.</li>
+				<li><strong class="bold">REDIS_HOST:</strong> This is the IP address assigned to the LoadBalancer service that exposes Redis in the cloud.</li>
+				<li><strong class="bold">REDIS_AUTH:</strong> This variable uses the <strong class="source-inline">db-password</strong> secret value to set the password to connect with Redis.</li>
+				<li><strong class="bold">SENSOR_TOPIC:</strong> This variable sets the Mosquitto topic to be listened to in order to get data from the sensors.</li>
+			</ul>
+			<p>If you are using a private cloud, you might use an IP address like <strong class="source-inline">192.168.0.242</strong>, for example. You can get this IP address by reading the <em class="italic">Deploying Redis to persist Mosquitto sensor data</em> section. Then, change the <strong class="source-inline">REDIS_HOST</strong> IP address to this value.</p>
+			<p>We have <a id="_idIndexMarker798"/>finished this section and have understood how data is processed. Let’s continue deploying Prometheus service to store sensor data coming from the temporary Redis list.</p>
+			<h1 id="_idParaDest-219"><a id="_idTextAnchor220"/>Installing Prometheus, a time series database</h1>
+			<p>Prometheus is a <a id="_idIndexMarker799"/>time series database that you can use to store your weather data. It’s open source <a id="_idIndexMarker800"/>and it’s suitable for edge devices. It can be deployed on ARM devices and it’s very flexible to manage metrics and alerts. In this use case, we use Prometheus because of how flexible it is and the support it provides to store and visualize metrics. But we are going to use Grafana for visualizing data later. Now let’s install Prometheus in our Kubernetes cloud cluster, following these steps:</p>
+			<ol>
+				<li value="1">Create the <strong class="source-inline">monitoring</strong> namespace, which will be used to install Prometheus and Grafana:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Namespace</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: monitoring</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Create a ConfigMap that contains static configurations for Prometheus. In this case, we are going to create two services that insert data into Prometheus: one stores a counter and the weather data. The first service is called <strong class="source-inline">service1</strong> and the <a id="_idIndexMarker801"/>second <strong class="source-inline">service2</strong>. Each service uses port <strong class="source-inline">5555</strong>. Let’s call this ConfigMap <strong class="source-inline">prometheus-server-conf</strong>. To create it, run the following command:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1 </strong></p><p class="source-code"><strong class="bold">kind: ConfigMap </strong></p><p class="source-code"><strong class="bold">metadata: </strong></p><p class="source-code"><strong class="bold">  name: prometheus-server-conf </strong></p><p class="source-code"><strong class="bold">  labels: </strong></p><p class="source-code"><strong class="bold">    name: prometheus-server-conf </strong></p><p class="source-code"><strong class="bold">  namespace: monitoring </strong></p><p class="source-code"><strong class="bold">data: </strong></p><p class="source-code"><strong class="bold">  prometheus.yml: |- </strong></p><p class="source-code"><strong class="bold">    global: </strong></p><p class="source-code"><strong class="bold">      scrape_interval: 5s </strong></p><p class="source-code"><strong class="bold">      evaluation_interval: 5s </strong></p><p class="source-code"><strong class="bold">      external_labels: </strong></p><p class="source-code"><strong class="bold">        monitor: 'codelab-monitor' </strong></p><p class="source-code"><strong class="bold">    scrape_configs: </strong></p><p class="source-code"><strong class="bold">      - job_name: 'MonitoringJob1' </strong></p><p class="source-code"><strong class="bold">        scrape_interval: 5s </strong></p><p class="source-code"><strong class="bold">        static_configs: </strong></p><p class="source-code"><strong class="bold">          - targets: ['service1:5555'] </strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>Targets are services that export data in the format that Prometheus can read. In this case, we are using two services. <strong class="source-inline">service1</strong> exports data from <strong class="source-inline">sensor1</strong>; this data is collected by Redis and transformed to be consumed by Prometheus. In this use case, we are going to use only <strong class="source-inline">service1</strong>, but you can create as many services as you want.</p>
+			<ol>
+				<li value="3">Now create <a id="_idIndexMarker802"/>the deployment for Prometheus, using the previous ConfigMap to configure Prometheus when its created, by running the following:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: prometheus-deployment</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: prometheus-server</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: prometheus-server</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: prometheus-server</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">        - name: prometheus</strong></p><p class="source-code"><strong class="bold">          image: prom/prometheus:v2.34.0</strong></p><p class="source-code"><strong class="bold">          args:</strong></p><p class="source-code"><strong class="bold">            - "--storage.tsdb.retention.time=12h"</strong></p><p class="source-code"><strong class="bold">            - "--config.file=/etc/prom/prometheus.yml"</strong></p><p class="source-code"><strong class="bold">            - "--storage.tsdb.path=/prometheus/"</strong></p><p class="source-code"><strong class="bold">          ports:</strong></p><p class="source-code"><strong class="bold">            - containerPort: 9090</strong></p><p class="source-code"><strong class="bold">          resources:</strong></p><p class="source-code"><strong class="bold">            requests:</strong></p><p class="source-code"><strong class="bold">              cpu: 500m</strong></p><p class="source-code"><strong class="bold">              memory: 500M</strong></p><p class="source-code"><strong class="bold">            limits:</strong></p><p class="source-code"><strong class="bold">              cpu: 1</strong></p><p class="source-code"><strong class="bold">              memory: 1Gi</strong></p><p class="source-code"><strong class="bold">          volumeMounts:</strong></p><p class="source-code"><strong class="bold">            - name: prometheus-config-volume</strong></p><p class="source-code"><strong class="bold">              mountPath: /etc/prom/</strong></p><p class="source-code"><strong class="bold">            - name: prometheus-storage-volume</strong></p><p class="source-code"><strong class="bold">              mountPath: /prometheus/</strong></p><p class="source-code"><strong class="bold">      volumes:</strong></p><p class="source-code"><strong class="bold">        - name: prometheus-config-volume</strong></p><p class="source-code"><strong class="bold">          configMap:</strong></p><p class="source-code"><strong class="bold">            defaultMode: 420</strong></p><p class="source-code"><strong class="bold">            name: prometheus-server-conf</strong></p><p class="source-code"><strong class="bold">        - name: prometheus-storage-volume</strong></p><p class="source-code"><strong class="bold">          emptyDir: {}</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This deployment listens on port <strong class="source-inline">9090</strong>. This port is used to connect to Prometheus.</p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">You can use the same YAML to deploy Prometheus in a Kubernetes cluster deployed using a cloud provider, such as GCP, AWS, or Azure.</p>
+			<ol>
+				<li value="4">Now create <a id="_idIndexMarker803"/>a ClusterIP service that redirects port <strong class="source-inline">9090</strong> to port <strong class="source-inline">8080</strong> for Prometheus:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: prometheus-server</strong></p><p class="source-code"><strong class="bold">  name: prometheus-service</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 8080</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 9090</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: prometheus-server</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Let’s <a id="_idIndexMarker804"/>explore Prometheus by using <strong class="source-inline">port-forward</strong> to access the UI. For this, run the following command:<p class="source-code"><strong class="bold">$ kubectl port-forward svc/prometheus-service 8080 -n monitoring --address 0.0.0.0</strong></p></li>
+				<li>Access http://localhost:8080; you will see the following page:</li>
+			</ol>
+			<div>
+				<div id="_idContainer098" class="IMG---Figure">
+					<img src="image/B16945_11_02.jpg" alt="Figure 11.2 – Prometheus main page&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.2 – Prometheus main page</p>
+			<ol>
+				<li value="7">Now go to the <strong class="bold">Status</strong> | <strong class="bold">Targets</strong> menu:</li>
+			</ol>
+			<div>
+				<div id="_idContainer099" class="IMG---Figure">
+					<img src="image/B16945_11_03.jpg" alt="Figure 11.3 – Status menu&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.3 – Status menu</p>
+			<p>You will <a id="_idIndexMarker805"/>see the following page:</p>
+			<div>
+				<div id="_idContainer100" class="IMG---Figure">
+					<img src="image/B16945_11_04.jpg" alt="Figure 11.4 – Prometheus with targets down&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.4 – Prometheus with targets down</p>
+			<p>On this page, you will see that the monitoring jobs are <strong class="bold">down</strong> at the moment. Because the services are not already created. After these monitoring services are created in the cluster, the state will change to <strong class="bold">Up</strong> using green color.</p>
+			<p>Now the <a id="_idIndexMarker806"/>Prometheus deployment is ready. Let’s install our custom exporter in the cloud layer to export the temporary sensor data from our Redis list to Prometheus.</p>
+			<h1 id="_idParaDest-220"><a id="_idTextAnchor221"/>Deploying a custom exporter for Prometheus</h1>
+			<p>After configuring all the components, you need to deploy the exporter that Prometheus calls to <a id="_idIndexMarker807"/>get data from Redis; this service will be called <strong class="source-inline">service1</strong>. Remember that Redis was being used to persist temporary data that <a id="_idIndexMarker808"/>comes from the Mosquitto topic on the far edge. Before deploying this service, let’s understand the <strong class="source-inline">exporter</strong> container source code:</p>
+			<pre class="source-code">
+from flask import Response, Flask, request, jsonify
+import prometheus_client
+from prometheus_client import Gauge
+import redis
+import os
+import sys
+import json
+t = Gauge('weather_metric1', 'temperature')
+h = Gauge('weather_metric2', 'humidity')
+ 
+rhost = os.environ['REDIS_HOST']
+rauth = os.environ['REDIS_AUTH']
+stopic = os.environ['SENSOR_TOPIC']
+r = redis.StrictRedis(host=rhost,\
+        port=6379,db=0,password=rauth,\
+        decode_responses=True)
+ 
+@app.route("/metrics")
+def metrics():
+    data = r.lpop(stopic)
+    values = json.loads(str(data).replace("\'","\""))
+    t.set(int(values["temperature"]))
+    h.set(int(values["humidity"]))
+    res = []
+    res.append(prometheus_client.generate_latest(t))
+    res.append(prometheus_client.generate_latest(h))
+    print({"processed":"done"},file=sys.stderr)
+    return Response(res, mimetype="text/plain")
+ 
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5555, debug=True)</pre>
+			<p>In this <a id="_idIndexMarker809"/>code made using Python, first we set the <strong class="source-inline">REDIS_HOST</strong> and <strong class="source-inline">REDIS_AUTH</strong> variables to connect to Redis and <strong class="source-inline">SENSOR_TOPIC</strong> to correspond to the list name in Redis where sensor data is stored. So, every time <a id="_idIndexMarker810"/>Prometheus calls the <strong class="source-inline">/metrics</strong> path, it extracts and returns one element inside the Redis list set with the value of <strong class="source-inline">SENSOR_TOPIC</strong> and returns a response in a format that Prometheus can read. For this, the code uses the <strong class="source-inline">prometheus_client</strong> library and sets two metrics using the <strong class="source-inline">Gauge</strong> metric type, which represents simple values. In this code, we are using two metrics: the first one is called <strong class="source-inline">weather_metric1</strong>, which contains the temperature values, and the second is <strong class="source-inline">weather_metric2</strong>, which contains humidity data. Once data is stored in Prometheus, it returns the JSON response <strong class="source-inline">{"processed":"done"}</strong>; after that, you can access this information in Prometheus. Alternatively, you can connect Prometheus to Grafana to create a new graph <a id="_idIndexMarker811"/>to show this data in real time. </p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">You can find the source of the exporter at <a href="https://github.com/sergioarmgpl/containers/tree/main/exporter/src">https://github.com/sergioarmgpl/containers/tree/main/exporter/src</a>.</p>
+			<p>Now <a id="_idIndexMarker812"/>let’s deploy the exporter by following these steps:</p>
+			<ol>
+				<li value="1">Create the exporter by creating the <strong class="source-inline">service1</strong> deployment:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: service1</strong></p><p class="source-code"><strong class="bold">  name: service1</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: service1</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: service1</strong></p><p class="source-code"><strong class="bold">      annotations:</strong></p><p class="source-code"><strong class="bold">        prometheus.io/scrape: "true"</strong></p><p class="source-code"><strong class="bold">        prometheus.io/path: /metrics</strong></p><p class="source-code"><strong class="bold">        prometheus.io/port: "5555"</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - image: sergioarmgpl/exporter</strong></p><p class="source-code"><strong class="bold">        name: exporter</strong></p><p class="source-code"><strong class="bold">        env:</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_HOST</strong></p><p class="source-code"><strong class="bold">          value: "redis"</strong></p><p class="source-code"><strong class="bold">        - name: REDIS_AUTH</strong></p><p class="source-code"><strong class="bold">          value: "YOUR_PASSWORD"</strong></p><p class="source-code"><strong class="bold">        - name: SENSOR_TOPIC</strong></p><p class="source-code"><strong class="bold">          value: "sensor1"</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>You can <a id="_idIndexMarker813"/>use secrets instead of using <a id="_idIndexMarker814"/>the plain password in your YAML.</p>
+			<ol>
+				<li value="2">Now create the <strong class="source-inline">service1</strong> service:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: service1</strong></p><p class="source-code"><strong class="bold">  name: service1</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 5555</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 5555</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: service1</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>Now if <a id="_idIndexMarker815"/>you return to your Prometheus <a id="_idIndexMarker816"/>targets, <strong class="source-inline">service1</strong> will appear as up and in green.</p>
+			<p>Now the exporter is running. It’s time to configure the Python script in the edge device to get data coming from the DHT11 sensor and send it to the Mosquitto topic. Let’s explore this in the next section.</p>
+			<h1 id="_idParaDest-221"><a id="_idTextAnchor222"/>Configuring a DHT11 sensor to send humidity and temperature weather data</h1>
+			<p>Before <a id="_idIndexMarker817"/>you start using your edge device with a DHT11 sensor to send data, you need to follow <a id="_idIndexMarker818"/>these steps to configure it:</p>
+			<ol>
+				<li value="1">Install at least Ubuntu 20.04 LTS on your Raspberry Pi. You can check <a href="B16945_02_Final_PG.xhtml#_idTextAnchor036"><em class="italic">Chapter 2</em></a>, <em class="italic">K3s Installation and Configuration</em>, and <a href="B16945_05_Final_PG.xhtml#_idTextAnchor097"><em class="italic">Chapter 5</em></a>, <em class="italic">K3s Homelab for Edge Computing Experiments</em>, for more on this.</li>
+				<li>Configure your DHT11 sensor to send data to the Raspberry Pi. For this use case, we are going to use the DHT11 Keyes sensor, which comes from the Keystudio Raspberry Pi 4B Complete RFID Starter kit. This is a common sensor that you can find in other brands. This sensor gets the temperature and humidity. It often comes with three pins, which are <em class="italic">G = Ground</em>, <em class="italic">V = VCC</em>, and <em class="italic">S = Signal</em>. The way to connect is to connect G to a ground pin on the Raspberry and V to a 3V3 pin that powers the sensor with 3 volts. S, for signal, sends information to the Raspberry using a GPIO pin. In this case, you can use any free GPIO pin on the Raspberry; for this configuration, we are using the GPIO22 pin:</li>
+			</ol>
+			<div>
+				<div id="_idContainer101" class="IMG---Figure">
+					<img src="image/B16945_11_05.jpg" alt="Figure 11.5 – DHT11 Keyes temperature and humidity sensor&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.5 – DHT11 Keyes temperature and humidity sensor</p>
+			<ol>
+				<li value="3">Now, install the system and Python libraries that we need to run the sensor code in your edge device by running the following commands:<ul><li>If <strong class="source-inline">python3</strong> is not installed in your Linux distribution, you can install it using the following command:<p class="source-code"><strong class="bold">$ sudo apt-get install python3 -y</strong></p></li><li>Then continue installing the needed libraries:<p class="source-code"><strong class="bold">$ sudo apt-get install libgpiod2 git -y</strong></p><p class="source-code"><strong class="bold">$ sudo python3 sensor.py</strong></p><p class="source-code"><strong class="bold">$ sudo pip3 install adafruit-circuitpython-dht</strong></p><p class="source-code"><strong class="bold">$ sudo pip3 install psutil</strong></p><p class="source-code"><strong class="bold">$ sudo apt-get install i2c-tools</strong></p></li></ul></li>
+				<li>Clone <a id="_idIndexMarker819"/>the repository:<p class="source-code"><strong class="bold">$ git clone https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes</strong></p><p class="source-code"><strong class="bold">$ cd Edge-Computing-Systems-with-Kubernetes/ch11/code</strong></p></li>
+				<li>Run <a id="_idIndexMarker820"/>the following:<p class="source-code"><strong class="bold">$ sudo python3 send.py</strong></p></li>
+			</ol>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">Only run the <strong class="source-inline">send.py</strong> code inside your edge device until all the components of the use case are deployed.</p>
+			<p>Now you are starting to send data from your edge device. But what is happening inside the <strong class="source-inline">send.py</strong> code? Let’s take a look:</p>
+			<pre class="source-code">
+import time
+import board
+import adafruit_dht
+import psutil
+import paho.mqtt.client as mqtt
+import sys
+for proc in psutil.process_iter():
+   if proc.name() == 'libgpiod_pulsein'
+      or proc.name() == 'libgpiod_pulsei':
+      proc.kill()
+sensor = adafruit_dht.DHT11(board.D22)
+mqhost="192.168.0.243"
+client = mqtt.Client()
+client.connect(mqhost, 1883, 60)
+client.loop_start()
+ 
+ def main(): 
+   while True:
+      t = sensor.temperature 
+      h = sensor.humidity
+      client.publish("sensor1",\
+      str({"t":int(t),"h":int(h)}))
+      time.sleep(2)
+try:
+  main()
+except KeyboardInterrupt:
+  pass
+finally:
+  sensor.exit()</pre>
+			<p>In <a id="_idIndexMarker821"/>this code, first, it’s validated if the Raspberry Pi can read data from the GPIO pins. Then, by using the Adafruit library, we set the GPIO22 pin of the Raspberry Pi to read data from <a id="_idIndexMarker822"/>the sensor. After this, we set the Mosquitto host with the IP of the LoadBalancer service where Mosquitto is listening. Finally, we start a loop to read data with the <strong class="source-inline">sensor</strong> variable. This data is sent to the Mosquitto <strong class="source-inline">sensor1</strong> topic. The loop sends data every 2 seconds.</p>
+			<p>If you press <em class="italic">Ctrl</em> + <em class="italic">C</em>, the code stops and executes <strong class="source-inline">sensor.exit()</strong> to close the sensor and clean the state of the sensor. Finally, you are sending data. At this point, all the data passes across Mosquitto at the far edge and goes to Redis and Prometheus in the cloud layer. The only part that’s missing is Grafana to visualize this data. For this, let’s continue to the next section.</p>
+			<h1 id="_idParaDest-222"><a id="_idTextAnchor223"/>Installing Grafana to create dashboards</h1>
+			<p>Grafana is <a id="_idIndexMarker823"/>a web application that you can use to visualize data from different data sources; it can also create alerts based on the data that you are visualizing. In <a id="_idIndexMarker824"/>our use case, Grafana will be used to visualize data that comes from Prometheus. Let’s remember that Prometheus is listening to <strong class="source-inline">service1</strong>, to get data that comes from Mosquitto at the far edge. To deploy Grafana, follow these steps:</p>
+			<ol>
+				<li value="1">First, create a ConfigMap to configure your Grafana deployment:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: ConfigMap</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: grafana-datasources</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">data:</strong></p><p class="source-code"><strong class="bold">  prometheus.yaml: |-</strong></p><p class="source-code"><strong class="bold">    {</strong></p><p class="source-code"><strong class="bold">      "apiVersion": 1,</strong></p><p class="source-code"><strong class="bold">      "datasources": [</strong></p><p class="source-code"><strong class="bold">        {</strong></p><p class="source-code"><strong class="bold">          "access":"proxy",</strong></p><p class="source-code"><strong class="bold">          "editable": true,</strong></p><p class="source-code"><strong class="bold">          "name": "prometheus",</strong></p><p class="source-code"><strong class="bold">          "orgId": 1,</strong></p><p class="source-code"><strong class="bold">          "type": "prometheus",</strong></p><p class="source-code"><strong class="bold">          "url": "http://prometheus-service.monitoring.svc:8080",</strong></p><p class="source-code"><strong class="bold">          "version": 1</strong></p><p class="source-code"><strong class="bold">        }</strong></p><p class="source-code"><strong class="bold">      ]</strong></p><p class="source-code"><strong class="bold">    }</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+			</ol>
+			<p>This will <a id="_idIndexMarker825"/>be the default data source configured in your <strong class="source-inline">grafana</strong> deployment.</p>
+			<ol>
+				<li value="2">Let’s create the <strong class="source-inline">grafana</strong> deployment by running the following:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: apps/v1</strong></p><p class="source-code"><strong class="bold">kind: Deployment</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  name: grafana</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  replicas: 1</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    matchLabels:</strong></p><p class="source-code"><strong class="bold">      app: grafana</strong></p><p class="source-code"><strong class="bold">  template:</strong></p><p class="source-code"><strong class="bold">    metadata:</strong></p><p class="source-code"><strong class="bold">      name: grafana</strong></p><p class="source-code"><strong class="bold">      labels:</strong></p><p class="source-code"><strong class="bold">        app: grafana</strong></p><p class="source-code"><strong class="bold">    spec:</strong></p><p class="source-code"><strong class="bold">      containers:</strong></p><p class="source-code"><strong class="bold">      - name: grafana</strong></p><p class="source-code"><strong class="bold">        image: grafana/grafana:8.4.4</strong></p><p class="source-code"><strong class="bold">        ports:</strong></p><p class="source-code"><strong class="bold">        - name: grafana</strong></p><p class="source-code"><strong class="bold">          containerPort: 3000</strong></p><p class="source-code"><strong class="bold">        resources:</strong></p><p class="source-code"><strong class="bold">          limits:</strong></p><p class="source-code"><strong class="bold">            memory: "1Gi"</strong></p><p class="source-code"><strong class="bold">            cpu: "1000m"</strong></p><p class="source-code"><strong class="bold">          requests: </strong></p><p class="source-code"><strong class="bold">            memory: 500M</strong></p><p class="source-code"><strong class="bold">            cpu: "500m"</strong></p><p class="source-code"><strong class="bold">        volumeMounts:</strong></p><p class="source-code"><strong class="bold">          - mountPath: /var/lib/grafana</strong></p><p class="source-code"><strong class="bold">            name: grafana-storage</strong></p><p class="source-code"><strong class="bold">          - mountPath: /etc/grafana/provisioning/datasources</strong></p><p class="source-code"><strong class="bold">            name: grafana-datasources</strong></p><p class="source-code"><strong class="bold">            readOnly: false</strong></p><p class="source-code"><strong class="bold">      volumes:</strong></p><p class="source-code"><strong class="bold">        - name: grafana-storage</strong></p><p class="source-code"><strong class="bold">          emptyDir: {}</strong></p><p class="source-code"><strong class="bold">        - name: grafana-datasources</strong></p><p class="source-code"><strong class="bold">          configMap:</strong></p><p class="source-code"><strong class="bold">              defaultMode: 420</strong></p><p class="source-code"><strong class="bold">              name: grafana-datasources</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Let’s <a id="_idIndexMarker826"/>create the service:<p class="source-code"><strong class="bold">$ cat &lt;&lt;EOF | kubectl apply -f -</strong></p><p class="source-code"><strong class="bold">apiVersion: v1</strong></p><p class="source-code"><strong class="bold">kind: Service</strong></p><p class="source-code"><strong class="bold">metadata:</strong></p><p class="source-code"><strong class="bold">  creationTimestamp: null</strong></p><p class="source-code"><strong class="bold">  labels:</strong></p><p class="source-code"><strong class="bold">    app: grafana</strong></p><p class="source-code"><strong class="bold">  name: grafana</strong></p><p class="source-code"><strong class="bold">  namespace: monitoring</strong></p><p class="source-code"><strong class="bold">spec:</strong></p><p class="source-code"><strong class="bold">  ports:</strong></p><p class="source-code"><strong class="bold">  - port: 3000</strong></p><p class="source-code"><strong class="bold">    protocol: TCP</strong></p><p class="source-code"><strong class="bold">    targetPort: 3000</strong></p><p class="source-code"><strong class="bold">  selector:</strong></p><p class="source-code"><strong class="bold">    app: grafana</strong></p><p class="source-code"><strong class="bold">  type: ClusterIP</strong></p><p class="source-code"><strong class="bold">EOF</strong></p></li>
+				<li>Let’s <a id="_idIndexMarker827"/>open the Grafana UI by running the following command:<p class="source-code"><strong class="bold">$ kubectl port-forward svc/grafana 3000 -n monitoring --address 0.0.0.0</strong></p></li>
+				<li>Let’s open the URL <strong class="source-inline">http://localhost:3000</strong>. When the login page appears, use the username <strong class="source-inline">admin</strong> and password <strong class="source-inline">admin</strong>, and click on the <strong class="bold">Log in</strong> button:</li>
+			</ol>
+			<div>
+				<div id="_idContainer102" class="IMG---Figure">
+					<img src="image/B16945_11_06.jpg" alt="Figure 11.6 – Grafana login&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.6 – Grafana login</p>
+			<ol>
+				<li value="6">After <a id="_idIndexMarker828"/>login, you will see the main page of Grafana:<div id="_idContainer103" class="IMG---Figure"><img src="image/B16945_11_07.jpg" alt="Figure 11.7 – Grafana main page&#13;&#10;"/></div></li>
+			</ol>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US"> </p>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.7 – Grafana main page</p>
+			<ol>
+				<li value="7">Click <a id="_idIndexMarker829"/>on <strong class="bold">Configuration</strong> | <strong class="bold">Data sources</strong>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer104" class="IMG---Figure">
+					<img src="image/B16945_11_08.jpg" alt="Figure 11.8 – Grafana configuration menu&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.8 – Grafana configuration menu</p>
+			<ol>
+				<li value="8">Then, check whether the Prometheus data source exists:</li>
+			</ol>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US"> </p>
+			<div>
+				<div id="_idContainer105" class="IMG---Figure">
+					<img src="image/B16945_11_09.jpg" alt="Figure 11.9 – Grafana data sources&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.9 – Grafana data sources</p>
+			<p>Because of our ConfigMap configuration, our default data source will be <strong class="source-inline">prometheus-service.monitoring.svc:8080</strong>.</p>
+			<ol>
+				<li value="9">Now <a id="_idIndexMarker830"/>create a new folder or dashboard using the <strong class="bold">+</strong> icon. Let’s create a folder first:</li>
+			</ol>
+			<div>
+				<div id="_idContainer106" class="IMG---Figure">
+					<img src="image/B16945_11_10.jpg" alt="Figure 11.10 – Grafana Create menu&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.10 – Grafana Create menu</p>
+			<ol>
+				<li value="10">Now in the opened dialog fill the <strong class="bold">Folder name</strong> field with the value <strong class="source-inline">Dashboard Sensors</strong> to create a folder with this name, then click on the <strong class="bold">Create</strong> button:</li>
+			</ol>
+			<div>
+				<div id="_idContainer107" class="IMG---Figure">
+					<img src="image/B16945_11_11.jpg" alt="Figure 11.11 – Grafana New dashboard folder dialog&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.11 – Grafana New dashboard folder dialog</p>
+			<p>You can <a id="_idIndexMarker831"/>use this folder to save your dashboards and alerts if you want.</p>
+			<ol>
+				<li value="11">As in <em class="italic">Figure 11.10</em>, let’s follow the same steps as for folders but this time click <strong class="bold">Dashboard</strong>. You will then see the page in <em class="italic">Figure 11.12</em>. Click on the <strong class="bold">Add a new panel</strong> button:</li>
+			</ol>
+			<div>
+				<div id="_idContainer108" class="IMG---Figure">
+					<img src="image/B16945_11_12.jpg" alt="Figure 11.12 – Grafana Add panel page"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.12 – Grafana Add panel page</p>
+			<ol>
+				<li value="12">In the next figure, you will see the settings to configure the new dashboard:</li>
+			</ol>
+			<div>
+				<div id="_idContainer109" class="IMG---Figure">
+					<img src="image/B16945_11_13.jpg" alt="Figure 11.13 – Grafana New dashboard/Edit Panel page&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.13 – Grafana New dashboard/Edit Panel page</p>
+			<p>Here you <a id="_idIndexMarker832"/>can configure this panel by setting the main part of the query. In this case, you have to write <strong class="source-inline">weather_metric1</strong> or <strong class="source-inline">weather_metric2</strong>. Here, <strong class="source-inline">weather_metric1</strong> gets the temperature and <strong class="source-inline">weather_metric2</strong> gets the humidity.</p>
+			<ol>
+				<li value="13">Set a time range to visualize data. Then, click on <strong class="bold">Apply time range</strong>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer110" class="IMG---Figure">
+					<img src="image/B16945_11_14.jpg" alt="Figure 11.14 – Grafana Absolute time range dialog"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.14 – Grafana Absolute time range dialog</p>
+			<ol>
+				<li value="14">Set the <a id="_idIndexMarker833"/>refresh time to 5 seconds in the next dialog, <strong class="bold">Query options</strong>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer111" class="IMG---Figure">
+					<img src="image/B16945_11_15.jpg" alt="Figure 11.15 – Setting real-time data values&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.15 – Setting real-time data values</p>
+			<p>Alternatively, you can click on the <strong class="bold">Refresh</strong> icon:</p>
+			<div>
+				<div id="_idContainer112" class="IMG---Figure">
+					<img src="image/B16945_11_16.jpg" alt="Figure 11.16 – Grafana setting refresh time&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.16 – Grafana setting refresh time</p>
+			<ol>
+				<li value="15">Then, click <a id="_idIndexMarker834"/>on the <strong class="bold">Save</strong> button and save the panel with any name and in a folder that you, for example with the previously folder created and using the name <strong class="source-inline">Dashboard sensors</strong> or <strong class="source-inline">Temperature Sensor1</strong>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer113" class="IMG---Figure">
+					<img src="image/B16945_11_17.jpg" alt="Figure 11.17 – Saving a new dashboard&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.17 – Saving a new dashboard</p>
+			<ol>
+				<li value="16">You can also just apply the changes by clicking on the <strong class="bold">Apply</strong> button instead of the <strong class="bold">Save</strong> button:</li>
+			</ol>
+			<div>
+				<div id="_idContainer114" class="IMG---Figure">
+					<img src="image/B16945_11_18.jpg" alt="Figure 11.18 – Applying changes to a new dashboard&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.18 – Applying changes to a new dashboard</p>
+			<ol>
+				<li value="17">Now you will see your dashboard:</li>
+			</ol>
+			<div>
+				<div id="_idContainer115" class="IMG---Figure">
+					<img src="image/B16945_11_19.jpg" alt="Figure 11.19 – Grafana Temperature Sensor1 dashboard&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.19 – Grafana Temperature Sensor1 dashboard</p>
+			<ol>
+				<li value="18">You can <a id="_idIndexMarker835"/>see the dashboards you have created by clicking on the <strong class="bold">Search dashboards</strong> icon:</li>
+			</ol>
+			<div>
+				<div id="_idContainer116" class="IMG---Figure">
+					<img src="image/B16945_11_20.jpg" alt="Figure 11.20 – Search dashboards&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.20 – Search dashboards</p>
+			<p>Now you can start visualizing the data that your edge device is generating, as shown in <em class="italic">Figure 11.18</em>. You can customize all the parameters to show the information according to your <a id="_idIndexMarker836"/>needs. You can also modify the code to add as many sensors as you want. We have now finished the chapter. Let’s get a quick summary of what we learned.</p>
+			<h1 id="_idParaDest-223"><a id="_idTextAnchor224"/>Summary</h1>
+			<p>In this chapter, we learned how monitoring can help us to visualize data at the edge, especially how to visualize data that comes from sensors, and how to build a basic use case scenario to extend for production use cases. To build this system, we used Prometheus as our time series database, Mosquitto as our basic way to store data from sensors, and Redis as a temporary queue to prevent the loss of our data from sensors. We also practiced how to build an edge computing system, using its different layers from the far edge to the cloud layer. This shows how important time series databases can be to manage sensor data and how tools such as Grafana can help to visualize it. This scenario can also be extended to farming, ocean and sea monitoring, animal populations, and so on. In the next chapter, we are going to continue with a similar scenario but applied to GPS and reading sensor data at long distances.</p>
+			<h1 id="_idParaDest-224"><a id="_idTextAnchor225"/>Questions</h1>
+			<p>Here are a few questions to validate your new knowledge:</p>
+			<ul>
+				<li>How do I set up an edge device to capture sensor data?</li>
+				<li>How do I use Prometheus to store data from sensors?</li>
+				<li>How do I use Grafana to create custom graphs to visualize sensor data?</li>
+				<li>How do I design a persistent system to manage sensor data using Mosquitto and Redis?</li>
+				<li>How do I use Python to process and send sensor data?</li>
+			</ul>
+			<h1 id="_idParaDest-225"><a id="_idTextAnchor226"/>Further reading</h1>
+			<p>You can refer to the following references for more information on the topics covered in this chapter:</p>
+			<ul>
+				<li>Mosquitto official website: <a href="https://mosquitto.org">https://mosquitto.org</a></li>
+				<li>Prometheus Python Client: <a href="https://github.com/prometheus/client_python">https://github.com/prometheus/client_python</a></li>
+				<li>How to set up Prometheus monitoring on a Kubernetes cluster <a href="https://devopscube.com/setup-prometheus-monitoring-on-kubernetes">https://devopscube.com/setup-prometheus-monitoring-on-kubernetes</a></li>
+				<li>How to set up Grafana on Kubernetes: <a href="https://devopscube.com/setup-grafana-kubernetes">https://devopscube.com/setup-grafana-kubernetes</a></li>
+				<li>Getting started with Prometheus: <a href="https://prometheus.io/docs/prometheus/latest/getting_started">https://prometheus.io/docs/prometheus/latest/getting_started</a></li>
+				<li>Using Prometheus and Grafana for IoT monitoring: <a href="https://cloud.google.com/community/tutorials/cloud-iot-prometheus-monitoring">https://cloud.google.com/community/tutorials/cloud-iot-prometheus-monitoring</a></li>
+				<li>A step-by-step guide to setting up Prometheus Alertmanager with Slack, PagerDuty, and Gmail: <a href="https://grafana.com/blog/2020/02/25/step-by-step-guide-to-setting-up-prometheus-alertmanager-with-slack-pagerduty-and-gmail">https://grafana.com/blog/2020/02/25/step-by-step-guide-to-setting-up-prometheus-alertmanager-with-slack-pagerduty-and-gmail</a></li>
+			</ul>
+		</div>
+		<div>
+			<div id="_idContainer118">
+			</div>
+		</div>
+	</body></html>

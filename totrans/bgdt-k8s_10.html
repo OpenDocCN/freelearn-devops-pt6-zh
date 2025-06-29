@@ -1,0 +1,552 @@
+<html><head></head><body>
+		<div id="_idContainer098">
+			<h1 class="chapter-number" id="_idParaDest-154"><a id="_idTextAnchor154"/>10</h1>
+			<h1 id="_idParaDest-155"><a id="_idTextAnchor155"/>Building a Big Data Pipeline  on Kubernetes</h1>
+			<p>In the previous chapters, we covered the individual components required for building big data pipelines on Kubernetes. We explored tools such as Kafka, Spark, Airflow, Trino, and more. However, in the real world, these tools don’t operate in isolation. They need to be integrated and orchestrated to form complete data pipelines that can handle various data <span class="No-Break">processing requirements.</span></p>
+			<p>In this chapter, we will bring together all the knowledge and skills you have acquired so far and put them into practice by building two complete data pipelines: a batch processing pipeline and a real-time pipeline. By the end of this chapter, you will be able to (1) deploy and orchestrate all the necessary tools for building big data pipelines on Kubernetes; (2) write code for data processing, orchestration, and querying using Python, SQL, and APIs; (3) integrate different tools seamlessly to create complex data pipelines; (4) understand and apply best practices for building scalable, efficient, and maintainable <span class="No-Break">data pipelines.</span></p>
+			<p>We will start by ensuring that all the required tools are deployed and running correctly in your Kubernetes cluster. Then, we will dive into building the batch processing pipeline, where you will learn how to ingest data from various sources, process it using Spark, and store the results in a data lake for querying <span class="No-Break">and analysis.</span></p>
+			<p>Next, we will tackle the real-time pipeline, which is essential for processing and analyzing data streams in near real time. You will learn how to ingest and process data streams using Kafka, Spark Streaming, and Elasticsearch, enabling you to build applications that can react to events as <span class="No-Break">they occur.</span></p>
+			<p>By the end of this chapter, you will have gained hands-on experience in building complete data pipelines on Kubernetes, preparing you for real-world big data challenges. Let’s dive in and unlock the power of big data <span class="No-Break">on Kubernetes!</span></p>
+			<p>In this chapter, we’re going to cover the following <span class="No-Break">main topics:</span></p>
+			<ul>
+				<li>Checking the <span class="No-Break">deployed tools</span></li>
+				<li>Building a <span class="No-Break">batch pipeline</span></li>
+				<li>Building a <span class="No-Break">real-time pipeline</span></li>
+			</ul>
+			<h1 id="_idParaDest-156"><a id="_idTextAnchor156"/>Technical requirements</h1>
+			<p>For the activities in this chapter, you should have a running Kubernetes cluster. Refer to <a href="B21927_08.xhtml#_idTextAnchor134"><span class="No-Break"><em class="italic">Chapter 8</em></span></a> for details on Kubernetes deployment and all the necessary operators. You should also have an <strong class="bold">Amazon Web Services</strong> (<strong class="bold">AWS</strong>) account to run the exercises. We will also use DBeaver to check data. For installation instructions, please refer to <a href="B21927_09.xhtml#_idTextAnchor141"><span class="No-Break"><em class="italic">Chapter 9</em></span></a><span class="No-Break">.</span></p>
+			<p>All code for this chapter is available at <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes">https://github.com/PacktPublishing/Bigdata-on-Kubernetes</a> in the <span class="No-Break"><strong class="source-inline">Chapter10</strong></span><span class="No-Break"> folder.</span></p>
+			<h1 id="_idParaDest-157"><a id="_idTextAnchor157"/>Checking the deployed tools</h1>
+			<p>Before we get our <a id="_idIndexMarker622"/>hands into a fully orchestrated data pipeline, we need to make sure that all the necessary operators are correctly deployed on Kubernetes. We will check for the Spark operator, the Strimzi operator, Airflow, and Trino. First, we’ll check for the Spark operator using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+kubectl get pods -n spark-operator</pre>			<p>This output shows that the Spark operator is <span class="No-Break">successfully running:</span></p>
+			<pre class="source-code">
+NAME                                READY   STATUS
+spark-operator-74db6fcf98-f86vt     1/1     Running
+spark-operator-webhook-init-5594s   0/1     Completed</pre>			<p>Now, we will check Trino. For that, type <span class="No-Break">the following:</span></p>
+			<pre class="console">
+kubectl get pods -n trino</pre>			<p>Check if all pods are correctly running; in our case, one coordinator pod and two worker pods. Also, check for Kafka and Elasticsearch with the <span class="No-Break">following commands:</span></p>
+			<pre class="source-code">
+kubectl get pods -n kafka
+kubectl get pods -n elastic</pre>			<p>Last, we will need a new deployment of Airflow. We will need to use a specific version of Airflow and one of its providers’ libraries to work correctly with Spark. I have already set up an image of Airflow 2.8.1 with the 7.13.0 version of the <strong class="source-inline">apache-airflow-providers-cncf-kubernetes</strong> library (needed for <strong class="source-inline">SparkKubernetesOperator</strong>). If you have Airflow already installed, let’s delete it with the <span class="No-Break">following command:</span></p>
+			<pre class="source-code">
+helm delete airflow -n airflow</pre>			<p>Make sure that all services and persistent volume claims are deleted as well, using the <span class="No-Break">following code:</span></p>
+			<pre class="source-code">
+kubectl delete svc --all -n airflow
+kubectl delete pvc --all -n airflow</pre>			<p>Then, we need to change slightly the configuration we already have for the <strong class="source-inline">custom_values.yaml</strong> file. We need to set the <strong class="source-inline">defaultAirflowTag</strong> and the <strong class="source-inline">airflowVersion</strong> parameters to <strong class="source-inline">2.8.1</strong>, and we will change the <strong class="source-inline">images.airflow</strong> parameter <a id="_idIndexMarker623"/>to get an already prepared <span class="No-Break">public image:</span></p>
+			<pre class="source-code">
+images:
+  airflow:
+    repository: "docker.io/neylsoncrepalde/apache-airflow"
+    tag: "2.8.1-cncf7.13.0"
+    digest: ~
+    pullPolicy: IfNotPresent</pre>			<p>Also, don’t forget to adjust the <strong class="source-inline">dags.gitSync</strong> parameter if you are working with a different GitHub repo or folder. A complete version of the adapted <strong class="source-inline">custom_values.yaml</strong> code is available at <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/airflow_deployment">https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/airflow_deployment</a>. Redeploy Airflow with the new configurations <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+helm install airflow apache-airflow/airflow --namespace airflow --create-namespace -f custom_values.yaml</pre>			<p>The last configurations needed allow Airflow to run <strong class="source-inline">SparkApplication</strong> instances on the cluster. We will set up a service account and a cluster role binding for running Spark on the <span class="No-Break">Airflow namespace:</span></p>
+			<pre class="source-code">
+kubectl create serviceaccount spark -n airflow
+kubectl create clusterrolebinding spark-role --clusterrole=edit --serviceaccount=airflow:spark --namespace=airflow</pre>			<p>Now, we will create a new cluster role and a cluster role binding to give Airflow workers the necessary<a id="_idIndexMarker624"/> permissions. Set up a <span class="No-Break">YAML file:</span></p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">rolebinding_for_airflow.yaml</p>
+			<pre class="source-code">
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spark-cluster-cr
+  labels:
+    rbac.authorization.kubeflow.org/aggregate-to-kubeflow-edit: "true"
+rules:
+  - apiGroups:
+      - sparkoperator.k8s.io
+    resources:
+      - sparkapplications
+    verbs:
+      - "*"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: airflow-spark-crb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spark-cluster-cr
+subjects:
+  - kind: ServiceAccount
+    name: airflow-worker
+    namespace: airflow</pre>			<p>Now, deploy this configuration with <span class="No-Break">the following:</span></p>
+			<pre class="console">
+kubectl apply -f rolebinding_for_airflow.yaml -n airflow</pre>			<p>That’s it! We can<a id="_idIndexMarker625"/> now move to the implementation of a batch data pipeline. Let’s get <span class="No-Break">to it.</span></p>
+			<h1 id="_idParaDest-158"><a id="_idTextAnchor158"/>Building a batch pipeline</h1>
+			<p>For the batch <a id="_idIndexMarker626"/>pipeline, we will use the IMBD dataset we worked on in <a href="B21927_05.xhtml#_idTextAnchor092"><span class="No-Break"><em class="italic">Chapter 5</em></span></a>. We are going to automate the whole process from data acquisition and ingestion into our data lake on <strong class="bold">Amazon Simple Storage Service</strong> (<strong class="bold">Amazon S3</strong>) up to the delivery of consumption-ready<a id="_idIndexMarker627"/> tables in Trino. In <span class="No-Break"><em class="italic">Figure 10</em></span><em class="italic">.1</em>, you can see a diagram representing the architecture for this <span class="No-Break">section’s exercise:</span></p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer078">
+					<img alt="Figure 10.1 – Architecture design for a batch pipeline" src="image/B21927_10_01.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.1 – Architecture design for a batch pipeline</p>
+			<p>Now, let’s get <a id="_idIndexMarker628"/>to <span class="No-Break">the code.</span></p>
+			<h2 id="_idParaDest-159"><a id="_idTextAnchor159"/>Building the Airflow DAG</h2>
+			<p>Let’s start <a id="_idIndexMarker629"/>developing our Airflow DAG as usual. The complete <a id="_idIndexMarker630"/>code is available at <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/batch/dags"><span class="No-Break">https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/batch/dags</span></a><span class="No-Break"> folder:</span></p>
+			<ol>
+				<li>The first lines of the Airflow DAG are <span class="No-Break">shown next:</span><p class="list-inset"><span class="No-Break"><strong class="bold">imdb_dag.py</strong></span></p><pre class="source-code">
+from airflow.decorators import task, dag
+from airflow.utils.task_group import TaskGroup
+from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
+from airflow.providers.cncf.kubernetes.sensors.spark_kubernetes import SparkKubernetesSensor
+from airflow.providers.amazon.aws.operators.glue_crawler import GlueCrawlerOperator
+from airflow.models import Variable
+from datetime import datetime
+import requests
+import boto3
+aws_access_key_id = Variable.get("aws_access_key_id")
+aws_secret_access_key = Variable.get("aws_secret_access_key")
+s3 = boto3.client('s3',
+    aws_access_key_id=aws_access_key_id,
+    aws_secret_access_key=aws_secret_access_key
+)
+default_args = {
+    'owner': 'Ney',
+    'start_date': datetime(2024, 5, 10)
+}</pre><p class="list-inset">This code imports the necessary libraries, sets up two environment variables needed to authenticate <a id="_idIndexMarker631"/>on AWS, defines an <a id="_idIndexMarker632"/>Amazon S3 client, and sets some <span class="No-Break">default configurations.</span></p></li>				<li>In the next block, we will start the DAG function in <span class="No-Break">the code:</span><pre class="source-code">
+@dag(
+        default_args=default_args,
+        schedule_interval="@once",
+        description="IMDB Dag",
+        catchup=False,
+        tags=['IMDB']
+)
+def IMDB_batch():</pre><p class="list-inset">This block integrates default arguments for the DAG and defines a schedule interval to run only once and <span class="No-Break">some metadata.</span></p></li>				<li>Now, we will define the first task that will automatically download the datasets and store<a id="_idIndexMarker633"/> them <a id="_idIndexMarker634"/>on S3 (the first line <span class="No-Break">is repeated):</span><pre class="source-code">
+def IMDB_batch():
+    @task
+    def data_acquisition():
+        urls_dict = {
+            "names.tsv.gz": "https://datasets.imdbws.com/name.basics.tsv.gz",
+            "basics.tsv.gz": "https://datasets.imdbws.com/title.basics.tsv.gz",
+            "crew.tsv.gz": "https://datasets.imdbws.com/title.crew.tsv.gz",
+            "principals.tsv.gz": "https://datasets.imdbws.com/title.principals.tsv.gz",
+            "ratings.tsv.gz": "https://datasets.imdbws.com/title.ratings.tsv.gz"
+        }
+        for title, url in urls_dict.items():
+            response = requests.get(url, stream=True)
+            with open(f"/tmp/{title}", mode="wb") as file:
+                file.write(response.content)
+            s3.upload_file(f"/tmp/{title}", "bdok-&lt;YOUR_ACCOUNT_NUMBER&gt;", f"landing/imdb/{title}")
+        return True</pre><p class="list-inset">This code is derived from what we developed in <a href="B21927_05.xhtml#_idTextAnchor092"><span class="No-Break"><em class="italic">Chapter 5</em></span></a>, with a small modification at the end to upload the downloaded files <span class="No-Break">to S3.</span></p></li>				<li>Next, we will call Spark processing jobs to transform that data. The first step is only read the data in its original format (TSV) and transform it to Parquet (which is optimized for storage and processing in Spark). First, we define a <strong class="source-inline">TaskGroup</strong> instance <a id="_idIndexMarker635"/>to better organize <span class="No-Break">the </span><span class="No-Break"><a id="_idIndexMarker636"/></span><span class="No-Break">tasks:</span><pre class="source-code">
+with TaskGroup("tsvs_to_parquet") as tsv_parquet:
+    tsvs_to_parquet = SparkKubernetesOperator(
+        task_id="tsvs_to_parquet",
+        namespace="airflow",
+        #application_file=open(f"{APP_FILES_PATH}/spark_imdb_tsv_parquet.yaml").read(),
+        application_file="spark_imdb_tsv_parquet.yaml",
+        kubernetes_conn_id="kubernetes_default",
+        do_xcom_push=True
+    )
+    tsvs_to_parquet_sensor = SparkKubernetesSensor(
+        task_id="tsvs_to_parquet_sensor",
+        namespace="airflow",
+        application_name="{{ task_instance.xcom_pull(task_ids='tsvs_to_parquet.tsvs_to_parquet')['metadata']['name'] }}",
+        kubernetes_conn_id="kubernetes_default"
+    )
+    tsvs_to_parquet &gt;&gt; tsvs_to_parquet_sensor</pre><p class="list-inset">Within this group, there are <span class="No-Break">two tasks:</span></p><ul><li><strong class="source-inline">tsvs_to_parquet</strong>: This is a <strong class="source-inline">SparkKubernetesOperator</strong> task that runs a Spark job on Kubernetes. The job is defined in the <strong class="source-inline">spark_imdb_tsv_parquet.yaml</strong> file, which contains the Spark application configuration. We use the <strong class="source-inline">do_xcom_push=True</strong> parameter, which enables cross-communication between this and the <span class="No-Break">following task.</span></li><li><strong class="source-inline">tsvs_to_parquet_sensor</strong>: This is a <strong class="source-inline">SparkKubernetesSensor</strong> task that monitors the Spark job launched by the <strong class="source-inline">tsvs_to_parquet</strong> task. It retrieves the Spark application name from the metadata pushed by the previous task using the <strong class="source-inline">task_instance.xcom_pull</strong> method. This sensor waits for the Spark job to complete before allowing the DAG to proceed to the <span class="No-Break">next tasks.</span></li></ul><p class="list-inset">The <strong class="source-inline">tsvs_to_parquet &gt;&gt; tsvs_to_parquet_sensor</strong> line sets up the task dependency, ensuring that the <strong class="source-inline">tsvs_to_parquet_sensor</strong> task runs after the <strong class="source-inline">tsvs_to_parquet</strong> task <span class="No-Break">completes successfully.</span></p></li>				<li>Next, we <a id="_idIndexMarker637"/>have another round of data processing with<a id="_idIndexMarker638"/> Spark. This time, we will join all the tables to build a consolidated unique table. This consolidated form has been <a id="_idIndexMarker639"/>called <strong class="bold">One Big Table</strong> (<strong class="bold">OBT</strong>) in the market. For that, we will define a new <strong class="source-inline">TaskGroup</strong> instance called <strong class="source-inline">Transformations</strong> and proceed the same as the previous <span class="No-Break">code block:</span><pre class="source-code">
+with TaskGroup('Transformations') as transformations:
+    consolidated_table = SparkKubernetesOperator(
+        task_id='consolidated_table',
+        namespace="airflow",
+        application_file="spark_imdb_consolidated_table.yaml",
+        kubernetes_conn_id="kubernetes_default",
+        do_xcom_push=True
+    )
+    consolidated_table_sensor = SparkKubernetesSensor(
+        task_id='consolidated_table_sensor',
+        namespace="airflow",
+        application_name="{{ task_instance.xcom_pull(task_ids='Transformations.consolidated_table')['metadata']['name'] }}",
+        kubernetes_conn_id="kubernetes_default"
+    )
+    consolidated_table &gt;&gt; consolidated_table_sensor</pre></li>				<li>Finally, after the data is processed and written in Amazon S3, we will trigger a Glue crawler <a id="_idIndexMarker640"/>that will write the metadata for this <a id="_idIndexMarker641"/>table into Glue Data Catalog, making it available <span class="No-Break">for Trino:</span><pre class="source-code">
+glue_crawler_consolidated = GlueCrawlerOperator(
+    task_id='glue_crawler_consolidated',
+    region_name='us-east-1',
+    aws_conn_id='aws_conn',
+    wait_for_completion=True,
+    config = {'Name': 'imdb_consolidated_crawler'}
+)</pre><p class="list-inset">Remember that all of this code should be indented to be inside the <span class="No-Break"><strong class="source-inline">IMDB_Batch()</strong></span><span class="No-Break"> function.</span></p></li>				<li>Now, in the last block of this code, we will configure the dependencies between tasks and <strong class="source-inline">TaskGroup</strong> instances and trigger the execution of the <span class="No-Break">DAG function:</span><pre class="source-code">
+    da = data_acquisition()
+    da &gt;&gt; tsv_parquet &gt;&gt; transformations
+    transformations &gt;&gt; glue_crawler_consolidated
+execution = IMDB_batch()</pre></li>			</ol>
+			<p>Now, we have to set up the two <strong class="source-inline">SparkApplication</strong> instances Airflow is going to call and the Glue<a id="_idIndexMarker642"/> crawler <a id="_idIndexMarker643"/>on AWS. Let’s get <span class="No-Break">to it.</span></p>
+			<h2 id="_idParaDest-160"><a id="_idTextAnchor160"/>Creating SparkApplication jobs</h2>
+			<p>We will follow the <a id="_idIndexMarker644"/>same pattern <a id="_idIndexMarker645"/>used in <a href="B21927_08.xhtml#_idTextAnchor134"><span class="No-Break"><em class="italic">Chapter 8</em></span></a> to configure the Spark jobs. We need PySpark code that will be stored in S3 and a YAML file for the job definition that must be in the <strong class="source-inline">dags</strong> folder, along with the Airflow <span class="No-Break">DAG code:</span></p>
+			<ol>
+				<li>As the YAML file is very similar to what we did before, we will not get into details here. The code for both YAML files is available at <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/batch/dags">https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/batch/dags</a> folder. Create those files and save them as <strong class="source-inline">spark_imdb_tsv_parquet.yaml</strong> and <strong class="source-inline">spark_imdb_consolidated_table.yaml</strong> in the <span class="No-Break"><strong class="source-inline">dags</strong></span><span class="No-Break"> folder.</span></li>
+				<li>Next, we will take a look at the PySpark code. The first job is quite simple. It reads the data from the TSV files ingested by Airflow and writes back the same data transformed to Parquet. First, we import Spark modules and define a <strong class="source-inline">SparkConf</strong> object with the necessary configurations for the <span class="No-Break">Spark application:</span><pre class="source-code">
+from pyspark import SparkContext, SparkConf
+from pyspark.sql import SparkSession
+conf = (
+    SparkConf()
+        .set("spark.cores.max", "2")
+        .set("spark.executor.extraJavaOptions", "-Dcom.amazonaws.services.s3.enableV4=true")
+        .set("spark.driver.extraJavaOptions", "-Dcom.amazonaws.services.s3.enableV4=true")
+        .set("spark.hadoop.fs.s3a.fast.upload", True)
+        .set("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .set("spark.hadoop.fs.s3a.aws.credentials.provider", "com.amazonaws.auth.EnvironmentVariablesCredentials")
+        .set("spark.jars.packages", "org.apache.hadoop:hadoop-aws:2.7.3")
+)
+sc = SparkContext(conf=conf).getOrCreate()</pre><p class="list-inset">These configurations are specific to working with Amazon S3 and enabling certain features such as S3 V4 authentication, fast uploads, and using the S3A filesystem implementation. The <strong class="source-inline">spark.cores.max</strong> property limits the maximum number of cores used by the application to <strong class="source-inline">2</strong>. The last line creates a <strong class="source-inline">SparkContext</strong> object with the configurations <span class="No-Break">defined before.</span></p></li>				<li>Next, we create a <strong class="source-inline">SparkSession</strong> instance and set the log level to <strong class="source-inline">"WARN"</strong> so that only <a id="_idIndexMarker646"/>warning<a id="_idIndexMarker647"/> and error messages get displayed in the logs. This is good for <span class="No-Break">log readability:</span><pre class="source-code">
+if __name__ == "__main__":
+    spark = SparkSession.builder.appName("SparkApplicationJob").getOrCreate()
+    spark.sparkContext.setLogLevel("WARN")</pre></li>				<li>Next, we will define table schemas. This is extremely important when working with large datasets as it improves Spark’s performance when dealing with text-based files (such as TSV, CSV, and so on). Next, we present only the schema for the first table to simplify readability. The full code can be found at <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/batch/spark_code"><span class="No-Break">https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/batch/spark_code</span></a><span class="No-Break"> folder:</span><pre class="source-code">
+schema_names = "nconst string, primaryName string, birthYear int, deathYear int, primaryProfession string, knownForTitles string"</pre></li>				<li>Now, we read the table into a Spark DataFrame (also displaying only the reading of the <span class="No-Break">first table):</span><pre class="source-code">
+names = (
+    spark
+    .read
+    .schema(schema_names)
+    .options(header=True, delimiter="\t")
+    .csv('s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/landing/imdb/names.tsv.gz')
+)</pre></li>				<li>Next, we write the tables back to S3 <span class="No-Break">in Parquet:</span><pre class="source-code">
+names.write.mode("overwrite").parquet("s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/bronze/imdb/names")</pre></li>				<li>Finally, we <a id="_idIndexMarker648"/>stop<a id="_idIndexMarker649"/> the Spark session and release any resources used by <span class="No-Break">the application:</span><pre class="source-code">
+spark.stop()</pre></li>				<li>Save this file as <strong class="source-inline">spark_imdb_tsv_parquet.py</strong> and upload it to the S3 bucket you defined in the YAML file (in this <span class="No-Break">case, </span><span class="No-Break"><strong class="source-inline">s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/spark-jobs/</strong></span><span class="No-Break">).</span></li>
+				<li>Now, we will define the second <strong class="source-inline">SparkApplication</strong> instance responsible for building the OBT. For this second code, we will skip the Spark configuration and <strong class="source-inline">SparkSession</strong> code blocks as they are almost the same as the last job except for one import we <span class="No-Break">must do:</span><pre class="source-code">
+from pyspark.sql import functions as f</pre><p class="list-inset">This imports the <strong class="source-inline">functions</strong> module that will allow data transformations using <span class="No-Break">Spark internals.</span></p></li>				<li>We begin here by reading <span class="No-Break">the datasets:</span><pre class="source-code">
+names = spark.read.parquet("s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/bronze/imdb/names")
+basics = spark.read.parquet("s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/bronze/imdb/basics")
+crew = spark.read.parquet("s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/bronze/imdb/crew")
+principals = spark.read.parquet("s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/bronze/imdb/principals")
+ratings = spark.read.parquet("s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/bronze/imdb/ratings")</pre></li>				<li>The <strong class="source-inline">knownForTitles</strong> column in the <strong class="source-inline">names</strong> dataset and the <strong class="source-inline">directors </strong>column in the <strong class="source-inline">crew</strong> dataset have several values in the same cell that need to be exploded<a id="_idIndexMarker650"/> to <a id="_idIndexMarker651"/>get one line per director <span class="No-Break">and titles:</span><pre class="source-code">
+names = names.select(
+    'nconst', 'primaryName', 'birthYear', 'deathYear',
+    f.explode(f.split('knownForTitles', ',')).alias('knownForTitles')
+)
+crew = crew.select(
+    'tconst', f.explode(f.split('directors', ',')).alias('directors'), 'writers'
+)</pre></li>				<li>Now, we begin to <span class="No-Break">join tables:</span><pre class="source-code">
+basics_ratings = basics.join(ratings, on=['tconst'], how='inner')
+principals_names = (
+    principals.join(names, on=['nconst'], how='inner')
+    .select('nconst', 'tconst','ordering', 'category', 'characters', 'primaryName', 'birthYear', 'deathYear')
+    .dropDuplicates()
+)
+directors = (
+    crew
+    .join(names, on=crew.directors == names.nconst, how='inner')
+    .selectExpr('tconst', 'directors', 'primaryName as directorPrimaryName',
+                'birthYear as directorBirthYear', 'deathYear as directorDeathYear')
+    .dropDuplicates()
+)</pre><p class="list-inset">Here, we <a id="_idIndexMarker652"/>perform <a id="_idIndexMarker653"/>three join operations: (a) <strong class="source-inline">basics_ratings</strong> is created by joining the <strong class="source-inline">basics</strong> and <strong class="source-inline">ratings</strong> DataFrames on the <strong class="source-inline">tconst</strong> column (a movie identifier); (b) <strong class="source-inline">principals_names</strong> is created by joining the <strong class="source-inline">principals</strong> and <strong class="source-inline">names</strong> DataFrames on the <strong class="source-inline">nconst</strong> column (an actor identifier); we select some specific columns and remove duplicates; (c) a <strong class="source-inline">directors</strong> table is created by joining the <strong class="source-inline">crew </strong>and <strong class="source-inline">names</strong> DataFrames, where the <strong class="source-inline">directors</strong> column in <strong class="source-inline">crew</strong> matches the <strong class="source-inline">nconst</strong> column in <strong class="source-inline">names</strong>. Then, we select specific columns, rename some columns so that we can identify which data relates specifically to directors, and <span class="No-Break">remove duplicates.</span></p></li>				<li>Next, we will create a <strong class="source-inline">basics_principals</strong> table joining the <strong class="source-inline">crew</strong> and <strong class="source-inline">principals_names</strong> datasets to get a complete dataset on crew and movie performers. Finally, we create a <strong class="source-inline">basics_principals_directors</strong> table joining the <strong class="source-inline">directors</strong> <span class="No-Break">table information:</span><pre class="source-code">
+basics_principals = basics_ratings.join(principals_names, on=['tconst'], how='inner').dropDuplicates()
+basics_principals_directors = basics_principals.join(directors, on=['tconst'], how='inner').dropDuplicates()</pre></li>				<li>Finally, we write this final table as a Parquet file on Amazon S3 and stop the <span class="No-Break">Spark job:</span><pre class="source-code">
+basics_principals_directors.write.mode("overwrite").parquet("s3a://bdok-&lt;ACCOUNT_NUMBER&gt;/silver/imdb/consolidated")
+spark.stop()</pre></li>			</ol>
+			<p>The last thing to<a id="_idIndexMarker654"/> do is to create a Glue <a id="_idIndexMarker655"/>crawler that will make the information on the OBT available <span class="No-Break">for Trino.</span></p>
+			<h2 id="_idParaDest-161"><a id="_idTextAnchor161"/>Creating a Glue crawler</h2>
+			<p>We will create a<a id="_idIndexMarker656"/> Glue crawler using the AWS<a id="_idIndexMarker657"/> console. Follow the <span class="No-Break">next steps:</span></p>
+			<ol>
+				<li>Log in to AWS and go to the <strong class="bold">AWS Glue</strong> page. Then, click on <strong class="bold">Crawlers</strong> in the side menu and click on <strong class="bold">Create crawler</strong> (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.2</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer079">
+					<img alt="Figure 10.2 – AWS Glue: Crawlers page" src="image/B21927_10_02.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.2 – AWS Glue: Crawlers page</p>
+			<ol>
+				<li value="2">Next, type <strong class="source-inline">imdb_consolidated_crawler</strong> (same name as referenced in the Airflow code) for <a id="_idIndexMarker658"/>the crawler’s name and a<a id="_idIndexMarker659"/> description as you like. <span class="No-Break">Click </span><span class="No-Break"><strong class="bold">Next</strong></span><span class="No-Break">.</span></li>
+				<li>Make sure <strong class="bold">Not yet</strong> is checked for the first configuration, <strong class="bold">Is your data already mapped to Glue tables?</strong>. Then, click on <strong class="bold">Add a data source</strong> (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.3</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer080">
+					<img alt="Figure 10.3 – Adding a data source" src="image/B21927_10_03.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.3 – Adding a data source</p>
+			<ol>
+				<li value="4">In <a id="_idIndexMarker660"/>the <strong class="bold">Add data source</strong> pop-up page, make<a id="_idIndexMarker661"/> sure <strong class="bold">S3</strong> is selected. Leave <strong class="bold">Network connection</strong> blank, and in the <strong class="bold">S3 path</strong> field, type the URL to the S3 bucket we are going to write the IMDB OBT to (<strong class="source-inline">s3://bdok-&lt;ACCOUNT_NUMBER&gt;/silver/imdb/consolidated</strong>), as shown in <span class="No-Break"><em class="italic">Figure 10</em></span><em class="italic">.4</em>. Click <strong class="bold">Add an S3 data source</strong> and then <span class="No-Break">click </span><span class="No-Break"><strong class="bold">Next</strong></span><span class="No-Break">:</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer081">
+					<img alt="Figure 10.4 – S3 path configuration" src="image/B21927_10_04.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.4 – S3 path configuration</p>
+			<ol>
+				<li value="5">On the<a id="_idIndexMarker662"/> next <a id="_idIndexMarker663"/>page, click on <strong class="bold">Create new IAM role</strong> and fill it with the name you like. Be sure it is not an existing role name. Click <strong class="bold">Next</strong> (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.5</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer082">
+					<img alt="Figure 10.5 – IAM role configuration" src="image/B21927_10_05.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.5 – IAM role configuration</p>
+			<ol>
+				<li value="6">On the<a id="_idIndexMarker664"/> next<a id="_idIndexMarker665"/> page, you can choose the same database we created in <a href="B21927_09.xhtml#_idTextAnchor141"><span class="No-Break"><em class="italic">Chapter 9</em></span></a> to work with Trino (<strong class="source-inline">bdok-database</strong>). For <strong class="bold">Table name prefix</strong>, I suggest putting <strong class="source-inline">imdb-</strong> to make it easier to locate this table (<span class="No-Break"><em class="italic">Figure 10</em></span><em class="italic">.6</em>). Leave the <strong class="bold">Crawler schedule</strong> setting as <strong class="bold">On demand</strong>. <span class="No-Break">Click </span><span class="No-Break"><strong class="bold">Next</strong></span><span class="No-Break">:</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer083">
+					<img alt="Figure 10.6 – Target database and table name prefix" src="image/B21927_10_06.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.6 – Target database and table name prefix</p>
+			<ol>
+				<li value="7">In the final <a id="_idIndexMarker666"/>step, review all the information <a id="_idIndexMarker667"/>provided. If all is correct, click <span class="No-Break"><strong class="bold">Create crawler</strong></span><span class="No-Break">.</span></li>
+			</ol>
+			<p>That’s it! All set. Now, we go back to the Airflow UI in a browser and activate the DAG to see the “magic” happening (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.7</em></span><span class="No-Break">):</span></p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer084">
+					<img alt="Figure 10.7 – Running the complete DAG on Airflow" src="image/B21927_10_07.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.7 – Running the complete DAG on Airflow</p>
+			<p>After the DAG is successful, wait about 2 minutes for the crawler to stop, and then let’s search for our data <a id="_idIndexMarker668"/>using<a id="_idIndexMarker669"/> DBeaver. Let’s play a little bit and search for all John Wick movies (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.8</em></span><span class="No-Break">):</span></p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer085">
+					<img alt="Figure 10.8 – Checking the OBT in Trino with DBeaver" src="image/B21927_10_08.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.8 – Checking the OBT in Trino with DBeaver</p>
+			<p>Et voilà! You have just run your complete batch data processing pipeline connecting all the batch tools <a id="_idIndexMarker670"/>we studied so far. Congratulations! Now, we will move to building a data streaming pipeline using Kafka, Spark <a id="_idIndexMarker671"/>Streaming, <span class="No-Break">and</span><span class="No-Break"><a id="_idIndexMarker672"/></span><span class="No-Break"> Elasticsearch.</span></p>
+			<h1 id="_idParaDest-162"><a id="_idTextAnchor162"/>Building a real-time pipeline</h1>
+			<p>For the real-time<a id="_idIndexMarker673"/> pipeline, we will use the same data simulation code we used in <a href="B21927_08.xhtml#_idTextAnchor134"><span class="No-Break"><em class="italic">Chapter 8</em></span></a> with an enhanced architecture. In <span class="No-Break"><em class="italic">Figure 10</em></span><em class="italic">.9</em>, you can find an architecture design of the pipeline we are about <span class="No-Break">to build:</span></p>
+			<div>
+				<div class="IMG---Figure" id="_idContainer086">
+					<img alt="Figure 10.9 – Real-time data pipeline architecture" src="image/B21927_10_09.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.9 – Real-time data pipeline architecture</p>
+			<p>First thing, we need to<a id="_idIndexMarker674"/> create a <strong class="bold">virtual private cloud</strong> (<strong class="bold">VPC</strong>) – a private network – on AWS and set up a <strong class="bold">Relational Database Service</strong> (<strong class="bold">RDS</strong>) Postgres <a id="_idIndexMarker675"/>database that will work as our <span class="No-Break">data source:</span></p>
+			<ol>
+				<li>Go to the AWS console and navigate to the <strong class="bold">VPC</strong> page. On the <strong class="bold">VPC</strong> page, click on <strong class="bold">Create VPC</strong>, and you will get to the <span class="No-Break">configuration page.</span></li>
+				<li>Make sure <strong class="bold">VPC and more</strong> is selected. Type <strong class="source-inline">bdok</strong> in the <strong class="bold">Name tag auto-generation</strong> block and check the <strong class="bold">Auto-generate</strong> box so that AWS will generate all resources’ names according to the project name. For <strong class="bold">IPv4 CIDR block</strong>, let’s use the <strong class="source-inline">10.20.0.0/16</strong> <strong class="bold">Classless Inter-Domain Routing</strong> (<strong class="bold">CIDR</strong>) block. Leave <a id="_idIndexMarker676"/>the rest as default (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.10</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer087">
+					<img alt="Figure 10.10 – VPC basic configurations" src="image/B21927_10_10.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.10 – VPC basic configurations</p>
+			<ol>
+				<li value="3">Now, roll the <a id="_idIndexMarker677"/>page. You can leave the <strong class="bold">Availability Zones</strong> (<strong class="bold">AZs</strong>) and <a id="_idIndexMarker678"/>subnets configuration as they are (two AZs, two public subnets, and two private subnets). Make sure to mark <strong class="bold">In 1 AZ</strong> for the <strong class="bold">network address translation</strong> (<strong class="bold">NAT</strong>) gateway. Leave<a id="_idIndexMarker679"/> the <strong class="bold">S3 Gateway</strong> box marked (<span class="No-Break"><em class="italic">Figure 10</em></span><em class="italic">.11</em>). Also, leave the two DNS options marked at the end. Click on <span class="No-Break"><strong class="bold">Create VPC</strong></span><span class="No-Break">:</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer088">
+					<img alt="Figure 10.11 – NAT gateway configuration" src="image/B21927_10_11.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.11 – NAT gateway configuration</p>
+			<ol>
+				<li value="4">The VPC will take<a id="_idIndexMarker680"/> a few minutes to create. After it is successfully created, in the AWS console, navigate to the <strong class="bold">RDS</strong> page, click on <strong class="bold">Databases</strong> in the side menu, and then click on <span class="No-Break"><strong class="bold">Create Database</strong></span><span class="No-Break">.</span></li>
+				<li>On the next page, choose <strong class="bold">Standard create</strong> and choose <strong class="bold">Postgres</strong> for the database. Leave the default engine version. In the <strong class="bold">Templates</strong> section, choose <strong class="bold">Free tier</strong> because we only need a small database for <span class="No-Break">this exercise.</span></li>
+				<li>In the <strong class="bold">Settings</strong> section, choose a name for our database. In this case, I’m working with <strong class="source-inline">bdok-postgres</strong>. For the credentials, leave <strong class="source-inline">postgres</strong> as the master username, check <strong class="bold">Self managed</strong> for the <strong class="bold">Credentials management</strong> option, and choose a <a id="_idIndexMarker681"/>master password (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.12</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer089">
+					<img alt="Figure 10.12 – Database name and credentials" src="image/B21927_10_12.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.12 – Database name and credentials</p>
+			<ol>
+				<li value="7">Leave the <strong class="bold">Instance configuration</strong> and <strong class="bold">Storage</strong> sections <span class="No-Break">as default.</span></li>
+				<li>In the <strong class="bold">Connectivity</strong> section, choose <strong class="bold">Don’t connect to an EC2 compute resource</strong> as this won’t be needed for our exercise. On the <strong class="bold">VPC</strong> page, choose the VPC we just created (<strong class="source-inline">bdok-vpc</strong>) and leave the <strong class="bold">Create new DB Subnet Group</strong> option as default. In the <strong class="bold">VPC security group</strong> section, choose <strong class="bold">Create new</strong> and type <strong class="source-inline">bdok-database-sg</strong> for the security group name (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.13</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer090">
+					<img alt="Figure 10.13 – RDS subnet and security group configuration" src="image/B21927_10_13.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.13 – RDS subnet and security group configuration</p>
+			<ol>
+				<li value="9">Make sure<a id="_idIndexMarker682"/> that the <strong class="bold">Database authentication</strong> section is marked as <strong class="bold">Password authentication</strong>. All the other settings you can leave as default. At the end, AWS gives us the cost for this database if we keep it running for 30 days (<span class="No-Break"><em class="italic">Figure 10</em></span><em class="italic">.14</em>). Lastly, click <strong class="bold">Create database</strong> and wait a few minutes for the <span class="No-Break">database creation:</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer091">
+					<img alt="Figure 10.14 – Database estimate cost" src="image/B21927_10_14.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.14 – Database estimate cost</p>
+			<ol>
+				<li value="10">Finally, we need<a id="_idIndexMarker683"/> to change the configurations for the database security group to allow connections from outside the VPC other than your own IP address (the default configuration). Go to the <strong class="bold">Databases</strong> page again and click on the newly created <strong class="source-inline">bdok-postgres</strong> database. Click on the security group name to open its page (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.15</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer092">
+					<img alt="Figure 10.15 – bdok-postgres database view page" src="image/B21927_10_15.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.15 – bdok-postgres database view page</p>
+			<ol>
+				<li value="11">In the security<a id="_idIndexMarker684"/> group page, with the security group selected, roll down the page and click on the <strong class="bold">Inbound rules</strong> tab. Click on <strong class="bold">Edit inbound rules</strong> (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.16</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer093">
+					<img alt="Figure 10.16 – Security group page" src="image/B21927_10_16.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.16 – Security group page</p>
+			<ol>
+				<li value="12">On the next <a id="_idIndexMarker685"/>page, you will see an entry rule already configured with your IP address as the source. Change it to <strong class="bold">Anywhere-IPv4</strong> and click on <strong class="bold">Save rules</strong> (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.17</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer094">
+					<img alt="Figure 10.17 – Security rules configuration" src="image/B21927_10_17.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.17 – Security rules configuration</p>
+			<ol>
+				<li value="13">Last thing – to populate our database with some data, we will use the <strong class="source-inline">simulatinos.py</strong> code to generate some fake customer data and ingest it into the database. The code is available at <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/streaming">https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/streaming</a> folder. To run it, copy the database endpoint from its page on AWS, and in a terminal, type <span class="No-Break">the following:</span><pre class="source-code">
+python simulations.py --host &lt;YOUR-DATABASE-ENDPOINT&gt; -p &lt;YOUR-PASSWORD&gt;</pre></li>			</ol>
+			<p>After the code prints some data on the terminal, stop the process with <em class="italic">Ctrl</em> + <em class="italic">C</em>. Now, we are set to start <a id="_idIndexMarker686"/>working on the data pipeline. Let’s start with Kafka <span class="No-Break">Connect configurations.</span></p>
+			<h2 id="_idParaDest-163"><a id="_idTextAnchor163"/>Deploying Kafka Connect and Elasticsearch</h2>
+			<p>For Kafka to be able<a id="_idIndexMarker687"/> to <a id="_idIndexMarker688"/>access <a id="_idIndexMarker689"/>Elasticsearch, we will need to deploy another Elasticsearch cluster inside the same namespace Kafka is deployed. To do that, we will use two YAML configuration files, <strong class="source-inline">elastic_cluster.yaml</strong> and <strong class="source-inline">kibana.yaml</strong>. Both files are available in <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/streaming/elastic_deployment">https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/streaming/elastic_deployment</a> folder. Follow the <span class="No-Break">next steps:</span></p>
+			<ol>
+				<li>First, download both files and run the following commands in <span class="No-Break">a terminal:</span><pre class="source-code">
+kubectl apply -f elastic_cluster.yaml -n kafka
+kubectl apply -f kibana.yaml -n kafka</pre></li>				<li>Next, we will get an Elasticsearch automatically generated password with the <span class="No-Break">following command:</span><pre class="source-code">
+kubectl get secret elastic-es-elastic-user -n kafka -o go-template='{{.data.elastic | base64decode}}'</pre><p class="list-inset">This command will print the password in the terminal. Save it <span class="No-Break">for later.</span></p></li>				<li>Elasticsearch only works with encryption in transit. This means that we must configure certificates and keys that will allow Kafka Connect to correctly connect to Elastic. To that, first, we will get Elastic’s certificates and keys and save them locally using the <span class="No-Break">following commands:</span><pre class="source-code">
+kubectl get secret elastic-es-http-certs-public -n kafka --output=go-template='{{index .data "ca.crt" | base64decode}}' &gt; ca.crt
+kubectl get secret elastic-es-http-certs-public -n kafka --output=go-template='{{index .data "tls.crt" | base64decode}}' &gt; tls.crt
+kubectl get secret elastic-es-http-certs-internal -n kafka --output=go-template='{{index .data "tls.key" | base64decode}}' &gt; tls.key</pre><p class="list-inset">This will create three files locally, named <strong class="source-inline">ca.crt</strong>, <strong class="source-inline">tls.crt</strong>, <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">tls.key</strong></span><span class="No-Break">.</span></p></li>				<li>Now, we will use these files to create a <strong class="source-inline">keystore.jks</strong> file that will be used in the Kafka Connect cluster. In a terminal, run the <span class="No-Break">following commands:</span><pre class="source-code">
+openssl pkcs12 -export -in tls.crt -inkey tls.key -CAfile ca.crt -caname root -out keystore.p12 -password pass:BCoqZy82BhIhHv3C -name es-keystore
+keytool -importkeystore -srckeystore keystore.p12 -srcstoretype PKCS12 -srcstorepass BCoqZy82BhIhHv3C -deststorepass OfwxynZ8KATfZSZe -destkeypass OfwxynZ8KATfZSZe -destkeystore keystore.jks -alias es-keystore</pre><p class="list-inset">Note that I have set some random passwords. You can choose your own if you like. Now, you have <a id="_idIndexMarker690"/>the <a id="_idIndexMarker691"/>file<a id="_idIndexMarker692"/> we need to configure the encryption in <span class="No-Break">transit, </span><span class="No-Break"><strong class="source-inline">keystore.jks</strong></span><span class="No-Break">.</span></p></li>				<li>Next, we need to create a secret in Kubernetes using the <strong class="source-inline">keystore.jks</strong> file. To do this, in a terminal, type <span class="No-Break">the following:</span><pre class="source-code">
+kubectl create secret generic es-keystore --from-file=keystore.jks -n kafka</pre></li>				<li>Now, we are ready to deploy Kafka Connect. We have a ready-to-go configuration file named <strong class="source-inline">connect_cluster.yaml</strong>, available at <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/streaming">https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/streaming</a> folder. Two parts of this code, though, are worth mentioning. In <em class="italic">line 13</em>, we have the <strong class="source-inline">spec.bootstrapServers</strong> parameter. This parameter should be fulfilled with the service for Kafka bootstrap created by the Helm chart. To get the name of the service, type <span class="No-Break">the following:</span><pre class="source-code">
+kubectl get svc -n kafka</pre><p class="list-inset">Check if the service name matches the one in the code. If it doesn’t, adjust accordingly. Keep the <strong class="source-inline">9093</strong> port for <span class="No-Break">this service.</span></p></li>				<li>In <em class="italic">line 15</em>, you have the <strong class="source-inline">spec.tls.trustedCertificates</strong> parameter. The <strong class="source-inline">secretName</strong> value should match the exact name for the <strong class="source-inline">ca-cert</strong> secret created by the Helm chart. Check the name of this secret with the <span class="No-Break">following command:</span><pre class="source-code">
+kubectl get secret -n kafka</pre><p class="list-inset">If the name of the secret does not match, adjust accordingly. Keep the <strong class="source-inline">ca.crt</strong> value for the <span class="No-Break"><strong class="source-inline">certificate</strong></span><span class="No-Break"> parameter.</span></p></li>				<li>The last thing <a id="_idIndexMarker693"/>worth <a id="_idIndexMarker694"/>mentioning<a id="_idIndexMarker695"/> is that we will mount the <strong class="source-inline">es-keystore</strong> secret created before as a volume in Kafka Connect’s pod. The following code block sets <span class="No-Break">this configuration:</span><pre class="source-code">
+  externalConfiguration:
+    volumes:
+      - name: es-keystore-volume
+        secret:
+          secretName: es-keystore</pre><p class="list-inset">This secret must be mounted as a volume so that Kafka Connect can import the necessary secrets to connect <span class="No-Break">to Elasticsearch.</span></p></li>				<li>To deploy Kafka Connect, in a terminal, type <span class="No-Break">the following:</span><pre class="source-code">
+kubectl apply -f connect_cluster.yaml -n kafka</pre><p class="list-inset">The Kafka Connect cluster will be ready in a couple of minutes. After it is ready, it is time to configure<a id="_idIndexMarker696"/> the <strong class="bold">Java Database Connectivity</strong> (<strong class="bold">JDBC</strong>) source connector to pull data from the <span class="No-Break">Postgres database.</span></p></li>				<li>Next, prepare a<a id="_idIndexMarker697"/> YAML<a id="_idIndexMarker698"/> file that configures the JDBC source connector. Next, you will find the code for <span class="No-Break">this file:</span><p class="list-inset"><span class="No-Break"><strong class="bold">jdbc_source.yaml</strong></span></p><pre class="source-code">
+apiVersion: "kafka.strimzi.io/v1beta2"
+kind: "KafkaConnector"
+metadata:
+  name: "jdbc-source"
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-connect-cluster
+spec:
+  class: io.confluent.connect.jdbc.JdbcSourceConnector
+  tasksMax: 1
+  config:
+    key.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable: true
+    value.converter.schemas.enable: true
+    connection.url: «jdbc:postgresql://&lt;DATABASE_ENDPOINT&gt;:5432/postgres»
+    connection.user: postgres
+    connection.password: "&lt;YOUR_PASSWORD&gt;"
+    connection.attempts: "2"
+    query: "SELECT * FROM public.customers"
+    mode: "timestamp"
+    timestamp.column.name: "dt_update"
+    topic.prefix: "src-customers"
+    valincrate.non.null: "false"</pre><p class="list-inset">The connector’s configuration specifies that it should use the <strong class="source-inline">io.confluent.connect.jdbc.JdbcSourceConnector</strong> class from Confluent’s JDBC connector library. It sets the maximum number of tasks (parallel workers) for the connector to 1. The connector is configured to use JSON converters for both keys and values, with schema information included. It connects to a PostgreSQL database running on an Amazon RDS instance, using the provided connection URL, username, and password. The <strong class="source-inline">SELECT * FROM public.customers</strong> SQL query is specified, which means the connector will continuously monitor the <strong class="source-inline">customers</strong> table and stream out any new or updated rows as JSON objects in a Kafka topic named <strong class="source-inline">src-customers</strong>. The <strong class="source-inline">mode</strong> value is set to <strong class="source-inline">timestamp</strong>, which means the connector will use a timestamp column (<strong class="source-inline">dt_update</strong>) to track which rows have already been processed, avoiding duplicates. Finally, the <strong class="source-inline">validate.non.null</strong> option is set to <strong class="source-inline">false</strong>, which <a id="_idIndexMarker699"/>means<a id="_idIndexMarker700"/> the connector will not fail if it <a id="_idIndexMarker701"/>encounters <strong class="source-inline">null</strong> values in the <span class="No-Break">database rows.</span></p></li>				<li>Place the YAML file in a folder named <strong class="source-inline">connectors</strong> and deploy the JDBC connector with the <span class="No-Break">following command:</span><pre class="source-code">
+kubectl apply -f connectors/jdbc_source.yaml -n kafka</pre><p class="list-inset">You can check if the connector was correctly deployed using the <span class="No-Break">following command:</span></p><pre class="source-code">kubectl get kafkaconnector -n kafka
+kubectl describe kafkaconnector jdbc-source -n kafka</pre><p class="list-inset">We will also check if messages are correctly being delivered to the assigned Kafka topic using the <span class="No-Break">following command:</span></p><pre class="source-code">kubectl exec kafka-cluster-kafka-0 -n kafka -c kafka -it -- bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --from-beginning --topic src-customers</pre></li>			</ol>
+			<p>You should see the messages in JSON format printed on the screen. Great! We have a real-time <a id="_idIndexMarker702"/>connection with our <a id="_idIndexMarker703"/>source <a id="_idIndexMarker704"/>database. Now, it is time to set up the real-time processing layer <span class="No-Break">with Spark.</span></p>
+			<h2 id="_idParaDest-164"><a id="_idTextAnchor164"/>Real-time processing with Spark</h2>
+			<p>To correctly<a id="_idIndexMarker705"/> connect Spark with Kafka, we need to<a id="_idIndexMarker706"/> set up some authorization configuration in <span class="No-Break">Kafka’s namespace:</span></p>
+			<ol>
+				<li>The following commands create a service account for Spark and set the necessary permissions to run <strong class="source-inline">SparkApplication</strong> instances in <span class="No-Break">this environment:</span><pre class="source-code">
+kubectl create serviceaccount spark -n kafka
+kubectl create clusterrolebinding spark-role-kafka --clusterrole=edit --serviceaccount=kafka:spark -n kafka</pre></li>				<li>Next, we need to make sure that a secret with our AWS credentials is set in the namespace. Check if the secret already exists with the <span class="No-Break">following command:</span><pre class="source-code">
+kubectl get secrets -n kafka</pre><p class="list-inset">If the secret does not exist yet, create it with the <span class="No-Break">following command:</span></p><pre class="source-code">kubectl create secret generic aws-credentials --from-literal=aws_access_key_id=&lt;YOUR_ACCESS_KEY_ID&gt; --from-literal=aws_secret_access_key="&lt;YOUR_SECRET_ACCESS_KEY&gt;" -n kafka</pre></li>				<li>Now, we need to build a Spark Streaming job. To do that, as seen before, we need a YAML configuration file and PySpark code that will be stored in Amazon S3. The YAML file follows the same pattern as seen before in <a href="B21927_08.xhtml#_idTextAnchor134"><span class="No-Break"><em class="italic">Chapter 8</em></span></a>. The code for this configuration is available at <a href="https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/streaming">https://github.com/PacktPublishing/Bigdata-on-Kubernetes/tree/main/Chapter10/streaming</a> folder. Save it locally as it will be used to deploy the <span class="No-Break"><strong class="source-inline">SparkApplication</strong></span><span class="No-Break"> job.</span></li>
+				<li>The Python code for the Spark job is also available in the GitHub repository under the <a href="B21927_10.xhtml#_idTextAnchor154"><span class="No-Break"><em class="italic">Chapter 10</em></span></a><strong class="source-inline">/streaming/processing</strong> folder. It is named <strong class="source-inline">spark_streaming_job.py</strong>. This code is very similar to what we have seen in <a href="B21927_07.xhtml#_idTextAnchor122"><span class="No-Break"><em class="italic">Chapter 7</em></span></a>, but a few parts are worth commenting on. In <em class="italic">line 61</em>, we do real-time transformations on the data. Here, we are simply calculating the age of the person based on <a id="_idIndexMarker707"/>their birthdate using the <span class="No-Break">following code:</span><pre class="source-code">
+query = (
+        newdf
+        .withColumn("dt_birthdate", f.col("birthdate"))
+        .withColumn("today", f.to_date(f.current_timestamp() ) )
+        .withColumn("age", f.round(
+            f.datediff(f.col("today"), f.col("dt_birthdate"))/365.25, 0)
+        )
+        .select("name", "gender", "birthdate", "profession", "age", "dt_update")
+    )</pre></li>				<li>For the <a id="_idIndexMarker708"/>Elasticsearch sink connector to read messages on topics correctly, the messages must be in a standard Kafka JSON format with two keys: <strong class="source-inline">schema</strong> and <strong class="source-inline">payload</strong>. In the code, we will manually build this schema and concatenate it to the final version of the data in JSON format. <em class="italic">Line 70</em> defines the <strong class="source-inline">schema</strong> key and the beginning of the <strong class="source-inline">payload</strong> structure (the line will not be printed here to <span class="No-Break">improve readability).</span></li>
+				<li>In <em class="italic">line 72</em>, we transform the values of the DataFrame into a single JSON string and set it to a column <span class="No-Break">named </span><span class="No-Break"><strong class="source-inline">value</strong></span><span class="No-Break">:</span><pre class="source-code">
+    json_query = (
+        query
+        .select(
+            f.to_json(f.struct(f.col("*")))
+        )
+        .toDF("value")
+    )</pre></li>				<li>In <em class="italic">line 80</em>, we concatenate the previously defined <strong class="source-inline">schema</strong> key for the JSON string with the actual values of the data and write it in a streaming query back to Kafka <a id="_idIndexMarker709"/>in a <a id="_idIndexMarker710"/>topic <span class="No-Break">named </span><span class="No-Break"><strong class="source-inline">customers-transformed</strong></span><span class="No-Break">:</span><pre class="source-code">
+    (
+        json_query
+        .withColumn("value", f.concat(f.lit(write_schema), f.col("value"), f.lit('}')))
+        .selectExpr("CAST(value AS STRING)")
+        .writeStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", "kafka-cluster-kafka-bootstrap:9092")
+        .option("topic", "customers-transformed")
+        .option("checkpointLocation", "s3a://bdok-&lt;ACCOUNT-NUMBER&gt;/spark-checkpoint/customers-processing/")
+        .start()
+        .awaitTermination()
+    )</pre></li>				<li>Save this file as <strong class="source-inline">spark_streaming_job.py</strong> and save it in the S3 bucket we defined in the YAML file. Now, you are ready to start the real-time processing. To start the streaming query, in a terminal, type the <span class="No-Break">following command:</span><pre class="source-code">
+kubectl apply -f spark_streaming_job.yaml -n kafka</pre><p class="list-inset">You can also check if the application is running correctly with the <span class="No-Break">following commands:</span></p><pre class="source-code">kubectl describe sparkapplication spark-streaming-job -n kafka
+kubectl get pods -n kafka</pre></li>				<li>Now, check if the messages are being correctly written into the new topic with <span class="No-Break">the following:</span><pre class="source-code">
+kubectl exec kafka-cluster-kafka-0 -n kafka -c kafka -it -- bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --from-beginning --topic customers-transformed</pre></li>			</ol>
+			<p>That’s it! We have<a id="_idIndexMarker711"/> the real-time processing layer up <a id="_idIndexMarker712"/>and running. Now, it is time to deploy the Elasticsearch sink connector and get the final data into Elastic. Let’s get <span class="No-Break">to it.</span></p>
+			<h2 id="_idParaDest-165"><a id="_idTextAnchor165"/>Deploying the Elasticsearch sink connector</h2>
+			<p>Here, we<a id="_idIndexMarker713"/> will<a id="_idIndexMarker714"/> begin with the YAML configuration file for the Elasticsearch sink connector. Most of the “heavy lifting” was done earlier with the configuration of the <span class="No-Break">secrets needed:</span></p>
+			<ol>
+				<li>Create a file <a id="_idIndexMarker715"/>named <strong class="source-inline">es_sink.yaml</strong> under the <strong class="source-inline">connectors</strong> folder. Here is <span class="No-Break">the code:</span><p class="list-inset"><span class="No-Break"><strong class="bold">es_sink.yaml</strong></span></p><pre class="source-code">
+apiVersion: "kafka.strimzi.io/v1beta2"
+kind: "KafkaConnector"
+metadata:
+  name: "es-sink"
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-connect-cluster
+spec:
+  class: io.confluent.connect.elasticsearch.ElasticsearchSinkConnector
+  tasksMax: 1
+  config:
+    topics: "customers-transformed"
+    connection.url: "https://elastic-es-http.kafka:9200"
+    connection.username: "elastic"
+    connection.password: "w6MR9V0SNLD79b56arB9Q6b6"
+    batch.size: 1
+    key.ignore: "true"
+    elastic.security.protocol: "SSL"
+    elastic.https.ssl.keystore.location: "/opt/kafka/external-configuration/es-keystore-volume/keystore.jks"
+    elastic.https.ssl.keystore.password: "OfwxynZ8KATfZSZe"
+    elastic.https.ssl.key.password: "OfwxynZ8KATfZSZe"
+    elastic.https.ssl.keystore.type: "JKS"
+    elastic.https.ssl.truststore.location: "/opt/kafka/external-configuration/es-keystore-volume/keystore.jks"
+    elastic.https.ssl.truststore.password: "OfwxynZ8KATfZSZe"
+    elastic.https.ssl.truststore.type: "JKS"</pre><p class="list-inset">The part I think is worth some attention here is from <em class="italic">line 20</em> on. Here, we are configuring the SSL/TLS settings for the connection to Elasticsearch. The <strong class="source-inline">keystore.location</strong> and <strong class="source-inline">truststore.location</strong> properties specify the paths to the <strong class="source-inline">keystore</strong> and <strong class="source-inline">truststore</strong> files, respectively (which, in this case, are the same). The <strong class="source-inline">keystore.password</strong>, <strong class="source-inline">key.password</strong>, and <strong class="source-inline">truststore.password</strong> properties provide the passwords for accessing these files. The <strong class="source-inline">keystore.type</strong> and <strong class="source-inline">truststore.type</strong> properties specify the type of the <strong class="source-inline">keystore</strong> and <strong class="source-inline">truststore</strong> files, which in this case is <strong class="source-inline">JKS</strong> (<span class="No-Break">Java KeyStore).</span></p></li>				<li>Now, everything<a id="_idIndexMarker716"/> is set to<a id="_idIndexMarker717"/> get this connector up and running. In a terminal, type <span class="No-Break">the following:</span><pre class="source-code">
+kubectl apply -f connectors/es_sink.yaml -n kafka</pre><p class="list-inset">You can also check if the connector was correctly deployed with the <span class="No-Break">following command:</span></p><pre class="source-code">kubectl describe kafkaconnector es-sink -n kafka</pre></li>				<li>Now, get the load balancer’s URL and access the Elasticsearch UI. Let’s see if our data got <span class="No-Break">correctly ingested:</span><pre class="source-code">
+kubectl get svc -n kafka</pre></li>				<li>Once you are logged in to Elasticsearch, choose <strong class="bold">Dev Tools</strong> in the side menu and run the <strong class="source-inline">GET _cat/indices</strong> command. If all is well, the new <strong class="source-inline">customers-transformed</strong> index will show up in the output (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.18</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer095">
+					<img alt="Figure 10.18 – New index created in Elasticsearch" src="image/B21927_10_18.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.18 – New index created in Elasticsearch</p>
+			<ol>
+				<li value="5">Now, let’s create <a id="_idIndexMarker718"/>a new <a id="_idIndexMarker719"/>data view with this index. In the side menu, choose <strong class="bold">Stack Management</strong> and click on <strong class="bold">Data Views</strong>. Click on the <strong class="bold">Create data </strong><span class="No-Break"><strong class="bold">view</strong></span><span class="No-Break"> button.</span></li>
+				<li>Set <strong class="source-inline">customers-transformed</strong> for the data view name and again <strong class="source-inline">customers-transformed</strong> for the index pattern.  Select the <strong class="source-inline">dt_update</strong> column as the timestamp field. Then, click on <strong class="bold">Save data view to Kibana</strong> (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.19</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer096">
+					<img alt="Figure 10.19 – Creating a data view on Kibana" src="image/B21927_10_19.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.19 – Creating a data view on Kibana</p>
+			<ol>
+				<li value="7">Now, let’s<a id="_idIndexMarker720"/> check the<a id="_idIndexMarker721"/> data. In the side menu, choose <strong class="bold">Discover</strong> and then select the newly created <strong class="source-inline">customers-transformed</strong> data view. Remember to set the date filter to a reasonable value, such as 1 year ago. You can play with some time-based subsets of the data if you are doing a larger indexing. The data should be shown in the UI (<span class="No-Break"><em class="italic">Figure 10</em></span><span class="No-Break"><em class="italic">.20</em></span><span class="No-Break">):</span></li>
+			</ol>
+			<div>
+				<div class="IMG---Figure" id="_idContainer097">
+					<img alt="Figure 10.20 – customers-transformed data shown in Kibana" src="image/B21927_10_20.jpg"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.20 – customers-transformed data shown in Kibana</p>
+			<p>Now, add more data by running the <strong class="source-inline">simulations.py</strong> code again. Try to play a little bit and build some cool dashboards to visualize <span class="No-Break">your data.</span></p>
+			<p>And that<a id="_idIndexMarker722"/> is it! You just ran an entire<a id="_idIndexMarker723"/> real-time data pipeline in Kubernetes using Kafka, Spark, and Elasticsearch. Cheers, <span class="No-Break">my friend!</span></p>
+			<h1 id="_idParaDest-166"><a id="_idTextAnchor166"/>Summary</h1>
+			<p>In this chapter, we brought together all the knowledge and skills acquired throughout the book to build two complete data pipelines on Kubernetes: a batch processing pipeline and a real-time pipeline. We started by ensuring that all the necessary tools, such as a Spark operator, a Strimzi operator, Airflow, and Trino, were correctly deployed and running in our <span class="No-Break">Kubernetes cluster.</span></p>
+			<p>For the batch pipeline, we orchestrated the entire process, from data acquisition and ingestion into a data lake on Amazon S3 to data processing using Spark, and finally delivering consumption-ready tables in Trino. We learned how to create Airflow DAGs, configure Spark applications, and integrate different tools seamlessly to build a complex, end-to-end <span class="No-Break">data pipeline.</span></p>
+			<p>In the real-time pipeline, we tackled the challenges of processing and analyzing data streams in real time. We set up a Postgres database as our data source, deployed Kafka Connect and Elasticsearch, and built a Spark Streaming job to perform real-time transformations on the data. We then ingested the transformed data into Elasticsearch using a sink connector, enabling us to build applications that can react to events as <span class="No-Break">they occur.</span></p>
+			<p>Throughout the chapter, we gained hands-on experience in writing code for data processing, orchestration, and querying using Python and SQL. We also learned best practices for integrating different tools, managing Kafka topics, and efficiently indexing data <span class="No-Break">into Elasticsearch.</span></p>
+			<p>By completing the exercises in this chapter, you have acquired the skills to deploy and orchestrate all the necessary tools for building big data pipelines on Kubernetes, connect these tools to successfully run batch and real-time data processing pipelines, and understand and apply best practices for building scalable, efficient, and maintainable <span class="No-Break">data pipelines.</span></p>
+			<p>In the next chapter, we will discuss how we can use Kubernetes to deploy <strong class="bold">generative AI</strong> (<span class="No-Break"><strong class="bold">GenAI</strong></span><span class="No-Break">) applications.</span></p>
+		</div>
+	</body></html>
