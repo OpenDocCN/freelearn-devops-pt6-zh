@@ -1,0 +1,974 @@
+- en: '*Chapter 7*: Extending and Scaling Crossplane'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The chapter will deep-dive into a few characteristics that make Crossplane extendable
+    and scalable. The initial sections of the chapter will discuss developing new
+    Crossplane providers for external resources that are not yet supported. We will
+    examine the standards to be considered while designing a provider and the approaches
+    available to make provider development comparatively comfortable. The following
+    sections will cover configuration, the method to package the XR/Claim APIs, and
+    how to test our XR. The final part of the chapter will cover different patterns
+    supported by Crossplane to scale the control plane into a multi-tenant ecosystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following are the topics covered in the chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building a new provider
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: XRD detailed
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A framework to build a provider
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Packaging and distribution of XR/Claim
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Testing the configurations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Multi-tenant control plane patterns
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building a new provider
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Crossplane providers are nothing but a bundle of related **Managed Resources**
+    (**MRs**). MRs are opinionated custom controllers and custom resources combined
+    into one-to-one mapping with external resources, enabling us to manage those resources
+    from Kubernetes. Onboarding new resources as MRs into an existing or new provider
+    is a time-consuming process. The Crossplane community has worked hard to onboard
+    most of the essential resources with Crossplane-native controllers in the last
+    few years. With the recent development in the Crossplane community to auto-generate,
+    Crossplane providers from Terraform provider enabled 100% resource coverage for
+    all cloud resources. In addition to the provider for all primary cloud providers,
+    we also have providers for other external resources, such as GitLab, Helm, SQL,
+    and Argo CD. Visit the Crossplane website or Upbound Registry to explore the available
+    providers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we attempt to automate all application and infrastructure concerns, we
+    might end up in a scenario where some external resources do not have a provider.
+    You might decide to onboard a new provider yourself – for example, currently,
+    there is no provider to manage Bitbucket repository resources. This section of
+    the chapter will cover the essential aspects of the **Crossplane Resource Model**
+    (**XRM**) required for new provider developers and explore the frameworks available
+    to ease the development process. First, we will look at XRM, an opinionated subset
+    of the **Kubernetes Resource Model** (**KRM**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs: []
+  type: TYPE_NORMAL
+- en: Looking at the standards defined by the XRM to support the new provider development
+    also enables us to understand existing MRs much better. It will further help us
+    build our XR with the same XRM standards. Following these standards with the XRs
+    will enable a uniform and easy understanding for the consuming teams.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following section will dive into the details of the XRM specification.
+  prefs: []
+  type: TYPE_NORMAL
+- en: XRM detailed
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Being an extension of the KRM, XRM inherits most of the standards. As discussed
+    in *Chapters 3* and *4*, Crossplane inherits many standards from the Kubernetes
+    CRDs. The opinionated XRM standards over the basic Kubernetes standards define
+    a uniform bridge between Kubernetes and the external resource. The XRM standards
+    cover the following characteristics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuration fidelity
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Spec and status configuration
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Naming the custom and external resources
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configuration ownership
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sensitive input and output fields
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We can dive into the details of each of these characteristics in the following
+    sections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuration fidelity
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The MR should have all possible fields available for configuration in the external
+    resource API. It delivers every configuration combination at the control plane
+    level. We should leave the abstractions to encode policy and the recipe creation
+    for the platform developers via XR. Every field available for configuration in
+    the external resource API should be present in the MR with the same name. Having
+    the same name for the attributes will make it easy for users to compare and troubleshoot.
+    Before starting a new provider’s development, it’s essential to ensure that the
+    resources have well-defined CRUD APIs with granular controls. Control theory implementation
+    cannot work well without such API standards. The following section will talk more
+    about the API input and output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spec and status configuration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Spec** is the configuration section that acts as the input of the API, and
+    **status** is the attributes that are the output of the API. Let’s look at the
+    spec section first. We can have three types of configuration knobs in the spec
+    section – initial initialization, late initialization, and immutable configuration
+    are the three types. Initial initializations are the configurations used while
+    resource provisioning as configured by the users. Many of the parameters fall
+    under this category. The database version in RDS provisioning can be an example
+    of initial initializations. The late-initialization attributes are initialized
+    with default values by the provider when the resource is created and later updated
+    with the actual value, configured by the user in the reconciliation loop. It is
+    typically helpful for external resource fields that are only available after creating
+    the resource. Resource tagging with labels is the most common example.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Immutable configurations are attributes whose value cannot be changed after
+    initial provisioning – for instance, we cannot change the RDS region after creating
+    the resource. Such configurations should be marked immutable in the MR. A reconciliation
+    failure event is made if a user attempts to update the same. The mandatory fields
+    required from Create and Update API operations should be marked as required fields
+    in the MR. Optional fields should be of `pointer` type – a standard inherited
+    from Kubernetes. We do this because some non-pointer types may resolve to zero
+    when the user does not specify any value – for example, we should use `*bool`
+    instead of `bool`. This concern is not applicable for a required field, as the
+    value has to be specified by the user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Information
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some fields can hold `struct` type value, as the underlying resource API supports
+    it that way. We saw an example of this in the previous chapter. The `Policy` object
+    from AWS IAM was taking a JSON policy as an input.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The *status* section represents the current state of the external resource.
+    It holds attributes observed back from the external resource after every reconciliation
+    loop. The fields that can be recreated if deleted are eligible candidates to be
+    added to the *status* section. If a configuration and its sub-attribute represent
+    another external resource, we should not include the relevant fields both in *spec*
+    and *stats* – for example, we can also cocreate the subnet while creating Azure
+    Virtual Network. In other words, the cloud API for Azure Virtual Network also
+    has a section to define the subnet. From the Crossplane control pane, we should
+    manage this as two unique resources with references.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Naming the custom and external resource
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Each MR represents a unique kind, categorized under a specific API group, and
+    it can exist under multiple versions. It is a behavior that is inherited from
+    the Kubernetes standards. We have two important names when we create an object
+    of a specific MR kind:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The name of the resource within the control plane
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The name of the resource in the external ecosystem
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The resource name in the control plane can also be called the **Custom Resource**
+    (**CR**) name. At the end of the day, be it MR, Claim, or XR, it’s an opinionated
+    CR. When the user creates the MR/XR/Claim, they will provide a name parallel to
+    the kind, version, and API group. This name will uniquely identify a resource
+    within the cluster. If it’s an MR/XR, the name is unique throughout the cluster.
+    In the case of a Claim, it’s unique per namespace. As these names are not autogenerated,
+    the consuming teams may choose a random value. Such random names are challenging
+    to cross-reference resources. A predictable naming strategy and labels will help
+    resource references be straightforward. We can govern such standers in the configuration
+    using admission controller tools such as **Open Policy Agent** (**OPA**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The external name is the resource’s name in the external ecosystem. The resource
+    provider may or may not allow us to influence the name – for example, with the
+    S3 bucket, we can determine the bucket’s name in AWS. We control this name through
+    properties such as ID, name, or UID. If the user does not configure these attributes,
+    the controller can autogenerate with the <`CR Name>-<Namespace>-<Random 5 character
+    assigned by Kubernetes>` template. Amazon VPC is a typical example where we cannot
+    influence the name. AWS generates a unique ID called `vpcID` as a name. If we
+    wish to link our MR/XR/Claim to an existing external resource, we can add an `crossplane.io`/`external-name`
+    annotation with the resource’s name to the external ecosystem. If a resource with
+    a specified name does not exist, a new resource with the provided name is created.
+    If it’s a resource where naming is not allowed, the final name is copied back
+    to the `crossplane.io/external-name` attribute. When designing our new MR, we
+    need to keep these naming behaviors in mind.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Information
+  prefs: []
+  type: TYPE_NORMAL
+- en: The KRM also recommends adding labels to the resources in the external environment
+    with the kind, the CR name, and the provider name. It will help use cases such
+    as identifying resources in the external environment, bulk operations based on
+    the label, monitoring, and debugging. Note that all resources may not support
+    such tags.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuration ownership
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Some fields are relevant only to the control plane, both in the Spec and the
+    Status section – for example, `ProviderConfigRef` in the Spec section indicates
+    which credentials to use. We have other attributes that apply to the external
+    resource only. There can be a conflict between these fields – for example, `CreationTimestamp`
+    can exist at both the cluster and external resource levels. The KRM proposes the
+    `spec.forProvider` and the `status.atProvider` sections as the owner for the external
+    resource-related fields.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sensitive input and output fields
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: There can be sensitive information in both the input and the output fields of
+    an MR. Configuring the database master password is an example of sensitive data
+    in the MR input. The IAM AccessKey credential is an example of sensitive data
+    in the MR output. It is not sensible to directly expose these field values in
+    the MR/XR/Claim. In the case of sensitive information in the MR output, the Kubernetes
+    Secret should store the data. The Crossplane community is also coming up with
+    *vault* integrations to publish credentials. Similarly, input fields with secret
+    information should be confidential references. The controller should fetch the
+    value for such fields from the secret source. The naming convention for such a
+    field in the MR should be `<Field name>SecretRef`. The `MasterPasswordSecretRef`
+    field in the `RDSInstance` MR is an example of such a field.
+  prefs: []
+  type: TYPE_NORMAL
+- en: KRM is an area that evolves continuously with new requirements. Creating KRM
+    standards to support resource reference in a Terraform-generated Crossplane provider
+    is in progress. Another example of an in-progress standard is using Crossplane
+    only as an observer, especially for existing resources managed by other automation
+    tools such as Helm and Terraform. Regularly checking the Crossplane Slack channel
+    or release notes can keep us updated on evolving standards. This concludes the
+    KRM discussion. In the next section, we will look at a couple of approaches available
+    for provider development.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Framework to build a provider
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To bring down the cognitive load required to develop a new provider, the Crossplane
+    community has identified a couple of comparatively painless ways, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`ProviderConfig`, which can read credentials from the Kubernetes Secrets to
+    manage external provider authentication and authorization. It also has a sample
+    MR along with a controller. We can add all our new MRs and respective controllers
+    with appropriate control theory implementation, using the CRUD APIs of the external
+    resources. The video at [https://www.youtube.com/watch?v=dhuqH308Tc0](https://www.youtube.com/watch?v=dhuqH308Tc0)
+    walks us through the provider development using provider template with a hands-on
+    example.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Create`, `Read`, `Update`, and `Delete` operations on the external resource.
+    The configuration knobs from the MR are converted to JSON and used as input to
+    the `CRUD` operations, using the Terraform CLI. Step-by-step instruction on how
+    to develop such a provider is available at [https://github.com/crossplane/terrajet/blob/main/docs/generating-a-provider.md](https://github.com/crossplane/terrajet/blob/main/docs/generating-a-provider.md).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Most of us may not have a requirement to develop a provider ourselves. Already,
+    we have 100% resource coverage for all significant cloud provider resources. The
+    Crossplane community will create a Terrajet Crossplane provider soon for every
+    available Terraform provider, provided we have a less cognitive load. If you still
+    have a requirement, this section will have guided you in the appropriate direction.
+    Additionally, learning the KRM will have taken your understanding of MR to the
+    next level. The book’s next section will cover ways to package and distribute
+    the XRs/Claims.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Packaging and distribution of XR/Claim
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Crossplane configuration is a way to package our XR and Claim APIs. This packaging
+    will help us reliably establish these APIs into any Kubernetes cluster where Crossplane
+    is enabled. Crossplane configuration is primarily a composition distribution mechanism.
+    Along with the distribution, we also can manage versions and dependencies. We
+    may end up using Crossplane configuration for three different use cases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is useful when a large organization wants more than one control plane distributed
+    across different team boundaries.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It is also useful when someone is interested in building a control plane platform
+    to sell as a product.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Open source developers who want to share their XR/Claim recipes with the community
+    can also use the Crossplane configuration.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This section of the chapter will go through a hands-on journey so that you can
+    learn Crossplane configurations. To start with, let’s look at packaging and distribution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Packaging and distribution
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'With Crossplane configurations, we pack the compositions as an OCI-compliant
+    image for distribution. Packing the compositions as configurations is a simple
+    two three-step process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As a first step, create a `crossplane.yaml` file. It’s a simple YAML of `Configuration.meta.pkg.crossplane.io`
+    kind. It defines the configuration name, the minimum-supported Crossplane version,
+    and the dependencies. Both the provider and another configuration can be defined
+    as dependencies. The following is the sample configuration YAML:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This example is available at [https://github.com/PacktPublishing/End-to-End-Automation-with-Kubernetes-and-Crossplane/tree/main/Chapter07/Hand-on-examples/configuration](https://github.com/PacktPublishing/End-to-End-Automation-with-Kubernetes-and-Crossplane/tree/main/Chapter07/Hand-on-examples/configuration).
+    We will pack our last Amazon S3 bucket example in a configuration named `aws-bucket`,
+    which is designed to work in any Crossplane version greater than or equal to v1.6.0\.
+    The AWS Crossplane provider is added as a dependency for the package.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we will execute the Crossplane CLI command build to generate the `configuration`
+    package. We will run the command in the folder where we have the `crossplane.yaml`
+    file and all our compositions. This step will output a file with a `**.xpkg` extension.
+    Once the package is generated, the next step is to push the package into any OCI-compliant
+    image registry. The Crossplane CLI `push` command will create an OCI-compliant
+    image and move it into the registry. The following are the commands to build and
+    push the configuration:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'If you don’t have the Crossplane CLI set up, use the following two commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Refer to the following screen for the installation in macOS:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.1 – The Crossplane CLI install'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B17830_07_01.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.1 – The Crossplane CLI install
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that the default image registry is the Docker hub. You should log in to
+    the Docker hub in your CLI using `docker login`. You can see that the image is
+    available at [https://hub.docker.com/repository/docker/arunramakani/aws-bucket](https://hub.docker.com/repository/docker/arunramakani/aws-bucket).
+    You can also configure another image registry of your choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Information
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that each composition and XRD combination is kept in different folders
+    (`Bucket` and `IAM`). It will help the `build` command map and validate the composition
+    and XRD combination. You will see a build error if all compositions and XRD are
+    kept in the same folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Refer to the following screenshot, where we create the configuration and OCI-compliant
+    image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.2 – Package and push the OCI configuration image'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B17830_07_02.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.2 – Package and push the OCI configuration image
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the configuration is available as an image in the registry, we can install
+    the `configuration` package into the Crossplane control plane and start using
+    the composition. We will look at that in detail in the following section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing and using the configuration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We have two options to install the configuration in the Crossplane ecosystem.
+    The first option is to use the following Crossplane CLI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The CLI takes the name and image as two parameters for installation. It will
+    even install the dependent AWS provider that we defined. Once you have the configuration
+    installed, look at the details of the configuration and ConfigurationRevision
+    with the following command. Every configuration update will create a new ConfigurationRevision,
+    and only one revision will be active at a given time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.3 – Install configuration'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B17830_07_03.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.3 – Install configuration
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The second way to install configuration is using the `Configuration.pkg.crossplane.io`
+    kind YAML. Note that there are two configuration kinds in the Crossplane core
+    with different API groups. The first API group, `meta.pkg.crossplane.io`, is used
+    for building the `Configuration` package. The second API group, `pkg.crossplane.io`,
+    is used for installing the `Configuration` package. The following is a sample
+    configuration YAML:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have not used the `PackagePullPolicy`, `RevisionActivationPolicy`, and `RevisionHistoryLimit`
+    attributes in the CLI. `PackagePullPolicy` works very similar to `ImagePullPolicy`
+    with other Kubernetes kinds. `RevisionActivationPolicy` can hold either `Automatic`
+    or `Manual`, with `Automatic` as the default value. When it is automatic, the
+    new XRs from the package are installed, XRs from the old package will become inactive,
+    and the new XRs will become active to take charge of the resource reconciliation.
+    You will see two ConfigurationRevisions after upgrading the `Configuration` package
+    by one version increment. When a new ConfigurationRevision is created, you can
+    also see that CompositionRevision is made for the changing composition. Refer
+    to the following screenshot with one active and one inactive ConfigurationRevision:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.4 – Configuration update and revision'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B17830_07_04.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.4 – Configuration update and revision
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we have set `RevisionActivationPolicy` in `Manual` mode, we must edit the
+    revision manually to make it `Active`. The `RevisionHistoryLimit` field is the
+    maximum number of revisions that Crossplane will keep track of. The following
+    section will investigate ways to test Crossplane configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing the configurations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The platform developers require a way to test the XRs and configurations they
+    develop. Also, many teams might be interested in practicing test-driven development.
+    This section of the book will explore **KUbernetes Test TooL** (**KUTTL**) as
+    the test tool for practicing test-driven development and configuration-testing
+    pipelines. KUTTL is a declarative test tool that tests for the best Kubernetes
+    controller states and CRDs. The critical feature of KUTTL is writing declarative
+    test cases against the CR. Being able to work well with CRs and CRDs, KUTTL can
+    also work well with XR, XRDs, and Claim. First, we will look at the basic installation
+    and setup required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing KUTTL
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The KUTTL CLI is an extension to kubectl. To install KUTTL, we will first install
+    Krew. This is a kubectl plugin manager that helps discover, install, and update
+    kubectl plugins. To install on a macOS/Linux operating system, run the following
+    script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Set the path, making sure we can access Krew in the terminal, using the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The instruction to install Krew in other operating systems is different. To
+    download and install Krew on different operating systems, refer to [https://krew.sigs.k8s.io/docs/user-guide/setup/install/](https://krew.sigs.k8s.io/docs/user-guide/setup/install/).
+    Once you have Krew installed, the KUTTL set is a simple step – executing the following
+    instruction:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: After executing the preceding command, you will have KUTTL successfully installed
+    in your local environment. The next step is to look at the anatomy of the KUTTL
+    project and the basics of setting up tests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: KUTTL test setup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'There are three critical components to the KUTTL setup. `TestSuite.kuttl.dev`
+    is the first component and the core configuration. It holds the configuration
+    for the entire test suite. The following is a sample `TestSuite` configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note that the name of the `TestSuite` file should be `kuttl-test.yaml` to enable
+    the KUTTL CLI to look for the test configurations. `StartKIND`, `KindContext`,
+    and `SkipClusterDelete` are some of the configurations that defined the Kubernetes
+    cluster for testing. We use an existing Kubernetes cluster from GCP in the preceding
+    example. With `KindContext`, I have specified the name of the Kubernetes cluster
+    from kubeconfig. Instead, we can create a new kind Kubernetes cluster for testing
+    and destroy the same at the end of testing. It will be beneficial for test pipelines.
+    Refer to KUTTL documentation to understand full cluster configuration options.
+    The `Commands` section of the `TestSuite` file will enable us to run all initialization.
+    We are initializing `ProviderConfig` in our hands-on example. Look at the complete
+    example at [https://github.com/PacktPublishing/End-to-End-Automation-with-Kubernetes-and-Crossplane/tree/main/Chapter07/Hand-on-examples/test-configuration](https://github.com/PacktPublishing/End-to-End-Automation-with-Kubernetes-and-Crossplane/tree/main/Chapter07/Hand-on-examples/test-configuration).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that our `ProviderConfig` does not carry any actual AWS credentials. `ProviderConfig`
+    is available in the `init` folder in the Git repository. We initialize `ProviderConfig`
+    to ensure that the Crossplane will not complain about missing configuration. Remember
+    that scope of testing is to validate whether our XR and Claim are correctly converted
+    into an MR. In other words, we will be testing our composition logic. If an MR
+    will create the resource as expected, it is the scope of provider testing. If
+    we use a dynamic kind Kubernetes cluster, we should install Crossplane, AWS provider,
+    and the configuration as part of the initialization. It is out of scope for us,
+    as we use an existing cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs: []
+  type: TYPE_NORMAL
+- en: Provide the actual cloud credentials in `ProviderConfig` if you wish to do end-to-end
+    testing, or if your test case depends on some status field that we will get back
+    from the external resource.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second key component is the test folders and test steps. KUTTL will scan
+    for the test case from all the subfolders of the `TestDirs` folder specified in
+    the `TestSuite` file. Each folder is a test case. In our case, we have two test
+    folders. The `bucket-failure` folder holds a test case that will fail, and `bucket-success`
+    contains a test case that will pass. Each test case can have multiple steps executed
+    in a specified order. KUTTL can recognize the step number from the filename prefix.
+    Note that the files inside the test case folder (in the Git example) have a numerical
+    prefix.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The final section is to implement the individual test step. Each test step
+    can have the configuration we apply in the Kubernetes cluster (XR/Claim) and the
+    respective assert configurations (MR). The asserts do not have to define the whole
+    MR but can have the fields we want to validate. We can define multiple assert
+    configurations in a single assert step file. In the preceding example, we apply
+    the bucket Claim and validate whether the composition patches the bucket name
+    correctly (refer to the `bucketwithcredential` folder from the Git repository
+    example). We can even assert and validate status fields in the MR, provided with
+    a valid `ProviderConfig`. Execute the test from the root folder where we have
+    the `kuttl-test.yaml` file with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that the `bucket-failure` folder assert configuration has a different
+    bucket name different from the bucket Claim; hence, the test case will fail. Refer
+    to the following screenshot, where one test case fails and the other succeeds:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.5 – The KUTTL test case'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B17830_07_05.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.5 – The KUTTL test case
+  prefs: []
+  type: TYPE_NORMAL
+- en: Information
+  prefs: []
+  type: TYPE_NORMAL
+- en: We just covered the fundamental aspects of KUTTL. To explore the tool in more
+    detail, visit [https://kuttl.dev/docs/](https://kuttl.dev/docs/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following section will discuss the possibility of using KUTTL as a **Test-Driven
+    Development** (**TDD**) tool for XR/Claim development.
+  prefs: []
+  type: TYPE_NORMAL
+- en: TDD
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'TDD is a software development practice where developers develop test cases
+    first from the requirements and then write code that passes the test cases. It
+    is an iterative model of development where we start with failing test cases and
+    slowly evolve code to pass. There are a lot of benefits to using TDD, including
+    clean code and full test coverage. It’s beyond the scope of this book to look
+    at all the benefits. This section will focus on using TTD in XR development. The
+    following figure represents the iterative TDD process for an XR/Claim:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.6 – TDD for XR/Claim'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B17830_07_06.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.6 – TDD for XR/Claim
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following steps describe the stages in TDD for XR/Claim:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Define the API scope and boundary using the trade-off analysis discussed in
+    the previous chapter.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create the XR/Claim API specification using the XRD configuration, using the
+    scope and boundary definition. It will be a requirement from the perspective of
+    API consumers.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Define the final MR state of each resource in the composition. This only has
+    an API implementation requirement. Organization policy and compliance requirements
+    will become part of the implementation requirement.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Develop the KUTTL test cases for all the requirements defined in *Steps 2* and
+    *3*. Run the test cases to see that all instances fail.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Develop the compositions and rerun the test cases. Iterate until all the test
+    cases succeed.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Refine the API scope and boundary requirements to continue the cycle.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We can combine KUTTL with other Kubernetes ecosystem tools such as Skaffold
+    to make our TDD easy. This concludes our discussion on testing the configuration/composition.
+    In the final section of the chapter, we will cover the different ways to scale
+    Crossplane into a multi-tenant ecosystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-tenant control plane patterns
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Typically, multiple product teams will have to access the control plane platform
+    to take advantage of the composition recipes built by the platform engineers.
+    The section covers different patterns that Crossplane supports to enable a multi-tenant
+    control plane. The following are the key two patterns Crossplane users can choose
+    from:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-tenancy with a single cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Multi-tenancy with multiple clusters
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Multi-tenancy with a single cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Multi-tenancy with a single cluster is a pattern where all the product teams
+    use a single Crossplane control plane. The control plane is configured to enable
+    multi-tenancy in the same cluster itself. The following facts describe what this
+    setup will look like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The product teams are isolated with the namespace Kubernetes construct. Each
+    product team should be assigned a namespace.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As mentioned previously in an earlier discussion about the difference between
+    XR and Claim, Claims are namespace-scoped and the XR is of cluster scope.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Also, we discussed earlier that XRs are meant to be used only by the platform
+    team.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Precise RBAC can be applied to the Claim API in the given namespace, based on
+    team member roles and the API group.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An organization can implement RBAC, either using the default Kubernetes RBAC
+    API or a general-purpose policy engine, such as the OPA (Gatekeeper).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In addition to the preceding points, each team should have different external
+    provider credentials to track the usage, cost, monitoring, audit, and so on. It
+    can be easily achieved using the ProviderConfig named after the namespaces. We
+    should also be patching the ProviderConfigRef from the Claims namespace reference
+    in the composition. The following figure shows the architecture that can help
+    you visualize the single cluster multi-tenancy:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.7 – The single cluster multi-tenancy'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B17830_07_07.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.7 – The single cluster multi-tenancy
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following is the code snippet referring to the pattern:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Under each resource in the composition, patch `ProviderConfigRef` with the
+    Claims namespace dynamically:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: The following section will look at the multi-tenancy setup with multiple clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-tenancy with multiple clusters
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Some organization setups may have multiple independent business units with
+    different infrastructure requirements, such as monitoring, cost management, and
+    compliance. We might have the condition to set up multiple Crossplane control
+    planes. The following two basic patterns in Crossplane will support such an environment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Configuration**: We can leverage the XR/Claim packaging mechanism discussed
+    earlier in this chapter to develop and distribute XR/Claim reliably.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Nested crossplane**: One central Crossplane control plane can manage other
+    Kubernetes clusters for each business unit. We can use the Helm provider from
+    the central Crossplane cluster to set up Crossplane across the other clusters.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We can also attempt multiple Crossplane setups within a single cluster, one
+    for every tenant/team. We can try this with tools such as `vcluster` or similar
+    tools. It is an advanced pattern. What we attempt here is Kubernetes inside another
+    Kubernetes. If you have a similar use case, try the setup using vcluster. This
+    concludes the multi-tenancy discussion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter discussed various aspects that extend and scale Crossplane. We
+    have taken a step-by-step journey to learn Crossplane from its basics to many
+    advanced concepts in the last few chapters. We covered many nuances of building
+    a state-of-the-art control plane for automation using Kubernetes and Crossplane.
+    This takes us to the end of part 2 of the book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The book’s third part will explore an approach to managing configuration along
+    with some configuration management tools and recipes. It will be a journey to
+    unify application and infrastructure automation with Crossplane and other configuration
+    management tools.
+  prefs: []
+  type: TYPE_NORMAL

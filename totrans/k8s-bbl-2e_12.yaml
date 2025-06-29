@@ -1,0 +1,1616 @@
+- en: '12'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: StatefulSet – Deploying Stateful Applications
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we explained how to use a Kubernetes cluster to run
+    *stateless* workloads and applications and how to use Deployment objects for this
+    purpose. Running stateless workloads in the cloud is generally easier to handle,
+    as any container replica can handle the request without taking any dependencies
+    on the results of previous operations by the end user. In other words, every container
+    replica would handle the request in an identical way; all you need to care about
+    is proper load balancing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, the main complexity is in managing the *state* of applications. By
+    *state,* we mean any stored *data* that the application or component needs to
+    serve the requests, and it can be modified by these requests. The most common
+    example of a stateful component in applications is a database – for example, it
+    can be a **relational MySQL database** or a **NoSQL MongoDB database**. In Kubernetes,
+    you can use a dedicated object to run *stateful* workloads and applications: StatefulSet.
+    When managing StatefulSet objects, you will usually need to work with Persistent
+    Volumes (PVs), which have been covered in *Chapter 9*, *Persistent Storage in
+    Kubernetes*. This chapter will provide you with knowledge about the role of StatefulSet
+    in Kubernetes and how to create and manage StatefulSet objects to release new
+    versions of your stateful applications.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing the StatefulSet object
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Managing StatefulSet
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Releasing a new version of an app deployed as a StatefulSet
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: StatefulSet best practices
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For this chapter, you will need the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A deployed Kubernetes cluster is needed. You can use either a local or a cloud-based
+    cluster, but to fully understand the concepts, we recommend using a **multi-node**,
+    cloud-based Kubernetes cluster. The cluster must support the creation of PersistentVolumeClaims.
+    Any cloud-based cluster, or local cluster, for example, `minikube` with a `k8s.io/minikube-hostpath`
+    provisioner, will be sufficient.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Kubernetes CLI (`kubectl`) must be installed on your local machine and configured
+    to manage your Kubernetes cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Kubernetes cluster deployment (local and cloud-based) and `kubectl` installation
+    have been covered in *Chapter 3*, *Installing Your First Kubernetes Cluster*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can download the latest code samples for this chapter from the official
+    GitHub repository at [https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter12](https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter12).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing the StatefulSet object
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You may wonder why running stateful workloads in the distributed cloud is generally
+    considered **harder** than running stateless ones. In classic three-tier applications,
+    all the states would be stored in a database (*data tier* or *persistence layer*)
+    and there would be nothing special about it. For SQL servers, you would usually
+    add a failover setup with data replication, and if you require superior performance,
+    you would scale *vertically* by simply purchasing better hardware for hosting.
+    Then, at some point, you might think about clustered SQL solutions, introducing
+    *data sharding* (horizontal data partitions). But still, from the perspective
+    of a web server running your application, the database would just be a single
+    connection string to read and write the data. The database would be responsible
+    for persisting a *mutable state*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember that every application *as a whole* is, in some way, stateful unless
+    it only serves static content or just transforms user input. However, this does
+    not mean that *every* component in the application is stateful. A web server that
+    runs the application logic can be a *stateless* component, but the database where
+    this application stores user input and sessions will be a *stateful* component.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will first explain how you approach managing state in containers and what
+    we consider an application or system state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing state in containers
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now, imagine how this could work if you deployed your SQL server (single instance)
+    in a container. The first thing you would notice is that after restarting the
+    container, you would lose the data stored in the database – each time it is restarted,
+    you get a fresh instance of the SQL server. Containers are *ephemeral*. This doesn’t
+    sound too useful for our use case. Fortunately, containers come with the option
+    to mount data volumes. A volume can be, for example, a *host’s directory or an
+    external disk volume*, which will be *mounted* to a specific path in the container’s
+    filesystem. Whatever you store in this path will be kept in the volume even after
+    the container is terminated or restarted. In a similar way, you can use NFS share
+    or an external disk instance as a volume. Now, if you configure your SQL server
+    to put its data files in the path where the volume is mounted, you achieve data
+    persistence even if the container restarts. The container itself is still ephemeral,
+    but the data (state) is *not*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is a high-level overview of how the state can be persisted for plain containers,
+    without involving Kubernetes. But before we move on to Kubernetes, we need to
+    clarify what we actually regard as a **state**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Assume that you have a web server that serves just simple *static* content
+    (which means it is always the same, as a simple HTML web page). There is still
+    some data that has persisted, for example, the HTML files. However, this is *not*
+    a state: user requests cannot modify this data, so *previous* requests from the
+    user will not influence the result of the *current* request. In the same way,
+    configuration files for your web server are not their state or log files written
+    on the disk (well, that is arguable, but from the end user’s perspective, it is
+    not).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, if you have a web server that keeps user sessions and stores information
+    about whether the user is logged in, then this is indeed the state. Depending
+    on this information, the web server will return different web pages (responses)
+    based on whether the user is logged in. Let’s say that this web server runs in
+    a container – there is a catch when it comes to whether it is *the* stateful component
+    in your application. If the web server process stores user sessions as a file
+    in the container (warning: this is probably quite a bad design), then the web
+    server container is a *stateful* component. But if it stores user sessions in
+    a database or a Redis cache running in separate containers, then the web server
+    is *stateless*, and the database or Redis container becomes the stateful component.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is briefly how it looks from a single container perspective. We need now
+    to zoom out a bit and take a look at state management in **Kubernetes Pods**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing state in Kubernetes Pods
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In Kubernetes, the concept of container volumes is extended by **PersistentVolumes**
+    (**PVs**), **PersistentVolumeClaims** (**PVCs**), and **StorageClasses** (**SCs**),
+    which are dedicated, storage-related objects. PVC aims to *decouple* Pods from
+    the actual storage. PVC is a Kubernetes object that models a request for the storage
+    of a specific type, class, or size – think of saying *I would like 10 GB of read/write-once
+    SSD storage*. To fulfill such a request, a PV object is required, which is a piece
+    of real storage that has been provisioned by the cluster’s automation process
+    – think of this as a directory on the host system or storage driver-managed disk.
+    PV types are implemented as plugins, similar to volumes in Docker or Podman. Now,
+    the whole process of provisioning PV can be *dynamic* – it requires the creation
+    of an SC object and for this to be used when defining PVCs. When creating a new
+    SC, you provide a *provisioner* (or plugin details) with specific parameters,
+    and each PVC using the given SC will automatically create a PV using the selected
+    provisioner. The provisioners may, for example, create cloud-managed disks to
+    provide the backing storage. On top of that, containers of a given Pod can share
+    data using the same PV and mount it to their filesystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is just a brief overview of what Kubernetes provides for state storage.
+    We have covered this in more detail in *Chapter 9*, *Persistent Storage in Kubernetes*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On top of the management of state in a single Pod and its containers, there
+    is the management of state in *multiple replicas* of a Pod. Let’s think about
+    what would happen if we used a Deployment object to run multiple Pods with MySQL
+    Server. First, you would need to ensure that the state persisted on a volume in
+    a container – for this, you can use PVs in Kubernetes. But then you actually get
+    multiple, separate MySQL servers, which is not very useful if you would like to
+    have high availability and fault tolerance. If you expose such a deployment using
+    a service, it will also be useless because each time, you may hit a different
+    MySQL Pod and get different data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, you arrive either at designing a *multi-node failover setup* with replication
+    between the master and replicas, or a complex *cluster with data sharding*. In
+    any case, your individual MySQL Server Pod replicas need to have a *unique identity*
+    and, preferably, *predictable network names* so that the Nodes and clients can
+    communicate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When designing your cloud-native application for the Kubernetes cluster, always
+    analyze all the pros and cons of storing the state of the application as stateful
+    components *running in Kubernetes*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is where StatefulSet comes in. Let’s take a closer look at this Kubernetes
+    object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: StatefulSet and how it differs from a Deployment object
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Kubernetes StatefulSet is a similar concept to a Deployment object. It also
+    provides a way of managing and scaling a set of Pods, but it provides guarantees
+    about the *ordering and uniqueness* (unique identity) of the Pods. In the same
+    way as Deployment, it uses a Pod template to define what each replica should look
+    like. You can scale it up and down and perform rollouts of new versions. But now,
+    in StatefulSet, the individual Pod replicas are *not interchangeable*. The unique,
+    persistent identity for each Pod is maintained during any rescheduling or rollouts
+    – this includes the **Pod name** and its **cluster DNS names**. This unique, persistent
+    identity can be used to identify PVs assigned to each Pod, even if Pods are replaced
+    following a failure. For this, StatefulSet provides another type of template in
+    its specification named `volumeClaimTemplates`. This template can be used for
+    the dynamic creation of the PVCs of a given SC. By doing this, the whole process
+    of storage provisioning is fully dynamic – you just need to create a StatefulSet.
+    The underlying storage objects are managed by the StatefulSet controller.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cluster DNS names of individual Pods in StatefulSet remain the same, but their
+    cluster IP addresses are not guaranteed to stay the same. This means that if you
+    need to connect to individual Pods in the StatefulSet, you should use cluster
+    DNS names.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Basically, you can use StatefulSet for applications that require the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Persistent storage managed by the Kubernetes cluster (this is the main use case,
+    but not the only one)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Stable and unique network identifiers (usually DNS names) for each Pod replica
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ordered deployment and scaling
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ordered, rolling updates
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the following diagram, you can see that StatefulSets can be seen as a more
+    predictable version of a Deployment object, with the possibility to use persistent
+    storage provided by PVCs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B22019_12_01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 12.1: StatefulSet high-level view'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To summarize, the key differences between StatefulSet and Deployment are as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: StatefulSet ensures a *deterministic* (sticky) name for Pods, which consists
+    of `<statefulSetName>-<ordinal>`. For Deployments, you would have a *random* name
+    consisting of `<deploymentName>-<podTemplateHash>-<randomHash>`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For StatefulSet objects, the Pods are started and terminated in a *specific*
+    and *predictable* order that ensures consistency, stability, and coordination
+    while scaling the ReplicaSet. Let us take the preceding example diagram of MySQL
+    StatefulSet; the Pods will be created in sequential order (mysql-0, mysql-1, and
+    mysql-2). When you scale down the StatefulSet, the Pods will be terminated in
+    the reverse order – mysql-2, mysql-1, and mysql-0 at the end.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In terms of storage, Kubernetes creates PVCs based on `volumeClaimTemplates`
+    of the StatefulSet specification for each Pod in the StatefulSet and always attaches
+    this to the Pod with *the same* name. For Deployment, if you choose to use `persistentVolumeClaim`
+    in the Pod template, Kubernetes will create a single PVC and attach the same to
+    all the Pods in the deployment. This may be useful in certain scenarios but is
+    not a common use case.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You need to create a `headless` Service object that is responsible for managing
+    the *deterministic network identity* (cluster DNS names) for Pods. The headless
+    Service allows us to return *all* Pods’ IP addresses behind the service as DNS
+    A records instead of a single DNS A record with a `ClusterIP` Service. A headless
+    Service is only required if you are not using a regular service. The specification
+    of StatefulSet requires having the Service name provided in `.spec.serviceName`.
+    Refer to *Understanding headless services* in *Chapter 8*, *Exposing Your Pods
+    with Services*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Before we explore the StatefulSet, we need to understand some of the limitations
+    of the StatefulSet objects, as explained in the following section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring the limitations of StatefulSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Here’s a breakdown of some specific things to keep in mind when using StatefulSets:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Storage setup**: StatefulSets don’t automatically create storage for your
+    pods. You’ll need to either use a built-in tool (like PersistentVolume Provisioner)
+    or manually set up the storage beforehand.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Leftover storage**: When you scale down or remove a StatefulSet, the storage
+    used by its pods sticks around. This is because your data is important and shouldn’t
+    accidentally be deleted. You’ll need to clean up the storage yourself if needed.
+    Otherwise, the leftover storage could become a concern because over time, all
+    this unused storage can accumulate, leading to wasted resources and increased
+    storage costs.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Pod address**: You’ll need to set up a separate service (called a Headless
+    Service) to give the Pod unique and stable network names.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Stopping StatefulSets**: There’s no guarantee that pods will shut down in
+    a specific order when you delete a StatefulSet. To ensure a clean shutdown, it’s
+    best to scale the StatefulSet down to zero Pods before removing it completely.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Updating StatefulSets**: Using the default update method with StatefulSets
+    can sometimes lead to problems that require you to fix things manually. Be aware
+    of this and consider alternative update strategies if needed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Before you start exercises with StatefulSet, read important information about
+    the StatefulSets in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data management in Statefulset
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Kubernetes offers StatefulSets as a powerful tool for managing stateful applications.
+    However, successfully deploying and maintaining stateful applications requires
+    user involvement beyond simply defining the StatefulSet itself. Here’s a breakdown
+    of key areas requiring your attention:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Data cloning and synchronization**: Unlike stateless applications, stateful
+    applications rely on persistent data. While StatefulSets manage Pod ordering and
+    identity, they don’t handle data replication between Pods. You’ll need to implement
+    this functionality yourself. Common approaches include using init containers to
+    copy data from a predefined source during Pod creation, leveraging built-in replication
+    features within your application (like MySQL replication), or utilizing external
+    scripts to manage data synchronization.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Remote storage accessibility**: StatefulSets ensure Pods can be rescheduled
+    across available nodes in the cluster. To maintain data persistence during rescheduling,
+    the storage provisioned by the PV needs to be accessible from all worker nodes.
+    This means choosing a storage class that replicates data across nodes or using
+    network-attached storage solutions accessible from all machines.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**External backups**: StatefulSets are designed for managing Pod life cycles
+    and data persistence within the cluster. However, they don’t handle external backups.
+    To ensure disaster recovery in case of catastrophic events, implementing a separate
+    external backup solution is crucial. This could involve backing up your PVs to
+    a cloud storage service or a dedicated backup server outside the Kubernetes cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There are best practices and recommended approaches for handling the data in
+    StatefulSets. The following section will explain some of the replication management
+    techniques for StatefulSets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Replication management
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'As the name suggests, Stateful applications handling data often require data
+    initialization or synchronization. You might need to implement these using methods
+    like the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**init containers**: Copy data from a source (like a config map) to the persistent
+    storage before starting the application.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Application-level replication**: Leverage built-in replication features within
+    your application to handle data updates across Pods.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**External scripts**: Use external scripts or tools to manage data migration
+    during the update process.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now, let’s take a look at a concrete example of StatefulSet that deploys MySQL
+    Pods with the backing of persistent storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing StatefulSet
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To demonstrate how StatefulSet objects work, we will modify our MySQL deployment
+    and adapt it to be a StatefulSet. A significant part of the StatefulSet specification
+    is the same as for Deployments. As we would like to demonstrate how the automatic
+    management of PVCs works in StatefulSet objects, we will use `volumeClaimTemplates`
+    in the specification to create PVCs and PVs, which the Pods will consume. Each
+    Pod will internally mount its assigned PV under the `/var/lib/mysql` path in the
+    container filesystem, which is the default location of MySQL data files. In this
+    way, we can demonstrate how the *state* persists, even if we forcefully restart
+    Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The example that we are going to use in this chapter is for demonstration purposes
+    only and is meant to be as simple as possible. If you are interested in *complex*
+    examples, such as deploying and managing distributed databases in StatefulSets,
+    please take a look at the official Kubernetes blog post about deploying the Cassandra
+    database at [https://kubernetes.io/docs/tutorials/stateful-application/cassandra/](https://kubernetes.io/docs/tutorials/stateful-application/cassandra/).
+    Usually, the main source of complexity in such cases is handling the joining and
+    removal of Pod replicas when scaling the StatefulSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will now go through all the YAML manifests required to create our StatefulSet
+    and apply them to the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a StatefulSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We have discussed the concepts of StatefulSet, and now it’s time to learn how
+    to manage them. First, let’s take a look at the StatefulSet YAML manifest file
+    named `mysql-statefulset.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first part of the preceding file is very similar to the Deployment object
+    specification, where you need to provide the number of `replicas` and a `selector`
+    for Pods. There is one new parameter, `serviceName`, which we will explain shortly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next part of the file concerns the specification of the Pod template that
+    is used by the StatefulSet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you look closely, you can observe that the structure is the same as for
+    Deployments. Notice the environment variables we are providing via the Secret
+    object, which needs to be created before creating the StatefulSet. Also, the last
+    part of the file contains `volumeClaimTemplates`, which is used to define templates
+    for PVC used by the Pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, in general, the structure of the StatefulSet spec is similar
+    to a Deployment, although it has a few extra parameters for configuring PVCs and
+    associated Service objects. The specification has five main components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`replicas`: Defines the number of Pod replicas that should run using the given
+    `template` and the matching label `selector`. Pods may be created or deleted to
+    maintain the required number.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`serviceName`: The name of the service that governs the StatefulSet and provides
+    the network identity for the Pods. This Service must be created before the StatefulSet
+    is created. We will create the `mysql-headless` Service in the next step.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`selector`: A **label selector**, which defines how to identify Pods that the
+    StatefulSet owns. This can include *set-based* and *equality-based* selectors.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`template`: Defines the template for Pod creation. Labels used in `metadata`
+    must match the `selector`. Pod names are not random and follow the `<statefulSetName>-<ordinal>`
+    convention. You can optionally use `.spec.ordinals` to control the starting number
+    for the unique identification number assigned to each pod in your StatefulSet.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`volumeClaimTemplates`: Defines the template for PVC that will be created for
+    each of the Pods. Each Pod in the StatefulSet object will get its own PVC that
+    is assigned to a given Pod name persistently. In our case, it is a 1 GB volume
+    with the `ReadWriteOnce` access mode. This access mode allows the volume to be
+    mounted for reads and writes by a *single* Node only. We did not specify `storageClassName`,
+    so the PVCs will be provisioned using the default SC in the cluster. PVC names
+    are not random and follow the `<volumeClaimTemplateName>-<statefulSetName>-<ordinal>`
+    convention.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The default SC in your cluster is marked with the `storageclass.kubernetes.io/is-default-class`
+    annotation. Whether you have a default SC, and how it is defined, depends on your
+    cluster deployment. For example, in the Azure Kubernetes Service cluster, it will
+    be an SC named `default` that uses the `kubernetes.io/azure-disk` provisioner.
+    In `minikube`, it will be an SC named `standard` that uses the `k8s.io/minikube-hostpath`
+    provisioner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The specification also contains other fields that are related to rolling out
+    new revisions of StatefulSet – we will explain these in more detail in the next
+    section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, let’s have a look at our *headless* Service named `mysql-headless`. Create
+    a `mysql-headless-service.yaml` file with the following content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The specification is very similar to the normal Service that we created previously
+    for the Deployment; the only difference is that it has the value `None` for the
+    `clusterIP` field. This will result in the creation of a headless Service, `mysql-headless`.
+    A headless Service allows us to return *all* Pods’ IP addresses behind the Service
+    as DNS `A records` instead of a single DNS `A record` with a `clusterIP` Service.
+    We will demonstrate what this means in practice in the next steps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With all the YAML manifest files, we can start deploying our example StatefulSet!
+    Perform the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a namespace called `mysql` (using `mysql-ns.yaml`):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a Secret to store MySQL environment variables:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Please note that it is also possible to create the same secret using YAML and
+    base64 encoded (e.g., `echo -n 'mysqlroot' | base64`) values inside (refer to
+    `mysql-secret.yaml` in the repository to see the sample YAML file); we are using
+    this imperative method to demonstrate the secret with actual values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a headless Service, `mysql-headless`, using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a StatefulSet object, `mysql-stateful`, using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now, you can use the `kubectl describe` command to observe the creation of
+    the StatefulSet object (alternatively, you can use `sts` as an abbreviation for
+    StatefulSet when using kubectl commands):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Use the `kubectl get pods` command to see that the three desired Pod replicas
+    have been created. Note that this can take a bit of time as the Pods have to get
+    the PVs provisioned based on their PVCs:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Please note the ordered, deterministic Pod naming – this is the key to providing
+    a unique identity to the Pods in the StatefulSet object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you describe one of the Pods, you will see more details about the associated
+    PV and PVC:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'For the second Pod, you will see a similar output to the following, but with
+    a different PVC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the PVC used by this `mysql-stateful-0` Pod is named `mysql-data-mysql-stateful-0`
+    and the PVC used by this `mysql-stateful-1` Pod is named `mysql-data-mysql-stateful-1`.
+    Right after the Pod was scheduled on its target Node, the PVs are provisioned
+    via the respective StorageClass and bound to the individual PVCs. After that,
+    the actual container, which internally mounts this PV, has been created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using the `kubectl get` command, we can reveal more details about the PVC:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'And finally, let’s take a look at the PV that was provisioned:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Please note that, in our example, we are demonstrating this using the minikube
+    `hostPath` type. If your Kubernetes cluster uses a different storage backend,
+    you will see different outputs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have successfully created the StatefulSet object; now it is time to verify
+    whether it works as expected in a basic scenario. To do this, let us use an updated
+    `k8sutils` container image with the default MySQL client package installed. (Check
+    `Chapter12/Containerfile` to see the details of the `k8sutils` image.) Create
+    `k8sutils.yaml` as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Create the `k8sutils` Pod as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please note that we used `-n mysql` while applying the YAML so that the resource
+    will be created inside the `mysql` namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Follow these steps to verify the content of different Pods in the StatefulSet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Jump into the `k8sutil` Pod to execute our test commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Access the MySQL Stateful application using the default headless service we
+    created earlier (remember the password you created using the Secret object earlier):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The basic MySQL connection is working, and we are able to access the MySQL server
+    running as a StatefulSet application. We will now take a quick look at how the
+    *headless* Service behaves.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the headless Service and stable network identities
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Previously, we learned about headless service in Kubernetes and how we can use
+    it for accessing StatefulSet applications. (Refer to *Understanding headless services*
+    section in *Chapter 8*, *Exposing Your Pods with Services*). In this section,
+    let us go deep and explore the headless service mechanism in the backend of StatefulSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s do an experiment that demonstrates how the `headless` Service is used
+    to provide stable and predictable network identities for our Pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Log in to the same k8sutils Pod that we used in the previous test.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Perform DNS check for the headless Service, `mysql-headless`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: We have received three `A records` that point directly to Pod IP addresses.
+    Additionally, they have `CNAME records` in the form of `<podName>-<ordinal-number>.<headless-serviceName>.<namespace>.svc.cluster.local`.
+    So, the difference with default Service is that a Service that has `ClusterIP`
+    will get load balancing to a *virtual IP* level (which, on Linux, is usually handled
+    at a kernel level by `iptables` rules configured by `kube-proxy`), whereas in
+    the case of the headless Service, the responsibility for load balancing or choosing
+    the target Pod is on the *client* making the request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Having *predictable* FQDNs for Pods in the StatefulSet gives us the option
+    to send the requests directly to individual Pods, without guessing their IP addresses
+    or names. Let’s try accessing the MySQL server served by the `mysql-stateful-0`
+    using its short DNS name provided by the headless Service:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As expected, you have connected directly to the Pod and have been served by
+    the proper Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us create a database inside the MySQL database server as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now, we will show that this DNS name remains unchanged even if a Pod is restarted.
+    The IP of the Pod will change, but the DNS name will not. What is more, the PV
+    that is mounted will also stay the same, but we will investigate this in the next
+    paragraphs. In another shell window, outside of the container, execute the following
+    command to force a restart of the `mysql-stateful-0` Pod:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Check the Pods and you will see that `mysql-stateful-0` has been recreated
+    and mounted with the same `mysql-data-mysql-stateful-0` PVC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the `k8sutils` shell, execute the MySQL client command to check the database
+    server content:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You can see that the database `ststest` we created before the Pod deletion is
+    still there, which means the data is persistent or stateful. Also, notice the
+    IP address of the Pod changed but the DNS remained the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This explains how the headless Services can be leveraged to get a stable and
+    predictable network identity that will not change when a Pod is restarted or recreated.
+    You may wonder what the actual use of this is and why it is important for StatefulSet
+    objects. There are a couple of possible use cases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying clustered databases, such as `etcd` or MongoDB, requires specifying
+    the network addresses of other Nodes in the database cluster. This is especially
+    necessary if there are no *automatic discovery* capabilities provided by the database.
+    In such cases, stable DNS names provided by headless Services help to run such
+    clusters on Kubernetes as StatefulSets. There is still the problem of changing
+    the configuration when Pod replicas are added or removed from the StatefulSet
+    during scaling. In some cases, this is solved by the *sidecar container pattern*,
+    which monitors the Kubernetes API to dynamically change the database configuration.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you decide to implement your own storage solution running as StatefulSet
+    with advanced data sharding, you will most likely need mappings of logical shards
+    to physical Pod replicas in the cluster. Then, the stable DNS names can be used
+    as part of this mapping. They will guarantee that queries for each logical shard
+    are performed against a proper Pod, irrespective of whether it was rescheduled
+    to another Node or restarted.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Finally, let’s take a look at the state persistence for Pods running in StatefulSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: State persistence
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As we demonstrated earlier, the data is persistent inside the PV and will bound
+    back to the newly created Pod with the same ordinal number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the following example, we are deleting all of the Pods in the StatefulSet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Kubernetes will recreate all of the Pods in the same order as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can also verify the PVs mounted to ensure the Pod to PVC binding was successful:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you have learned, the PV will not be removed by the StatefulSet controller
+    as part of Pod or StatefulSet deletion. It is your responsibility to clean up
+    the data by removing the PVs manually if you are removing the StatefulSet objects
+    completely.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we will take a look at scaling the StatefulSet object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling StatefulSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the case of StatefulSets, you can do similar *scaling* operations as for
+    Deployment objects by changing the number of `replicas` in the specification or
+    using the `kubectl scale` imperative command. The new Pods will automatically
+    be discovered as new Endpoints for the Service when you scale up, or automatically
+    removed from the Endpoints list when you scale down.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, there are a few differences when compared to Deployment objects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you deploy a StatefulSet object of `N` replicas, the Pods during deployment
+    are created sequentially, in order from `0` to `N`-`1`. In our example, during
+    the creation of a StatefulSet object of three replicas, the first `mysql-stateful-0`
+    Pod is created, followed by `n mysql-stateful-1`, and finally `mysql-stateful-2`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When you scale *up* the StatefulSet, the new Pods are also created sequentially
+    and in an ordered fashion.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When you scale *down* the StatefulSet, the Pods are terminated sequentially,
+    in *reverse order*, from `N`*-*`1` to `0`. In our example, while scaling down
+    the StatefulSet object to zero replicas, the `mysql-stateful-2` Pod is terminated,
+    followed by `mysql-stateful-1`, and finally `mysql-stateful-0`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: During the scaling up of the StatefulSet object, before the next Pod is created
+    in the sequence, all its predecessors must be *running* and *ready*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: During the scaling *down* of the StatefulSet object, before the next Pod is
+    terminated in the reverse sequence, all its predecessors must be completely *terminated*
+    and *deleted*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Also, in general, before *any* scaling operation is applied to a Pod in a StatefulSet
+    object, all its predecessors must be running and ready. This means that if, during
+    scaling down from four replicas to one replica, the `mysql-stateful-0` Pod were
+    to suddenly fail, then no further scaling operation would be performed on the
+    `mysql-stateful-1`, `mysql-stateful-2`, and `mysql-stateful-3` Pods. Scaling would
+    resume when the `mysql-stateful-0` Pod becomes ready again.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This sequential behavior of scaling operations can be relaxed by changing the
+    `.spec.podManagementPolicy` field in the specification. The default value is `OrderedReady`.
+    If you change it to `Parallel`, the scaling operations will be performed on Pods
+    in parallel, similar to what you know from Deployment objects. Note that this
+    only affects scaling operations. The way of updating the StatefulSet object with
+    `updateStrategy` of the `RollingUpdate` type does not change.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Equipped with this knowledge, let’s *scale up* our StatefulSet imperatively
+    to demonstrate it quickly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Scale out the StatefulSet using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'If you now check the Pods using the `kubectl get pods` command, you will see
+    the sequential, ordered creation of new Pods:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Similarly, if you check the output of the `kubectl describe` command for the
+    StatefulSet object, you will see the following in the events:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can see that the last two Pods – `mysql-stateful-3` and `mysql-stateful-2`
+    – are deleted in an orderly way. Now, let us check the Pods in the `statefulset`
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Check the PVCs now and you will see the PVCs are still there. This is an expected
+    situation for StatefulSet, as we learned earlier:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: When managing StatefulSets with **Horizontal Pod Autoscaler** (**HPA**) or similar
+    horizontal scaling tools, refrain from specifying a value for `.spec.replicas`
+    in your manifest. Instead, leave it unset. The Kubernetes control plane will dynamically
+    adjust the number of replicas as per resource requirements, facilitating efficient
+    scaling of your application without the need for manual intervention.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Congratulations! We have learned how to deploy and scale StatefulSet objects.
+    Next, we will demonstrate how you can delete a StatefulSet object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deleting a StatefulSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To delete a StatefulSet object, there are two possibilities:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Delete the StatefulSet together with Pods that it owns
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Delete the StatefulSet and leave the Pods unaffected
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In both cases, the PVCs and PVs that were created for the Pods using `volumeClaimTemplates`
+    will *not* be deleted by default. This ensures that state data is not lost accidentally
+    unless you explicitly clean up the PVCs and PVs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But with the latest Kubernetes versions (from v1.27 onwards), you can use the
+    `.spec.persistentVolumeClaimRetentionPolicy` field to control the deletion of
+    PVCs as part of the StatefulSet life cycle:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: Refer to the documentation to learn more about `persistentVolumeClaimRetentionPolicy`
+    (https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To delete the StatefulSet object together with Pods, you can use the regular
+    `kubectl delete` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will see that the Pods will be terminated first, followed by the StatefulSet
+    object. Please note that this operation is different from *scaling down* the StatefulSet
+    object to zero replicas and then deleting it. If you delete the StatefulSet object
+    with existing Pods, there are no guarantees regarding the order of termination
+    of the individual Pods. In most cases, they will be terminated at once.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Optionally, if you would like to delete just the StatefulSet object, you need
+    to use the `--cascade=orphan` option for `kubectl delete`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: After this command, if you inspect what Pods are in the cluster, you will still
+    see all the Pods that were owned by the `mysql-stateful` StatefulSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lastly, if you would like to clean up PVCs and PVs after deleting the StatefulSet
+    object, you need to perform this step manually. Use the following command to delete
+    the PVC’s created as part of the StatefulSet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: This command will delete PVCs and associated PVs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: IMPORTANT NOTE
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that if you want to perform verifications of state persistence after
+    exercising the new version rollout in the next section, you should not yet delete
+    the PVCs. Otherwise, you will lose the MySQL files stored in the PVs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this section, we have completed our learning on basic operations with the
+    StatefulSet objects in Kubernetes. Next, let’s take a look at releasing new versions
+    of apps deployed as StatefulSets and how StatefulSet revisions are managed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Releasing a new version of an app deployed as a StatefulSet
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have just covered the *scaling* of StatefulSets in the previous section by
+    the `kubectl scale` command (or by making changes to the `.spec.replicas` number
+    in the specification). Everything you have learned about sequential and ordered
+    changes to the Pods plays an important role in rolling out a new revision of a
+    StatefulSet object when using the `RollingUpdate` strategy. There are many similarities
+    between StatefulSets and Deployment objects. We covered the details of Deployment
+    updates in *Chapter 11*, *Using Kubernetes Deployments for Stateless Workloads*.
+    Making changes to the StatefulSet Pod *template* (`.spec.template`) in the specification
+    will also cause the rollout of a new revision for StatefulSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'StatefulSets support two types of *update strategies* that you define using
+    the `.spec.updateStrategy.type` field in the specification:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`RollingUpdate`: The default strategy, which allows you to roll out a new version
+    of your application in a controlled way. This is slightly different from the `RollingUpdate`
+    strategy known from Deployment objects. For StatefulSet, this strategy will terminate
+    and recreate Pods in a sequential and ordered fashion and make sure that the Pod
+    is recreated and in a ready state before proceeding to the next one.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`OnDelete`: This strategy implements the legacy behavior of StatefulSet updates
+    prior to Kubernetes 1.7\. However, it is still useful! In this type of strategy,
+    StatefulSet will *not* automatically update the Pod replicas by recreating them.
+    You need to manually delete a Pod replica to get the new Pod template applied.
+    This is useful in scenarios when you need to perform additional manual actions
+    or verifications before proceeding to the next Pod replica. For example, if you
+    are running a *Cassandra cluster* or an *etcd cluster* in a StatefulSet, you may
+    want to verify whether the new Pod has correctly joined the existing cluster following
+    the removal of the previous version of the Pod. Of course, it is possible to perform
+    similar checks using the Pod template life cycle `postStart` and `preStop` hooks
+    while using the `RollingUpdate` strategy, but this requires more sophisticated
+    error handling in the hooks.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let’s now take a closer look at the `RollingUpdate` strategy, which is the most
+    important and commonly used update strategy for StatefulSets. The key thing about
+    this is that the strategy respects all the StatefulSet guarantees, which we explained
+    in the previous section regarding scaling. The rollout is done in reverse order;
+    for example, the first Pod, `mysql-stateful-2`, is recreated with the new Pod
+    template, followed by `mysql-stateful-1`, and finally `mysql-stateful-0`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the process of rollout fails (not necessarily the Pod that was currently
+    recreated), the StatefulSet controller is going to restore any failed Pod to its
+    *current version*. This means that the Pods that have already received a *successful*
+    update to the current version will remain at the current version, whereas the
+    Pods that have not yet received the update will remain at the previous version.
+    In this way, the StatefulSet attempts to always keep applications healthy and
+    consistent. However, this can also lead to *broken* rollouts of StatefulSets.
+    If one of the Pod replicas *never* becomes running and ready, then the StatefulSet
+    will stop the rollout and wait for *manual* intervention. Applying the template
+    again to the previous revision of StatefulSet is not enough – this operation will
+    not proceed as the StatefulSet will wait for the failed Pod to become ready. The
+    only resolution is manual deletion of the failed Pod and then having the StatefulSet
+    apply the previous revision of the Pod template.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lastly, the `RollingUpdate` strategy also provides the option to execute *staged*
+    rollouts using the `.spec.updateStrategy.rollingUpdate.partition` field. This
+    field defines a number for which all the Pod replicas that have a *lesser* *ordinal*
+    number will not be updated, and, even if they are deleted, they will be recreated
+    at the previous version. So, in our example, if the `partition` were to be set
+    to `1`, this means that during the rollout, only `mysql-stateful-1` and `mysql-stateful-2`
+    would be updated, whereas `mysql-stateful-0` would remain unchanged and run on
+    the previous version. By controlling the `partition` field, you can easily roll
+    out a single *canary* replica and perform *phased* rollouts. Please note that
+    the default value is `0`, which means that all Pod replicas will be updated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we will release a new version of our mysqlserver using the `RollingUpdate`
+    strategy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Updating StatefulSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We will now demonstrate how to do a rollout of a new image version for a Pod
+    container using the StatefulSet YAML manifest file that we created previously:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Make a copy of the previous YAML manifest file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Ensure that you have the `RollingUpdate` strategy type and `partition` set
+    to `0`. Also note that if you have attempted to create the StatefulSet object
+    with a different strategy first, you will not be able to modify it without deleting
+    the StatefulSet beforehand:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: These values are the default ones, but it is worth specifying them explicitly
+    to understand what is really happening.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Apply the manifest file to the cluster to create the `mysql-stateful` StatefulSet
+    with new configurations:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Wait until the Pods are running before you continue the rolling update task.
+    Let’s verify the pods created by StatefulSet using the `kubectl get pods` command
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When the StatefulSet is ready in the cluster, let’s create a new database inside
+    the StatefulSet via the k8sutils Pod as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now, we have a new StatefulSet with `updateStrategy` and a new database created
+    inside.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we can roll out a new version of the MySQL container image for our StatefulSet
+    object. To do that, perform the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Modify the container image used in the StatefulSet Pod template to `mysql:8.3.0`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Apply the changes to the cluster using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Immediately after that, use the `kubectl rollout status` command to see the
+    progress in real time. This process will be a bit longer than in the case of Deployment
+    objects because the rollout is performed in a sequential and ordered fashion:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Similarly, using the `kubectl describe` command, you can see events for the
+    StatefulSet that demonstrate precisely what the order of Pod replica recreation
+    was:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As expected, the rollout was done in *reverse* order. The first Pod to recreate
+    was `mysql-stateful-2` followed by `mysql-stateful-1`, and finally `mysql-stateful-0`.
+    Also, because we have used the default `partition` value of `0`, all the Pods
+    were updated. This is because all ordinal numbers of Pod replicas are greater
+    than or equal to `0`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we can verify that the Pods were recreated with the new image. Execute
+    the following command to verify the first Pod replica in the StatefulSet object:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'And finally, you can verify that the *state* persisted because the existing
+    PVCs were used for the new Pods. Please note that this will only work properly
+    if you haven’t deleted the PVCs for the StatefulSet manually in the previous section:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As you can see in the preceding output, the rollout of a new version of MySQL
+    was completed successfully and the state has persisted even though the Pods were
+    recreated; you can see the `stsrolling` database, which you created before the
+    rolling update.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can change the StatefulSet container image *imperatively* using the kubectl
+    -n mysql set image sts `mysql-stateful mysql=mysql:8.3.0` command. This approach
+    is only recommended for non-production and testing scenarios. In general, StatefulSets
+    are much easier to manage declaratively than imperatively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let us learn how you can use the `partition` field to do a *phased* rollout
+    with a *canary*. Assume that we would like to update the mysql image version to
+    `8.4.0`. You would like to make sure that the change is working properly in your
+    environment using a canary deployment, which is a single (or some) Pod replica
+    updated to the new image (or another image) version. Please refer to the following
+    steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Modify the `mysql-statefulset-rolling-update.yaml` manifest file so that the
+    `partition` number is equal to current `replicas`, in our case, `3`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: When the `partition` number is the same as the number of `replicas`, we can
+    apply the YAML manifest to the cluster and no changes to the Pods will be introduced
+    yet. This is called **staging a rollout**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Apply the manifest file to the cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now, let’s create a *canary* for our new version. Decrease the `partition`
+    number by one to `2` in the manifest file. This means that all Pod replicas with
+    an ordinal number of less than `2` will not be updated – in our case, that means
+    updating the `mysql-stateful-2` Pod only. All others will remain unchanged:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Apply the manifest file to the cluster again:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Use the `kubectl rollout status` command to follow the process. As expected,
+    only one Pod will be recreated:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'If you describe the MySQL `mysql-stateful-0` and MySQL `mysql-stateful-2` Pods,
+    you can see that the first one is using the old version of the image, whereas
+    the second is using the new one:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'At this point, you can perform verifications and smoke tests on your canary.
+    Log in to the k8sutils Pod and ensure the new Pod is running well with the new
+    image (e.g., 8.4.0). The canary looks good, so we can continue with a *phased*
+    rollout of our new version:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'For a phased rollout, you may use any *lower* `partition` number in the manifest.
+    You can do a few small, phased rollouts or just proceed with a full rollout. Let’s
+    do a full rollout by decreasing `partition` to `0`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Apply the manifest file to the cluster again:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Observe the next phase of the rollout using the `kubectl rollout status` command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As you can see, the phased rollout to the `mysql:8.4.0` image version was completed
+    successfully.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is possible to do phased rollouts *imperatively*. To do that, you need to
+    control the `partition` number using the `kubectl patch` command, for example,
+    `kubectl patch sts mysql-stateful -p '{"spec":{"updateStrategy":{"type":"RollingUpdate","rollingUpdate":{"partition":3}}}}'
+    -n mysql`. However, this is much less readable and more error-prone than *declarative*
+    changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will now take a look at how you can do rollbacks of StatefulSets in the next
+    section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rolling back StatefulSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the previous *Chapter 11*, *Using Kubernetes Deployments for Stateless Workloads*,
+    we have described how you can do *imperative* rollbacks to Deployments. For StatefulSets,
+    you can do exactly the same operations. To do that, you need to use the `kubectl
+    rollout undo` commands. However, especially for StatefulSets, we recommend using
+    a *declarative* model for introducing changes to your Kubernetes cluster. In this
+    model, you usually commit each change to the source code repository. Performing
+    rollback is very simple and involves just reverting the commit and applying the
+    configuration again. Usually, the process of applying changes (both deployment
+    and updates) can be performed as part of the CI/CD pipeline for the source code
+    repository, instead of manually applying the changes by an operator. This is the
+    easiest way to manage StatefulSets, and is generally recommended in Infrastructure-as-Code
+    and Configuration-as-Code paradigms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When performing rollbacks to StatefulSets, you must be fully aware of the consequences
+    of operations such as *downgrading* to an earlier version of the container image
+    while persisting the state. For example, if your rollout to a new version has
+    introduced *data schema changes* to the state, then you will not be able to safely
+    roll back to an earlier version unless you ensure that the *downward migration*
+    of state data is implemented!
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our example, if you would like to roll back to the mysql:8.3.0 image version
+    for our StatefulSet, you would either modify the YAML manifest file manually or
+    revert the commit in your source code repository if you use one. Then, all you
+    would need to do is execute the `kubectl apply` command to the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, in the last section of this chapter, we will provide you with a set of
+    best practices for managing StatefulSets in Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: StatefulSet best practices
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This section summarizes the known best practices when working with StatefulSet
+    objects in Kubernetes. The list is by no means complete but is a good starting
+    point for your journey with Kubernetes StatefulSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use declarative object management for StatefulSets
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: It is a good practice in the DevOps world to stick to declarative models for
+    introducing updates to your infrastructure and applications. Using the declarative
+    way of updates is the core concept for paradigms such as Infrastructure-as-Code
+    and Configuration-as-Code. In Kubernetes, you can easily perform declarative updates
+    using the `kubectl apply` command, which can be used on a single file or even
+    a whole directory of YAML manifest files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To delete objects, it is still better to use imperative commands. It is more
+    predictable and less prone to errors. The declarative deletion of resources in
+    the cluster is useful mostly in CI/CD scenarios, where the whole process is entirely
+    automated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The same principle also applies to StatefulSets. Performing a rollout or rollback
+    when your YAML manifest files are versioned and kept in a source control repository
+    is easy and predictable. Using the `kubectl rollout undo` method and `kubectl
+    set image deployment` commands is generally not practiced in production environments.
+    Using these commands gets much more complicated when more than one person is working
+    on operations in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do not use the TerminationGracePeriodSeconds Pod with a 0 value for StatefulSets
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The specification of Pod allows you to set `TerminationGracePeriodSeconds`,
+    which informs `kubelet` how much time it should allow for a Pod to gracefully
+    terminate when it attempts to terminate it. If you set `TerminationGracePeriodSeconds`
+    to `0`, this will effectively make Pods terminate *immediately*, which is strongly
+    discouraged for StatefulSets. StatefulSets often need graceful cleanup or `preStop`
+    life cycle hooks to run before the container is removed. Otherwise, there is a
+    risk that the state of StatefulSet will become inconsistent. Refer to the Container
+    hooks documentation (https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/#container-hooks)
+    to learn more.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scale down StatefulSets before deleting
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When you delete a StatefulSet and you intend to reuse the PVCs later, you need
+    to ensure that the StatefulSet terminates gracefully, in an ordered manner, so
+    that any subsequent redeployment will not fail because of an inconsistent state
+    in PVCs. If you perform the `kubectl delete` operation on your StatefulSet, all
+    the Pods will be terminated *at once*. This is often not desired, and you should
+    first scale down the StatefulSet gracefully to zero replicas and then delete the
+    StatefulSet itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensure state compatibility during StatefulSet rollbacks
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: If you ever intend to use StatefulSet rollbacks, you need to be aware of the
+    consequences of operations such as downgrading to an earlier version of the container
+    image while persisting the state. For example, if your rollout to a new version
+    has introduced data schema changes in the state, then you will not be able to
+    safely roll back to an earlier version unless you ensure that the downward migration
+    of state data is implemented. Otherwise, your rollback will just recreate Pods
+    with the older versions of the container image, and they will fail to start properly
+    because of incompatible state data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do not create Pods that match an existing StatefulSet label selector
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'It is possible to create Pods with labels that match the label selector of
+    some existing StatefulSet. This can be done using bare Pods or another Deployment
+    or ReplicaSet. This leads to conflicts, which Kubernetes does not prevent, and
+    makes the existing StatefulSet *believe* that it has created the other Pods. The
+    results may be unpredictable and, in general, you need to pay attention to how
+    you organize your labeling of resources in the cluster. It is advised to use semantic
+    labeling. You can learn more about this approach in the official documentation:
+    [https://kubernetes.io/docs/concepts/configuration/overview/#using-labels](https://kubernetes.io/docs/concepts/configuration/overview/#using-labels).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use Remote Storage for the PV
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When using StatefulSets, it’s important to ensure that you’re utilizing remote
+    storage. This means storing your application’s data on a separate storage system,
+    typically **Network-Attached Storage** (**NAS**), **Storage Area Network** (**SAN**),
+    or a cloud storage service. By storing data remotely, you ensure that it’s accessible
+    from any instance of your application (or any nodes in the cluster), even if the
+    instance is replaced or moved. This provides data persistence and resilience,
+    helping to prevent data loss in case of failures or updates to your StatefulSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Define liveness and readiness probes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: For stateful applications, a healthy Pod needs to not only be running but also
+    be able to access and process its persistent state. Liveness probes help ensure
+    this functionality. If a liveness probe fails consistently, it indicates a deeper
+    issue with the Pod’s ability to handle its state. Restarting the Pod in this case
+    can potentially trigger recovery mechanisms or allow the StatefulSet controller
+    to orchestrate a failover to another healthy Pod with the same state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: StatefulSets often manage services that rely on specific data or configurations
+    to be available before serving traffic. Readiness probes can be tailored to check
+    if the Pod’s state is ready and operational. By preventing traffic from reaching
+    unready Pods, you ensure a smooth user experience and avoid potential data inconsistencies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitor your StatefulSets
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Keeping an eye on your StatefulSets’ health and performance is crucial. Utilize
+    monitoring tools to track key metrics like Pod restarts, resource utilization,
+    and application errors. This allows you to proactively identify and address potential
+    issues before they impact your application’s functionality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter demonstrated how to work with *stateful* workloads and applications
+    on Kubernetes using StatefulSets. We first learned what the approaches to persisting
+    states in containers and Kubernetes Pods are, and, based on that, we described
+    how a StatefulSet object can be used to persist the state. Next, we created an
+    example StatefulSet, together with a *headless* Service. Based on that, you learned
+    how PVCs and PVs are used in StatefulSets to ensure that the state is persisted
+    between Pod restarts. Next, we learned how you can scale the StatefulSet and how
+    to introduce updates using *canary* and *phased* rollouts. And finally, we provided
+    a set of known best practices when working with StatefulSets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the next chapter, you will learn more about managing special workloads where
+    you need to maintain exactly one Pod per Node in Kubernetes. We will introduce
+    a new Kubernetes object: DaemonSet.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'StatefulSets: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Headless Services: https://kubernetes.io/docs/concepts/services-networking/service/#headless-services'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Container hooks: [https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/#container-hooks](https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/#container-hooks)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Join our community on Discord
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Join our community’s Discord space for discussions with the authors and other
+    readers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://packt.link/cloudanddevops](https://packt.link/cloudanddevops)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/QR_Code119001106479081656.png)'
+  prefs: []
+  type: TYPE_IMG

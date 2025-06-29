@@ -1,0 +1,681 @@
+- en: 9\. Azure Active Directory pod-managed identities in AKS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, *Chapter 8, Role-based access control in AKS*, you
+    integrated your AKS cluster with **Azure Active Directory** (**Azure AD**). You
+    then assigned Kubernetes roles to users and groups in Azure AD. In this chapter,
+    you will explore how you can integrate your applications running on AKS with Azure
+    AD, and you will learn how you can give your pods an identity in Azure so they
+    can interact with other Azure resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Azure, application identities use a functionality called service principals.
+    A service principal is the equivalent of a service account in the cloud. An application
+    can use a service principal to authenticate to Azure AD and get access to resources.
+    Those resources could be either Azure resources such as Azure Blob Storage or
+    Azure Key Vault, or they could be applications that you developed that are integrated
+    with Azure AD.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two ways to authenticate a service principal: you can either use
+    a password or a combination of a certificate and a private key. Although these
+    are secure ways to authenticate your applications, managing passwords or certificates
+    and the rotation associated with them can be cumbersome.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managed identities in Azure are a functionality that makes authenticating to
+    a service principal easier. It works by assigning an identity to a compute resource
+    in Azure, such as a virtual machine or an Azure function. Those compute resources
+    can authenticate using that managed identity by calling an endpoint that only
+    that machine can reach. This is a secure type of authentication that does not
+    require you to manage passwords or certificates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Azure AD pod-managed identities allow you to assign managed identities to pods
+    in Kubernetes. Since pods in Kubernetes run on virtual machines, by default, each
+    pod would be able to access the managed identity endpoint and authenticate using
+    that identity. Using Azure AD pod-managed identities, pods can no longer reach
+    the internal endpoint for the virtual machine, and rather only get access to identities
+    assigned to that specific pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, you'll configure an Azure AD pod-managed identity on an AKS
+    cluster and use it to get access to Azure Blob Storage. In the next chapter, you
+    will then use these Azure AD pod-managed identities to get access to Azure Key
+    Vault and manage Kubernetes secrets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following topics will be covered briefly in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An overview of Azure AD pod-managed identities
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Setting up a new cluster with Azure AD pod-managed identities
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Linking an identity to your cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using a pod with managed identity
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's start with an overview of Azure AD pod-managed identities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An overview of Azure AD pod-managed identities
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The goal of this section is to describe Azure managed identities and Azure AD
+    pod-managed identities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As explained in the introduction, managed identities in Azure are a way to
+    securely authenticate applications running inside Azure. There are two types of
+    managed identities in Azure. The difference between them is how they are linked
+    to resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**System assigned**: This type of managed identity is linked 1:1 to the resource
+    (such as a virtual machine) itself. This managed identity also shares the lifecycle
+    of the resource, meaning that once the resource is deleted, the managed identity
+    is also deleted.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**User assigned**: User-assigned managed identities are standalone Azure resources.
+    A user-assigned managed identity can be linked to multiple resources. When a resource
+    is deleted, the managed identity is not deleted.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Both types of managed identities work the same way once they are created and
+    linked to a resource. This is how managed identities work from an application
+    perspective:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your application running in Azure requests a token to the `169.254.169.254`).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The IMDS will request a token from Azure AD. It uses a certificate that is configured
+    for your managed identity and is only known by the IMDS.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Azure AD will return a token to the IMDS, which will, in turn, return that token
+    to your application.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Your application can use this token to authenticate to other resources, for
+    instance, Azure Blob Storage.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Managed identity workflow in an Azure virtual machine](img/B17338_09_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.1: Managed identity in an Azure virtual machine'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When running multiple pods on a single virtual machine in a Kubernetes cluster,
+    by default each pod can reach the IMDS endpoint. This means that each pod could
+    get access to the identities configured for that virtual machine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Azure AD pod-managed identities add-on for AKS configures your cluster in
+    such a way that pods can no longer access the IMDS endpoint directly to request
+    an access token. It configures your cluster in such a way that pods trying to
+    access to IMDS endpoint (1) will connect to a DaemonSet running on the cluster.
+    This DaemonSet is called the **node managed identity** (**NMI**). The NMI will
+    verify which identities that pod should have access to. If the pod is configured
+    to have access to the requested identity, then the DaemonSet will connect to the
+    IMDS (2 to 5) to get the token, and then deliver the token to the pod (6). The
+    pods can then use this token to access Azure resources (7).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Azure AD pod-managed identity workflow](img/B17338_09_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.2: Azure AD pod-managed identity'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This way, you can control which pods on your cluster have access to certain
+    identities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Azure AD pod-managed identities were initially developed as an open-source project
+    by Microsoft on GitHub. More recently, Microsoft has released Azure AD pod-managed
+    identities as an AKS add-on. The benefit of using Azure AD pod-managed identities
+    as an AKS add-on is that the functionality is supported by Microsoft and the software
+    will be updated automatically as part of regular cluster operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: At the time of writing, the Azure AD pod-managed identities add-on is in preview.
+    Currently, it is also not supported for Windows containers. Using preview functionality
+    for product use cases is not recommended.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you know how Azure AD pod-managed identities work, let's set it up
+    on an AKS cluster in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up a new cluster with Azure AD pod-managed identities
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As mentioned in the previous section, there are two ways to set up Azure AD
+    pod-managed identities in AKS. It can either be done using the open-source project
+    on GitHub, or by setting it up as an AKS add-on. By using the add-on, you'll get
+    a supported configuration, which is why you'll set up a cluster using the add-on
+    in this section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the time of writing, it is not yet possible to enable the Azure AD pod-managed
+    identities add-on on an existing cluster, which is why in the following instructions
+    you'll delete your existing cluster and create a new one with the add-on installed.
+    By the time you are reading this, it might be possible to enable this add-on on
+    an existing cluster without recreating your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Also, because the functionality is in preview at the time of this writing,
+    you''ll have to register for the preview. That''ll be the first step in this section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Start by opening Cloud Shell and registering for the preview of Azure AD pod-managed
+    identities:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You''ll also need a preview extension of the Azure CLI, which you can install
+    using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now you can go ahead and delete your existing cluster. This is required to
+    ensure you have enough core quota available in Azure. You can do this using the
+    following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Once your previous cluster is deleted, you''ll have to wait until the pod identity
+    preview is registered on your subscription. You can use the following command
+    to verify this status:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Wait until the status shows as registered, as shown in *Figure 9.3*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Verifying that the pod identity preview is registered on your subscription](img/B17338_09_03.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 9.3: Waiting for the feature to be registered'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'If the feature is registered and your old cluster is deleted, you need to refresh
+    the registration of the namespace before creating a new cluster. Let''s first
+    refresh the registration of the namespace:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'And now you can create a new cluster using the Azure AD pod-managed identities
+    add-on. You can use the following command to create a new cluster with the add-on
+    enabled:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will take a couple of minutes to finish. Once the command finishes, obtain
+    the credentials to access your cluster and verify you can access your cluster
+    using the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This should return an output similar to *Figure 9.4*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Obtaining the credentials to access your new cluster and verifying that you
+    can access your new cluster ](img/B17338_09_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.4: Getting cluster credentials and verifying access'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now you have a new AKS cluster with Azure AD pod-managed identities enabled.
+    In the next section, you will create a managed identity and link it to your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Linking an identity to your cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In the previous section, you created a new cluster with Azure AD pod-managed
+    identities enabled. Now you are ready to create a managed identity and link it
+    to your cluster. Let''s get started:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To start, you will create a new managed identity using the Azure portal. In
+    the Azure portal, look for `managed identity` in the search bar, as shown in *Figure 9.5*:![Search
+    for Managed identity in the Azure search bar](img/B17338_09_05.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.5: Navigating to Managed Identities in the Azure portal'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In the resulting pane, click the + New button at the top. To organize the resources
+    for this chapter together, it's recommended to create a new resource group. In
+    the resulting pane, click the Create new button to create a new resource group.
+    Call it `aad-pod-id`, as shown in *Figure 9.6*:![Creating a new resource group
+    called aad-pod-id](img/B17338_09_06.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.6: Creating a new resource group'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Now, select the region you created your cluster in as the region for your managed
+    identity and give it a name (`aad-pod-id` in this example), as shown in *Figure
+    9.7*. To finish, click the Review + create button and in the final window click
+    the Create button to create your managed identity:![Providing instance details
+    for creating a new managed identity](img/B17338_09_07.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.7: Providing Instance details for the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Once the managed identity has been created, hit the Go to resource button to
+    go to the resource. Here, you will need to copy the client ID and the resource
+    ID. They will be used later in this chapter. Copy and paste the values somewhere
+    that you can access later. First, you will need the client ID of the managed identity.
+    You can find that in the Overview pane of the managed identity, as shown in *Figure
+    9.8*:![Fetching the client ID from the managed identity overview page](img/B17338_09_08.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.8: Getting the client ID of the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Finally, you will also need the resource ID of the managed identity. You can
+    find that in the Properties pane of the managed identity, as shown in *Figure
+    9.9*:![Fetching resource ID from the managed identity Properties page](img/B17338_09_09.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.9: Getting the resource ID of the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Now you are ready to link the managed identity to your AKS cluster. To do this,
+    you will run a command in Cloud Shell, and afterward you will be able to verify
+    that the identity is available in your cluster. Let''s start with linking the
+    identity. Make sure to replace `<Managed identity resource ID>` with the resource
+    you copied earlier:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You can verify that your identity was successfully linked to your cluster by
+    running the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This should give you an output similar to *Figure 9.10*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Verifying that your identity was successfully linked to your cluster](img/B17338_09_10.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.10: Verifying the availability of the identity in the cluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This means that the identity is now available for you to use in your cluster.
+    How you do this will be explained in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using a pod with managed identity
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In the previous section, you created a managed identity and linked it to your
+    cluster. In this section, you will create a new blob storage account and give
+    the managed identity you created permission over this storage account. Then, you
+    will create a new pod in your cluster that can use that managed identity to interact
+    with that storage account. Let''s get started by creating a new storage account:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To create a new storage account, look for `storage accounts` in the Azure search
+    bar, as shown in *Figure 9.11*:![Searching for storage accounts in the Azure search
+    bar](img/B17338_09_11.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.11: Looking for storage accounts in the Azure search bar'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'In the resulting pane, click the + New button at the top of the screen as shown
+    in *Figure 9.12*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Creating a new storage account](img/B17338_09_12.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 9.12: Creating a new storage account'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Select the `aad-pod-id` resource group you created earlier, give the account
+    a unique name, and select the same region as your cluster. To optimize costs,
+    it is recommended that you select the Standard performance, StorageV2 as the Account
+    kind, and Locally-redundant storage (LRS) for Replication, as shown in *Figure
+    9.13*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Configuring your new storage account by providing Subscription details and
+    Instance details](img/B17338_09_13.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 9.13: Configuring your new storage account'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: After you have provided all the values, click Review + create and then the Create
+    button on the resulting screen. This will take about a minute to create. Once
+    the storage account is created, click the Go to resource button to move on to
+    the next step.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: First, you will give the managed identity access to the storage account. To
+    do this, click Access Control (IAM) in the left-hand navigation bar, click + Add
+    and Add role assignment. Then select the Storage Blob Data Contributor role, select
+    User assigned managed identity in the Assign access to dropdown, and select the
+    access-blob-id managed identity you created, as shown in *Figure 9.14*. Finally,
+    hit the Save button at the bottom of the screen:![In the IAM pane of the storage
+    account, providing the managed identity with access to the storage account  ](img/B17338_09_14.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.14: Providing access to the storage account for the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Next, you will upload a random file to this storage account. Later, you will
+    try to access this file from within a Kubernetes pod to verify you have access
+    to the storage account. To do this, go back to the Overview pane of the storage
+    account. There, click on Containers, as shown in *Figure 9.15*:![Navigating to
+    Containers from the Overview pane of the storage account](img/B17338_09_15.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.15: Clicking on Containers in the overview pane'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Then hit the + Container button at the top of the screen. Give the container
+    a name, such as `uploadedfiles`. Make sure to set Public access level to Private
+    (no anonymous access), and then click the Create button at the bottom of the screen,
+    as shown in *Figure 9.16*:![Creating a new container called uploadedfiles](img/B17338_09_16.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.16: Creating a new blob storage container'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Finally, upload a random file into this storage container. To do this, click
+    on the container name, and then click the Upload button at the top of the screen.
+    Select a random file from your computer and click Upload as shown in *Figure 9.17*:![Uploading
+    a new file to Blob Storage](img/B17338_09_17.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 9.17: Uploading a new file to blob storage'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Now that you have a file in blob storage, and your managed identity has access
+    to this storage account, you can go ahead and try connecting to it from Kubernetes.
+    To do this, you will create a new deployment using the Azure CLI container image.
+    This deployment will contain a link to the managed identity that was created earlier.
+    The deployment file is provided in the code files for this chapter as `deployment-with-identity.yaml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'There are a few things to draw attention to in the definition of this deployment:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '`mcr.microsoft.com/azure-cli`) is referring to the Azure CLI, and you''re running
+    a `sleep` command in this container to make sure the container doesn''t continuously
+    restart.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'You can create this deployment using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Watch the pods until the `access-blob` pod is in the `access-blob` pod and
+    `exec` into it using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Once you are connected to the pod, you can authenticate to the Azure API using
+    the following command. Replace `<client ID of managed identity>` with the client
+    ID you copied earlier:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This should return you an output similar to *Figure 9.18*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Logging into the Azure CLI using the client ID of the managed identity](img/B17338_09_18.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 9.18: Logging in to the Azure CLI using the Azure AD pod-managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Now, you can try accessing the blob storage account and download the file.
+    You can do this by executing the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This should return you an output similar to *Figure 9.19*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Downloading a blob file using the managed identity](img/B17338_09_19.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 9.19: Downloading a blob file using the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You can now exit the container using the `exit` command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If you would like to verify that pods that don''t have a managed identity configured
+    and cannot download the file, you can use the file called `deployment-without-identity.yaml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'As you can see, this deployment isn''t similar to the deployment you created
+    earlier in the chapter. The difference here is that the pod definition doesn''t
+    contain the label with the Azure AD pod-managed identity. This means that this
+    pod won''t be able to log in to Azure using any managed identity. You can create
+    this deployment using the following:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Watch the pods until the `no-access-blob` pod is in the `access-blob` pod and
+    `exec` into it using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Once you are connected to the pod, you can try to authenticate to the Azure
+    API using the following command, which should fail:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This should return an output similar to *Figure 9.20*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Authentication error for the deployment with a pod identity](img/B17338_09_20.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 9.20: The new pod cannot authenticate using the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Finally, you can exit the container using the `exit` command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: This has successfully shown you how to use Azure AD pod-managed identities to
+    connect to blob storage from within your Kubernetes cluster. A deployment with
+    an identity label could log in to the Azure CLI and then access blob storage.
+    A deployment without this identity label didn't get permission to log in to the
+    Azure CLI, and hence was also not able to access blob storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This has concluded this chapter. Let''s make sure to delete the resources you
+    created for this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can keep the cluster you created in this chapter since in the next chapter
+    you will use Azure AD pod-managed identities to access Key Vault secrets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this chapter, you've continued your exploration of security in AKS. Whereas
+    *Chapter 8, Role-based access control in AKS*, focused on identities for users,
+    this chapter focused on identities for pods and applications running in pods.
+    You learned about managed identities in Azure and how you can use Azure AD pod-managed
+    identities in Azure to assign those managed identities to pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You created a new cluster with the Azure AD pod-managed identities add-on enabled.
+    You then created a new managed identity and linked that to your cluster. In the
+    final section, you gave this identity permissions over a blob storage account
+    and finally verified that pods with the managed identity were able to log in to
+    Azure and download files, but pods without the managed identity couldn't log in
+    to Azure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, you'll learn more about Kubernetes secrets. You'll learn
+    about the built-in secrets and then also learn how you can securely connect Kubernetes
+    to Azure Key Vault, and even use Azure AD pod-managed identities to do this.
+  prefs: []
+  type: TYPE_NORMAL

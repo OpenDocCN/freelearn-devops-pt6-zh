@@ -1,0 +1,1724 @@
+- en: '13'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: KubeArmor Securing Your Runtime
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As the popularity of Kubernetes grows, so does the need for robust security
+    measures to protect workloads. We learned how to secure a cluster using RBAC,
+    which allows us to control the access that users have to resources. Using RBAC,
+    we can control what users can execute on a cluster, controlling if someone can
+    create or delete a pod, view logs, view Secrets, etc. We also looked at securing
+    clusters using Gatekeeper policies that can protect nodes by denying the creation
+    of an object that contains a value against security policies like attempting to
+    allow privilege escalation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While these go a long way to securing clusters, there are certain actions that
+    are often overlooked by many organizations. One of the most important examples
+    is securing the container runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes has limited abilities to audit or secure actions that are executed
+    within a container. While Kubernetes can handle certain security requirements
+    like blocking elevated privilege attempts within a container, it doesn’t provide
+    a way for operators to limit most actions that are executed in the container.
+    It cannot allow or deny any actions that a user may be able to execute once they
+    exec into a running container, like looking at files, deleting files, adding files,
+    and more. Even worse, most actions executed inside a container are not audited
+    by the Kubernetes API server, which is why they often go overlooked.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In *Chapter 8*, *Managing Secrets*, we learned about using Vault to store and
+    retrieve secrets. Many people think that if they use a system like Vault, they
+    have secured their secrets from anyone being able to view the data in the secret.
+    It is true that the secret isn’t stored in a basic K8s secret resource, where
+    anyone with the required permissions to the namespace would be able to view and
+    decode the secret. Since a Vault secret will be stored in your pod as an environment
+    variable or a file, there is no way to stop someone who has access to exec into
+    the container from viewing the container’s environment variables or the files
+    where the Vault secret is stored.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also need a way to stop certain processes from running in containers. Your
+    organization may have a policy that a container should never run an SSH daemon.
+    Without an add-on tool, you have limited options to secure binaries to that level
+    in a running container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sure, you can create pipelines and security checks when an image is created
+    and deny images that don’t follow documented security standards, but once the
+    image passes and is deployed, how do you stop someone from executing an exec into
+    the container and adding binaries like the SSH daemon, or even worse, malware
+    or crypto mining tools?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Luckily, a company called AccuKnox has donated a project to the CNCF called
+    **KubeArmor** that provides you with the ability to secure your container runtime.
+    KubeArmor isn’t limited to only the runtime; it has a number of other useful features
+    that are related to securing your workloads, including restricting process execution,
+    file access, and more.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will explain how to deploy KubeArmor and how to use its
+    many features to enhance the security of your clusters. Here are a few topics
+    that we will cover in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is runtime security?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Introducing KubeArmor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying KubeArmor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Enabling KubeArmor logging
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: KubeArmor and LSM policies
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating a KubeArmorSecurityPolicy
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using karmor to interact with KubeArmor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This chapter has the following technical requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An Ubuntu 22.04+ server running Docker with a minimum of 8 GB of RAM
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A KinD cluster, preferably a new cluster, with Vault integrated
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Scripts from the `chapter13` folder from the repo, which you can access by
+    going to this book’s GitHub repository: [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is runtime security?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Runtime security is a vital part of security for systems, applications, and
+    data when they are most exposed to attacks during active execution, while they
+    are up and running on your network. Runtimes, often left unmonitored and sometimes
+    lacking in any form of logging or auditing, pose a critical security challenge.
+    Of course, runtime security is not exclusive to containers; it is a requirement
+    for applications, containers, physical servers, virtual machines, and more. Every
+    component within your infrastructure requires continuous monitoring of all potential
+    security risks to quickly detect threats and vulnerabilities posed by potential
+    attackers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the face of increasingly sophisticated and dynamic security threats, the
+    reliance solely on static security measures is no longer adequate. This is where
+    runtime security comes in, providing dynamic, real-time protection precisely when
+    it is most crucial: with live systems. Through constant monitoring of the runtime
+    environment, these systems can spot anomalies, suspicious activities, and unauthorized
+    processes and allow or block actions based on a set of policies.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To secure workloads you need to follow key practices, such as permitting only
+    authorized processes in a container, implementing measures to prevent and alert
+    on any unauthorized resource access, or inspecting network traffic to detect any
+    hostile activities. For example, you can limit what processes can access files
+    or directories in a container, denying access to a database file to any process
+    that isn’t part of MySQL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Runtime security has multiple pieces to consider: using KubeArmor is just one
+    of the tools to help protect your workloads and clusters. *Figure 13.1* shows
+    a picture of the components that make up a runtime environment from the CNCF security
+    V2 whitepaper. You can find the whole paper on the CNCF website at [https://www.cncf.io/wp-content/uploads/2022/06/CNCF_cloud-native-security-whitepaper-May2022-v2.pdf](https://www.cncf.io/wp-content/uploads/2022/06/CNCF_cloud-native-security-whitepaper-May2022-v2.pdf).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have covered many of the various tools to secure your runtimes in previous
+    chapters, including network policies, identity and access management, secrets,
+    and policy security using **Gatekeeper**. Combining these options with the added
+    security that KubeArmor supplies, you can secure your clusters from malicious
+    activity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.1: CNCF runtime security landscape'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In summary, KubeArmor is a runtime security tool that provides dynamic, real-time
+    protection for your systems against an ever-expanding spectrum of threats and
+    vulnerabilities. Its purpose is to protect the security and stability of your
+    infrastructure, upholding the integrity of your operations in the face of countless
+    cybersecurity threats.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing KubeArmor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we jump into KubeArmor, we need to define a few base concepts you need
+    to be aware of. If you are new to Linux, you may not be familiar with these, and
+    even if you are a Linux veteran, the concepts may still be new to you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction to Linux Security
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this chapter, you will primarily see two references that need to be understood
+    to understand how KubeArmor protects clusters. The first term is **eBPF**, which
+    stands for the **extended Berkley Packet Filter**, and the second one is **LSM**,
+    which stands for **Linux Security Module**. In *Figure 13.2*, you can see how
+    access from a pod goes through KubeArmor before it hits the host’s kernel. This
+    is what allows KubeArmor to secure your runtimes: sitting between the pod runtime
+    and the kernel, to take action before a request is executed.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_02.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.2: KubeArmor’s high-level design'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we need to explain, at a high level, what eBPF and LSMs are and how they
+    help to secure a cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Have you ever wondered how Linux handles the constant stream of data in and
+    out of the system? How it monitors performance, and how it protects itself from
+    security risks? Well, that’s where eBPF comes in: it handles all these responsibilities
+    and more!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Think of eBPF as a digital traffic cop. Your computer resembles a busy intersection
+    where data is in constant motion. eBPF acts as a traffic controller, capable of
+    controlling the data flow, inspecting it for issues, and tracking ongoing activities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One advantage of eBPF is its use of “virtual machines,” rather than requiring
+    direct edits to the kernel to add features like monitoring network traffic. eBPF
+    primarily uses programs that are written in a restricted subset of C and are executed
+    within the kernel. While C is the most commonly used language for creating eBPF
+    programs, you can also create them using other languages, including:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Go
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Lua
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Python
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rust
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using a language other than C involves transpiling to C or adding the required
+    libraries that abstract the C programming. The final decision on selecting a language
+    is ultimately up to your use cases, standards, and expertise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In summary, eBPF provides a number of powerful functions, without the need to
+    modify the kernel directly. It is highly secured and isolated, providing a security
+    boundary through its use of virtual machines, similar to a standard virtual machine
+    that runs a full operating system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The other term we mentioned was **LSM**, which stands for **Linux Security Module**.
+    Two of the most common LSMs today are SELinux, which is primarily used by Red
+    Hat systems, and **AppArmor**, which is used by a number of systems, including
+    Ubuntu, SUSE, and Debian.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Like the previous eBPF section, we are going to provide a high-level overview
+    of LSMs with a focus on AppArmor since we are using Ubuntu as our server operating
+    system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: LSMs are used to connect the kernel with security policies and modules, providing
+    enforcement of **mandatory access controls** (**MACs**) and additional security
+    policies within a Linux system. They provide a framework for security, providing
+    hooks into the kernel, and allowing external modules the ability to intercept
+    and secure systems calls, file operations, and other various kernel activities.
+    LSMs are meant to be very flexible and extensible, allowing you to select and
+    create modules that meet your specific requirements, rather than a set of policies
+    that a vendor thinks you should implement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Given that both eBPF and LSMs offer security functionalities, you might be wondering
+    how, or if, they are different.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Despite their apparent similarities at a high level, they diverge significantly.
+    eBPF employs kernel-embedded virtual machines for execution, allowing the creation
+    of programs capable of executing low-level tasks such as packet filtering, tracing,
+    and performance monitoring. eBPF is commonly employed for network-related tasks,
+    performance optimization, or the development of custom kernel-level functions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: LSMs are components executed by the kernel, operating externally to the kernel
+    itself. The core purpose of LSMs is to enhance system security through the enforcement
+    of policies, including MACs, and other measures designed to safeguard system resources.
+    These modules have the ability to increase cluster security by restricting access
+    to various elements, ranging from files and processes to the flow of network traffic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can create policies without a tool like KubeArmor if you know enough about
+    the specific LSM, like AppArmor. Imagine if you use multiple Linux vendors, you
+    would need to know each LSM that each vendor is compatible with. This makes creating
+    policies a challenge, and that’s where AppArmorKubeArmor can help.
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeArmor streamlines the task of creating LSM policies, saving you from having
+    to know the syntax between different LSMs. When you create a policy with KubeArmor,
+    it automatically generates the corresponding LSM policy on the host system. This
+    guarantees that, irrespective of the underlying LSM in operation, you can create
+    a uniform set of policies that provide a consistent security standard across multiple
+    Linux distributions and LSMs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can imagine, KubeArmor uses both eBPF and LSMs to help you secure your
+    environments. Now that we know about what both eBPF and LSMs provide, we can move
+    on to introducing KubeArmor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Welcome to KubeArmor
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Securing any environment can be a difficult task. When it comes to protecting
+    your clusters, it’s not something you can simply address after the fact; it should
+    be a part of the initial design and discussions. Many organizations tend to postpone
+    the security aspect of their environments because of the perceived skills, effort,
+    and time required to implement security solutions. However, it’s essential to
+    establish a security foundation before your cluster goes into production. This
+    can present a challenge to organizations, and that’s where KubeArmor steps in
+    to assist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By deploying KubeArmor, you can increase the security and regulatory compliance
+    of containerized applications. KubeArmor serves as a runtime security solution
+    designed to secure containerized workloads by enforcing security protocols and
+    promptly identifying and allowing or denying any activity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The features of KubeArmor are always evolving: by the time you read this book,
+    KubeArmor will likely have additional features that we do not cover in this chapter.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, what are some of the features that KubeArmor provides to enhance our security?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Container security
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Containers are the cornerstone of modern applications, making their security
+    a primary objective. This isn’t to say that we think non-containerized applications
+    don’t need security: of course they do, but non-containerized apps have a lot
+    of security options provided by operating systems and third-party vendors. Containers,
+    as we know them today, are relatively new and many of the toolsets are still catching
+    up.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeArmor provides security by continuously monitoring container behavior in
+    real time, mitigating risks like container escapes, binary execution, and privilege
+    escalations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inline mitigation versus post-attack mitigation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: There are a number of products on the market today that are very good at detecting
+    anomalies, but they do not have the ability to block or allow the request before
+    it actually executes. This is a post-attack mitigation process, which means the
+    action will be allowed or denied and the anomaly will be logged.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This would be like having a door without a lock and when someone walks into
+    the building, all you would get is an alert from a security camera. The person
+    would still be allowed into the building since there is no lock on the door.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many of the offerings that only detect events can be integrated with other systems
+    to prevent the action(s). For example, a system detects that someone may have
+    injected a crypto miner into a running container. The event would be detected
+    by the anomaly engine and based on that event, you could trigger a custom written
+    routine to create a network policy that would deny all egress and ingress traffic.
+    This would block the application from network activity, stopping the pod from
+    mining and it would save the current state of the pod since we didn’t destroy
+    it; we just stopped all network traffic to and from the pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Post Attack Mitigation](img/B21165_13_03.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.3: Post-attack mitigation'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In *Figure 13.3*, you can see the flow of a post-mitigation attack. The flow
+    of the mitigation is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Post-exploit mitigation works by actioning suspicious activity in response to
+    an alert indicating malicious intent.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The attacker is allowed to execute a binary or other actions. Since they have
+    access, they may be able to disable security controls, logging, etc. to avoid
+    detection.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Assuming the action has been detected, we send it to an event handler that can
+    execute an action based on the event. However, it’s important to point out that
+    by the time a malicious process is actioned, sensitive contents may have already
+    been deleted, encrypted, or transmitted.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Based on the event, the handler will execute an action like deleting the pod
+    or perform other actions like creating a network policy to block communication
+    without deleting the pod.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'One key differentiator of KubeArmor is its ability to not only detect the runtime
+    event but to take action on the event, to block or allow it based on various parameters.
+    Similar to post-attack mitigation, you would still see the attempted action(s)
+    logged, which may be required as evidence to document the malicious activity.
+    However, unlike the previous example of a door with no lock, this door would have
+    a camera and a lock. When someone tries to open the door, the camera will log
+    the attempt: but this time, since the door is locked, the opening action will
+    be denied.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![KubeArmor Differentiation](img/B21165_13_04.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.4: Inline mitigation'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In *Figure 13.4*, you can see how streamlined the process is: we don’t need
+    an external event handler, or any custom components to act on the event. Since
+    KubeArmor handles the events in line, in real time, we can stop an action instantly
+    before an attacker can perform any malicious activity, all in a single product.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see, inline mitigation is a better method of mitigating runtime events.
+    Threats move quickly in today’s landscape, and we need to be just as quick at
+    mitigation. If we are attempting to react to events only after they happen, the
+    damage will already have been done and you will just have a log entry that tells
+    you someone has done something malicious.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Zero-day vulnerability
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Zero-day vulnerabilities take time to remediate, not only from a vendor side
+    but from an organizational side as well. If you have the ability to remediate
+    any vulnerability as you wait for an official patch, you should: every minute
+    counts. KubeArmor monitors container activities for any suspicious activity. It
+    can stop activities, without prior knowledge regarding the specific vulnerability
+    or attack pattern.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: CI/CD pipeline integration
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: KubeArmor easily integrates into **continuous integration and continuous deployment**
+    (**CI/CD**) pipelines. Integrating KubeArmor into your pipelines automates security
+    checks through the entire development and deployment lifecycle, delivering a safe
+    and secure image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Robust auditing and logging
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Logging is very important, and KubeArmor includes comprehensive logs and audit
+    trails of container activities. These logs can be used to report compliance, provide
+    troubleshooting assistance, and assist in forensic examinations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Enhanced container visibility
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Visibility into container behavior simplifies identifying and responding to
+    security incidents or abnormalities. KubeArmor finds what processes are running
+    in the container and what they are accessing and connecting to.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Least privilege tenet adherence
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: KubeArmor is based on the least amount of privilege concept, which is a base
+    security principle. This ensures that containers possess only the necessary permissions
+    and access levels required for their designated functions, consequently curtailing
+    the attack surface and constraining potential damage stemming from a compromised
+    container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Policy enforcement
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Policies are at the heart of KubeArmor. They provide administrators with the
+    ability to create detailed security policies for containers, fine-tuning the requirements
+    for each different, unique workload. Want to block the ability of any container
+    executing the SSH daemon? Make a simple policy using KubeArmor and no container
+    will be able to execute the SSH daemon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Staying in compliance
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To help you stay in compliance with standards like **CIS**, **NIST-800-53**,
+    and **MITRE**, KubeArmor includes policies that will secure your clusters based
+    on the defined best standards, all out of the box.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Policy impact testing
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Any policy can be tested before enforcing any settings. This will help you to
+    create a policy that will not cause any workloads to have downtime due to a setting
+    that may impact a running application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-tenancy support
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: It is common for enterprises to run multi-tenant clusters. With multiple teams
+    or applications sharing a Kubernetes cluster, you need to provide a secure environment
+    to all of the users, stopping any attacks or effects that a workload in one namespace
+    may have on another namespace. KubeArmor provides isolation and security among
+    tenants by implementing unique policies at the container level. It’s an important
+    tool for securing containerized applications, providing compliance with regulatory
+    requirements, and providing a defence against a large spectrum of security threats.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let’s talk about how we can deploy KubeArmor in a cluster and how to use
+    it to secure our workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cluster requirements for the exercises
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As you learned in *Chapter 2*, KinD is a Kubernetes cluster that runs the components
+    in containers. This nesting does mean that some add-ons like KubeArmor need to
+    have some extra steps to function correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this chapter, we suggest a new cluster. If you have a previous cluster with
+    Vault installed already, you should delete that cluster and start over with a
+    new one. If you do need to delete an existing cluster, you can execute `kind delete
+    cluster --name cluster01` to delete it and then use the scripts to deploy a new
+    cluster that includes Vault integration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To make it easier to deploy, we have included all the required scripts in the
+    `chapter13/cluster` directory. To deploy a new cluster, execute `create-cluster.sh`
+    in the `cluster` directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also need Vault for one of the examples. If you want to run the example,
+    you will need to add Vault to your cluster. We have provided an automated Vault
+    deployment in the `chapter13/vault` directory called `deploy-vault.sh`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once both have been executed, you will have a brand-new cluster integrated with
+    Vault. It will take time for Vault to deploy fully, so please wait until all of
+    the pods have been created to move on to deploying KubeArmor in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying KubeArmor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before we can use KubeArmor on our KinD cluster, we will need to patch Calico
+    and the kubearmor-relay deployment to work with KinD. AppArmor requires some changes
+    for certain workloads to deploy and run correctly in a KinD cluster. In a standard
+    cluster, these patches would not be required: and once they are deployed, KubeArmor
+    will work as it would on a standard Kubernetes cluster.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeArmor can be easily deployed using a single binary, called karmor, or via
+    Helm charts. For the book exercises, we will use the karmor utility to install
+    KubeArmor. Both deployment methods offer the same protection and configuration
+    options, and once deployed, you interact with KubeArmor the same way, regardless
+    of the deployment method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have included a script in the `chapter13` folder called `kubearmor-patch.sh`
+    that will download karmor, patch Calico and the kubearmor-relay deployments, and
+    deploy KubeArmor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeArmor installs on most Kubernetes clusters without any issues. Since we
+    are using a cluster built on KinD, we need to make a few tweaks to allow AppArmor
+    to work as expected. The scripts do this work for you. The majority of the fixes
+    are to add an annotation to a few deployments, like the Calico Typha controller
+    to unconfined mode. We will discuss the patched deployments and what unconfined
+    provides in this section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The script downloads karmor and moves it to the `/usr/local/bin` directory on
+    the host. This is the utility that we will use to install KubeArmor and interact
+    with it once it has been deployed in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since KubeArmor leverages LSMs, all nodes require an installed LSM, like AppArmor,
+    for KubeArmor to function. On most Ubuntu deployments, AppArmor is already deployed,
+    but since our Kubernetes cluster is running containerized, AppArmor is not included
+    in the image. To resolve this, we need to add AppArmor to our nodes: the script
+    takes care of this by executing `docker exec` in each container that updates the
+    apt repositories, installs AppArmor, and restarts containerd.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next step in the script will patch the `calico-typha` deployment with an
+    `AppArmor` policy that is unconfined. Running policies as unconfined means they
+    don’t have an AppArmor profile assigned to them, or they are assigned a profile
+    that does not impose any significant restrictions. This allows the process to
+    operate with the standard Linux discretionary access controls, without additional
+    restrictions from AppArmor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we mentioned previously, you wouldn’t need these patch deployments in a standard
+    Kubernetes cluster, but since we are using KinD, we need to patch `calico-typha`
+    to work correctly with KubeArmor running in our KinD cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With all the requirements and changes deployed, the script continues to install
+    KubeArmor using karmor install. This will take a few minutes to deploy all the
+    components and, during the deployment, you will see each step that karmor is executing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will see that the installer creates a number of Kubernetes resources, including
+    CRDs, a ServiceAccount, RBAC, Services, and Deployments. Once all resources have
+    been created, it will verify the deployment was successful by telling you that
+    `Your Cluster is Armored Up!`
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After a successful deployment, you will have additional pods running in the
+    `kubearmor` namespace, the controller, the relay, and a `kubearmor` pod, one for
+    each of your nodes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can also deploy KubeArmor using Helm charts. If you want to know more about
+    deploying KubeArmor with Helm, read more about it in KubeArmor’s Git repository
+    at [https://github.com/kubearmor/KubeArmor/blob/main/getting-started/deployment_guide.md](https://github.com/kubearmor/KubeArmor/blob/main/getting-started/deployment_guide.md).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Each of the pods has a specific function that is explained below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**kubearmor**: A daemonset that deploys the `kubearmor` pod on each node in
+    the cluster. It is a non-privileged DaemonSet with capabilities that allow it
+    to monitor pods and containers and the host.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**kubearmor-relay**: KubeArmor’s relay server collects all messages, alerts,
+    and system logs generated by KubeArmor in each node, and then it allows other
+    logging systems to simply collect those through the service of the relay server.
+    The relay server plays a critical role in ensuring efficient and centralized security
+    monitoring and data collection within Kubernetes environments, making it easier
+    for organizations to maintain robust security postures in their containerized
+    infrastructures.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**kubearmor-controller**: Admission controller for KubeArmor policy management,
+    including policy management, distribution, synchronization, and logging.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For the chapter, we’ve opted for the karmor binary installation due to its ease
+    of use, making it a convenient choice for deploying KubeArmor quickly. Additionally,
+    we need the same karmor binary for the exercises throughout the chapter. This
+    approach not only simplifies the learning process but also underscores the versatility
+    and practicality of the karmor tool in managing KubeArmor deployments and operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have KubeArmor deployed, we will discuss configuring logging before
+    we start to create policies to secure our cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Enabling KubeArmor logging
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: By default, KubeArmor is not enabled to log events or alerts to `STDOUT`. Later
+    in the chapter, we will go over how to watch logging events in the console interactively,
+    which is useful for troubleshooting issues with policies in real time, but it
+    is not an efficient way to log a history of policy events.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most logging solutions made for Kubernetes will pick up logged events from `STDOUT`
+    and `STDERROR`. By enabling KubeArmor’s logging options, you will have a history
+    of events in your standard logging solution. Using these events, you can create
+    alerts and produce a history of changes and events when a security audit occurs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'KubeArmor offers three events that can be logged:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Alert**: When a policy is violated, an event will be logged with information
+    including the action, policy name, pod name, namespace, and more'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Log**: Creates a log event when a pod executes a syscall, file access, process
+    creation, network socket events, etc'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Message**: Creates log entries generated by the KubeArmor daemon'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The process to enable logging is different between deployments of KubeArmor.
+    We used the karmor executable to deploy, so we need to edit the deployment, adding
+    two environment variables: one for standard logging, `ENABLE_STDOUT_LOGS`, and
+    one for alerts, `ENABLE_STDOUT_ALERTS`. Both of these require a value of true
+    to be enabled. To enable logging, we need to edit or patch the deployment of the
+    relay server. This has already been done by our included script that deployed
+    KubeArmor. The script will use a standard YAML file to patch the deployment. The
+    patching file is shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, using the patch file, the `script` executes a `kubectl patch` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once patched, all of the enabled logs will be shown in the relay-server pod
+    logs. An example of an event is shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'From the example log entry, you can see that the information for the event
+    contains everything that you need to know for the activity. It includes a review
+    of the activity including:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The source namespace
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The Kubernetes host
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pod name
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Process name
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The violated policy name
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Operation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The resource that was acted on
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The results of the action, allowed or denied
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By itself, this may not include additional information that you need to know
+    the full activity from end to end. For example, it doesn’t include the user of
+    the initial activity. Like many events in Kubernetes, you need to correlate events
+    from multiple log files to create the full story of the executed activity. In
+    this example, you would need to correlate the activity from the event that audited
+    the initial `kubectl exec` command with the pod and time of the runtime violation
+    that KubeArmor logged.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, we have KubeArmor configured, and we can get into creating and
+    testing policies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeArmor and LSM policies
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we mentioned, KubeArmor is a tool that helps you create policies for Linux
+    LSMs. Since it creates standard LSMs, any policy that you create and deploy will
+    be stored on the node(s) where the OS stores LSM policies. Since we are using
+    KinD, the nodes are running Ubuntu, which uses AppArmor as the LSM. AppArmor policies
+    are stored in the `/etc/apparmor.d` directory on the host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output below shows an example directory from a node that has had a few
+    KubeArmor policies created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you looked at any of the policies, you would see a standard AppArmor formatted
+    policy. We aren’t going to go into the details of creating an AppArmor policy,
+    but the output below shows an example of a policy created by KubeArmor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It’s possible that your nodes may have policies that were not created using
+    KubeArmor. In order to know what policies were created and managed by KubeArmor
+    and what policies were not, you need to look at the first line of the policy.
+    If the policy was created by KubeArmor, it will start with `## == Managed by KubeArmor
+    == ##`, and policies that do not start with this line were not created by KubeArmor.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s move on to the next section, on creating a `KubeArmorSecurityPolicy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a KubeArmorSecurityPolicy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It’s time to create some policies! When KubeArmor is deployed, it creates three
+    Custom Resource Definitions and one of those is `kubearmorpolicies.security.kubearmor.com`,
+    which is used to create new policy resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s jump right into an example policy. You do not need to deploy this to your
+    cluster; it’s being used to show an example policy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we want to block any attempted access to create a file in the `/bin` directory
+    of our containers in the `demo` namespace, the format of this policy is shown
+    below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Breaking down this policy, we can see that it’s using the `security.kubearmor.com/v1`
+    API and it’s a KubeArmorPolicy type. The metadata section has common options,
+    naming the object `block-write-bin` in the `demo` namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `spec` section is where we actually start to create a new policy. There
+    are a number of options available to you for creating policies. You can learn
+    about all of the options on the KubeArmor website: [https://docs.kubearmor.io/kubearmor/documentation/security_policy_specification](https://docs.kubearmor.io/kubearmor/documentation/security_policy_specification).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The action `spec` allows you to define what the policy enforces. The options
+    are `Block`, `Allow`, and `Audit`: each of the options is described in the table
+    below.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Available Action** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Block` | Tells KubeArmor to block the actions that are included in the policy
+    (default if no action is provided) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Allow` | Tells KubeArmor to allow the actions that are included in the policy
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Audit` | Tells KubeArmor to only audit the actions of the policy. The actions
+    on the policy will be allowed, but in our example, we would receive a logged event
+    when someone creates a file under the `/bin` directory. This is handy for testing
+    how a policy will affect a workload in the cluster. |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Table 13.1: Available actions for policies'
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeArmor operates on the principle of enforcing the least permissive access.
+    When you specify the allow action in a policy, it generates an allow list that
+    permits access exclusively to the object(s) specified within the policy. For instance,
+    if you were to establish an `allow` policy for a file named `demo/allowed-file`,
+    any process within the container would have permission to access that particular
+    file. All other files accessed within the container would trigger an audit event
+    because they do not belong to the allowed list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might be questioning the example, where if you set up an allow policy and
+    someone tries to read a different file, it won’t reject the request but will instead
+    log the access for auditing purposes. The default security posture, within an
+    allow policy, pertains to how it manages access attempts not listed in the allowed
+    entries. By default, KubeArmor’s security posture is set to audit mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s crucial to bear in mind that when you establish an allow policy, any access
+    requests that would typically be denied will not face denial; instead, they will
+    merely trigger an audit alert. As a result, if you configure an allow rule to
+    restrict access to a specific file, all other files will remain accessible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The default posture behavior can be changed at the global level or on a per
+    namespace level. To make the global default posture block, instead of audit, you
+    need to edit the KubeArmor config, which is stored in a ConfigMap called `kubearmor-config`
+    in the `kubearmor` namespace. In the config, you can set the default security
+    posture for each option, file, network, and capabilities:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Depending on your cluster configuration and the logic design of a cluster,
+    you may want to change the default posture on specific namespaces. To set the
+    policy on a namespace, you need to add an annotation of `kubearmor-file-posture=<value>`.
+    If we wanted to add a policy to an existing demo namespace, we would just need
+    to run `kubectl annotate`, as shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you were creating a new namespace using a manifest, you would just add the
+    annotation to the manifest before applying the file to create the namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After defining the policy action, we need to add what objects we want to block,
+    allow, or audit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are four objects that we can create policies for. They are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Process
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: File
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Network
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Capabilities
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The KubeArmor website has documentation on the policies and options located
+    at [https://docs.kubearmor.io/kubearmor/documentation/security_policy_specification](https://docs.kubearmor.io/kubearmor/documentation/security_policy_specification).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In our example, our goal is to prevent any form of write access within the `/bin`
+    directory. To achieve this, we will utilize the `file` object. Following the object
+    declaration, you specify a `match` condition that will trigger the policy action.
+    In this instance, we’ve configured the `matchDirectories` action specifically
+    for the `/bin` directory, indicating to KubeArmor that the policy’s evaluation
+    should only occur if the action is within that directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Continuing, there are optional settings for `readOnly` and `recursive`. In our
+    scenario, we have enabled both. When `readOnly` is set to true, it permits the
+    reading of any file located under `/bin`, but any other actions will be denied.
+    Enabling the `recursive` option instructs KubeArmor to assess both the `/bin`
+    directory and all of its subdirectories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, you can define the message option, which will add a custom message
+    in the KubeArmor logs when the policy has been triggered. In our example, we added
+    the message option to add “**Alert! An attempt to write to the /bin directory
+    denied.**” when an attempt is made to do anything other than read a file under
+    the directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You may be wondering about the allow action and how we said it creates an allow
+    list, allowing only access to the objects in the policy, and denying access to
+    every other file in the container. The example of a single file isn’t a great
+    example for the real world, but it does explain what you granted access to and
+    what was denied by allow policies. An allow policy will lock down a container
+    tightly when used correctly. When used incorrectly, your application would likely
+    crash, being denied access to a file not in the allowed list. You can imagine
+    that creating an allow list for an app could require a large number of objects,
+    many of which would be a challenge to find on your own.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s use a real-world example policy to close out this section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Foowidgets want to secure their secrets. They have created a policy that all
+    secrets must be stored in an external secret manager like Vault. As we discussed
+    in the secrets chapter, you can read your secret in from Vault without having
+    a base64-encoded secret in the namespace. A lot of people assume this secures
+    your secret, but they overlook that someone will be able to exec into the container
+    and read most files, including files that store secrets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do we enhance the security of our secrets, even using an external secrets
+    manager like Vault? The answer is KubeArmor!
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can address Foowidgets’ requirement by creating a policy that will allow
+    only the required running process access to the file that contains the secret,
+    while any other process will be denied.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the `chapter13/nginx-secrets` directory, there is a script called `create-nginx-vault.sh`,
+    which will create an NGNIX webserver that will display a secret file and the contents
+    when you open a webpage path, `/secrets/myenv`. The secret that is shown on the
+    page is pulled down from Vault and mounted in the pod using a volume at `/etc/secrets/myenv`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When you execute the script, the last line will show you the **nip.io** URL
+    for the webserver. Open the URL in any browser, or curl the `http://secret.<nip.io>/secrets/myenv`
+    URL to prove that the secret shows in the output. You should see output similar
+    to the below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_05.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.5: NGINX showing contents of secret file'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Verifying that the container is working as expected, we can `exec` into the
+    container and attempt to read the secret file using `cat`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The secret is mounted in the pod at `/etc/secrets` in the `myenv` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will output the contents of the file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Hold on! I thought that employing an external secret manager would ensure the
+    security of Kubernetes secrets. Although it may not store the data in an easily
+    discoverable `Secret` within the namespace, an individual with container execution
+    access can still retrieve the secret.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This issue is one of the shortcomings of systems like Vault; simply using Vault
+    doesn’t necessarily guarantee the security of the secret.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To illustrate this with a real-world scenario, let’s consider a requirement
+    by our company, Foowidgets. They want to restrict secret access exclusively to
+    the processes that require access to the secret. This can be accomplished by creating
+    a new KubeArmor policy that permits only the application to access the file containing
+    the secret. In our example container, we intend to grant the NGINX process permission
+    to read the secret file while preventing other processes from doing so.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To accomplish this, we have created an example policy file called `nginx-secrets-block.yaml`.
+    This will deploy into the `my-ext-secret` namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: To show the policy in action, we have included a script called `redeploy-nginx-vault.sh`
+    in the `chapter13/nginx-secrets` directory, which will delete the previous NGINX
+    deployment and then create a new deployment with the KubeArmor policy to secure
+    the Vault secret used by NGINX.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Execute the script and wait until the new deployment and policy have been created.
+    It’s important that we confirm that the outcome is what we expect from the new
+    policy. To verify the policy, we will attempt to access the secret by executing
+    `kubectl exec -it nginx-secrets -n my-ext-secret -- bash` to enter the pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once in the pod, we can attempt to view the secret by using `cat`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You’ll notice that access to the file is no longer allowed. KubeArmor will
+    intercept the request and, based on the policy, refuse access to the `/etc/secrets/myenv`
+    file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Take note that even though you have root privileges within the container, you
+    can’t access the `myenv` file in the `/etc/secrets` directory. The policy blocks
+    any access not explicitly allowed to the directory or its files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, everything seems to be going well. However, now we must verify the website
+    to ensure that the secret information still appears. If the site displays the
+    same content as before implementing our policy, it demonstrates that the secret
+    is allowed to be read by the NGINX binary. To verify this, navigate to the same
+    URL you previously used to test the site, either by browsing or using the `curl`
+    command. If you still have the same browser window open, simply refresh it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The screenshot below verifies that the website is functioning correctly and
+    continues to display the value stored in the `myenv` file in the `/etc/secrets`
+    directory. This confirms that the NGINX binary has the necessary access to the
+    secret file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_06.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.6: NGINX can still read secret'
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeArmor simplifies the creation of LSM policies for both developers and operators.
+    The potential applications are endless, granting you the capability to enhance
+    the security of workloads down to the granularity of individual files or processes.
+    Now that we’ve covered the process of policy creation, let’s proceed to explore
+    the primary tool that you’ll employ to engage with KubeArmor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using karmor to interact with KubeArmor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We installed KubeArmor using the karmor utility. Along with installing and uninstalling
+    KubeArmor in a cluster, it is used for a number of other actions. The table below
+    is an overview of the main options that you should understand. Each one will be
+    explained in detail in its own section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Options** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Install` | Installs KubeArmorKubeArmor in a clusterKubeArmor |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Logs` | Provides an interactive method to view logs, or to send the logs
+    to a file |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Probe` | Lists the support features for the cluster |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `profile` | Runs an interactive utility that displays the process, file,
+    network, and syscalls that KubeArmor has observed |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `recommend` | Creates a directory that contains recommended policies that
+    can be deployed in a cluster. This will download additional containers to create
+    the recommendations. It could take some time depending on the number and size
+    of the running containers. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `selfupdate` | Updates the `karmor` CLI |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `summary` | Shows observations from the discovery engine |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `sysdump` | Used to collect a system dump to help troubleshooting |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `uninstall` | Uninstalls KubeArmor from the cluster |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `version` | Shows the version of the karmor binaryKubeArmor |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `Vm` | Used for commands that can be used against VMs that run with `Kubevirt`,
+    which runs `kvmservices` |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Table 13.2: karmor command options'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The list may make KubeArmor look like it doesn’t have a lot of options, but
+    most of the options are incredibly powerful and some will take time to run in
+    larger clusters. In the next sections, we will explain the karmor options and
+    what they provide to secure your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: karmor install and uninstall
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As you would imagine, the `karmor install` command will deploy KubeArmor into
+    the cluster from your current `kubeconfig` file, while the `karmor uninstall`
+    command will remove KubeArmor from the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We do need to call out that `karmor uninstall`, by default, will remove KubeArmor
+    from the cluster, but it will leave any LSM policies that were created on the
+    hosts in an inactive state. To fully remove KubeArmor from the cluster, including
+    all created policies, you need to add the `--force` flag to the `uninstall` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: karmor probe
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The probe option will list the KubeArmor features in the current cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you check for the supported probes, karmor will output information including
+    each node and its active LSM and the default posture of each namespace and pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: karmor profile
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: KubeArmor’s profile provides you with an interactive console to view what processes,
+    files, network connections, and syscalls are in use. The screen below shows an
+    abbreviated output from a probe with the **File** tab selected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_07.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.7: karmor profile output'
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, a probe will output information for all namespaces. If you have
+    clusters with a lot of namespaces and pods, you can limit the output to a single
+    namespace or certain pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To limit the output to a single namespace, add the option `-n` or `--namespace
+    <namespace to prove>`, and to limit the output to just a pod, use `-p` or `--pod
+    <pod name to probe>`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to see this in action, let’s say that you wanted to watch a new
+    namespace called `demo` for activity. You would execute the recommend command
+    and add `-n demo`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On the host, execute the probe command shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: You may not see any activity under some tabs. The profile command needs to have
+    activity to show and if there is no activity for any of the watched events, they
+    will not show any data. You will see a blank list until KubeArmor sees activity
+    and creates new entries, as shown in *Figure 13.8*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_08.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.8: KubeArmor’s profile console'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Open another connection to the host, so we can create a new NGINX deployment.
+    There is a script in the `chapter13/nginx` directory called `ngnix-ingress.sh`
+    that will create a new namespace called demo with an NGINX deployment and an ingress
+    rule. Execute the script and, at the end, it will show you the ingress URL to
+    use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have created a deployment, your other terminal should show activity
+    in the **Process** tab, as shown in *Figure 13.9*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_09.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.9: KubeArmor’s profile console'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will populate events in the **Process** tab as the NGINX pod starts up
+    and processes are started. In your other window, you will see the profile update,
+    in real time, with the processes that started in the demo namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeArmor’s probe is a powerful tool that provides information that would otherwise
+    be very challenging to collect.
+  prefs: []
+  type: TYPE_NORMAL
+- en: karmor recommend
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The `recommend` command is to provide security policy recommendations based
+    on established industry compliance standards and attack frameworks like CIS, MITRE,
+    NIST, STIGs, and various others. All of the workloads specified in the recommend
+    command will be tested against any policy templates included with KubeArmor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_10.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.10: KubeArmor recommend policies'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since each pod and container are evaluated, you have the option to filter the
+    execution to target not only the cluster but by namespace, container image, or
+    pod. An example output of `karmor recommend` running is shown in *Figure 13.11*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_11.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.11: karmor recommend output'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From the output, you can see that karmor will pull the image for each container
+    to test against the policies. All policies that are created by karmor are, by
+    default, saved in a directory called out in the current working directory. You
+    can change where the policies will be created by adding the `-o` or the `--output`
+    switch to the recommend command. Since the recommendations are broken down by
+    each action, you may generate a large number of files. To show an example, we
+    run a recommend command against our KinD cluster’s `kube-system` namespace, which
+    generates the directory structure shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Along with a directory for each deployment, you will see a `report.txt` file
+    that contains all recommended policies for various standards, including NIST,
+    MITRE, PCI_DSS, CIS, etc. We will discuss the report and its options in a later
+    section. For now, we want to focus on the created policies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s take a closer look at the first directory in the list, which contains
+    policies for the `core-dns` deployment in the `kube-system namespace`. As you
+    can see from the output, 16 policies were created by the `recommend` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you look at the filenames, you can tell what type of action and process
+    each policy uses. For example, let’s look at the `registry-k8s-io-coredns-coredns-v1-10-1-write-etc-dir.yaml`
+    `policy`. From the filename, we can see that this policy was created to add an
+    action to writing in the `/etc` directory. Looking into the file, we will see
+    that this policy contains a block action on directories in `/etc` and it also
+    locks down `/etc` to a read-only state, for anything that matches the label `k8s-app=kube-dns`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: There are a few added fields in this policy that we haven’t discussed previously,
+    namely the severity and the tags. Unlike other tools that may add severity to
+    a triggered event, KubeArmor allows you to set your own severity for policies.
+    When you create a policy, you can assign it a severity rating from 1 to 10, allowing
+    you to create your own rating based on your organizational requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The tags section was generated by the recommend command. By default, when you
+    run a recommendation, it will test all of the objects against all of the included
+    hardening policies, including MITRE TTPs, STIGs, NIST, and CIS. The policies that
+    are created are based on the standards supplied during the recommendation collection.
+    If you don’t specify any policies to check, karmor will create policies for all
+    standards, including policies that you may or may not need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Depending on your organization and security requirements, you can limit the
+    hardening policies to only the policies that you want to include. This is done
+    by adding either the `-t` or `--tag` flags to the recommend command, followed
+    by the standard or standards. For example, if we wanted to run a recommend against
+    the `kube-system` namespace and only include the CIS and PCI-DSS standards, we
+    would execute:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: Like all other recommend commands, this will create an `out` directory in the
+    working directory with policies and a `report.txt`. If you took a look at the
+    report, you would see a list of recommended actions around PCI-DSS and CIS standards
+    for each pod. The figure below is an abbreviated example of a `report.txt` from
+    the recommend command we ran against `kube-system`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B21165_13_12.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 13.12: Recommend example for NIST and CIS'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we added tags to our command, karmor only created policies that are required
+    to meet the standards for NIST and CIS. This will create fewer policies than running
+    without any tags since it will only generate policies based on the specified tags
+    versus all standards if you do not supply a tag.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The last example we will discuss is using recommend to create policies and
+    a report for an image that is not running in the cluster. So far, we have run
+    recommendations against objects in the cluster, but KubeArmor offers the ability
+    to create policies based on any container image. To run a recommendation against
+    an image, you need to add the `-i` or `--image` to your command. For example,
+    we want to run karmor against the `bitnami/nginx` image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will pull down the image and run it against all of the included KubeArmor
+    policies. The policies will be created in the `out` directory, just like the previous
+    examples:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we ran the same test and included the tag for only the CIS policies, we
+    would generate fewer policies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: As demonstrated, the recommend command empowers you to increase the security
+    of your workloads in accordance with any standards required by your organization,
+    government regulations, or other pertinent criteria.
+  prefs: []
+  type: TYPE_NORMAL
+- en: karmor logs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The logs option provides a real-time log of KubeArmor’s activities, which is
+    beneficial when you want to watch events without seeing hundreds of other logged
+    activities. When you execute a karmor log, a logger will start up and watch for
+    KubeArmor activity. Since it’s a real-time log, it will run interactively in your
+    shell, waiting for activity:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As events are observed by KubeArmor, they will be shown in the output. For
+    example, we create a policy that will block any write attempts to the `/bin` directory
+    in all containers in the demo namespace. We exec into the container and attempt
+    to create a file called `test` in the directory. As we can see in the output below,
+    the attempt was denied:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Since this was an action that KubeArmor had a policy for, it will also log
+    the activity in the session running the karmor logs. The logs contain a lot of
+    information. Below is an example of a logged event:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: By default, the log output is set to text, which may be difficult to sort through
+    when there are a lot of logged events. If you would prefer the logs to be in JSON
+    format, you can add the flag `--json` to the `logs` command. The format that is
+    best to use for your requirements usually depends on the system you are using
+    for storing your logged events. In most cases, JSON is the format preferred by
+    most logging systems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To show the difference, we execute the same test from the previous log entry,
+    an attempt to create a file under `/bin`. This will change the output from text
+    to JSON, as shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The decision to use text or JSON is usually dependent on the tools you plan
+    to use to parse the data. JSON is a popular format for logging since it makes
+    parsing the data much easier than using a text format.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You may be looking at the logging abilities using the karmor log and wondering
+    how useful it is to have the output going to the console only.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a default behavior, the logs are directed to `stdout`. While real-time log
+    viewing is valuable for monitoring events as they happen, it’s not always feasible
+    to continuously observe events. It is more common to send your logs to a file,
+    which can then be viewed or sent to an external system for processing. KubeArmor
+    offers the flexibility to modify your log output preferences by using the `--logPath`
+    flag. This flag lets you specify the desired destination for the log file, enabling
+    you to redirect log data to a designated file location.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When you specify the path of the log file, it must include the entire path
+    and filename that you want to use. The `logPath` option can be used with other
+    options, like setting the log format to JSON. The example command below will send
+    the logs to the current user’s home directory using the filename `karmor.logs`
+    in JSON format:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you specify a new directory in `logPath`, it must be created before sending
+    any logs; KubeArmor will not create the directory for you. If you fail to create
+    the directory before logging, you will receive an error on the log output screen
+    and no events will be logged.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When the first event is caught by KubeArmor, it will create the file and will
+    continue to collect data until you stop logging:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Like other karmor options, logging will watch the entire cluster by default,
+    which may generate a lot of events that may make it difficult to find the events
+    you really need to see. Instead of logging the entire cluster, you can filter
+    the logs by adding a flag to the `logs` option. The available flags include:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Flag** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `--labels` | Filter the logs by a label |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `--namespace` | Filter the logs by namespace |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `--pod` | Filter the logs by pod |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Table 13.3: Limiting logs to certain objects'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Limiting the scope of the objects being logged offers the distinct advantage
+    of tailoring the log data to focus exclusively on the specific object(s) you require
+    detailed information for. By implementing this approach, you can significantly
+    enhance the precision and relevance of the logged data, ensuring that it directly
+    aligns with your specific monitoring, analysis, and troubleshooting needs. Limiting
+    the objects being logged enables you to streamline your monitoring efforts, making
+    it more efficient and effective in providing insights into the targeted object(s)
+    while reducing the noise and clutter caused by unnecessary log entries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: karmor vm
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Did you know that with Kubernetes you can run virtual machines? These VMs are
+    deployed and managed differently than what you may be used to when working with
+    hypervisors from VMware and Microsoft. Instead of running an OS straight on the
+    hypervisor, KubeVirt VMs actually run inside of a container. They look like a
+    standard pod running any other Docker image, but instead of a microservice, it’s
+    an entire operating system supporting both Windows and Linux.
+  prefs: []
+  type: TYPE_NORMAL
+- en: KubeVirt is a complex topic and we can’t cover it in this section alone. You
+    can learn more about KubeVirt on their website, [https://kubevirt.io/](https://kubevirt.io/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The KubeArmor team saw the need to expand runtime security to include support
+    for VMs running with KubeVirt. This is a powerful feature for organizations that
+    run VMs in Kubernetes, extending the same security that KubeArmor provides for
+    containers to VMs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we looked at strengthening the security of our runtime environment,
+    enhancing your overall security posture. It’s a common misconception that an organization’s
+    clusters are secured since many of them tend to overlook the content running within
+    containers or the implications of a user connecting to a running pod using `kubectl
+    exec`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter also described in detail how one of the most effective approaches
+    to container security involves tightly controlling the container’s processes,
+    exclusively allowing the execution of only the necessary processes while denying
+    access to all other files. By leveraging a tool like KubeArmor, you can grant
+    access to specific files from a restricted set of binaries, blocking access to
+    and securing all other processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Which of the following are LSMs?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Accuknox
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: AppArmor
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: SELinux
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: LSMLinux
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: LSMs and eBPF provide the same features.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Which karmor option provides real-time information in an easy-to-see console?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Monitor
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Trace
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Profile
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Probe
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Which of the following is NOT a feature provided by KubeArmor to enhance security
+    in Kubernetes clusters?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Restricting process execution
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: File access control
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Network traffic encryption
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creating security policies
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: b - AppArmor
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: b - False
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: c - Profile
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: c - Network traffic encryption
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Join our book’s Discord space
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Join the book’s Discord workspace for a monthly *Ask Me Anything* session with
+    the authors:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://packt.link/K8EntGuide](https://packt.link/K8EntGuide)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/QR_Code965214276169525265.png)'
+  prefs: []
+  type: TYPE_IMG

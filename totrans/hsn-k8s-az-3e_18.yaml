@@ -1,0 +1,1100 @@
+- en: 12\. Connecting an application to an Azure database
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In previous chapters, you stored the state of your application in your cluster,
+    either on a Redis cluster or on MariaDB. You might remember that both had some
+    issues when it came to high availability. This chapter will take you through the
+    process of connecting to a MySQL database managed by Azure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will discuss the benefits of using a hosted database rather than running **StatefulSets** on
+    Kubernetes. To create this hosted and managed database, you will make use of **Azure
+    Service Operator** (**ASO**). ASO is a way to create Azure resources, such as
+    a managed MySQL database, from within a Kubernetes cluster. In this chapter, you
+    will learn more details about the ASO project, and you will set up and configure
+    ASO on your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You will then make use of ASO to create a MySQL database in Azure. You will
+    use this managed database as part of a WordPress application. This will show you
+    how you can connect an application to a managed database. This chapter is broken
+    down into the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Azure Service Operator
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing ASO on your cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating a MySQL database using ASO
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating an application using the MySQL database
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's start by exploring ASO.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Azure Service Operator
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, you will learn more about ASO. We will start by exploring the
+    benefits of using a hosted database versus running StatefulSets on Kubernetes
+    itself, and then learn more details about ASO.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the examples that you have gone through so far have been self-contained;
+    that is, everything ran inside the Kubernetes cluster. Almost any production application
+    has a state, which is generally stored in a database. While there is a great advantage
+    to being mostly cloud-agnostic, this has a huge disadvantage when it comes to
+    managing a stateful workload such as a database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you are running your own database on top of a Kubernetes cluster, you need
+    to take care of scalability, security, high availability, DR, and backup. Managed
+    database services offered by cloud providers can offload you or your team from
+    having to execute these tasks. For example, Azure Database for MySQL comes with
+    enterprise-grade security and compliance, built-in high availability, and automated
+    backups. The service scales within seconds. Finally, you also have the option
+    to configure DR to a secondary region.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is a lot simpler to consume a production-grade database from Azure than it
+    is to set up and manage your own on Kubernetes. In the next section, you will
+    explore a way that Kubernetes can be used to create these databases on Azure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is ASO?
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As with most applications these days, much of the hard work has already been
+    done for us by the open-source community (including those who work for Microsoft).
+    Microsoft has realized that many users would like to use their managed services
+    from Kubernetes and that they require an easier way of using the same methodologies
+    that are used for Kubernetes deployment. The ASO project was created to solve
+    this problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: ASO is a new project started in 2020 that succeeds the **Open Service Broker
+    for Azure** (**OSBA**) project. OSBA was Microsoft's original implementation that
+    allowed you to create Azure resources from within Kubernetes, but this project
+    is no longer maintained and has been deprecated. ASO serves the same purpose and
+    is actively maintained and developed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two parts to ASO: a set of **CustomResourceDefinitions** (**CRDs**)
+    and a controller that manages those CRDs. The CRDs are a set of API extensions
+    for Kubernetes that allow you to specify which Azure resources you want to create.
+    There are CRDs for resource groups, virtual machines, MySQL databases, and more.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most APIs in ASO are still in either the alpha or beta stage, meaning they might
+    change in the future. Please refer to the documentation at [https://github.com/Azure/azure-service-operator](https://github.com/Azure/azure-service-operator)
+    for an up-to-date resource definition, as the definitions used in this chapter
+    might have changed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The controller is a pod that runs on your cluster and monitors the Kubernetes
+    API for any objects that are created using these CRDs. It's this controller that
+    will interface with the Azure API and create the resource you create using ASO.
+  prefs: []
+  type: TYPE_NORMAL
+- en: ASO depends on two other projects that you have already learned about in this
+    book, namely **Azure Active Directory** (**Azure AD**) pod-managed identities
+    and cert-manager. ASO uses Azure AD pod-managed identities to link a managed identity
+    to the ASO pod. This also means that this managed identity needs to have permissions
+    to create those resources. ASO uses cert-manager to get access to a certificate
+    for the ASO pod to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, ASO will store secrets such as connection strings in Kubernetes
+    secrets. As you have learned in the preceding chapters, it's better to store secrets
+    in Key Vault rather than in Kubernetes. ASO has the option to store secrets in
+    Key Vault as well, and during the setup, you will configure ASO to store secrets
+    in Key Vault.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For a user perspective using ASO, *Figure 12.1* describes what happens when
+    you create a resource:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a user, you submit a YAML definition for an Azure resource to the Kubernetes
+    API. The Azure resources are defined in a CRD.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The ASO pod is monitoring the Kubernetes API for changes to the Azure CRD objects.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: When changes are detected, ASO will create the resources in Azure.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If a connection string was created as part of the resource creation, this connection
+    string will be stored either as a Kubernetes secret (default) or in Key Vault
+    (if configured).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![High-level process diagram of resource creation using ASO](img/B17338_12_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 12.1: High-level process diagram of resource creation using ASO'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, you've learned the basics of the ASO project. In the next section,
+    you will go ahead and install ASO on your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing ASO on your cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To install ASO on your cluster, you will need a cluster. At the end of the previous
+    chapter, you deleted your cluster, so you will create a new one here. After that,
+    you will need to create a managed identity and Key Vault. Both are best practices
+    when setting up ASO, which is why this chapter will explain how to set up ASO
+    this way. After the creation of these resources, you need to ensure that cert-manager
+    is set up in your cluster. Once that is confirmed, you can install ASO using a
+    Helm chart.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's start with the first step, creating a new AKS cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a new AKS cluster
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Since you deleted your cluster at the end of the previous chapter, let''s start
+    by creating a new cluster. You can do all these steps using Cloud Shell. Let''s
+    get started:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, you will create a new cluster. Since you will be making use of pod identities
+    for the authorization of ASO, you will also enable the pod identity add-on on
+    this new cluster. At the time of this writing, the pod identity add-on is in preview.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If you haven''t registered for your subscription for this preview as explained
+    in *Chapter 9*, *Azure Active Directory pod-managed identities in AKS*, please
+    do so now using the following commands:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You will also need a preview extension of the Azure CLI, which you can install
+    using the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You will have to wait until the pod identity preview is registered on your
+    subscription. You can use the following command to verify this status:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Wait until the status shows as registered, as shown in *Figure 12.2*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Output displaying the status as registered](img/B17338_09_03.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Once you registered the preview provider, or if you had already done so as
+    part of *Chapter 9*, *Azure Active Directory pod-managed identities in AKS*, you
+    can create a new cluster using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Once the command is finished, get the credentials to get access to your cluster
+    using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You now have a new Kubernetes cluster with pod identities enabled. To continue
+    the setup of ASO, let's now create a managed identity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a managed identity
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In this section, you will use the Azure portal to create a managed identity.
+    You will then give permission to your AKS cluster to manage this managed identity
+    and give the managed identity access to your subscription to create the resources.
+    Let''s start:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the Azure search bar, look for *Managed Identities*, as shown in *Figure
+    12.3*:![Searching for Managed Identity in the Azure search bar](img/B17338_12_03.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.3: Searching for Managed Identities'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In the resulting screen, click on + New to create a new managed identity, as
+    shown in *Figure 12.4*:![Clicking on the Add new button to create a new managed
+    identity](img/B17338_12_04.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.4: Creating a new managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: To organize the resources for this chapter together, create a new resource group
+    called ASO, as shown in *Figure 12.5*:![Creating a new resource group](img/B17338_12_05.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.5: Creating a new resource group'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Provide the location and a name for your managed identity; use the name `aso-mi`
+    as shown in *Figure 12.6* if you wish to follow the example here. Make sure to
+    select the same region as the region of your cluster:![Providing necessary details
+    to create a managed identity](img/B17338_12_06.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.6: Providing Project and Instance details for creating the managed
+    identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Click Review + create at the bottom of the screen and create the managed identity.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Once the managed identity is created, you need to capture the client ID and
+    resource ID for later use. Copy and paste this information in a location where
+    you can access it later. You can get the client ID in the Overview pane, as shown
+    in *Figure 12.7*:![Getting the client ID details from the Managed Identity pane](img/B17338_12_07.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.7: Getting the client ID from the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'You can get the resource ID in the Properties pane, as shown in *Figure 12.8*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Getting the Resource ID details from the Managed Identity pane](img/B17338_12_08.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.8: Getting the resource ID of the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The next thing to do on the managed identity is to give our AKS cluster permissions
+    to it. To do this, click on Access control (IAM) in the left pane, click on the
+    + Add button at the top of the screen, click Add role assignment from the dropdown
+    menu, select the Managed Identity Operator role, select User assigned managed
+    identity from the Assign access to dropdown menu, and select the handsonaks-agentpool
+    identity and save. This process is shown in *Figure 12.9*:![Giving AKS cluster
+    permissions to access the managed identity](img/B17338_12_09.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.9: Giving AKS access to the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You will now give Managed Identities permission to create resources on your
+    subscription. To do this, look for Subscriptions in the Azure search bar, as shown
+    in *Figure 12.10*, and then select your subscription:![Searching for subscriptions
+    in the Azure search bar](img/B17338_12_10.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.10: Looking for subscriptions in the Azure search bar'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'In the Subscription pane, click on Access control (IAM), click on the + Add
+    button at the top of the screen, click Add role assignment, select the Contributor
+    role, select User assigned managed identity from the Assign access to dropdown
+    menu, and select the aso-mi identity and save. This process is shown in *Figure 12.11*:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Giving the aso-mi the contributor role at the subscription level](img/B17338_12_11.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 12.11: Giving the aso-mi permissions to your subscription'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This completes the setup of the managed identity. In the next section, you will
+    create a key vault and allow the managed identity you just created to create and
+    read secrets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a key vault
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this section, you will create the key vault that ASO will use to store connection
+    strings and secrets. This is optional in the ASO setup process but recommended.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To start, look for key vaults in the Azure search bar, as shown in *Figure 12.12*:![Searching
+    for Key Vault in the Azure search bar](img/B17338_12_12.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.12: Looking for key vaults in the Azure search bar'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Click the + New button at the top of the screen to create a new key vault. Select
+    the ASO resource group you created earlier and give your key vault a name. Please
+    note that your key vault name has to be unique, so consider adding extra characters
+    to the name if it is not unique. Also, make sure to create the key vault in the
+    same region as your AKS cluster. The resulting configuration is shown in *Figure
+    12.13*:![Providing the necessary details to create a key vault](img/B17338_12_13.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.13: Key vault configuration'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Now select Next: Access policy > to configure a new access policy. Here you
+    will give the aso-mi managed identity you created in the previous section permission
+    to do secret management in this key vault. To do this, start by clicking the +
+    Add Access Policy button, as shown in *Figure 12.14*:![Clicking the Add access
+    policy button](img/B17338_12_14.jpg)'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.14: Clicking the + Add Access Policy button'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In the resulting popup, select the Secret Management template, then click on
+    None selected to select your managed identity. In the resulting popup, look for
+    the aso-mi managed identity, select it, and then click Select followed by clicking
+    on Add, as shown in *Figure 12.15*:![Adding the secret management permissions
+    to the managed identity](img/B17338_12_15.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.15: Adding the secret management permissions to the managed identity'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: This has configured the access policy in Key Vault. Now click the Review + create
+    button, and in the last window hit Create to create the key vault. This should
+    take a couple of minutes to complete.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Once your key vault has been deployed, you are ready to start installing ASO,
+    which will be explained in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up ASO on your cluster
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Now that you have the required managed identity and Key Vault, you are ready
+    to start deploying ASO on your cluster. You can do all these steps using Cloud
+    Shell. Let''s get started:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You created a new cluster in the *Creating a new AKS cluster* section. You
+    will need to link the managed identity you created earlier to the cluster. The
+    ASO components will be created in their own namespace, so you will also create
+    a new namespace for this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now you can install cert-manager on your cluster. You''ve done this once before
+    in *Chapter 6*, *Securing your application with HTTPS*, but at the end of the
+    chapter you were asked to remove this component. You can install it again using
+    the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Track the deployment status of cert-manager using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Wait until the rollout shows that it''s successfully rolled out, as shown in
+    *Figure 12.16*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Output verifying the roll-out status of cert-manager](img/B17338_12_16.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.16: Checking the rollout status of cert-manager'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Once cert-manager has fully rolled out, you can start the ASO installation.
+    Start by adding the Helm repo for ASO using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Next, you need to provide configuration values for your ASO installation. Open
+    the `values.yaml` file that is part of the code sample that comes with this chapter
+    using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Fill in all the required values in that file, as shown here:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'As shown in the previous code sample, you will need to provide your tenant
+    ID, subscription ID, key vault name, client ID of the managed identity (twice),
+    and resource ID of the managed identity. You can find the tenant ID and subscription
+    ID with the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will return an output similar to *Figure 12.17*, in which the tenant ID
+    and subscription ID have been highlighted:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Getting the subscription ID and tenant ID from the output](img/B17338_12_17.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.17: Getting the subscription ID and tenant ID'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Once you have the values filled in, you can install ASO using the following
+    command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The installation process takes a couple of minutes. Wait until the following
+    command returns a successful rollout:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The output should look similar to *Figure 12.18*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Output verifying the status of the deployments for ASO](img/B17338_12_18.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.18: Checking the status of the deployments for ASO'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'At the time of writing, there was an issue with the `aadpodidbinding` label
+    on the deployment of `azureoperator-controller-manager`. This can, however, be
+    fixed by applying a patch, to apply a new label to that deployment. The patch
+    has been provided in the files for the chapter, specifically in the `patch.yaml`
+    file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'As you can see, the patch itself applies a new label to the pods in the deployment.
+    You can apply the patch using the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This will ensure that you can use ASO in the next section.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Now that ASO has been deployed on your cluster, you are ready to start deploying
+    Azure resources using Kubernetes and ASO. You will do that in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying Azure Database for MySQL using ASO
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In the previous section, you deployed ASO on your Kubernetes cluster. This
+    means that now you can use the Kubernetes API to deploy Azure resources. In this
+    section, you will create a MySQL database running on the Azure Database for MySQL
+    service using YAML files that you will submit to Kubernetes using `kubectl`. Let''s
+    get started:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, you need to create a resource group. The code for the resource group
+    definition is also available in the code samples with this chapter. Create this
+    file and save it as `rg.yaml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As you can see in the code for the resource, `apiVersion` refers to `azure.microsoft.com`
+    and `kind` is `ResourceGroup`. Furthermore, you provide the details for the resource
+    group, being its name and its location. Make sure to change `location` to the
+    location of your cluster.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'You can create this resource group using the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'To monitor the process of the resource group creation, you can use the following
+    command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This returns an output similar to *Figure 12.19*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Output confirming the successful creation of a new resource group](img/B17338_12_19.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.19: Monitoring the creation of a new resource group'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Let's also verify that the resource group was created in Azure. To do so, look
+    for the resource group name (`aso-resources`, in this example) in the Azure search
+    bar, as shown in *Figure 12.20*:![Searching for the resource group in the Azure
+    search bar](img/B17338_12_20.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.20: Searching for the resource group in the Azure portal'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: As you can see, the resource group is returned in the search results, meaning
+    the resource group was successfully created.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Now you can create the MySQL server. You won''t create a virtual machine to
+    run MySQL, but rather create a managed MySQL server on Azure. To create this,
+    you can use the `mysql-server.yaml` file that is provided for you:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This file contains specific configurations for the MySQL server. A number of
+    elements are worth pointing out:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '`MySQLServer` instance.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`location` to the location of your cluster.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`sslEnforcement` is disabled for this demo. This has been done to make the
+    demo easier to follow. If you create a production cluster, it is highly recommended
+    to enable `sslEnforcement`.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Line 11-16**: Here you define the size of the MySQL server. In this case,
+    you are creating a basic server with 5 GB of capacity. If you plan to use this
+    for production use cases, you will likely need a larger server.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'You can create the MySQL server using the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will take a couple of minutes to complete. You can follow the progress
+    using the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will return an output similar to *Figure 12.21*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Output confirming the successful creation of a new MySQL server](img/B17338_12_21.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.21: Monitoring the creation of the MySQL server'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: If you were to run into errors when creating the MySQL server, please refer
+    to the ASO documentation at [https://github.com/Azure/azure-service-operator/blob/master/docs/troubleshooting.md](https://github.com/Azure/azure-service-operator/blob/master/docs/troubleshooting.md).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Once you get the message that the server has successfully been provisioned,
+    you can exit out of this command by pressing *Ctrl + C*.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'After the MySQL server, you can create the MySQL database. The definition of
+    the MySQL database has been provided in the `mysql-database.yaml` file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The definition of the database is providing a name and referring to the server
+    you created earlier. To create the database, you can use the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will take a couple of seconds to complete. You can follow the progress
+    using the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will return an output similar to *Figure 12.22*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Output confirming the successful creation of a MySQL database](img/B17338_12_22.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.22: Monitoring the creation of the MySQL database'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Once you get the message that the database has successfully been provisioned,
+    you can exit out of this command by pressing *Ctrl + C*.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'You can create a firewall rule that will allow traffic to your database. In
+    this example, you will create a rule that will allow traffic from all sources.
+    In a production environment, this is not recommended. For the recommended networking
+    configurations for Azure Database for MySQL, please refer to the documentation:
+    [https://docs.microsoft.com/azure/mysql/flexible-server/concepts-networking](https://docs.microsoft.com/azure/mysql/flexible-server/concepts-networking).The
+    configuration for the firewall rule has been provided in the `mysql-firewall.yaml`
+    file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As you can see, we refer to the MySQL server that was created earlier and allow
+    traffic from all IP addresses (meaning from `0.0.0.0` to `255.255.255.255`).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'To create the firewall rule, you can use the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will take a couple of seconds to complete. You can follow the progress
+    using the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will return an output similar to *Figure 12.23*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Output confirming the successful creation of a MySQL firewall rule](img/B17338_12_23.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.23: Monitoring the creation of the MySQL firewall rule'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Once you get the message that the firewall rule has successfully been provisioned,
+    you can exit out of this command by pressing *Ctrl + C*.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Let's verify that all of this was successfully created in the Azure portal.
+    To do so, start by searching for the MySQL server name (`wp-helm-mysql` in this
+    example) in the Azure search bar as shown in *Figure 12.24*. Click on the server
+    to go to the details:![Searching for the MySQL server using the Azure search bar](img/B17338_12_24.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.24: Searching for the MySQL server in the Azure portal'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: This will take you to the Overview pane of the MySQL server. Scroll down in
+    this pane and expand the Available resources section. Here you should see that
+    wordpress-db was created, as shown in *Figure 12.25*:![The database created through
+    ASO as shown in the Azure portal](img/B17338_12_25.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.25: The database created through ASO is shown in the Azure portal'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'From the MySQL server pane, click on Connection security in the left-hand navigation
+    to verify the firewall rule. You should see the firewall rule you created through
+    ASO on this pane, as shown in *Figure 12.26*:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![The firewall rule created through ASO is set on the MySQL server](img/B17338_12_26.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 12.26: The firewall rule created through ASO is set on the MySQL server'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This verifies that you were able to create a MySQL server with a database in
+    Azure and configure its firewall settings.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, you've used ASO to create a MySQL server, as well as a database
+    on that server, and then finally configured its firewall. You were able to do
+    all of this using Kubernetes YAML files. ASO translated those YAML files to Azure
+    and created the resources for you. Finally, you were able to confirm everything
+    was created and configured in the Azure portal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next and final section, you will use this database to support the WordPress
+    application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating an application using the MySQL database
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'You now have a MySQL database. To showcase that you can use this database to
+    configure an application, you will use the WordPress application. You can install
+    this using Helm and provide the connection information to your database in the
+    Helm configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To start, you will need the connection information to your database server.
+    When you installed ASO on your cluster, you configured it to use Key Vault as
+    a secret store rather than Kubernetes secrets. You will need this connection information
+    to connect WordPress to your Azure MySQL database.Search for `Key Vaults` in the
+    Azure search bar, as shown in *Figure 12.27*, click on Key vaults, and then select
+    the key vault you created earlier in the chapter:![Searching for Key Vault using
+    the Azure search bar](img/B17338_12_27.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.27: Searching for key vaults in the Azure portal'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In the resulting pane, click on Secrets in the left-hand navigation and then
+    click on the secret, as shown in *Figure 12.28*. The name of this secret follows
+    the naming convention `<object type>-<Kubernetes namesapce>-<object name>`.![The
+    MySQL secret in the Azure portal](img/B17338_12_28.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.28: The MySQL secret in the Azure portal'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You will then get a view with multiple versions of your secret; click the current
+    version as shown in *Figure 12.29*:![Different versions of the secret in Key Vault](img/B17338_12_29.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Figure 12.29: Different secret versions in your key vault'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Now, copy the value of the secret, as shown in *Figure 12.30*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Clicking the Copy to clipboard button to copy the value of the secret](img/B17338_12_30.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.30: Copying the value of the secret to clipboard'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The secret contains several pieces of information related to your database
+    connection that you will need for the Helm installation. It contains the fully
+    qualified server name, the username, and the password. The values in the secret
+    are Base64 encoded. To make working with this secret easier, a shell script has
+    been provided that will give you the required decoded values. To run this script,
+    use the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'An example is shown in *Figure 12.31*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Running a script to generate decoded values of the secret](img/B17338_12_31.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.31: Decoding the secret'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'You can use the values outputted by the previous step to configure Helm to
+    use your Azure MySQL database. The following Helm command will set up WordPress
+    on your cluster, but use an external database:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As you can see, with this command, you disabled the MariaDB installation by
+    setting the `mariadb.enabled` value to `false` and then provided the connection
+    information to the external database.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'To monitor the setup of WordPress, you can use the following command:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will take a couple of minutes to fully set up, and finally, you should
+    see the WordPress pod in a running state and ready, as shown in *Figure 12.32*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Output displaying the WordPress pod in a running state](img/B17338_12_32.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.32: WordPress pod in a running state'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Once the pod is running and ready, you can stop this command by pressing *Ctrl
+    + C*. If you remember the WordPress deployment in *Chapter 3*, *Application deployment
+    on AKS*, there was a second pod present in the WordPress installation hosting
+    a MariaDB database. This pod is no longer there since we replaced it with an Azure
+    MySQL database.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Let''s now finally connect to this WordPress application. You can get the public
+    IP address of the WordPress website using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This will show you the public IP, as shown in *Figure 12.33*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Getting the public IP of the WordPress website from the output](img/B17338_12_33.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.33: Getting the public IP of the WordPress website'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Enter this IP address in your web browser''s address bar and hit *Enter*. You
+    should be able to see the WordPress landing page with the default demo post, as
+    shown in *Figure 12.34*:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![Browsing to the WordPress website](img/B17338_12_34.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: 'Figure 12.34: Browsing to the WordPress website'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You now have a fully functional WordPress website hosted on Kubernetes, with
+    the database being backed by Azure Database for MySQL.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'This concluded the examples from this chapter. You created a number of resources
+    and installed a number of cluster components. Let''s also clean them up from the
+    cluster using the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You've been able to connect an application on Kubernetes to an Azure-managed
+    MySQL database. You used the WordPress Helm chart and provided custom values to
+    configure this Helm chart to make it connect to the managed database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This chapter introduced **Azure Service Operator** (**ASO**). ASO is an open-source
+    project that makes it possible to create Azure services using Kubernetes. This
+    allows you as the user to not have to switch between the Azure portal or CLI and
+    Kubernetes resource definitions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, you created a new AKS cluster and then installed ASO on this
+    cluster. You then created a MySQL database on Azure using ASO. You verified that
+    this database was available in Azure using the Azure portal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, you created a WordPress application on your Kubernetes cluster that
+    connected to the external database. You verified that the application was running
+    and available as you've seen in previous chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, you will learn about other Azure integrations with AKS,
+    namely Azure Security Center and Azure Defender for Kubernetes, which are used
+    to monitor the security configuration of your cluster and mitigate threats.
+  prefs: []
+  type: TYPE_NORMAL

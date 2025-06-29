@@ -1,0 +1,695 @@
+- en: '7'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Networking in EKS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '**Kubernetes** (**K8s**) isn’t prescriptive about external networking. This
+    means it is possible to use multiple network plugins and configurations in Kubernetes
+    to meet security, latency, and operational requirements.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will focus on how standard K8s Pod and cluster networking
+    works and then discuss the similarities and differences in an AWS **Virtual Private
+    Cloud** (**VPC**). Specifically, we will cover the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding networking in Kubernetes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Getting to grips with basic AWS networking
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understanding EKS networking
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configuring EKS networking using the VPC CNI
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Common networking issues
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The reader should have a familiarity with TCP/IP networking, how networks work
+    in AWS, and the concepts of NAT. This chapter is intended to give the reader the
+    skills to configure and manage EKS networking for one or more clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding networking in Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Kubernetes is designed to be extensible, and as such it supports multiple network
+    implementations, all of which meet a clearly defined networking model. K8s has
+    some basic networking rules that all network plugins must follow:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every Pod gets its own IP address
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Containers within a Pod share the Pod IP address
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pods can communicate with all other Pods in the cluster using Pod IP addresses
+    (without NAT)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Isolation of Pods at the network level is performed using network policies
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For compliance reasons, any K8s network implementation must be built to support
+    the **Container Network Interface** (**CNI**) specification, which is a **Cloud
+    Native Computing Foundation** (**CNCF**) project. The CNI specification consists
+    of guides and libraries for writing plugins to configure network interfaces in
+    containers. While it is possible to have multiple CNIs in a single cluster, by
+    default, a single K8s cluster will be configured to support only a single CNI.
+    There are many types and providers of CNI plugins, but they all allow Pods to
+    connect to an external network and/or the allocation of Pod IP addresses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we dive into networking specifically for EKS, it’s important to understand
+    how networking generally works in K8s as most CNI implementations follow this
+    pattern.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Network implementation in Kubernetes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: A Pod is the smallest unit that can be deployed and managed by Kubernetes. A
+    Pod can contain more than one container. Containers in a Pod share a network namespace,
+    which means they share the same IP address, network port space, and Ethernet interface.
+    The following diagram illustrates Pod-to-Pod connectivity within a node and across
+    nodes in the same cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.1 – Basic Pod networking](img/B18129_07_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7.1 – Basic Pod networking
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'K8s network communication happens in several ways, depending on the sources
+    and destinations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As the containers in a Pod share the same network namespace and port space,
+    they can communicate with each other using a localhost (`127.0.0.1`) address.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Each Pod has a corresponding interface (veth) in the root network namespace
+    of the host, as well as its own interface in its network namespace. This is known
+    as a veth pair, which acts as a virtual network cable between the Pod network
+    namespace and the host networking, which has the actual Ethernet interface. Pods
+    that want to talk to each other use the cluster DNS to resolve a service name
+    to an IP address, and the ARP protocol to map the IP address to a Pod Ethernet
+    address.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the Pod is on another node, the cluster DNS resolves the IP address. In cases
+    where the ARP request fails, the packet is routed out of the host to the network
+    where it hopefully finds a route to the target IP address.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The CNI integrates with kubelet, which is the primary K8s agent that runs on
+    all worker nodes. When a new Pod is created, it doesn’t have a network interface.
+    The kubelet will send an `ADD` command to the CNI, which is then responsible for
+    the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inserting a network interface into the container network namespace (`eth0`)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Making any necessary changes on the host such as creating the `veth` interface
+    and attaching it to the `Bridge0` and the `eth0` interfaces
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Assigning an IP address to the interface and setting up the relevant routes
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Kubernetes adds further abstraction on top of the basic Pod networking. A Kubernetes
+    cluster allows multiple replicas of the same Pod to be deployed across multiple
+    hosts and allows ingress traffic to be routed to any one of those hosts. There
+    are different types of service; we will focus on a `NodePort` service for this
+    example. When a service is created, it will select (typically) Pods based on a
+    label. It creates a new DNS name, virtual IP, assigns a dynamic port on each node,
+    and keeps a map of which nodes are hosting which Pods with the label defined in
+    the service specifcation. This is shown in the following diagram.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.2 – Nodeport services](img/B18129_07_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7.2 – Nodeport services
+  prefs: []
+  type: TYPE_NORMAL
+- en: As traffic arrives at the service (using the service DNS name or *host:dynamic
+    port* combination), iptables or IP Virtual Server (IPVS) are used to rewrite the
+    request service address to a relevant Pod address (under the control of kube-proxy)
+    and then the basic Pod networking rules are applied as described previously. In
+    the case of service 1 (*Figure 7**.2*), traffic can be sent to each node and the
+    destination will be rewritten to the Pod running on that node. In the case of
+    service 2, traffic arriving at node 3 has no local Pod, so traffic will be sent
+    to either node 1 or node 2.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, traffic will be source NAT’d from node 3, so traffic always flows
+    in and out of node 3 irrespective of where the Pods are located. The Kubernetes
+    network proxy (kube-proxy) runs on each node and is responsible for managing services
+    and the requests (including SNAT) and load balancing for the Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: SNAT means replacing the source IP address of the IP packet with another address.
+    In most cases, this will be the IP address of the node’s Ethernet address. **Destination
+    NAT** (**DNAT**) is where the destination IP address is replaced with another
+    address, generally the IP address of a Pod. The following diagram illustrates
+    these concepts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.3 – K8s source/destination NAT](img/B18129_07_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7.3 – K8s source/destination NAT
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In *Figure 7**.3*, using a nodePort service as the example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The traffic is received on node 3 from the client (`10.2.3.4`) for the service
+    exposed on nodeport service port `3124`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: kube-proxy will perform the SNAT, mapping the source IP to the local node’s
+    Ethernet address and using DNAT to map a service address to a Pod IP address (on
+    node 1).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The packet is sent to node 1 (as this will respond to the ARP request for the
+    Pod IP address). The K8s endpoint, which contains the IP addresses of any Pods
+    that match the service selector, is used to send the packet to the Pod.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The Pod response is set back to node 3 (based on the source IP address) and
+    then mapped back to the client based on the source port mapping maintained by
+    kube-proxy.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: AWS networking is prescriptive, it configures K8s networking to work in conjunction
+    with AWS VPC networking, and it has a big impact on how EKS networking works by
+    default. The next section will quickly review how AWS VPC networking works and
+    some of the concepts you need to understand as we dive deeper in EKS networking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Getting to grips with basic AWS networking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we discuss EKS networking, we will quickly review basic VPC networking
+    in AWS. When you sign up to AWS, you are provided with an AWS account that can
+    deploy services across multiple Regions, and multiple **Availability Zones** (**AZ**)
+    in each Region. A Region is a geographic location, such as London, Frankfurt,
+    or Oregon, and consists of multiple AZs, which in turn each consist of two or
+    more AWS data centers connected to each other over high-speed networks. An AZ
+    is the basic unit of network reliability in AWS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.4 – Basic VPC structure](img/B18129_07_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7.4 – Basic VPC structure
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A VPC is a regional construct that is defined by an IP `10.1.0.0/16`. Subnets
+    are assigned from a VPC and map to one AZ. Services that have an IP address, such
+    as EKS, are assigned to a subnet (or group of subnets) and the AWS platform will
+    assign an available IP address from the subnet range and create an **Elastic Network
+    Interface** (**ENI**) in that subnet. In most AWS VPCs, RFC1918, that is, private,
+    addressing is used, which means VPC CIDR ranges are drawn from the following subnets:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`10.0.0.0` – `10.255.255.255` (`10/8` prefix)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`172.16.0.0` – `172.31.255.255` (`172.16/12` prefix)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`192.168.0.0` – `192.168.255.255` (`192.168/16` prefix)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In addition, the VPC can now use non-RFC1918 addresses, those in the `100.64.0.0/10`
+    and `198.19.0.0/16` ranges, which EKS supports. In large enterprises, these ranges
+    are shared across the existing data centers and offices, so a small range of addresses
+    are typically given to the AWS platform, which is then shared across multiple
+    VPCs and AWS services including EKS. It is possible to add additional IP ranges
+    to a VPC, that is, secondary addressing, but not to change the ranges once they
+    have been set. In the preceding example, an additional range, `100.64.0.0/10`,
+    has been added and three additional subnets created from that range in three separate
+    AZs. Within a VPC, any IP range, primary or secondary, is routable. In the preceding
+    example, a host on subnet `10.1.1.0/24` can route to any other subnet including
+    `100.64.0.0/16`; however, AWS **Security Groups** (**SGs**) and/or **Network Access
+    Control List** (**NACLs**) control which systems can communicate with which other
+    systems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Three additional services are needed to allow access to and from the internet.
+    An **Internet Gateway** (**IGW**) allows mapping between public IP addresses and
+    the VPC addresses (ingress and egress traffic).
+  prefs: []
+  type: TYPE_NORMAL
+- en: A **NAT Gateway** (**NATGW**) can use an IGW to provide outbound access only
+    and is used when applications/systems need to access public AWS APIs (such as
+    the EKS API) or public services such as Docker Hub to pull container images, but
+    don’t want to be accessed by anything on the internet. Private NATGWs are also
+    possible, which simply involves a NAT of a private subnet to a private address
+    without any relationship to an IGW. This is used to translate between a range
+    that is being reused elsewhere (on-premises or in another part of the AWS cloud)
+    or is not being routed on premises.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A **Transit Gateway** (**TGW**) is used to route between other VPCs (in the
+    same or other AWS accounts) and connects to on-premises workloads and services
+    (through a VPN or a Direct Connect private connection).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding EKS networking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we understand the basic K8s network models, what a CNI is, and how
+    VPC networking works, we can explore how EKS networking works. The VPC CNI has
+    several configuration options; we will not cover all possible configurations in
+    this section, only the most common ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'EKS is a managed service, and the control plane is managed by AWS in a separate
+    VPC. The two main networking questions you need to ask when configuring your cluster
+    are: how do I access the API endpoint from kubectl (and other) clients? And how
+    are my Pods accessed or access other systems? We covered public and private endpoints
+    in [*Chapter 6*](B18129_06.xhtml#_idTextAnchor095), so for the remainder of this
+    chapter, we will focus on Pod networking. Let’s start with a basic EKS deployment,
+    a private cluster with two EC2 instances in a node group. The cluster has been
+    configured to connect to two private VPC subnets; the node group is also deployed
+    to the same two subnets.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.5 – EKS networking (basic)](img/B18129_07_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7.5 – EKS networking (basic)
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you look at the VPC in *Figure 7**.5*, you can see four interfaces (ENIs)
+    – one for each of the worker nodes and two (typically) for the EKS cluster – along
+    with a private hosted zone that maps the server’s name to those two cluster ENIs.
+    There are also two security groups, one for the worker nodes and one for EKS control
+    plane/APIs. Currently, this is all default AWS platform behavior. Each of the
+    ENIs has been assigned an IP address from the subnet it is attached to. The security
+    groups will reference each other and allow access between the worker nodes and
+    API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: EKS is deployed with the AWS VPC CNI as the default CNI for the cluster. Other
+    CNIs can be used, some of which are described in [*Chapter 9*](B18129_09.xhtml#_idTextAnchor135),
+    *Advanced Networking with EKS*. The **vpc-cni** works in conjunction with the
+    kubelet agent to request and map an IP address from the VPC to the ENI used by
+    the host and then assign it to the Pod. The number of EC2 ENIs and therefore the
+    number of IP addresses that can be assigned to Pods is limited per EC2 instance
+    type. For example, a **m4.4xlarge** node can have up to 8 ENIs, and each ENI can
+    have up to 30 IP addresses, which means you can theoretically support up to 120
+    addresses per worker node (as we’ll see later, there are some limits to this).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The advantage of this approach is that the Pod is a first-class citizen in
+    an AWS VPC. There is no difference between the Pod and an EC2 instance; Pod networking
+    behaves exactly as described in this chapter. Another benefit is when traffic
+    leaves the node: traffic can be routed to and controlled through the same AWS
+    network gateways and controls, used by all the other services in AWS.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The disadvantage to this approach is that the EKS cluster, given the ephemeral
+    nature of Pods/containers, can quickly *eat* all your available subnet addresses,
+    preventing you from deploying new Pods and/or other AWS services such as databases
+    (RDS). This is particularly problematic if you have small VPC or subnet IP (CIDR)
+    ranges. There are several approaches to mitigate this issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Non-routable secondary addresses
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The concept of *non-routable* is to use an existing range used on premises,
+    or ideally one of the new non-RFC1918 ranges that is not routed on premises for
+    AWS for Pod addresses, allowing a large range to be used. This is shown in *Figure
+    7**.6*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.6 – Non-routable Pod networking](img/B18129_07_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7.6 – Non-routable Pod networking
+  prefs: []
+  type: TYPE_NORMAL
+- en: In *Figure 7**.6*, two different IP zones or routing domains are shown. In `10.1.0.0/16`,
+    and the secondary range, `100.64.0.0/10`, can both communicate with the enterprise
+    network on `10.0.0.0/8`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In `100.64.0.0/10` range are private and not routable. They use a NATGW, which
+    means that all outbound traffic undergoes NAT based on the source address as it
+    leaves the `100.64.0.0` subnets, so these IP addresses are never seen outside
+    the VPC.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Any Pods assigned an address from the `100.64.x.x` range (**Routing Domain 2**)
+    are not reachable from the enterprise network and the TGW doesn’t advertise ten
+    routes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prefix addressing
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The default behavior with EC2 worker nodes involves allocating the number of
+    addresses available to assign to Pods based on the number of IP addresses assigned
+    to ENIs as well as the number of network interfaces attached to your Amazon EC2
+    node. For example, the **m5.large** node can have up to 3 ENIs, and each ENI can
+    have up to 10 IP addresses, so with some limits, it can support 29 Pods based
+    on the following calculation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*3 ENIs * (10 IP addresses -1) + 2 (AWS CNI and kube-proxy Pods per node) =
+    29 Pods* *per node*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Version 1.9.0 or later of the Amazon VPC CNI supports *prefix assignment mode*,
+    enabling you to run more Pods per node on `/28` IPv4 address prefixes to each
+    of the host ENIs as long as you have enough space in your VPC CIDR range:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*3 ENIs * (9 prefixes per ENI * 16 IPs per prefix) + 2 = 434 Pods* *per node*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, please note that the Kubernetes scalability guide recommends a maximum
+    number of 110 Pods per node, and in most cases this will be the maximum enforced
+    by the CNI. Prefix addressing can be used in conjunction with non-routable addresses
+    as it will only work if the VPC CIDR is able to allocate contiguous `/28` subnets
+    from the VPC CIDR.
+  prefs: []
+  type: TYPE_NORMAL
+- en: IPv6
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Another option is to use IPv6 instead of IPv4\. A full discussion of the differences
+    between IPv6 and IPv4 is out of scope here, but in a VPC, if you enable IPv6,
+    you automatically get a public `/56` IPv6 CIDR block and each subnet is allocated
+    a `/64` range. This provides 2^64 (approximately 18 quintillion) IPv6 addresses
+    per subnet, so you will never exhaust the IP range. If the cluster is configured
+    with IPv6, each Pod is assigned a native IPv6 address, which is used for Pod-to-Pod
+    communication and an IPv6 IGW (egress only) is used for IPv6 internet access.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As most environments will support a mix of IPv6 and IPv4, EKS implements a **host-local
+    CNI** plugin that is paired with the **VPC CNI**, which supports Pods with only
+    an IPv6 address connecting to IPv4 endpoints outside the cluster (egress only).
+    IPv6 definitively solves IP allocation issues but introduces more complexity as
+    you need to manage IPv4 NAT and needs to be considered carefully. IPv6 is discussed
+    in more detail in described in [*Chapter 9*](B18129_09.xhtml#_idTextAnchor135),
+    *Advanced Networking* *with EKS*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we’ve reviewed at a high level how native K8s networking works
+    and how EKS/VPC networking is different. In the next section, we will review in
+    detail how to configure and manage EKS networking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring EKS networking using the VPC CNI
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As discussed previously, the AWS VPC CNI is installed by default, but you may
+    need to upgrade the CNI to use prefix assignment mode, for example, or change
+    a configuration parameter. The following sections will take you through configuration
+    steps for common tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing the CNI plugin
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The simplest way to carry out an upgrade of the CNI for a new cluster is to
+    apply the new Kubernetes manifest. The following code snippet will install version
+    v1.9.1 onto your cluster and change the version as desired. Be aware, however,
+    that downgrading the CNI version can be very tricky and, in some cases, will not
+    work!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In a script or CI/CD pipeline, it’s often a good idea to be able to export
+    the version of the currently running CNI (as long as it is deployed). The following
+    code snippet will allow you to do that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now deploy the CNI using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To enable prefix assignment in the CNI configuration, you can use the following
+    command (this will work for any of the CNI configuration parameters):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The EKS cluster also supports the use of add-ons, which allow you to configure,
+    deploy, and update the operational software, or provide key functionality to support
+    your Kubernetes applications such as the VPC CNI. Add-ons are the preferred way
+    to manage your cluster after the initial build and when you have running workloads.
+    The easiest way to create an add-on is to use the `eksctl` tool, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will create an add-on (visible in the AWS console). You can see the managed
+    fields if you run the `kubectl get` command as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You should be able to see the fields managed by the EKS control plane in the
+    YAML, that is, the output under the `managedFields` key, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A simpler way to look at the plugin is to use the `eksctl` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will output something similar to the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This tells us there are updates available: v1.10.2, v1.10.1, and v1.9.3\. So,
+    if we want to upgrade the CNI, we issue the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Disabling CNI source NAT
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When Pod network traffic is destined for an IPv4 address outside of the VPC,
+    by default, `AWS_VPC_K8S_CNI_EXTERNALSNAT` variable, which is set to **false**
+    by default.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you want to use an external NAT device such as the AWS NATGW, you need to
+    disable this behavior using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Configuring custom networking
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'When Pods are created, their ENI will use the security groups and subnet of
+    the node’s primary network interface. Custom networking allows the use of a different
+    security group or subnet within the same VPC, and we’ve already described a use
+    case (non-routable secondary addresses) that requires this configuration. To enable
+    custom networking, you first need to have configured the required security groups
+    and subnets in your VPC. Then you can run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You will need to create an `ENIConfig` file that defines the required subnets
+    and security groups; an example is shown next. Note that the name is set to the
+    AZ the subnet is in; this is a best practice and allows EKS to automatically assign
+    the right subnet based on the node/AZ combination a Pod is deployed to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This configuration is applied using the `kubectl apply -f eu-central-1a.yaml`
+    command (assuming you have given the file the same name as the resource in the
+    `metadata` section of the file). You can then apply the following command to automatically
+    map to the right `topology.kubernetes.io/zone`) label:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s look at some common EKS networking issues and how to troubleshoot them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Common networking issues
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Networking is generally a complex issue, and although K8s defines a standard
+    model, each CNI introduces different issues. We will look at how to solve some
+    of the more common issues associated with the VPC CNI next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Issue** | **Solution** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| My worker nodes cannot join the cluster. | Check that the worker nodes subnets
+    have IP access to the internet (through an IGW or NATGW) as well as access to
+    the EKS API ENIs. Check the route tables and associated security groups to make
+    sure. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| My Pods cannot be assigned an IP address from the VPC. | Check that the VPC
+    has enough IP addresses free, if not assign a secondary CIDR range. Enable prefix
+    addressing once you have IP addresses or make the EC2 instance size bigger (more
+    ENIs). |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Pods are unable to resolve K8S DNS names. | Ensure all worker node subnets
+    do not have any security groups or network ACLS that block outbound or inbound
+    UDP port `53` and ensure your VPC has `enableDNSHostnames` and `enableDNSSupport`
+    set to `true`. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| AWS load balancers cannot be deployed. | Ensure the worker node subnets are
+    tagged with either `kubernetes.io/role/elb` or `kubernetes.io/role/internal-elb`.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: In this section, we have looked at the detailed commands needed to configure
+    and manage the VPC CNI. We’ll now revisit the key learning points from this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we explored the basic concept of networking and the network
+    model in native Kubernetes and how EKS differs. We described how EKS comes configured
+    with the AWS VPC CNI, which integrates with the AWS VPC to assign ENIs and IP
+    addresses to Pods from the VPC.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also learned that Pods in EKS are native VPC citizens and traffic can use
+    VPC network devices such as Internet Gateway, Transit Gateway, and NAT Gateway,
+    and can be controlled using VPC network controls such as SGs and/or NACLs. However,
+    this can come with some challenges such as VPC IP exhaustion. We discussed a few
+    ways to handle IP exhaustion, including non-routable subnets, prefix addressing,
+    and IPv6.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we talked about performing common tasks such as managing and upgrading
+    the CNI, disabling CNI source NAT so you can use external NAT devices such as
+    the AWS NATGW, and configuring custom networking so Pods can use other SGs or
+    subnets to the main worker node to help with security or IP exhaustion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will discuss EKS managed node groups, what they are,
+    and how they are configured and managed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'AWS VPC CNI repository: [https://github.com/aws/amazon-vpc-cni-k8s](https://github.com/aws/amazon-vpc-cni-k8s)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'What is an EC2 ENI?: [https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-eni.html](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-eni.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Overview of EKS and IPv6: [https://aws.amazon.com/blogs/containers/amazon-eks-launches-ipv6-support/](https://aws.amazon.com/blogs/containers/amazon-eks-launches-ipv6-support/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Supported CNIs on EKS: [https://docs.aws.amazon.com/eks/latest/userguide/alternate-cni-plugins.html](https://docs.aws.amazon.com/eks/latest/userguide/alternate-cni-plugins.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Private NAT Gateways: [https://aws.amazon.com/about-aws/whats-new/2021/06/aws-removes-nat-gateways-dependence-on-internet-gateway-for-private-communications/](https://aws.amazon.com/about-aws/whats-new/2021/06/aws-removes-nat-gateways-dependence-on-internet-gateway-for-private-communications/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Using Transit Gateway: [https://docs.aws.amazon.com/whitepapers/latest/building-scalable-secure-multi-vpc-network-infrastructure/transit-gateway.html](https://docs.aws.amazon.com/whitepapers/latest/building-scalable-secure-multi-vpc-network-infrastructure/transit-gateway.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'EC2 Max Pods Details by instance type: [https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt](https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Kubernetes scaling limits: [https://github.com/kubernetes/community/blob/master/sig-scalability/configs-and-limits/thresholds.md](https://github.com/kubernetes/community/blob/master/sig-scalability/configs-and-limits/thresholds.md)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Overview of EKS add-ons: [https://aws.amazon.com/blogs/containers/introducing-amazon-eks-add-ons/](https://aws.amazon.com/blogs/containers/introducing-amazon-eks-add-ons/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

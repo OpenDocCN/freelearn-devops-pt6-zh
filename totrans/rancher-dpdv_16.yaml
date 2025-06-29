@@ -1,0 +1,859 @@
+- en: '*Chapter 12*: Security and Compliance Using OPA Gatekeeper'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we'll cover bringing security and compliance to our Kubernetes
+    clusters using **OPA Gatekeeper** and why it is needed to manage a cluster at
+    scale. (OPA stands for **Open Policy Agent**.) With so many different teams deploying
+    their applications on your clusters, enforcing standards in your environment (for
+    example, blocking public image registries and blocking deployments that don't
+    follow the rules, such as setting CPU and memory limits on Pods) becomes extremely
+    hard. We'll also cover Rancher's **Center for Internet Security** (**CIS**) scanner,
+    which is required to scan a Kubernetes cluster for known vulnerabilities, along
+    with Rancher's hardening guides applying changes to RKE and RKE2 clusters that
+    enforce extra security standards as defined in the CIS benchmark. We'll also look
+    at how to maintain the cluster on an ongoing basis, and enterprise solutions such
+    as NeuVector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we''re going to cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why should I care about security in Kubernetes?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do I enforce standards and security policies in Kubernetes?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is OPA Gatekeeper?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do I install OPA Gatekeeper from the marketplace?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Best practices and standard policies.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do I scan my cluster for security issues?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do I lock down my cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying the Rancher CIS scan.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional security tools for protecting a cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Why should I care about security in Kubernetes?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One of the questions I get asked a lot is *Why should I care about security?
+    Doesn't containerization fix this?* The short answer is no. Containerization does
+    not solve every IT security problem, but it does change the game if we look back
+    at how we traditionally handled security with servers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, we would deploy **antivirus** (**AV**) software on all our servers to
+    detect and block malware, worms, and Trojan horses, for example, from attacking
+    our servers and stealing our data. Now, containerization throws a big wrench into
+    the works because we virtualize our applications inside another server, and most
+    AV software does not understand nor support running on a server with Docker. This
+    is even discussed in the official Docker documentation at [https://docs.docker.com/engine/security/antivirus/](https://docs.docker.com/engine/security/antivirus/)
+    that recommends excluding the Docker process and its directories from being scanned.
+    In addition, most of the popular AV vendors, such as Symantec Endpoint Protection,
+    block Docker from running altogether. It is important to note that security software,
+    such as Aqua, supports running AV scans at the host level. We'll talk more about
+    this topic later in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Second, we would create firewall rules between our servers, giving only the
+    bare minimum access. For example, you might only allow a **Secure Shell** (**SSH**)
+    protocol from a limited number of jump servers so that if someone compromised
+    a public-facing web server and gained remote access, they wouldn't be able to
+    SSH into other servers, such as the database server. Kubernetes changed this because
+    most **Container Network Interface** (**CNI**) providers, such as Canal, Calico,
+    and Weave, are open by default, meaning any pod in the cluster can directly connect
+    to any other pod in the cluster. This means if someone compromised the pod running
+    your web server, they could now start directly attacking other pods in the same
+    cluster. It is essential to note that Kubernetes has NetworkPolicies that allow
+    you to bring firewall-like rules into your cluster. However, not all CNI providers
+    support NetworkPolicies. You can find a list of the different CNIs that Rancher
+    supports located at https://rancher.com/docs/rancher/v2.6/en/faq/networking/cni-providers/#cni-features-by-provider.
+    This table includes the ones that support the NetworkPolicies resource type as
+    not all CNI providers support this feature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Third is control over what software is allowed to be installed in your environment.
+    Most enterprise environments do not allow application teams to directly access
+    production servers. They require application teams to document how to install
+    their application and how this process is being reviewed by outside teams such
+    as security and compliance. This was mainly to prevent application teams from
+    making changes to the server that could be a security issue. For example, without
+    controls in place, an application team might just disable the AV software instead
+    of going through the process of whitelisting their processes and fixing security
+    issues with their application. In addition, a team might be using outdated software,
+    such as Java, that has known vulnerabilities, with most security teams blocking
+    this. Containerization flips the script because an application team builds their
+    images; that is, if needed, they can install the software and libraries they want,
+    including outdated and vulnerable software.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fourth, we come to patching. Most translational server environments have regular
+    patching schedules, such as applying OS patches every month. Because of this,
+    known vulnerabilities are regularly removed from your environment. Containerization,
+    by default, makes a task such as monthly patching not a thing. One of the core
+    concepts with containers is that your images should be static and can only change
+    with a re-deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, an application team deploys a pod running a currently patched Ubuntu-based
+    image. They then leave it untouched for six months. Now, the Ubuntu-based image
+    is out of date and needs to be updated. You can, of course, connect to the pod
+    and run `apply patches` by running `apt upgrade` but your changes will be wiped
+    out as soon as that pod gets rescheduled. You need to rely on application teams
+    to keep the images up to date by redeploying the application on a set schedule,
+    and we all know how that will work out, as they don't want to change anything
+    if it's working. It's important to note that this problem is solved by adding
+    image scanning to your pipeline, and we'll be covering this topic later in this
+    chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Last, but not least, is limiting access in a traditional enterprise environment.
+    Access to production servers is limited, with application teams not being allowed
+    access. But, with Kubernetes, it is typical for organizations to get started on
+    their Kubernetes journey to give developers access to the production clusters
+    for speed and efficiency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we'll dive into how we start solving these issues, mainly
+    focusing on OPA Gatekeeper and Rancher CIS scans.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do I enforce standards and security policies in Kubernetes?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Of course, now that we know about all these security issues/limitations, we
+    need to ask what can we do about them?
+  prefs: []
+  type: TYPE_NORMAL
+- en: First is the AV software issue, with the question being, why do we need AV software
+    in the first place? We need it because we need to detect when rogue software runs
+    in our environment. For example, a hacker compromises a web server by finding
+    a vulnerability that gives them **Remote Code Execution** (**RCE**), also known
+    as **Arbitrary Code Execution** (**ACE**). Then, the hacker will start installing
+    a **Remote Access Tool** (**RAT**) to start moving laterally to other servers,
+    trying to gain more access. Containerization addresses this issue by shrinking
+    the attack surface. For example, it's tough to get a remote shell on a server
+    if it doesn't have a shell. This is why it's expected that most container images
+    contain only the absolute minimum software packages and libraries. Kubernetes
+    also addresses this issue by running containers with non-privileged accounts.
+    For example, we might run Apache as a non-root user. So, even if someone gains
+    access to the pod, they wouldn't have permission to install additional software
+    and libraries. This also includes if they were to find a way to break out of the
+    container, they would still be running as an account with little to no permissions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second is firewall rules, as discussed in the previous section. Kubernetes,
+    by default, is open between pods but because you need to expose ports and services
+    to the outside world explicitly, you get the benefit of being secure to the outside
+    world by default. For example, if we are running an Apache server as a pod in
+    our cluster, by default, we are not opening that pod directly to the world. But
+    still, you are exposing it via an ingress-controller where you can enable security
+    settings such as **ModSecurity**, which is a **Web Application Firewall** (**WAF**)
+    that can protect you from cross-site scripting, SQL injections, and sessions.
+    You can find out more about ModSecurity by visiting [https://github.com/SpiderLabs/ModSecurity](https://github.com/SpiderLabs/ModSecurity),
+    and you can find the details around enabling ModSecurity with Ingress NGINX located
+    at https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#modsecurity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third issue is control of the deployed software. We would manage the software
+    on the endpoints, or servers, in translational environments. Containerization
+    moved this process from the endpoint into your build pipeline. This is done by
+    integrating software such as Clair into your build scripts. The idea with Clair
+    is that you run your `docker build` command, then pass the image over to Clair,
+    where it will be downloaded and scanned for known vulnerabilities inside the image.
+    Clair will create a report listing the vulnerabilities, **CVE** (**Common Vulnerabilities
+    and Exposures**) number, and severity level. Depending on your **continuous integration/continuous
+    deployment** (**CI/CD**) software, you can choose to block a build if the image
+    has too many vulnerabilities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fourth issue is application patching. Unfortunately, there isn't an easy
+    way to solve this problem; the proper way is to regularly update your containers
+    as part of your ongoing development process. But, as we know, regular patching
+    of images can fall behind. So, what some people do is set up scheduled builds
+    in their pipeline. For example, you might create a scheduled task to rebuild your
+    application image every month using the current code versions and automatically
+    deploy and test it in your environment. By doing this, you are *patching* your
+    containers every month, just like we do with our servers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we have the issue of access. The easy way is to give everyone access
+    to deploy into production and make any changes they want. But, this will provide
+    you with unwanted problems and security, because it's always easier to just turn
+    off protection when it's in your way than to fix the reason it's being blocked.
+    To prevent this behavior, it is recommended to force all changes via a CI/CD pipeline
+    to be tracked and controlled using tools such as GitHub/GitLab **pull request**
+    (**PR**) approvals and not give anyone access to production outside cluster administrators.
+    Rancher can address this issue using its Fleet product, which you can learn more
+    about by visiting [https://fleet.rancher.io](https://fleet.rancher.io). In addition,
+    as of Rancher v2.6, Fleet is built into Rancher itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, we should know about the basic concepts around translating traditional
+    IT security requirements into their Kubernetes counterparts. In the next section,
+    we'll be diving into OPA Gatekeeper to enforce our clusters' security standards.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is OPA Gatekeeper?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: OPA is an open source policy engine that has been built for the cloud. In addition,
+    OPA is a **Cloud Native Computing Foundation** (**CNCF**) graduated project like
+    a number of the other tools we covered. OPA uses declarative language to enforce
+    policies across your environment. The basic idea is everything should call OPA
+    and ask, *Hey can I do XYZ?* At which point, OPA will evaluate the request against
+    its policies to approve or reject the request. It is important to note that OPA
+    is designed to be generic to be integrated with Kubernetes and other systems,
+    such as Terraform, Docker, and SSH.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Of course, the question comes up, what is Gatekeeper then? In short, OPA Gatekeeper
+    is a Kubernetes controller that allows you to define your OPA policies as Kubernetes
+    objects. This mainly includes constraints and constraint templates. This enables
+    users to define their policies as YAML and apply them to their cluster just like
+    another Kubernetes deployment. For the rest of this chapter, we'll focus on OPA
+    Gatekeeper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know what OPA Gatekeeper is, the next question to answer is *How
+    does it work?* The best way to answer that question is to follow a request through
+    the process. Please see the following diagram to understand this process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 12.1 – OPA Gatekeeper request flow diagram'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_12_01.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 12.1 – OPA Gatekeeper request flow diagram
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s look at these steps in detail next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 1**: A developer creates a request, and in this case, the request is
+    for a new Deployment called **webserver** in the **testing** namespace.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Step 2**: The developer submits the request to **Kube-Apiserver** as a YAML
+    or JSON file.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Step 3**: **Kube-Apiserver** receives the request and starts processing by
+    verifying if the user has valid credentials, the request has valid syntax, and
+    the user has permissions to access the requested resources. At this point, usually,
+    **Kube-Apiserver** would respond to the developer accepting or denying the request.
+    But, because we deployed OPA Gatekeeper to this cluster, the request follows a
+    different path.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`ValidatingAdmissionWebhook` to route some requests to a defined webhook. It
+    is important to note that not all requests are forwarded to the webhook. For example,
+    a `kubectl get pods` request is a read-only request, so it would not be forwarded
+    to the webhook. But, a request for creating a pod would be because it''s a change
+    to the environment. In this case, OPA Gatekeeper has added `ValidatingAdmissionWebhook`
+    into **Kube-Apiserver**.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`billing-code`, which you can use for charge-back to your application teams.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`billing-code` label, the creation will be blocked, and the rejection will
+    be forwarded to the next step. But, assuming that the request was approved, OPA
+    Gatekeeper will respond with an HTTP success code of `200`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`fail close by default` by default. What this means is if the request is anything
+    but `200`, it is assumed to be a denial, and the request will be rejected. Even
+    valid deployments will be rejected if the OPA Gatekeeper pods are down or unavailable.
+    This means your cluster is blocked, and no pod will spin up. So, Rancher''s OPA
+    Gatekeeper deployment switches the default policy to `failurePolicy: Ignore`,
+    which states if the webhook request receives an error such as a timeout. The Admission
+    Controller will fail to open, which means that the controller will assume the
+    request would have been approved if OPA Gatekeeper is ever offline. You should
+    review this setting with your security team and confirm if availability is more
+    important than potentially allowing a deployment that doesn''t meet the standards
+    during an outage.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Finally, at this point, the end user will receive a response to their request.
+    Because of the steps listed previously, the user might see additional latency
+    during a deployment. But, this usually is so quick that it becomes background
+    noise for most environments. It is also important to note that this process applies
+    to both end users and internal requests from other controllers inside the cluster,
+    such as kube-scheduler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, you should understand how a request flows through kube-apiserver
+    into the Admission Controller, then forwarded on to OPA Gatekeeper, then finally
+    back to the developer via kube-apiserver. In the next section, we are going to
+    dive into the process of installing OPA Gatekeeper in your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to install OPA Gatekeeper from the marketplace
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With Rancher, there are two main ways to deploy OPA Gatekeeper, these being
+    via the App marketplace in Rancher and via the Rancher Helm Chart. Of course,
+    you can deploy upstream OPA Gatekeeper directly without Rancher. It is typically
+    recommended to deploy OPA Gatekeeper via the App marketplace simply for convenience.
+    The steps for installing OPA Gatekeeper are listed in this section for each of
+    the major Rancher releases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we discuss the installation steps, here''s a list of the prerequisites
+    to have ready for the installation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You should have the global role Administrator or Cluster Owner permissions to
+    the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: OPA Gatekeeper requires Kubernetes v1.16 or higher.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You should review the official support matrix at [https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/](https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/)
+    to confirm that you are deploying a fully compatible and validated system solution.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To install OPA Gatekeeper in Rancher v2.4, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the Rancher UI, go to the **Cluster** dashboard.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Go to the **Tools** menu and select **OPA Gatekeeper** from the drop-down menu;
+    refer to *Figure 12.2*:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.2 – Rancher v2.4 installing OPA Gatekeeper from the Tools menu'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_12_02.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 12.2 – Rancher v2.4 installing OPA Gatekeeper from the Tools menu
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is normally recommended to use the default settings, which can be found at
+    [https://rancher.com/docs/rancher/v2.0-v2.4/en/cluster-admin/tools/opa-gatekeeper/](https://rancher.com/docs/rancher/v2.0-v2.4/en/cluster-admin/tools/opa-gatekeeper/).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.3 – Rancher v2.4 OPA Gatekeeper install wizard'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_12_03.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 12.3 – Rancher v2.4 OPA Gatekeeper install wizard
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, let''s look at the installation steps for Rancher v2.5:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the Rancher UI, go to **Cluster Explorer**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click on the **Apps & Marketplace** option.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Select the **OPA Gatekeeper** chart.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.4 – Rancher v2.5 installing OPA Gatekeeper from Apps & Marketplace'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_12_04.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 12.4 – Rancher v2.5 installing OPA Gatekeeper from Apps & Marketplace
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is normally recommended to use the default settings, which can be found at
+    [https://rancher.com/docs/rancher/v2.5/en/opa-gatekeper/](https://rancher.com/docs/rancher/v2.5/en/opa-gatekeper/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we''ll discuss the installation for Rancher v2.6:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the Rancher UI, go to **Cluster Management**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: On the **Clusters** page, go to the cluster where you want to enable OPA Gatekeeper
+    and click **Explore**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the left navigation bar, click **Apps & Marketplace**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.5 – Rancher v2.6 installing OPA Gatekeeper from Apps & Marketplace'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_12_05.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 12.5 – Rancher v2.6 installing OPA Gatekeeper from Apps & Marketplace
+  prefs: []
+  type: TYPE_NORMAL
+- en: Click **Charts**, then click **OPA Gatekeeper** and click **Install**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.6 – OPA Gatekeeper Install page'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_12_06.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 12.6 – OPA Gatekeeper Install page
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is usually recommended to use the default settings, which can be found at
+    [https://rancher.com/docs/rancher/v2.6/en/opa-gatekeper/](https://rancher.com/docs/rancher/v2.6/en/opa-gatekeper/).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.7 – Rancher v2.6 OPA Gatekeeper Install options'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_12_07.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 12.7 – Rancher v2.6 OPA Gatekeeper Install options
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, we should have OPA Gatekeeper installed in our environment but
+    without constraints, it won't do much. In the next section, we are going to cover
+    some standard constraint templates that you can use to get started.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Best practices and standard policies
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we have OPA Gatekeeper installed, it's time to start creating templates
+    and applying them to your cluster. In this section, we are going to cover some
+    of the most popular templates. It is important to note that most of these templates
+    come from upstream OPA Gatekeeper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I like to deploy the first one called `containerlimits`, a template rule that
+    ensures that all pods have CPU and memory limits set. You can find the template
+    at [https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/general/containerlimits](https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/general/containerlimits).
+    The main idea here is that, by default, all pods are given unlimited CPU and memory,
+    meaning a single pod can steal all the resources on a node forcing out other pods
+    and even causing nodes to lock up and then crash. This causes what I call a *runaway
+    app* that will consume a node, cause it to crash, then move to another node and
+    repeat the process until you run out of nodes. You can find an example of this
+    kind of application at [https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery/run-away-app](https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery/run-away-app).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This link also includes how to resolve a runaway app issue. This template makes
+    sure that it''s set to a valid value. It could be 1 MB of memory, meaning the
+    pods will never be scheduled, or it could be 100 TB, meaning the pod will never
+    be scheduled because there is no node big enough for it to start. This also has
+    the benefit of giving you insight into the capacity required for your clusters,
+    because if you see that your cluster is reporting 100% allocation, it means one
+    of two things:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your limits are being set too high, and you are wasting resources.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You need to start adding nodes, because you will run out of resources.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: OPA Gatekeeper can protect us from runaway apps by blocking pods/deployments
+    that are missing CPU and memory limits, which means a runaway app can never make
+    it into the cluster in the first place.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll be covering scaling in the next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To apply this template, simply run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: But, make sure you test this in a non-production cluster first.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another template I like to use is called `requiredlabels`, which is a template
+    that allows you to force all namespaces to have a label. For example, you might
+    want to move all namespaces to have a billing code so you can do show-back and
+    charge-back. Or maybe, you want to force the namespaces to have a technical contact
+    listed to make it easier to contact the application team when deployments are
+    misbehaving.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To apply this template, simply run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will only apply to newly created namespaces, so you will have to go back
+    and set the label for existing namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full details about this template can be found at [https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/general/requiredlabels](https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/general/requiredlabels).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, the template that I see many security teams asking for is `httpsonly`,
+    which forces all ingresses to have the `kubernetes.io/ingress.allow-http = false`
+    annotation, meaning all ingresses must have an SSL certificated defined in the
+    ingress configuration under the **TLS** (**Transport Layer Security**) section.
+    Many security teams require all traffic, including backend services, to be HTTPS
+    only.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To apply this template, simply run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Full details about this template can be found at [https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/general/httpsonly](https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/general/httpsonly).
+    It is important to note that, by default, Rancher clusters come with a self-signed
+    certificate for ingresses to default to when another certificate is not defined.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are, of course, more templates that the open source community has created,
+    which can be found at [https://github.com/open-policy-agent/gatekeeper-library](https://github.com/open-policy-agent/gatekeeper-library).
+    I also recommend using these templates as a base for creating your custom templates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, you should have OPA Gatekeeper installed in your cluster and
+    some rules defined, allowing you to enforce your standards. In the next section,
+    we'll be diving into taking the next step of locking down your cluster to prevent
+    security-related issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do I scan my cluster for security issues?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rancher has a Rancher CIS scan or Rancher-cis-benchmark tool built on top of
+    kube-bench, an open source software from Aqua Security. kube-bench is designed
+    to scan a Kubernetes cluster and review the settings on the components of Kubernetes
+    such as kube-apiserver, etcd, and kubelet. kube-bench uses the CIS Benchmark report
+    from the non-profit organization CIS, which creates a standard list of best practice
+    settings for protecting your Kubernetes cluster. These reports are made after
+    the most significant changes to Kubernetes and are designed to be as vendor-neutral
+    as possible. You can learn more about CIS and its reports by going to [https://learn.cisecurity.org](https://learn.cisecurity.org).
+    But, because this report is intended to be vendor-neutral, some settings don't
+    apply to Rancher and its cluster. So, Rancher publishes a self-assessment and
+    hardening guide that addresses all the items in the report. This assessment is
+    designed so that it can be handed over to your security team/auditors when they
+    start asking questions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But, it is important to note that, by default, Rancher and its cluster will
+    not pass the CIS report without making changes to your environment and nodes,
+    with some of these steps requiring manual steps. In the next section, we'll be
+    diving into how to make Rancher pass the report.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find Rancher's reports and assessment at [https://rancher.com/docs/rancher/v2.5/en/security/rancher-2.5/](https://rancher.com/docs/rancher/v2.5/en/security/rancher-2.5/).
+    It is important to note that these guides change over time as Kubernetes and Rancher
+    are upgraded, and additionally, as security issues are found; thus, it is recommended
+    to review these assessments on a scheduled basis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do I lock down my cluster?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In the previous section, we talked about the CIS scan and Rancher''s self-assessments,
+    but of course, the question of *What can I do about this report?* comes up, and
+    Rancher''s answer to this question is what Rancher calls its **hardening guides**.
+    These guides cover the three Kubernetes distributions that Rancher owns: RKE,
+    RKE2, and k3s. We won''t be going into too much detail in this section, as Rancher
+    already has this process documented. Here, we''ll be linking to guides for each
+    cluster type.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For RKE clusters, the hardening guide is tied to the Rancher server and Kubernetes
+    version. The following are the high-level steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring the Linux kernel to safely handle **Out-Of-Memory** (**OOM**) and
+    kernel panics.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creating a local user and group to be used by etcd to isolate the database from
+    other processes to protect the data.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Disabling the default service accounts being mounted to every pod.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Enabling a `NetworkPolicy` default to limit all pod-to-pod traffic, requiring
+    that you open rules as you need them.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Turning on secret encryption wherein, by default, secrets are stored in etcd
+    in plain text, but with etcd encryption enabled, the secrets will be encrypted
+    at rest.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Finally, ending by turning on `PodSecurityPolicy` to limit pod security settings,
+    such as blocking pods from running as root.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The complete guide can be found at [https://rancher.com/docs/rancher/v2.5/en/security/rancher-2.5/1.6-hardening-2.5/](https://rancher.com/docs/rancher/v2.5/en/security/rancher-2.5/1.6-hardening-2.5/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This process is much easier for RKE2 clusters, as RKE2 is secure by default,
+    but you still need to apply a few changes, which are listed here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting the same Linux kernel parameters as RKE.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creating an etcd user.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Finally, we just need to turn on the CIS profile that we would like on the
+    master servers by adding the `profile: cis-1.5/6` option.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The complete guide can be found at [https://docs.rke2.io/security/hardening_guide/](https://docs.rke2.io/security/hardening_guide/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The hardening process for k3s clusters is similar to RKE2 but still requires
+    a few extra steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting the same Linux kernel parameters as RKE2
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Skipping the etcd steps, as k3s doesn't use etcd by default
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Turning on `PodSecurityPolicy` to limit pod security settings, such as blocking
+    pods from running as root
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: It is important to note that k3s doesn't have the CIS profiles like RKE2 and
+    is not secure by default as it's designed to be lightweight and fast.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The complete guide can be found at [https://rancher.com/docs/k3s/latest/en/security/hardening_guide/](https://rancher.com/docs/k3s/latest/en/security/hardening_guide/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, assuming you have followed the guides listed previously, you
+    should be able to move to install the Rancher CIS scan and be able to pass it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying Rancher CIS scan
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The only recommended way of installing Rancher CIS scan is via **Apps & Marketplace**
+    inside Rancher. But first, let''s cover some of the basic requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rancher v2.4 or greater.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Cluster owner permissions to the downstream cluster(s) or global role Administrator
+    permissions.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The downstream cluster must be an RKE, RKE2, EKS, or GKE cluster for full support.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: A generic profile can be used for other clusters, but there might be false positives
+    or other permissions issues.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Here is how to install `rancher-cis-benchmark` with Rancher v2.4.x and v2.5.x
+    via the Cluster Explorer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the Rancher UI, go to **Cluster Explorer**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Apps**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **rancher-cis-benchmark**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Install**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To install the CIS Benchmark with Rancher v2.6.x via the **Cluster Management**
+    pane, do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the Rancher UI, go to **Cluster Management**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Navigate to the cluster where you will install the CIS Benchmark.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the left navigation bar, click **Apps & Marketplace** | **Charts**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **CIS Benchmark**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Install**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: For Rancher-created clusters, you should use the *default* settings. For generic
+    clusters, please review the example settings at [https://github.com/rancher/cis-operator/tree/master/examples](https://github.com/rancher/cis-operator/tree/master/examples).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: At this point, you should have your cluster locked down, and Rancher's CIS scan
+    running in your cluster to confirm that the cluster stays locked over time. In
+    the next section, we're going to dive into some additional tools for protecting
+    your cluster, including some paid solutions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additional security tools for protecting a cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have mostly been talking about OPA Gatekeeper in this chapter, as it is one
+    of the most popular open source solutions. But, of course, there are other paid
+    solutions, such as NeuVector, which provides image and cluster scanning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With **SUSE** (German: **Software- und System-Entwicklung**) buying NeuVector,
+    it has been announced that NeuVector''s container runtime security platform will
+    be released to the public under the Apache 2.0 license on GitHub at [https://github.com/neuvector/neuvector](https://github.com/neuvector/neuvector).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition, the Aqua Platform is ubiquitous for paying customers, as it is
+    a closed source product that requires licensing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For NeuVector, I recommend watching the master class *PCI Compliance and Vulnerability
+    Management for Kubernetes* on YouTube ([https://www.youtube.com/watch?v=kSkX5MRmEkE](https://www.youtube.com/watch?v=kSkX5MRmEkE))
+    to learn more about NeuVector and how to integrate it into Rancher.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I also recommend watching the master class *Kubernetes Master Class Preventive
+    Security for Kubernetes Enterprise Deployments* for Aqua, found here: [https://www.youtube.com/watch?v=2Phk7yyWezU](https://www.youtube.com/watch?v=2Phk7yyWezU).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both the YouTube videos are hosted on Rancher's YouTube channel and include
+    links to their slides and scripts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter taught us about some of the security and compliance issues that
+    containers and Kubernetes have addressed. We went over what OPA Gatekeeper is
+    and how it works. We then dove into some of the best practices and standard templates.
+    We learned how OPA Gatekeeper enforces different rules for your cluster by deploying
+    these templates. This is important because this skill is necessary to create your
+    own rules that suit your environment and its requirements. We then covered how
+    to lock down your cluster and ensure it stays locked down using Rancher CIS scans.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next chapter will cover how to bring scaling to your clusters for both pods
+    and nodes, including all the limitations and concerns with scaling your clusters.
+  prefs: []
+  type: TYPE_NORMAL

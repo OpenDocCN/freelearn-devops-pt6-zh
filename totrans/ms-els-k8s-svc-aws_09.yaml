@@ -1,0 +1,875 @@
+- en: '9'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Advanced Networking with EKS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In previous chapters, we reviewed standard AWS and EKS networking ([*Chapter
+    7*](B18129_07.xhtml#_idTextAnchor107)). However, there are certain situations
+    where you will need to use some of the more advanced networking features we will
+    describe in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter looks at use cases such as how you can manage Pod address exhaustion
+    with **Internet Protocol version 6** (**IPv6**) and how you can enforce Layer
+    3 network controls for Pod traffic using network policies. We also look at how
+    you can use different **complex network-based information systems** (**CNIs**)
+    in EKS to support multiple Pod network interfaces using the Multus CNI and how
+    you can support overlay networks for encryption and network acceleration, such
+    as the **Data Plane Development Kit** (**DPDK**) or **Extended BerkeleyPacket
+    Filter** (**eBPF**). These are complex topics, and the aim of this chapter is
+    to provide the base knowledge for a cluster administrator to be able to assess
+    whether these solutions need to be configured and the impact they will have on
+    the EKS deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Specifically, we will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using IPv6 in your EKS cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing and using Calico network policies
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Choosing and using different CNIs in EKS
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You should be familiar with YAML, basic networking, and EKS architecture. Before
+    getting started with this chapter, please ensure that you have the following in
+    place:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Network connectivity to your EKS API endpoint
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The AWS CLI and the `kubectl` binary are installed on your workstation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A basic understanding of IPv6 addressing and usage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A good understanding of **virtual private cloud** (**VPC**) networking and how
+    to create network objects such as **elastic network interfaces** (**ENIs**), and
+    so on
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using IPv6 in your EKS cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: IPv6 has some distinct advantages over IPv4, namely, it provides a much larger
+    address space (this includes public IP addresses), reduces some latency by removing
+    **Network Address Translation** (**NAT**) hops, and can simplify the overall routing
+    network configuration. It does have some limitations (not only for EKS but other
+    AWS services as well) so care must be taken when adopting IPv6\. Please review
+    [https://aws.amazon.com/vpc/ipv6/](https://aws.amazon.com/vpc/ipv6/) and [https://docs.aws.amazon.com/eks/latest/userguide/cni-ipv6.html](https://docs.aws.amazon.com/eks/latest/userguide/cni-ipv6.html)
+    before implementing it in production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'IPv6 cannot currently be enabled on an existing cluster, so the first thing
+    we need to do is create a new cluster with the IPv6 address family, which is at
+    least running Kubernetes 1.21\. We will use `eksctl` with the following configuration
+    file, `myipv6cluster.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then run the following `eksctl` command to create and deploy the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: This process may take 15–25 minutes to complete.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As we haven’t specified an existing VPC, `eksctl` will create one for us and
+    assign it an additional IPv6 **Classless Inter-Domain Routing** (**CIDR**) range
+    from the Amazon pool (every VPC needs an IPv4 CIDR range), illustrated next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.1 – eksctl VPC](img/B18129_09_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.1 – eksctl VPC
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we look at the subnets assigned to this VPC, we can see `eksctl` has created
+    six subnets, three public, and three private (two per **Availability Zone** (**AZ**))
+    subnets. It has also allocated an IPv4 (required) CIDR range and an IPv6 CIDR
+    range from the main ranges allocated to the VPC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.2 – eksctl IPv4/v6 subnets](img/B18129_09_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.2 – eksctl IPv4/v6 subnets
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The cluster will be created with the two worker nodes (on the public subnets
+    by default). Each worker node has both an IPv4 and IPv6 IP address, as IPv4 is
+    required by the VPC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will output something similar to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: IPv6 prefix assignment occurs on each worker node at startup. A single `IPv6
+    /80` prefix is assigned (the `/80 => ~10^14` addresses) per worker node ENI and
+    is big enough to support large clusters with millions of Pods although the current
+    Kubernetes recommendation is no more than 110 Pods per host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can see the prefix assignment by looking at the EC2 instance and clicking
+    on the network tab. In the following example, a `2a05:d014:ec6:2f00:8207::/80`
+    prefix has been assigned, and no IPv4 prefix is assigned:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: "![Figure 9.3 – I\uFEFFPv6 prefix assignment](img/B18129_09_03.jpg)"
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.3 – IPv6 prefix assignment
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once you have enabled IPv6 at the cluster level, you can’t assign IPv4 addresses
+    to your Pods; only IPv6 addresses can be assigned as EKS doesn’t currently support
+    Pods with both an IPv4 and IPv6 address (as they do with worker nodes). However,
+    if we use the `kubectl get pods` command to list the system Pods in the `kube-system`
+    namespace, we can see that the Pods are assigned IPv6 addresses:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can deploy a simple web app using the deployment `.yaml` files from [*Chapter
+    4*](B18129_04.xhtml#_idTextAnchor067), *Running Your First Application on EKS*.
+    If we look at the resulting Pods, we can see they also have an IPv6 address. An
+    example output is shown next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We’ve looked at how to create a cluster with an IPv6 IP address family and how
+    to deploy Pods. However, there are some basic differences in how the Pods can
+    communicate in and outside the VPC with IPv6\. The next sections describe these
+    networking scenarios in more detail, focusing on how traffic is routed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Security group configuration is needed to *allow* traffic as a minimum. Therefore,
+    we will only discuss the VPC routing table configuration in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pod to external IPv6 address
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: An IPv6 address is so large they are globally unique, so no NAT is performed.
+    Any Pods running on worker nodes in public subnets, which are assigned an IP address
+    from a prefix in the subnet, will be able to route directly to the internet through
+    an **internet gateway** (**IGW**) without any address translation. This also means
+    that they are accessible from the internet (access is controlled through security
+    groups). If the subnet is private, an **egress-only IGW** (**EIGW**) can be used
+    to provide access to external IPv6 addresses but not allow any direct inbound
+    IPv6 traffic (unlike the regular IGW).
+  prefs: []
+  type: TYPE_NORMAL
+- en: VPC routing
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As any IPv6 Pod always uses its IPv6 address as its source IP address, standard
+    Kubernetes service discovery and routing mechanisms and VPC routing tables can
+    be used to reach another Pod. Any intra-VPC IPv6 traffic is not source NATed (unlike
+    IPv4 by default), so the destination Pod always sees the source Pod’s *real VPC*
+    IPv6 address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As a Pod only has an IPv6 stack, it can only communicate with other elements
+    running an IPv6 stack that have entries in the VPC routing tables. This includes
+    the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Other Pods with IPv6 addresses
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An EC2 host with an IPv6 address (single or dual stack)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: ASW services that support IPv6 endpoints (refer to [https://docs.aws.amazon.com/general/latest/gr/aws-ipv6-support.html](https://docs.aws.amazon.com/general/latest/gr/aws-ipv6-support.html))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To communicate with IPv4 endpoints, a translation service is required; this
+    can be achieved in a number of ways:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using a host-local CNI plugin
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using NAT64 (AWS NAT Gateway)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using DNS64 (AWS Route 53)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will review these options in detail next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using host-local CNI plugin
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The approach, still used today, is to extend the VPC CNI to support an internal
+    IPV4 address range, `169.254.172.0/22`, allocated to every worker node and used
+    to create a secondary IPv4 interface in each Pod. This configuration is included
+    in the IPv6 cluster we created and can be viewed by SSHing into a worker node
+    and running the `cat /etc/cni/net.d/10-aws.conflist` command as *root*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As this IPv4 `169.254.172.0/22` range is not visible in the VPC and is reused
+    by each worker node, all IPv4 egress traffic is **source NAT**ed (**SNAT**) to
+    the IPv4 ENI allocated to the worker node; otherwise, there will be IP address
+    conflicts. The following diagram illustrates this solution:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.4 – host-local solution](img/B18129_09_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.4 – host-local solution
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To see how this works, let’s create a new container and shell into it using
+    the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once in the container shell, you can see the secondary interface and route
+    tables in the container with the `iptables` and `netstat` commands. This will
+    output something similar to the block shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: This means when a Pod tries to communicate with an IPv4 address, it will use
+    the `v4if0` interface, which will SNATed to the Host IPv4 ENI. We will now look
+    at some enhancements that AWS has announced in 2021 that can simplify this configuration
+    and remove the need for the host SNAT.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using DNS64 with AWS Route 53
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Each VPC has its own DNS resolver built into the subnet (normally residing at
+    the second IP address of the subnet CIDR). Normally this resolves on IPv4 DNS
+    requests, but you can now add DNS64 to the subnet, and it applies to all the AWS
+    resources within that subnet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With DNS64, the AWS Route 53 Resolver looks up the DNS entry based on the client
+    request and, based on the response, does one of the two following things:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the DNS response contains an IPv6 address, the resolver responds to the client
+    with the IPV6 address, and then the client establishes an IPv6 networking session
+    directly using the IPv6 address.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If there is no IPv6 address in the response, only an IPv4 address, then the
+    Resolver responds to the client by adding the well-known `/96` prefix, defined
+    in `RFC6052` (`64:ff9b::/96`), to the IPv4 address in the record to enable it
+    to work with NAT64 (described next).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'This diagram illustrates this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.5 – DNS64 on your VPC](img/B18129_09_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.5 – DNS64 on your VPC
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s look at how the well-known `64:ff9b::/96` prefix is used to communicate
+    with the IPv4 endpoint.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using NAT64 with a NATGW
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In [*Chapter 7*](B18129_07.xhtml#_idTextAnchor107), *Networking in EKS*, we
+    discussed how a **NAT Gateway** (**NATGW**) could be used to allow outbound network
+    access from private subnets. It does this by mapping private addresses (IPv4)
+    to a public IP address assigned to the NATGW.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'NAT64 is automatically available on any existing or new NATGW. Once you have
+    enabled DNS64 for the subnet and added a route for the `64:ff9b::/96` prefix to
+    the NATGW, the following steps happen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As described previously, if there is no matching IPv6 record, the VPC DNS resolver
+    will respond with the IPv4 address and the `RFC6052` prefix, which is used by
+    the client to establish an IPv6 session. The VPC routing table will send the traffic
+    to the NAT64 gateway, which translates the IPv6 packets to IPv4 by replacing the
+    IPv6 (Pod) address with the NATGW IPV4 address.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The NAT64 gateway forwards the IPv4 packets to the destination using the route
+    table associated with its subnet.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The IPv4 destination sends back IPv4 response packets to the NATGW. The response
+    IPv4 packets are translated back to IPv6 by the NATGW by replacing its IP (destination
+    IPv4) with the Pod’s IPv6 address and prepending `64:ff9b::/96` to the source
+    IPv4 address. The packet then flows to the Pod following the local route statement
+    in the route table:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 9.6 – NAT64 on your VPC](img/B18129_09_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.6 – NAT64 on your VPC
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Don’t forget to delete your IPv6 cluster using the `eksctl delete cluster myipv6cluster`
+    command unless you want to use it for the next sections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s look at how we can control traffic inside the cluster using network
+    policies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing and using Calico network policies
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: By default, all Pods in all namespaces in a cluster can communicate with each
+    other. This might be desirable, but, in many cases, you want to take a *least
+    privilege* approach to network access. Fortunately, Kubernetes provides network
+    policies to restrict access between Pods (west-to-east communication). A network
+    policy operates at Layer 3 and Layer 4 of the OSI model and, as such, is equivalent
+    to a traditional on-premises firewall or AWS security group. More details can
+    be found at [https://kubernetes.io/docs/concepts/services-networking/network-policies/](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The EKS VPC CNI doesn’t support network policies, so a network plugin or different
+    CNI is required. In this section, we use the `eksctl` with the following configuration
+    file, `myipv4cluster.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: We noticed some challenges with getting this solution working with IPv6 clusters
+    and the newer Tigera Operator, so care should be taken when using either.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can then run the following `eksctl` command to create and deploy the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the cluster is active, add the cluster to your local admin machine if
+    needed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then add `calico-operator` to the cluster using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then configure the Calico plugin using `kubectl` to deploy the `calico-install.yaml`
+    configuration file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can verify that the plugin is installed using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have all the prerequisites to support network policies, let’s now deploy
+    two simple deployments using the `simple-deployments.yaml` manifest. This section
+    of the file will create the two namespaces:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following code section will create the deployment, `deploy1`, in the `deploy1`
+    namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next code section will create the second deployment, `deploy2`, in the
+    `deploy2` namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the deployment completes, make a note of the IP address of the Pod in
+    the `deploy1` namespace using the following command (in the example, it is `192.168.42.16`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can now shell into the Pod in the `deploy2` namespace using the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you run the following command in the shell, it will succeed (change the
+    IP address to the one for the Pod in the `deploy1` namespace):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the ping has finished, we can deploy the `deny-all.yaml` network policy,
+    which denies all outbound traffic (egress) of the `deploy2` namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you run the following command in the `deploy2` Pod namespace, it will *fail*
+    due to the network policy:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: We’ve now seen how to extend EKS using the Calico policy engine to support network
+    policies. In the next section, let’s look at how we can make more changes to the
+    CNI and even replace it completely.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choosing and using different CNIs in EKS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We have seen how AWS CNI integrates with the VPC to offer **IP address management**
+    (**IPAM**) services and the creation and management of the Pod network interface.
+    The following are some of the reasons why you might want to replace the default
+    AWS VPC CNI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to have multiple Pod interfaces
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you want to use an overlay network for encryption
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you want to use network acceleration, such as DPDK or eBPF
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As the EKS control plane is managed by AWS, there are a limited number of CNIs
+    supported today; please refer to [https://docs.aws.amazon.com/eks/latest/userguide/alternate-cni-plugins.html](https://docs.aws.amazon.com/eks/latest/userguide/alternate-cni-plugins.html)
+    for the most up-to-date list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The most important decision you need to make is whether you can extend the
+    existing VPC CNI as we did with Calico but continue to use the VPC CNI to manage
+    IP addresses and Pod interfaces. This is referred to as CNI plugin chaining, where
+    a primary CNI is enhanced with additional capabilities. Therefore, if we look
+    at the default CNI configuration file on an `/etc/cni/net.d/10-aws.conflist` EC2
+    host, we can see three plugins are enabled by default:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Kubernetes will call the `aws-cni` plugin first as it’s listed first when it
+    wants to add or remove a Pod network interface. It will then call the next plugin
+    in the chain; in the default case, this is `egress-v4-cni` (which is the IPv4
+    host-local allocator discussed in the *Using IPv6 in your EKS cluster* section),
+    passing it the command and the parameters passed to the first CNI plugin plus
+    the result from the last plugin and so on until the chain is complete. This allows
+    different functions to be configured by the CNI plugins, so in the default case
+    in EKS, the first plugin configures the Pod interface and provides a VPC routable
+    IP address. The second is used to do the IPv6-to-IPv4 conversion or source NAT.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s look at how we can use Multus, one of the supported EKS CNIs, to have
+    multiple Pod network interfaces without losing VPC connectivity. In this case,
+    Multus will act as a *meta plugin* and call other CNIs to do the Pod networking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is very useful as we don’t have to replace the standard VPC-CNI, so IP
+    addressing and routing is set up in the VPC using the VPC API by the AWS CNI.
+    We can use Multus to create a second Pod interface that could be used as a management
+    interface or to exchange heartbeat information if the Pods want to act as a cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring multiple network interfaces for Pods
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'As you can see from the following diagram, we normally attach other ENIs to
+    the worker nodes to be managed by Multus, whereas the primary (master) EC2 interface
+    is always managed by the VPC CNI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.7 – Multus CNI integration with EKS](img/B18129_09_07.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.7 – Multus CNI integration with EKS
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first thing we should do is install Multus on the cluster we used for the
+    network policies using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will create a `kube-multus-ds` DaemonSet that runs across your worker
+    nodes in this case, `2`. This can be viewed using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we look in the host’s `/etc/cni/net.d/` CNI configuration directory, we see
+    there is a new `00-multus.conf` configuration file. This file will be used first
+    by Kubernetes as it starts with a lower numeric value (`00`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Looking in more detail at the new CNI configuration file, we can see Multus
+    is now the primary CNI (defined by the `type` keyword). It also used the `delegates`
+    keyword to call other CNIs; in this case, just the AWS VPC CNI, which behaves
+    as it did before as the plugin list is the same. The following output shows a
+    truncated view of the new configuration file that, with the exception of the initial
+    block, is the same as the default AWS VPC CNI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you remember, when we used `eksctl` to create our cluster, it also created
+    a VPC and some private subnets, examples are shown next. We will use these to
+    host the Multus-managed ENIs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.8 – Private subnets created by eksctl](img/B18129_09_08.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.8 – Private subnets created by eksctl
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There is some network *plumbing* we need to do before Multus works properly
+    after we have enabled it in the cluster. We will need to do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create some ENIs for Multus to use, tagging them so EKS ignores them
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Attach them to our worker nodes and sort out the IP address allocation and routing
+    so the VPC can route traffic to and from the Pod’s secondary interface
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating the Multus ENIs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The first thing we need to do is create ENIs in the various private subnets.
+    The CloudFormation script shown next provides an example of how to do it programmatically,
+    but you can do it other ways. You should pay special attention to the tags; we
+    explicitly state the cluster and zone (availability) that the interface is connected
+    to and the fact it should *not be managed* by the EKS control plane. We also create
+    a security group, as this is a mandatory parameter for an ENI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the following section, we create the first ENI in the first subnet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the next section, we create the second ENI in the second subnet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the final section, we create the last ENI in the third subnet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Successfully deploying this script should result in three new interfaces being
+    created; an example is shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 9.9 – New ENIs for Multus](img/B18129_09_09.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.9 – New ENIs for Multus
+  prefs: []
+  type: TYPE_NORMAL
+- en: Attaching the ENIs to your worker nodes and configuring VPC routing
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: You will now need to attach the interfaces to the worker nodes that your EC2
+    instances are using. You can do this through the console by selecting the worker
+    node and selecting **Actions** | **Networking** | **Attach network interface**,
+    or you can attach them automatically (more on this later).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As we have only created one interface by AZ, you will only see the interface
+    that corresponds to the AZ the instance is in. This will create a new Ethernet
+    interface on your worker nodes with an address assigned from the private subnets.
+    You can review the configuration by connecting to the host and running the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will output something similar to the block shown next, where we can see
+    a second ENI (`eth1` in this example), but depending on how many interfaces are
+    already allocated to the worker node, the interface number may vary:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As the interface name could vary per worker node, we need to normalize them
+    so we can rename them using the `ip link` command. Again this can be done per
+    host using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This may seem like a lot of work so far, but we still have to solve the major
+    issue of how we route traffic to and from this secondary interface. Multus uses
+    `NetworkAttachmentDefinition` to define the network used by the secondary interface:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`NetworkAttachmentDefinition` is referenced in the Pod or Deployment; an example
+    is shown next. The Pod will have a second interface attached by Multus with an
+    IP address allocated between `192.168.96.20` and `192.168.96.40`, as defined in
+    the `config` section of the `NetworkAttachmentDefinition` file, shown previously.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The range used here is just a subset of the subnet CIDR that will be used by
+    Multus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will use the `nodeSelector` tag to allocate an IP address based on the AZ
+    defined in `NetworkAttachmentDefinition`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you run the following command, you can see the Pod is hosted on the worker
+    node that is hosted in the `eu-central-1a` AZ:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we shell into the Pod using the following commands, you can see the Pod
+    has two interfaces:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now to the meat of the problem! A VPC is a Layer 3 networking construct, everything
+    needs an IP address to communicate, and the VPC maintains routes to all IP addresses/ranges
+    in route tables. The VPC also maintains MAC address mapping to map IP addresses
+    to the right ENI to make sure traffic keys to the right interfaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This all works as the IP addresses are requested from the VPC. But in the case
+    of Multus, it is assigning the IP address, and as it is creating an ipvlan-based
+    interface, the MAC address is actually the one assigned to the Multus interface
+    (`eth2` in `NetworkAttachmentDefinition`). So, the VPC doesn’t know that the IP
+    addresses have been allocated or which ENI it needs to map them to. You need to
+    associate the IP address assigned to the Pod with the Multus ENI using the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There are a few ways you can automate some of this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The AWS-managed repository, [https://github.com/aws-samples/eks-automated-ipmgmt-multus-pods](https://github.com/aws-samples/eks-automated-ipmgmt-multus-pods),
+    suggests using either an `init` container or a sidecar to make calls to the `AssignPrivateIpAddresses`
+    EC2 API (or the equivalent IPv6 API call)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There’s a great blog by Joe Alford, [https://joealford.medium.com/deploying-multus-into-amazons-eks-42269146f421](https://joealford.medium.com/deploying-multus-into-amazons-eks-42269146f421),
+    that looks to address some of the shortcomings of the AWS scripts, which we recommend
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Roll your own solution using tools such as AWS Lambda and auto-scaling events
+    to create, attach interfaces, and configure prefixes that can be used by a deployment
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying these solutions is outside the scope of this book, but hopefully,
+    you can see that the VPC CNI is the simplest way to get native AWS networking
+    in your cluster, both for IPv4 and IPv6.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A different CNI may still be required if you want to do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use an overlay network based on IPsec, VXLAN, or IP in IP
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Support enhanced networking use cases such as source IP address preservation,
+    direct server return, and low latency networking using eBPF
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Support for Windows **Host Networking** **Services** (**HNS**)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: BGP Integration
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: One of the major reasons for using another CNI, VPC address exhaustion, is still
+    a use case, but prefix addressing, discussed in [*Chapter 7*](B18129_07.xhtml#_idTextAnchor107),
+    *Networking in EKS*, solves this issue as long as you can allocate prefixes to
+    interfaces. If you truly don’t have VPC addresses, then this still could be a
+    reason to use another CNI.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we looked at how you can extend and replace the VPC CNI. We’ll
+    now revisit the key learning points from this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We started by describing how IPv6 can be configured in a new cluster to provide
+    almost limitless IP addresses that don’t require NATing. We also discussed that
+    IPv6 does have limits in terms of what it can communicate with and how techniques
+    such as the host-local plugin, DNS64, and NAT64 can be used to provide IPv6 to
+    IPv4 translation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We then looked at how the Calico policy engine can be used to enhance the capabilities
+    of EKS by providing IPv4 L3/L4 network policies (just like a traditional firewall)
+    that can be used to limit access between Pods and external IP addresses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we looked at how a CNI works with plugins and chaining and using Multus
+    as an example, how the AWS VPC CNI can be replaced and the advantages that brings,
+    but also the complexity it can add. We also briefly discussed that there are some
+    valid use cases where a different CNI will be required but that the one that used
+    to be the main driver, VPC IP exhaustion, can now be solved using prefix addresses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will look at the overall process of upgrading your cluster
+    and build on some of the concepts discussed in the previous chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Configuring Multus CNI: [https://aws.amazon.com/blogs/containers/amazon-eks-now-supports-multus-cni/](https://aws.amazon.com/blogs/containers/amazon-eks-now-supports-multus-cni/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CNI Chaining: [https://karampok.me/posts/chained-plugins-cni/](https://karampok.me/posts/chained-plugins-cni/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'IPv6 on AWS: [https://aws.amazon.com/vpc/ipv6/](https://aws.amazon.com/vpc/ipv6/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

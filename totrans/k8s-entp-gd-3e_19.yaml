@@ -1,0 +1,1682 @@
+- en: '19'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Building a Developer Portal
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One of the more popular concepts in recent years of DevOps and automation is
+    to provide an **Internal Developer Portal** (**IDP**). The purpose of this portal
+    is to provide a single point of service for your developers and infrastructure
+    team to be able to access architectural services without having to send an email
+    to “your guy” in IT. This is often the promise of cloud-based services, though
+    it requires considerable custom development to achieve. It also provides the foundation
+    for creating the guardrails needed to develop a manageable architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter is going to combine the theory we walked through in *Chapter 18*,
+    *Provisioning a Multitenant Platform*, along with most of the concepts and technologies
+    we’ve learned throughout this book to create an IDP. Once you’ve completed this
+    chapter, you’ll have an idea of how to build an IDP for your infrastructure, as
+    well as context for how the various technologies we have built and integrated
+    into Kubernetes through this book should come together.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This chapter will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying our IDP
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Onboarding a tenant
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying an application
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Expanding our platform
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Finally, before we dive into the chapter, we’d like to say *thank you!* This
+    book has been quite the journey for us. It’s amazing to see how much has changed
+    in our industry since we wrote the second edition, and how far we have come. Thank
+    you for joining us on our quest to build out enterprise Kubernetes, and explore
+    the different technologies and how the enterprise world impacts how we create
+    that technology.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical Requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This chapter has more significant technology requirements than the previous
+    chapters. You’ll need three Kubernetes clusters with the following requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Compute**: 16 GB memory and 8 cores. You’re going to be running GitLab, Vault,
+    OpenUnison, Argo CD, etc. It’s going to require some real horsepower.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Access**: Make sure you can update and access the local nodes. You’ll need
+    this to add our CA certificate to your nodes so that it can be trusted when pulling
+    container images.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Networking**:You won’t need public IPs, but you will need to be able to access
+    all three clusters from your workstation. It will make the implementation easier
+    if you use load balancers for each, but it’s certainly not a requirement.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Pulumi and Python 3**: We’re going to be using Pulumi to deploy our platform,
+    running on Python 3\. The workstation you use will need to be able to run these
+    tools. We built and wrote this chapter on macOS, using Homebrew ([https://brew.sh/](https://brew.sh/))
+    for Python.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Before we start building, we’re going to spend some time on the technical requirements
+    for this chapter and why they are requirements, relating them back to common enterprise
+    scenarios. First, let’s look at our compute requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fulfilling Compute Requirements
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Throughout the rest of this book, our goal was to run all the labs on a single
+    VM. We did this for a few reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Cost**:We know how quickly costs can climb when learning technology and we
+    wanted to make sure we weren’t asking you to spend more money for this.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Simplicity**: Kubernetes is hard enough without getting into the details
+    of how compute and networking are set up in enterprise environments! We also didn’t
+    want to have to worry about storage, which brings several complications to the
+    table.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Ease of Implementation and Support**: We wanted to make sure we could help
+    with the labs, so limiting how you deployed them made that much easier for us.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'With that all said, this chapter is different. You could use three VMs running
+    KinD, but that would probably start causing more problems than it would be worth.
+    There are two primary options we’re going to cover: using the cloud and building
+    a home lab.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Cloud-Managed Kubernetes
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: It’s very popular to use a managed Kubernetes when there’s nothing to deploy.
+    Every major cloud has its own, and so do most smaller clouds. These are great
+    if you are OK with spending some money and are more focused on Kubernetes than
+    the infrastructure that runs it. Make sure, though, that when you set up your
+    clusters, you are able to directly access your worker nodes via SSH or some other
+    means.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many cloud-based managed clusters make it the default that you can’t access
+    your nodes, which, from a security standpoint, is great! You can’t breach something
+    you can’t access! The downside is that you can’t customize it either. We’ll cover
+    this in the next section, but most enterprises require customized nodes at some
+    level, even when using cloud-managed Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, make sure you’re able to handle the costs. A setup with three clusters
+    is not likely to stay within whatever free credits you get for long. You’ll want
+    to make sure you can afford to spend the money. That said, if throwing money at
+    a cloud isn’t for you, then maybe a home lab will be your best bet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building a Home Lab
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The cloud can get really expensive, and that money is just thrown away. You
+    don’t have anything to show for it! The alternative is building a home lab to
+    run your clusters. As of the time of writing this book, it’s never been easier
+    to run enterprise-grade infrastructure in your own home or apartment. It doesn’t
+    require a massive investment and can be far cheaper than a single cloud-managed
+    cluster for just a month or two.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can start very simply with a single refurbished or even home-built server
+    for under $500 on eBay and other auction sites. Once you have a server, install
+    Linux and a hypervisor and you’re ready to start. This, of course, requires more
+    time being spent on underlying infrastructure than we’ve done so far, but can
+    be very rewarding both from a personal level and an economic one. If you’re going
+    through this book in the hopes of breaking into the enterprise Kubernetes world,
+    knowing about how your infrastructure works can be a real differentiator among
+    other candidates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you’re in the position to spend a few more dollars on your home lab, there
+    are projects that make it easier to build out your lab. Two such projects are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Metal as a Service (MaaS)**: This project ([https://maas.io/](https://maas.io/))
+    from Canonical makes it easier to quickly onboard infrastructure to a lab by providing
+    resource management, DNS, network boot, etc. Canonical is the same company that
+    created the Ubuntu Linux distribution. While it started as a project for onboarding
+    hardware quickly, it also supports KVM via the `virsh` protocol, which allows
+    for the management of VMs via SSH. This is what I run my home lab on right now
+    on a few home-built PCs running Ubuntu.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Container Craft Kargo**: A relatively new platform ([https://github.com/ContainerCraft/Kargo](https://github.com/ContainerCraft/Kargo))
+    that combines several “enterprise” quality systems to build a home lab built on
+    Kubernetes. The great thing about this project is it starts with Talos, a combination
+    operating system and Kubernetes distribution, and uses KubeVirt to leverage the
+    Kubernetes API for deploying VMs. It’s a great project that I’ve started working
+    on and using and will be moving my home lab, too.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Having worked through what to build a home lab on and where you can deploy your
+    IDP, we’ll next explore why you’ll need to have direct access to your nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Customizing Nodes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When working with a managed Kubernetes such as Amazon or Azure, the nodes are
+    provided for you. There’s also an option to disable external access. This is great
+    from a security standpoint because you don’t need to secure what you can’t access!
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we’ve said before, there’s a difference between security and compliance.
+    While a fully managed node may be more secure, your compliance rules may say that
+    you, as the cluster manager, must have processes in place to manage node access.
+    Simply removing all access may not cover this compliance issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There’s a functional drawback to this approach though; you’re now not able
+    to customize the nodes. This drawback can manifest in several ways:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Custom Certificates**: We’ve made the point multiple times throughout this
+    book that enterprises often maintain internal **Certificate Authorities** (**CAs**).
+    We’re mirroring this process by using our own internal CA for issuing certificates
+    used by Ingresses and other components. This includes our Harbor instance, which
+    means for our cluster to be able to pull images, the node it runs on must trust
+    our CA. For this work, the node must be configured to trust our CA. There’s no
+    API for Kubernetes to trust a private CA, unfortunately.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Drivers**: While not as important with cloud-managed Kubernetes, it’s not
+    unusual for enterprises to use specific hardware stacks that are certified to
+    work with specific hardware. For instance, your **Storage Area Network** (**SAN**)
+    may have specific kernel drivers. If you don’t have access to your nodes, you
+    can’t install these drivers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Supported Operating Systems**: Many enterprises, especially those in highly
+    regulated industries, want to make sure they’re running a supported operating
+    system and configuration. For instance, if you’re running Azure Kubernetes but
+    your enterprise has standardized on **Red Hat Enterprise Linux** (**RHEL**), you’ll
+    need to create a custom node image.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While requiring access to your nodes complicates your deployment in multiple
+    ways, such as requiring a way to manage and secure that access, it’s often a necessary
+    evil to the deployment and management of Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While you may be most familiar with building nodes on Ubuntu, RHEL, or RHEL
+    clones, Talos Linux from Sidero ([https://www.talos.dev/](https://www.talos.dev/))
+    provides a novel approach by stripping down the OS to the bare minimum needed
+    to start Kubernetes. This means that all interaction with your OS happens via
+    an API, either from Kubernetes or Talos. This makes for some very interesting
+    management because you no longer need to worry about patching the OS; the upgrades
+    are all done via APIs. No more securing SSH, but you do still need to lock down
+    the API. Not having access to the OS means you can’t just deploy a driver either.
+    The Kargo project we mentioned earlier uses Talos for its OS. When I wanted to
+    integrate my Synology **Network Attached Storage** (**NAS**), I had to create
+    a `DaemonSet` for the task to make it work with iSCSI ([https://github.com/ContainerCraft/Kargo/blob/main/ISCSI.md](https://github.com/ContainerCraft/Kargo/tree/main)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we’re using our own internal CA, your nodes will need to be customizable
+    at least to the point of being able to include custom certificates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You may think that an easy way to avoid this situation is to use Let’s Encrypt
+    ([https://letsencrypt.org/](https://letsencrypt.org/)) to generate certificates,
+    avoiding the need for custom certificate authorities. The issue with this approach
+    is that it avoids the common need to use custom certificates in enterprises, whereas
+    Let’s Encrypt doesn’t provide a standard way of issuing internal certificates.
+    Its automatic issuance APIs are built on public validation techniques such as
+    having publicly available URLs or via DNS. Neither is acceptable to most enterprises
+    so Let’s Encrypt is generally not allowed for internal systems. Since Let’s Encrypt
+    isn’t generally used for enterprises’ internal systems, we won’t use it here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know why we need access to our nodes, next, we’ll talk about network
+    management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accessing Services on Your Nodes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Throughout this book, we’ve assumed everything runs on a single VM. Even when
+    we ran multiple nodes in KinD, we did tricks with port forwarding to get access
+    to containers running on those nodes. Since these clusters are larger, you may
+    need a different approach. We covered MetalLB in *Chapter 4*, *Services, Load
+    Balancing, and Network Policies*, as a load balancer, which is potentially a great
+    option for multiple node clusters. You can also deploy your `Ingress` as a `DaemonSet`,
+    with the pods using host ports to listen across all your nodes, then use DNS to
+    resolve all your nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Regardless of which approach you use, we’re going to assume that all services
+    will be accessed via your `Ingress` controller. This includes text or binary protocols:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Control Plane:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '80/443: http/https'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '22: ssh'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '3306: MySQL'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Dev Node:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '80/443: http/https'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '3306: MySQL'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Production Node:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '80/443: http/https'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '3306: MySQL'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When we begin our rollout, we’ll see that NGINX can be used to forward both
+    web protocols and binary protocols, allowing you to use one `LoadBalancer` per
+    cluster. It’s important to note that your control plane cluster will need to be
+    able to access HTTPS and MySQL on both your dev and production nodes. Also note
+    that port `22` will be needed by our control plane cluster, so if you plan on
+    supporting SSH directly for your nodes, you’ll need to configure it for another
+    port if you’re not using an external `LoadBalancer` like MetalLB.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We know how we’re going to run our clusters, how we’ll customize the worker
+    nodes, and how we’ll access their services. Our last step is to get Pulumi ready.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying Pulumi
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the last chapter, we introduced the concept of **Infrastructure as Code**
+    (**IaC**) and said that we would be using Pulumi’s IaC tooling for deploying our
+    IDP. In order to use Pulumi, you’ll need a workstation to host and run the client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we dive too deeply into how to deploy Pulumi, it’s important to understand
+    some key concepts relating to IaC that are often glossed over. All IaC tools are
+    made up of at least three components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Controller**: The controller is generally a workstation or service that runs
+    the IaC tooling. For our book, we’re assuming a workstation will run our Pulumi
+    programs. For larger-scale or production implementations, it’s generally better
+    to deploy a controller service that runs the IaC tooling on your behalf. With
+    Pulumi, this could be their own SaaS service or a Kubernetes operator.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Tooling**: This is the core component of IaC. It’s the part that you create
+    for building your infrastructure and is specific to each IaC tool.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Remote APIs**: Each IaC tool interacts with remote systems via an API. The
+    original IaC tools interacted with Linux servers via SSH, and then with clouds
+    via their own APIs. Today, IaC tools interact with individual systems using their
+    own providers that wrap the target’s APIs. One of the more difficult aspects of
+    this is how to secure these APIs. We’ve spent much of this book stressing the
+    importance of short-lived tokens, which can also be applied to our IaC implementation.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In addition to the above three components, many IaC tools include some kind
+    of state management file. In the previous chapter, we described how IaC tools,
+    like Pulumi and Terraform, generate an expected state based on your IaC tooling
+    that then is applied to the downstream systems. This state will contain all the
+    same privileged information as your infrastructure and should be treated as a
+    “secret.” For instance, if you were to provision a password for your database
+    via IaC, your state file has a copy of that password.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For our deployment, we’re going to use a local state file. Pulumi offers options
+    for storing state on remote services like S3 buckets or using its own cloud offering.
+    While any of these options are better for management than a local file, we didn’t
+    want you to have to sign up for anything to read this book and run the exercises,
+    so we’re using a local file for all Pulumi state management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’ve been observant of IaC industry news, you may have seen that HashiCorp,
+    the company that created Terraform (and Vault), changed the open source license
+    to a “Business Source License” in the summer of 2023\. This was to combat the
+    large number of SaaS providers that were offering “Terraform as a Service” that
+    weren’t paying anything back to HashiCorp. This change in license led to many
+    of these SaaS providers creating OpenTofu, a fork of Terraform under the original
+    Apache 2 license. We’re not making any judgments or recommendations on the situation,
+    only to point out that managed services around state and controllers are where
+    IaC companies make most of their revenue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since Pulumi is a commercial, albeit open source, package, you’ll want to follow
+    their instructions for getting the command-line Pulumi tools installed onto the
+    workstation you want to run as your controller: [https://www.pulumi.com/docs/install/](https://www.pulumi.com/docs/install/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, you’ll need the chapter’s Git repository from GitHub. You can access
+    the code for this chapter at the following GitHub repository: [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter19](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter19).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve covered the environment and requirements for our IDP build, we
+    can dive into the deployment of our IDP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying our IDP
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With our technical requirements out of the way, let’s deploy our portal! First
+    off, I assume that you have three running clusters. If you’ve got a `LoadBalancer`
+    solution for each, then the next step is to deploy NGINX. We didn’t include NGINX
+    in the Pulumi tooling because, depending on how your clusters are deployed, this
+    can change how you deploy NGINX. For example, I didn’t use typical clusters with
+    `LoadBalancer`; I just used single-node clusters and patched NGINX with host ports
+    for `80` and `443`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’re also assuming you have some kind of native storage attached and have set
+    a default `StorageClass`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We’re going to run NGINX assuming that it will be the Ingress for HTTP(S),
+    MySQL, and SSH. This is pretty easy to do with the Helm chart for NGINX. On all
+    three clusters, run the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will deploy NGINX as an Ingress controller and launch a `LoadBalancer`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you’re using a single-node cluster, now would be the time to patch your
+    `Deployment` with something like: `kubectl patch deployments ingress-nginx-controller
+    -n ingress-nginx -p ''{"spec":{"template":{"spec":{"containers":[{"name":"controller","ports":[{"containerPort":80,"hostPort":80,"protocol":"TCP"},{"containerPort":443,"hostPort":443,"protocol":"TCP"},{"containerPort":22,"hostPort":22,"protocol":"TCP"},{"containerPort":3306,"hostPort":3306,"protocol":"TCP"}]}]}}}}`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will force the ports through the NGINX deployed on your cluster. The command
+    is in `chapter19/scripts/patch-nginx.txt`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once NGINX is deployed, you’ll need DNS wildcards for all three of your `LoadBalancer`
+    IPs. It’s tempting to just use IP addresses if you don’t have access to DNS, but
+    don’t! IP addresses can be handled in odd ways with certificate management. If
+    you don’t have a domain name you can use, then use `nip.io` the way we have throughout
+    this book. I’m using three domains, which I’ll use in all examples:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Control Plane –** *`.idp-cp.tremolo.dev`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Development Cluster –** *`.idp-dev.tremolo.dev`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Production Cluster –** *`.idp-prod.tremolo.dev`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With our environment now ready for deployment, let’s begin by creating a Pulumi
+    virtual environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting Up Pulumi
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Before we can begin running our Pulumi program to start our rollout, we first
+    need to create a Python virtual environment. Python dynamically links to libraries
+    in ways that can create problems and conflict with other systems built on Python.
+    To avoid these conflicts, which back in our Windows programming days was referred
+    to as “DLL Hell,” you need to create a virtual environment that will be isolated
+    for just your Pulumi program. In a new directory, run the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This creates a virtual environment that you can now use with Pulumi without
+    interfering with other systems. Next, we’ll need to “source” this environment
+    so that our execution uses it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last Python step is to download your dependencies, assuming you’ve checked
+    out the latest Git repository for the book:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `pip3` command reads all the packages named in `requirements.txt` and installs
+    them into our virtual environment. At this point, Python is ready, and we need
+    to initialize our stack.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first step to getting Pulumi ready is to “log in” to store your state file.
+    There are multiple options, from using Pulumi’s cloud to S3 buckets to your localhost.
+    You can see the various options on its website: [https://www.pulumi.com/docs/concepts/state/](https://www.pulumi.com/docs/concepts/state/).
+    We’re going to use our local directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This creates a directory in your current directory called `./pulumi` that will
+    contain your backend. Next, we need to initialize a Pulumi “stack” to track the
+    state for your deployment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, edit `/path/to/venv/chapter19/pulumi/Pulumi.yaml`, changing `runtime.options.virtualenv`
+    to point to `/path/to/venv`. Finally, we can initialize our stack:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: You’ll be asked to provide a password to encrypt your secrets. Make sure to
+    write it down someplace secure! You’ll now have a file called `/path/to/venv/chapter19/pulumi/Pulumi.bookv3-platform.yaml`
+    that is used to track your state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our environment is now prepped and ready to go! Next, we’ll configure our variables
+    and start our rollout.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Initial Deployment
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Eventual Consistency is a Lie – Ancient Cloud-Native Sith Proverb
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In the Kubernetes world, we often assume the idea of “eventual consistency,”
+    where we create a control loop that waits for our expected conditions to become
+    reality. This is generally an overly simplistic outlook on systems, especially
+    when working with enterprise systems. All this is to say that even though almost
+    all of our deployment is managed in a single Pulumi program, it will need to be
+    run multiple times to get the environment fully deployed. As we walk through each
+    step, we’ll explain why it needed to be run on its own.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With that out of the way, we need to configure our variables. We wanted to
+    minimize the amount of configuration, so you’ll need to set the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Option** | **Description** | **Example** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `openunison.cp.dns_suffix` | The DNS domain name of the control plane cluster
+    | `idp-cp.tremolo.dev` |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `kube.cp.context` | The Kubernetes context for the control plane in the control
+    plane’s kubectl configuration | `kubernetes-admin@kubernetes` |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `harbor:url` | The URL for Harbor after deployment | `https://harbor.idp-cp.tremolo.dev`
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `kube.cp.path` | The path to the kubectl configuration file for your control
+    plane cluster | `/path/to/idp-cp` |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `harbor:username` | The admin username for Harbor | `Always admin` |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `openunison.dev.dns_suffix` | The DNS suffix for the development cluster
+    | `idp-dev.tremolo.dev` |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `openunison.prod.dns_suffix` | The DNS suffix for the production cluster
+    | `idp-prod.tremolo.dev` |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Table 19.1: Configuration options in Kubernetes clusters'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To make it easier, you can customize `chapter19/scripts/pulumi-initialize.sh`
+    and run it. You can set each one of these options manually by running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'where `option` is the option you want to set and value is its `value`. Finally,
+    we can run the deployment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: You’ll be asked to provide the password to decrypt your secrets. Once done,
+    this initial deployment will take a while. Depending on the speed of your network
+    connection and how powerful your control plane cluster is, it could take 10 to
+    15 minutes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once everything is deployed, you’ll see a message like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you look at the output of the command, you’ll see all the resources that
+    were created! This lines up with the design we put together in the previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’re not going to walk through all of the code. There are over 45,000 lines!
+    We’ll cover the highlights after everything is deployed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'At this point, we have some gaps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Vault**:Vault is deployed but hasn’t been configured. We can’t configure
+    Vault until we’ve unsealed it.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**GitLab**: The baseline of GitLab has been deployed, but we don’t have a way
+    to run workflows. We also need to generate an access token so OpenUnison can interact
+    with it.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Harbor**: Harbor is running, but we can’t complete SSO integration without
+    having the Harbor admin password. We’ll also need this password for integration
+    with OpenUnison.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**OpenUnison**: The baseline OpenUnison Namespace as a Service portal has been
+    deployed, but we haven’t deployed any of the additional configurations needed
+    to power our IDP.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Next, let’s get Vault unsealed and ready for deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unsealing Vault
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Remember how in *Chapter 8*, *Managing Secrets*, we had to “unseal” Vault by
+    extracting randomly generated keys and running a script in the pod to unlock the
+    running Vault. There’s no easy way to do this in Pulumi, so we need to use a Bash
+    script. We also want to be able to store the unsealed keys in a safe space because
+    once you’ve retrieved them, you can’t get them a second time. Thankfully, Pulumi’s
+    secret management makes it easy to store the keys in the same place as the rest
+    of our configuration. First, let’s unseal our Vault:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It’s important to set either `PULUMI_CONFIG_PASSPHRASE` or `PULUMI_CONFIG_PASSPHRASE_FILE`
+    before running `unseal.sh`. Once done, you’ll see that there are two more secrets
+    if you run `pulumi config`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now your configuration is stored in your Pulumi configuration. If you’re using
+    a centralized configuration, such as with Pulumi Cloud or S3 buckets, this would
+    probably be much more useful! If you need to restart your pod for whatever reason,
+    you can unseal it again by running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: With Vault ready to be configured, next, we’ll get Harbor’s configuration ready.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Completing the Harbor Configuration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Configuring Harbor is actually very simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This script does two things:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Gets the randomly generated password from the `harbor-admin` secret and stores
+    it in the Pulumi configuration
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sets a flag so our Pulumi program knows to finish the SSO configuration
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We had to go through this step because the Harbor provider uses configuration
+    options specific to the `harbor` namespace. This is different from our other configuration
+    options. Let’s consider code that looks like this in your Pulumi program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Your code isn’t saying “Get the configuration called `someconfig`"; it’s saying
+    “Get the configuration called `someconfig` in my stack’s namespace.” The separation
+    between namespaces means that our code can’t get configuration information from
+    another namespace. From a practical standpoint, this means we’re defining the
+    same information multiple times between `harbor:url` and `harbor:password`, as
+    well as `harbor:username`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This approach seems inefficient and error-prone in our scenario, but at scale,
+    it makes for a great way to secure separate silos. In many deployments, the people
+    who own Harbor aren’t the same people who might own the automation. By not allowing
+    our code to have access to the `harbor` namespace, but being able to call libraries
+    that depend on it, we’re able to use this secret data without ever actually knowing
+    it! Of course, since we’re using a single secret set that we have access to, this
+    security benefit is negated. However, if you’re using a centrally managed service
+    for your Pulumi controller, it allows developers to write code that never knows
+    the secret data it relies upon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that Harbor is ready for its final configuration, we need to run some manual
+    steps in GitLab. We’ll do that in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Completing the GitLab Configuration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: There are two key components we’re missing from GitLab. First, we need to generate
+    a token for OpenUnison to use when automating GitLab. The other is we need to
+    manually configure a runner. Later on, we’re going to use GitLab’s integrated
+    workflows to build a container and push it into Harbor. GitLab does this by launching
+    a pod, which requires some automation. The service that launches these pods needs
+    to be registered with GitLab. This makes sense because you might want to run services
+    on a local Kubernetes cluster or a remote cloud. To handle this scenario, we need
+    to tell GitLab to generate a runner and give us a registration token. First, we’ll
+    generate the runner registration token.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Generating a GitLab Runner
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The first step is to log in to GitLab. We haven’t configured SSO yet, so you’ll
+    need to log in with the root credentials. These are stored as a Secret in the
+    `GitLab` namespace that ends with `gitlab-initial-root-password`. Once you have
+    the password, log in to GitLab with the username `root`. The URL will be `https://gitlab.controlplane.dns.suffix`,
+    where `controlplane.dns.suffix` is the DNS suffix for your control plane cluster.
+    For me, the URL is `https://gitlab.idp-cp.tremolo.dev/`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once logged in, click on **Admin Area** in the lower left-hand corner:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, website  Description automatically generated](img/B21165_19_01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.1: GitLab main screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, expand **CI/CD** and click on **Runners**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application, Teams  Description automatically generated](img/B21165_19_02.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.2: GitLab Admin Area'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the screen loads, click on **New instance runner**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_03.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.3: GitLab Runners'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When the **New instance runner** screen loads, check **Run untagged jobs**
+    since we’re only running jobs on our own cluster. You can use these tags to manage
+    running jobs across multiple platforms, similar to how you can use node tags to
+    manage where to run workloads in Kubernetes. Next, click **Create runner**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, text, application, email  Description automatically
+    generated](img/B21165_19_04.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.4: GitLab new instance runner'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, you’ll have a token that we can configure in our Pulumi configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application, Teams  Description automatically generated](img/B21165_19_05.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.5: New runner token'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Copy this token and configure it in Pulumi:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we’ll configure a token for automating GitLab.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Generating a GitLab Personal Access Token
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In the previous section, we configured a runner. Next, we need a token so that
+    OpenUnison can automate provisioning into GitLab. Unfortunately, GitLab doesn’t
+    provide an alternative to tokens. You can make the token expire regularly, but
+    you’ll need to replace it. That said, while logged in to GitLab as root, click
+    on the colorful icon in the upper left-hand corner and click **Preferences**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, website  Description automatically generated](img/B21165_19_06.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.6: GitLab preferences'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the **Preferences** screen loads, click on **Access Tokens** and then
+    **Add new token**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, text, application, email  Description automatically
+    generated](img/B21165_19_07.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.7: GitLab access tokens'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When the new token screen loads, you need to give it a name and an expiration
+    and click on the **api** option to give it full access. Once that’s done, click
+    on the **Create personal access token** button at the bottom of the screen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_08.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.8: Create a new GitLab personal access token'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the token is generated, the last step is to copy it and then configure
+    it as a Pulumi configuration secret:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, text, application, email  Description automatically
+    generated](img/B21165_19_09.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.9: GitLab personal access token'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Copy the token and set it in the Pulumi configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We’ve now finished the extra steps needed to complete the control plane’s configuration.
+    Next, we’ll complete the control plane rollout in our Pulumi program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finishing the Control Plane Rollout
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The next step is to rerun our Pulumi program to complete the integrations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: This should take less time than the initial run but will still take a few minutes.
+    OpenUnison needs to be rolled out again with the new configuration options, which
+    will take the longest amount of time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the rollout is done, we have one more task to complete on our control
+    plane. We need to update NGINX to forward SSH on port `22` to the GitLab shell
+    `Service`. We can do this by getting the name of the shell `Service` in the `GitLab`
+    namespace and updating our control plane NGINX:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once NGINX is running again, you should be able to ssh into GitLab. At this
+    point, you can log in to OpenUnison by accessing `https://k8sou.idp-cp.tremolo.dev`
+    (replace `idp-cp.tremolo.dev` with your control plane suffix) and log in with
+    the username `mmosley` and the password `start123`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_10.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.10: OpenUnison Main Page'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We haven’t finished integrating our dev or production systems yet, but you should
+    login to Vault, GitLab, Harbor, ArgoCD, and the control plane Kubernetes using
+    SSO with OpenUnison. Since you’re the first person to log in, you are automatically
+    both the control plane cluster administrator and the top-level approver.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the control plane configured, the last step in Pulumi is to onboard the
+    development and production clusters, which we’ll cover next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating Development and Production
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So far, we’ve spent all our time on the control plane. There won’t be any user
+    workloads here, however. Our tenants will be on the development and production
+    clusters. For our automation plan to work, we’re going to need to integrate these
+    clusters into OpenUnison so that we’re using short-lived tokens for all automation
+    API calls. Thankfully, OpenUnison already has everything we need, and it’s been
+    integrated into the OpenUnison Helm charts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first step is to deploy NGINX to each cluster. We’re going to port-forward
+    port `3306` for MySQL as well so that OpenUnison on the control plane can talk
+    to MySQL on each cluster. While we could have used the control plane’s MySQL for
+    vClusters, we don’t want to be in a situation where a problem on the control plane
+    takes down either development or production. By running MySQL on each cluster,
+    an outage on one doesn’t stop the operations for another. Run the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once running, you’ll be able to update the configuration for Pulumi.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Option** | **Description** | **Example** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `kube.dev.path` | The path to the kubectl configuration file for your development
+    cluster | `/path/to/idp-dev` |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `kube.dev.context` | The Kubernetes context for the development cluster in
+    its kubectl configuration | `kubernetes-admin@kubernetes` |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `kube.prod.path` | The path to the kubectl configuration file for your production
+    cluster | `/path/to/idp-prod` |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `kube.prod.context` | The Kubernetes context for the prod cluster in its
+    kubectl configuration | `kubernetes-admin@kubernetes` |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Table 19.2: Configuration options for Kubernetes and paths in development and
+    production clusters'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once your configuration is added, we can finish our Pulumi rollout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will take a few minutes to run, but once we’re done, we’ll have a final
+    step in OpenUnison to finish the rollout. If all goes well, you should see something
+    like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: Congratulations, our infrastructure is deployed! Three clusters, a dozen systems,
+    all integrated! Next, we’ll use OpenUnison’s workflows to finish the last integration
+    steps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Bootstrapping GitOps with OpenUnison
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We’ve deployed several systems to support our GitOps workflows, and we’ve integrated
+    them via SSO so that users can log in, but we haven’t started the GitOps bootstrapping
+    process. What we mean by “bootstrapping” in this context is to set up some initial
+    repositories in GitLab, integrate them into Argo CD, and make it so they sync
+    to the control plane, development, and production clusters. This way, as we add
+    new tenants, we’ll do so by creating manifests in Git instead of writing directly
+    to the API servers of our clusters. We’ll still write to the API servers for ephemeral
+    objects, like `Jobs` we’ll be using to deploy vClusters and integrate them with
+    our control plane, but otherwise, we want to write everything into Git.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’re going to do this last step in OpenUnison instead of Pulumi. You may be
+    wondering why we would use OpenUnison for this part when we could have used Pulumi.
+    That was the original plan, but unfortunately, a known bug with Pulumi’s GitLab
+    provider kept us from being able to create groups in the GitLab Community Edition.
+    Since OpenUnison’s workflow engine has this capability already, and this is a
+    step that would only ever be run once, we decided to just do it in OpenUnison’s
+    workflow engine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With that said, log in to OpenUnison using the instructions from the last section.
+    Next, click on **Request Access** on the left-hand side, choose **Kubernetes Administration**,
+    and add the development and production clusters by adding **Kubernetes-prod Cluster
+    Administrator** and **Kubernetes-dev Cluster Administrator** to your cart:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_11.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.11: OpenUnison request access to Dev and Prod cluster administration'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once added to your cart, click on the new **Checkout** menu option on the left,
+    add a reason for the request, and click on **SUBMIT YOUR REQUESTS**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application, Teams  Description automatically generated](img/B21165_19_12.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.12: Submit access request for cluster administration'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you refresh your screen, you’ll now see you have two open requests. Act
+    on them just as you did in *Chapter 9*, *Building Multitenant Clusters with vClusters*,
+    and log out. When you log back in, you’ll have access to both the development
+    and production clusters as well as the control plane.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once you’re logged back in, go back to **Request Access**, click on **OpenUnison
+    Internal Management Workflows**, and add **Initialize OpenUnison** to your cart.
+    Check it out of your cart with a reason, just as before. This time, there won’t
+    be an approval step. It will take a few minutes, but once it is done, you can
+    log in to Argo CD and you’ll see three new projects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_13.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.13: Argo CD after the OpenUnison initialization'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The state is **Unknown** because we haven’t yet trusted the keys from GitLab’s
+    ssh service. Download the Argo CD command-line utility using your favorite method
+    and run the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will add the correct keys to Argo CD. After a few minutes, you’ll see that
+    our applications in Argo CD are syncing! Now is a good time to look around both
+    Argo CD and GitLab. You’ll see how the basic scaffolding of our GitOps infrastructure
+    will look. You can also look at the onboarding workflow in `chapter19/pulumi/src/helm/kube-enterprise-guide-openunison-idp/templates/workflows/initialization/init-openunison.yaml`.
+    I think the most important thing you’ll see is how we tie everything together
+    via identity. This is something that is too often overlooked in the DevOps world.
+    Especially in Argo CD, we create an `AppProject` that constrains which repositories
+    and clusters can be added. We then create a `Secret` for each cluster, but the
+    `Secret` doesn’t contain any secret data. Finally, we generate `ApplicationSets`
+    to generate the `Application` objects. We’ll follow this pattern again when we
+    deploy our tenants.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You now have a working multitenant IDP! It took about 30 pages of explanation,
+    probably a few hours of cluster design and setup, and several thousand lines of
+    automation, but you have it! Next, it’s time to deploy a tenant!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Onboarding a Tenant
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'So far, we’ve spent all our time setting up our infrastructure. We have a Git
+    repository, clusters for our control plane as well as development and production,
+    a GitOps controller, a secrets manager, and an SSO and automation system. Now
+    we can build out our first tenant! The good news is this part is pretty easy and
+    doesn’t require any command-line tools. Like how we onboarded a vCluster in *Chapter
+    9*, *Building Multitenant Clusters with vClusters*, we’re going to use OpenUnison
+    as our portal for requesting and approving the new tenant. If you’re already logged
+    in to OpenUnison, log out and log back in, but this time, with the username `jjackson`
+    and the password `start123`. You’ll notice you have much fewer badges on the main
+    page because you don’t have access to anything yet! We’ll fix that by creating
+    a new tenant. Click on the **New Kubernetes Namespace** badge:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_14.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.14: Log in to OpenUnison with jjackson'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once it’s open, use the name `myapp` with the reason `new application` and
+    then hit **SAVE**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application, Teams  Description automatically generated](img/B21165_19_15.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.15: New Project Screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once saved, log out and log back in, but this time, as `mmosley` with the password
+    `start123`. You’ll see there’s an open approval. Click on **Open Approvals**,
+    **ACT ON REQUEST**, provide a justification, and click **APPROVE REQUEST**. When
+    the button turns turquoise, click **CONFIRM APPROVAL**. This is going to take
+    a while. It’s not that the steps are very computationally expensive. The time
+    is mostly waiting for systems to sync. That’s because we’re not writing directly
+    to our cluster’s API servers but are instead creating manifests in our GitLab
+    deployment that are then synced into the clusters by Argo CD. We’re also deploying
+    multiple vClusters and OpenUnisons, which also takes time. If you want to watch
+    the progress, you can watch the logs in the `openunison-orchestra` pod on the
+    control plane. This can take 10 to 15 minutes to fully roll out. We don’t have
+    a working email server, so you’ll know when the workflow is done by logging in
+    to Argo CD and you’ll see two new applications: one for our development vCluster
+    and one for our production vCluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, text, application  Description automatically generated](img/B21165_19_16.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.16: Argo CD after the new tenant is deployed'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you click on the `myapp/k8s-myapp-prod` application, you’ll see we don’t
+    have much synchronized in:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, text, application, chat or text message  Description
+    automatically generated](img/B21165_19_17.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.17: Production tenant Argo CD application'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What we’ve created at this point is a `ServiceAccount` that can communicate
+    with Vault and an `ExternalSecret` that syncs the pull secret we generated for
+    Harbor into the default namespace. Next, we’ll want to look at our new tenant!
+    Make sure to log out of everything, or just open an incognito/private window in
+    a different browser and log in as `jjackson` again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_18.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.18: OpenUnison as jjackson after tenant deployment'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You’ll see that we now have badges for our cluster management apps. When you
+    log in to them, you’ll see that your view is limited. Argo CD only lets you interact
+    with the `Application` objects for your tenant. GitLab only lets you see the projects
+    associated with your tenant. Harbor only lets you see the images for your tenant,
+    and finally, Vault only lets you interact with the secrets for your tenant. If
+    you look in the `myapp-dev` and `myapp-prod` sections of the tree at the top of
+    the screen, you’ll see you now have tokens and a dashboard for your two vClusters
+    too. Isn’t identity amazing?
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, we’ve built out a tremendous amount of infrastructure and created a
+    tenant using a common identity, allowing each system’s own policy-based system
+    to determine how to draw boundaries. Next, we’ll deploy an application to our
+    tenant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying an Application
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We’ve built out quite a bit of infrastructure to support our multitenant platform
+    and now have a tenant to run our application in place. Let’s go ahead and deploy
+    our application!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we log in to GitLab as `jjackson`, we’ll see there are three projects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**myapp-prod/myapp-application**:This repository will store the code for our
+    application and the build to generate our container.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**myapp-dev/myapp-ops**: The repository for the manifests for our development
+    cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**myapp-prod/myapp-ops**: Where the production cluster’s manifests are stored.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There’s no direct fork from the development project to the production project.
+    That was our original intent, but that stringent path from development to production
+    doesn’t work well. Development environments and production environments are rarely
+    the same and often have different owners of infrastructure. For example, I maintain
+    a public safety identity provider where our development environment doesn’t have
+    trust established with all the jurisdictions that our production environment does.
+    To address this, we set up an additional system to stand in for those identity
+    providers. These variances make it difficult to have a direct line to automatically
+    merge changes from development into production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With that said, let’s build out our application. The first step is to generate
+    an SSH key and add it to `jjackson`'s profile in GitLab so we can check the code
+    in. Once you have your SSH key updated, clone the `myapp-dev/myapp-ops` project.
+    This project has the manifests for your development cluster. You’ll see there
+    are already manifests to support synchronizing the pull secret for Harbor into
+    the default namespace. Create a folder called `yaml/namespaces/default/deployments`
+    and add `chapter19/examples/ops/python-hello.yaml` to it. Commit and push to your
+    GitLab. Within a few minutes, Argo CD will attempt to sync it, which will fail
+    because the image points to something that doesn’t exist. That’s OK. Next, we’ll
+    take care of that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_19.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.19: Broken Argo CD Rollout'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The image tag in our deployment will be updated upon a successful build of
+    our application. This gives us the automation we’re looking for and the ability
+    to easily roll back if we need to. Our application is a simple Python web service.
+    Clone the `myapp-prod/myapp-application` project and copy it in the `chapter19/examples/myapp`
+    folder. There are two items to make note of:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**source**:This folder contains our Python source code. It’s not very important
+    and we won’t spend any time on it.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**.gitlab-ci.yml**:This is the GitLab build script that’s responsible for generating
+    a Docker container, pushing it into Harbor, then patching our Deployment in Git.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you look at the `.gitlab-ci.yml` file, you might notice that it looks similar
+    to the Tekton tasks we built in previous editions. What’s similar about GitLab’s
+    pipelines is that each stage is run as a pod in our cluster. We have two stages.
+    The first builds our container and the second deploys it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The build stage uses a tool from Google called **Kaniko** ([https://github.com/GoogleContainerTools/kaniko](https://github.com/GoogleContainerTools/kaniko))
+    for building and pushing Docker images without needing to interact with a Docker
+    daemon. This means our build container doesn’t require a privileged container
+    and makes it easier to secure our build environment. Kaniko uses a Docker configuration
+    to manage credentials. If you are using AWS or any of the other major clouds,
+    you can integrate directly with their IAM solution. In this instance, we’re using
+    Harbor, so our OpenUnison workflow provisioned a Docker `config.json` as a variable
+    into the GitLab project. The build process uses the short version of the Git SHA
+    hash as a tag. This way, we can track each container to the build and the commit
+    that produced it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second stage of the build is the deployment. This stage first checks out
+    our `myapp-dev/myapp-ops` project, patches our `Deployment` with the correct image
+    URL, and then commits and pushes it back to GitLab. Unfortunately, neither GitLab
+    nor GitHub makes it easy to check out code using the identity of workflow. To
+    make this work, our OpenUnison onboarding workflow created a “deployment key”
+    for our Ops project, marking it as writeable, and then added the private key to
+    the app project. This way, the app project can configure SSH to allow for cloning
+    the DevOps repository, generating the patch, and then committing and pushing.
+    Once completed, Argo CD will detect the change within a few minutes and synchronize
+    it into your development vCluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_19_20.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.20: Argo CD with a working synced Deployment'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Assuming everything went well, you now have an automatically updated development
+    environment! You’re now ready to run any automated tests before promoting to production.
+    Since we don’t currently have an automated process for this, let’s explore how
+    we can approach it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Promoting to Production
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So far, we’ve deployed our application into our development vCluster. What about
+    our production vCluster? There’s no direct relationship between the `myapp-dev/myapp-ops`
+    project in GitLab and the `myapp-prod/myapp-ops` projects. If you read the first
+    two editions of this book, you might remember that the dev project was a fork
+    of the prod project. You would promote a container from development to production
+    by submitting a merge request (GitLab’s version of a pull request) and, once approved,
+    the changes in development would be merged into production allowing Argo CD to
+    synchronize them into our cluster. The problem with this approach is it assumes
+    dev and prod are the exact same, and that’s never true. Something as simple as
+    a different hostname for a database would have broken this approach. We needed
+    to break this pattern to make our cluster usable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For our own lab, the easiest way to go is to create the `yaml/namespaces/default/deployments`
+    directory in the `myapp-prod/myapp-ops` project, add `chapter19/examples/ops/python-hello.yaml`
+    to it, and update the image to point to our current image in Harbor. This is not
+    a well-automated process, but it would work. Eventually, Argo CD will finish synchronizing
+    the manifests and our service will be running on our production cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you’re looking to automate this more, you have multiple options:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Create GitLab workflows**: A workflow could be used to automate the updates
+    in a similar way as production. You would need a way to trigger it, but this solution
+    works nicely because you can leverage GitOps to track the rollouts.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Create custom jobs or scripts**: We’re running Kubernetes, so there are multiple
+    ways to create batch jobs to run the upgrade process. Depending on how you choose
+    to run batch jobs in Kubernetes, this can also be done using GitOps.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Akuity Kargo**:A new project focused on solving this problem in a consistent
+    way.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The first two options are variations on the same theme: a customized rollout
+    script. There’s nothing that says this is an antipattern. It just seems there’s
+    probably a better way, or at least a more consistent way, to do this. Enter the
+    Akuity Kargo project ([https://github.com/akuity/kargo](https://github.com/akuity/kargo)),
+    not to be confused with the Container Craft Kargo project! Akuity was founded
+    by many of the original developers of Argo CD. The Kargo project is not under
+    the Argo umbrella; it’s completely separate. It takes an interesting approach
+    to automating the process of syncing across repositories to promote systems across
+    environments. We originally thought we’d integrate this tool directly into our
+    cluster, but it’s still pre-version-1, so we decided to give it a mention instead.
+    It’s certainly a project we’ll be keeping our eyes on!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve rolled out our application to production, what can we do next?
+    We can add more users of course! We’ll explore that and how we can expand on our
+    platform next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding Users to a Tenant
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we have our tenant created and our application deployed, it might be
+    a good time to look at how we add new users. The good news is that we can add
+    more users! OpenUnison makes it easy for team members to request access. Log in
+    to OpenUnison, click on **Request Access**, and pick the application and the role
+    you want. The application owner will be responsible for approving that access.
+    The great thing about this approach is that the cluster owners never get involved.
+    It’s entirely up to the application owners who have access to their system. That
+    access is then provisioned, just in time, into all of the components of your platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application, Teams  Description automatically generated](img/B21165_19_21.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.21: Adding users to application roles in OpenUnison'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ve deployed our platform, and we know how to deploy a tenant and how to add
+    new members to that tenant. What can we do to improve our new platform? Where
+    are the gaps? We’ll walk through those next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Expanding Our Platform
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We’ve covered quite a bit in the last two chapters to build out a multitenant
+    platform. We walked through how GitOps works, different strategies, and how IaC
+    tools like Pulumi make automation easier. Find finally, we built out our multi-tenant
+    platform over three clusters. Our platform includes Git and builds using GitLab,
+    secrets management using Vault, GitOps with Argo CD, a Docker registry in Harbor,
+    and finally, it’s all integrated via identity using OpenUnison. That’s it, right?
+    No, unfortunately not. This section will cover some of the gaps or areas where
+    our platform can be built out. First, we’ll start with identity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Different Sources of Identity
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'One area we have taken a really focused view on throughout this book is how
+    a user’s identity crosses various boundaries of the systems that make up our clusters.
+    In this platform, we use our Active Directory for user authentication and use
+    OpenUnison’s internal groups for authorization. Similar to *Chapter 9*, we could
+    also integrate our enterprise’s groups for authorization. We can also expand outside
+    of Active Directory to use Okta, Entra ID (formerly Azure AD), GitHub, etc. A
+    great addition is to integrate multi-factor authentication. We’ve said it multiple
+    times throughout this book, but it bears repeating: multi-factor authentication
+    is one of the easiest ways to help lock down your environment!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having looked at how else to identify users, let’s look at monitoring and logging.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating Monitoring and Logging
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In *Chapter 15*, *Monitoring Clusters and Workloads*, we learned how to monitor
+    Kubernetes with Prometheus and aggregate logs using OpenSearch. We didn’t integrate
+    either of these systems into our platform. We did this for a few reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Simplicity**:These last two chapters were complex enough; they didn’t need
+    more stuff to integrate!'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Lack of multi-tenancy**:Prometheus has no concept of identity and the Grafana
+    Community edition only allows two roles. It does appear that OpenSearch supports
+    multi-tenancy, but that would have required considerable engineering.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Complexity with vCluster**: This is similar to the multi-tenancy issue; would
+    we have had a Prometheus for each vCluster? There are ways to do this, but they
+    would likely require their own book.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Given that this solution is designed for a production environment, you would
+    want to integrate some kind of monitoring and logging tied directly into both
+    your host clusters and your vClusters. That can get complex, but would be well
+    worth it. Imagine an application owner being able to view all their logs from
+    a single location without having to log in to a cluster. The tools are all there,
+    it’s just a matter of integration!
+  prefs: []
+  type: TYPE_NORMAL
+- en: We know it’s important to monitor a cluster, but let’s next talk about policy
+    management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating Policy Management
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This book covered two chapters on policy management and included authorization
+    management in our chapter on Istio. It’s an important aspect of Kubernetes that
+    we didn’t include in our platform. We also spent a chapter on runtime security.
+    We decided not to include policy management because while it would be needed for
+    production, it didn’t provide any additional benefit for the lab itself. It should
+    definitely be included for any production deployment, though!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve covered which technologies we didn’t include in our platform,
+    let’s talk about what you could replace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Replacing Components
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We chose the components we did for our platform because we wanted to show how
+    to build off what we learned throughout the book. We made a conscious decision
+    to use only open source projects and to avoid any kind of service that would require
+    a sign-up or trial. With that said, you could replace Vault with a service like
+    **AKeyLess**, replace GitLab with GitHub, etc. It’s your environment, so deploy
+    what works best for you!
+  prefs: []
+  type: TYPE_NORMAL
+- en: The story is far from over on our platform, but this does bring us to the end
+    of our book!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter covered considerable ground. We started by looking at how to build
+    out three Kubernetes clusters to support our platform. Once we had our clusters,
+    we deployed `cert-manager`, Argo CD, MySQL, GitLab, Harbor, Vault, and OpenUnison
+    via Pulumi, integrating them all. With our platform in place, we deployed a tenant
+    to see how to use automation and GitOps to simplify our management, and finally,
+    talked about different ways to update and adjust our multi-tenant platform. That’s
+    quite a lot of ground to cover in just one chapter!
+  prefs: []
+  type: TYPE_NORMAL
+- en: I want to say thank you to Kat Morgan for writing the Pulumi code I used as
+    the starting point for this chapter and helping me out when I ran into issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, *thank you!* Through 19 chapters and dozens of different technologies,
+    labs, and systems, you joined us on our fantastic journey through the enterprise
+    cloud-native landscape. We hope you had as much fun reading and working with this
+    book as we did writing it. Please, if you run into issues or just want to say
+    hi, open an issue on our GitHub repository. If you have thoughts or ideas, that
+    would be great as well! We cannot say this enough, but once again, thank you for
+    joining us!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Kubernetes has an API for trusting certificates:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Where can the Pulumi store state?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Local file
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: S3 bucket
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Pulumi’s SaaS service
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: All of the above
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What sources of identity can OpenUnison use?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Active Directory
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Entra ID (formerly Azure AD)
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Okta
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: GitHub
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: All of the above
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'GitLab lets you check out code from another repository using your workflow’s
+    token:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Argo CD can check repositories for changes:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'b: False: The node’s operating system must trust the remote certificate.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'd: All of these are valid options.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'e: OpenUnison supports all of these options.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'b: False: Neither GitLab nor GitHub supports workflow tokens to check out other
+    repositories.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'a: True: Letting Argo CD check for updates to a repository instead of using
+    a webhook can simplify deployment.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Join our book’s Discord space
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Join the book’s Discord workspace for a monthly *Ask Me Anything* session with
+    the authors:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://packt.link/K8EntGuide](https://packt.link/K8EntGuide)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/QR_Code965214276169525265.png)'
+  prefs: []
+  type: TYPE_IMG

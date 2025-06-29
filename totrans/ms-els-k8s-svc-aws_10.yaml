@@ -1,0 +1,580 @@
+- en: '10'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Upgrading EKS Clusters
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The Kubernetes community will release a new version of Kubernetes approximately
+    three times a year, as well as maintain release branches for the three most recent
+    minor releases. In addition, AWS will maintain at least four production-ready
+    versions of Kubernetes at any given time; at the time of writing, they are versions
+    1.24, 1.23, 1.22, and 1.21\. Given these two different release schedules, at some
+    point, you will need to upgrade your EKS clusters either because you want to use
+    a new feature developed by the Kubernetes community or because AWS is no longer
+    supporting the version you are using. The good news is that as EKS is a managed
+    service, AWS does most of the upgrade work for you!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This chapter looks at the best way to do this and the impact it can have on
+    running workloads. Specifically, we will cover the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reasons for upgrading EKS and key areas to focus on
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to do in-place upgrades of the control plane
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Upgrading nodes and their critical components
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating a new cluster and migrating workloads
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The reader should have a familiarity with YAML, basic networking, and EKS architecture.
+    Before getting started with this chapter, please ensure you have the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Network connectivity to your EKS API endpoint
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The AWS CLI and kubectl binary installed on your workstation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A good understanding of VPC networking and how to create network objects such
+    as ENIs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reasons for upgrading EKS and key areas to focus on
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: EKS is a community project and, as such, it is constantly evolving; big releases
+    currently happen approximately three times per year and normally contain at least
+    one major change. For example, 1.21, released in April 2021, deprecated Pod security
+    policies in favor of external admission control. This means that you will need
+    to take advantage of newer Kubernetes features at some point. In addition, the
+    Kubernetes community only supports the most recent three minor releases (for example,
+    1.25, 1.24, and 1.23), with older releases normally getting 1 year of patch releases,
+    after which you are on your own!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Amazon takes the upstream Kubernetes release, tests and validates it with the
+    AWS platform and components such as the AWS VPC CNI, and so on, and packages and
+    releases it as an EKS release. This process takes roughly 6 months after the Kubernetes
+    community release and will normally be supported for 14 months. This is illustrated
+    in the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.1 – Example Kubernetes release schedule](img/B18129_10_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.1 – Example Kubernetes release schedule
+  prefs: []
+  type: TYPE_NORMAL
+- en: After 12 months, AWS will notify customers, using the console and AWS Health
+    Dashboard, that a release is approaching the **end-of-life** (**EOL**)—sometimes
+    called **end-of-support** (**EOS**)—date, and after 14 months they will automatically
+    upgrade the control plane to the earliest supported version through a gradual
+    deployment process after the EOS date.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As the cluster owner, you can choose to upgrade the control plane at any time
+    before the EOS date, but you will always be responsible for upgrading worker nodes,
+    add-ons, and any core components such as `kube-proxy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are certain key areas to consider when upgrading as you cannot roll back
+    a version. If you want to roll back, you must deploy a new cluster with a previous
+    version. Key considerations are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Are Kubernetes APIs or key functionality being deprecated that may require changes
+    to the deployment manifest or Kubernetes component upgrades such as replacing
+    kubelet?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Do add-ons, third-party DaemonSets, and so on need upgrading to support the
+    new release?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Is there a new functionality that needs designing, such as the use of **Open
+    Policy Agent** (**OPA**) to replace Pod policies?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Are there security patches that need to be applied?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: On the whole, there should be little impact on running workloads unless they
+    are *aware* or interact with the Kubernetes control plane, but it is always worth
+    reading the release notes and upgrading in lower environments first before you
+    modify your production environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have discussed *why* you will need to upgrade, let’s discuss *how*
+    you do a cluster upgrade.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to do in-place upgrades of the control plane
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you do nothing, eventually, AWS will upgrade your control plane, but as discussed
+    previously, this might have an impact on other components. It is, therefore, best
+    to take a proactive approach. Upgrading the control plane is literally a *single-click*
+    operation, and AWS will progressively upgrade the API and etcd servers. In most
+    cases, this will be fine, but as discussed in the previous section, it can break
+    *services*
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A structured approach is, therefore, recommended. In the following example,
+    the team responsible for the `eksctl` configuration file, or it may be a more
+    detailed development for add-ons such as Argo CD, Flux, and so on. In the following
+    diagram, this is illustrated as the responsibility of a platform engineering team,
+    but in smaller companies, this might be a DevOps or **site reliability engineering**
+    (**SRE**) team’s or application development team’s responsibility:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.2 – Structured upgrade approach](img/B18129_10_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.2 – Structured upgrade approach
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the master IaC template has been created, this can be used by the development
+    teams to test their workloads in lower environments (testing/staging) and, ultimately,
+    in production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Assuming you have used `eksctl` to create your cluster, you can upgrade the
+    control plane with a simple one-line command. If we use the IPv4 cluster from
+    the previous chapter, we can upgrade it using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you leave out the `--approve` keyword, `eksctl` will not make changes. It’s
+    also worth noting that normally you can’t jump directly from a minor release such
+    as 1.19 to 1.22 without upgrading to 1.20 and then 1.21 first!
+  prefs: []
+  type: TYPE_NORMAL
+- en: This process can take up to 20 minutes, so it’s worth planning a change window
+    as Kubernetes API access may be intermittent during the upgrade (no existing workloads
+    should be affected). Once the control plane has been upgraded, you should upgrade
+    your worker nodes to match the cluster version prior to moving to the next version
+    (`eksctl` enforces this requirement). Let’s look at how we do this upgrade next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Upgrading nodes and their critical components
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Simplifying the upgrade process is one of the key reasons for using managed
+    node groups. If we want to upgrade a single worker node in an active cluster manually,
+    we would need to perform the following actions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Add a new worker that can run the Pods that will be evicted from the node running
+    the old version of the Kubernetes agents (kubelet, and so on) we are upgrading,
+    if we want to maintain the overall cluster capacity (the overall number of worker
+    nodes that can run active Pods) during the upgrade.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Drain the Pods from the node we are working on and remove them from the scheduling
+    process so that no new Pods are allocated.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Upgrade the operating system binaries and apply patches if needed.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Update and configure the Kubernetes agents (kubelet, and so on).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Once the upgraded node has registered and is ready, add it back to the scheduler.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Update any critical components such as `kube-proxy`, `coreDNS`, and so on.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If we have node groups with 10 or 20 nodes, you will see how this can become
+    painful very quickly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s look at how we upgrade the worker nodes now that the cluster control plane
+    is upgraded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Upgrading managed node groups
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Once you have upgraded the cluster, if you look at the managed node groups
+    for that cluster, you will see the **Update now** link. This can be used to automatically
+    upgrade the node group using the autoscaling launch template process described
+    in [*Chapter 8*](B18129_08.xhtml#_idTextAnchor123), *Managing Worker Nodes on
+    EKS*. An example is shown next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.3 – Node group updates](img/B18129_10_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.3 – Node group updates
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using the link will automatically replace all EC2 workers in the node group;
+    you will be presented with a pop-up window (an example is shown next) that provides
+    a few more options:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.4 – Node group update strategy](img/B18129_10_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.4 – Node group update strategy
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The upgrade node dialog box shown previously allows you to do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Replace the nodes with the latest AMI by setting the **Update node group** **version**
+    switch.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Replace the current autoscaling launch template with a different one using the
+    **Change launch template** **version** switch.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use the **Rolling update** strategy (default) to drain the Pods from the running
+    node. This strategy will respect any Pod disruption budgets defined, and so the
+    update will fail if the Pods cannot be drained gracefully. Alternatively, the
+    **Force update** strategy will try to drain the Pods as per a rolling update,
+    but if it fails, it will simply terminate the node rather than fail the update.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Clicking the `eksctl`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can watch the status of the replacement using the following command. In
+    the following example, you can see the older 1.19 AMI has `SchedulingDisabled`
+    set:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Upgrading self-managed node groups
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Upgrading self-managed nodes will depend on how you want to perform the upgrade
+    (draining Pods first, replacing nodes, or in-place upgrades), and which additional
+    components are installed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Generally, node groups should be viewed as immutable; so, as unmanaged node
+    groups may be part of an autoscaling group, you can change the AMI and use a new
+    launch template to force replacement, but as the operator you will be responsible
+    for removing the nodes from the scheduler (`SchedulingDisabled`), draining the
+    Pods, and then scaling out and scaling in (effectively, everything a managed group
+    does for you).
+  prefs: []
+  type: TYPE_NORMAL
+- en: A simpler way may be to simply create a new node group, move the Pods onto the
+    new node group, and delete the old one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Updating core components
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The node group will have an updated kubelet agent, but key components such as
+    `kube-proxy`, `coreDNS`, and `vpc-cni` will typically need to be upgraded to work
+    with a specific Kubernetes release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you look at the current version of `kube-proxy` on the upgraded cluster
+    and node groups using the following command, we can see this is still at the previous
+    cluster’s versions (`v1.19.16`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can do an upgrade using `eksctl` or another IaC tool. The next example shows
+    how to use `eksctl utils` to update `kube-proxy`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: To simplify this process, AWS introduced EKS add-ons, which allow the update
+    of operational software such as `kube-proxy` or monitoring daemons such as **AWS
+    Distro for** **OpenTelemetry** (**ADOT**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we use the AWS console and click on the `vpc-cni` add-on to upgrade the
+    `aws-node` DaemonSet that implements the CNI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.5 – Cluster add-ons](img/B18129_10_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.5 – Cluster add-ons
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can also do the operation programmatically using your IaC tool of choice.
+    The next example shows how you can do the same operation with `eksctl`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The use of `--force` will force the configuration onto the cluster. These actions
+    should all be tested on lower environments to ensure they don’t cause an outage
+    prior to being run on production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s look at using an alternative cluster and/or node group to provide a blue/green
+    deployment approach at the cluster level.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a new cluster and migrating workloads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As you can see, a typical upgrade will involve at least three steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Upgrading the control plane
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Upgrading/replacing the worker nodes with more up-to-date AMIs and the kubelet
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: At least upgrading the core components, `kube-proxy`, `coreDNS`, and `vpc-cni`
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In this approach, the Pods must first be drained and reallocated to worker nodes
+    as they are replaced. This can lead to interruptions if not managed well. An alternative
+    is to deploy a new cluster and then migrate workloads; this is sometimes referred
+    to as blue/green cluster deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will be the least cost-effective approach as you will be paying for two
+    control planes but may be suitable if you want to try to minimize disruption.
+    We will only discuss this approach at a high level in this book as the most common
+    approach is to upgrade the EKS control plane and then the worker nodes using managed
+    worker nodes, greatly reducing cost and complexity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A multi-cluster solution presents some different challenges: How do you move
+    workloads? Have any manual changes been applied to the cluster? How do you provide
+    ingress and egress connectivity? How do you manage state? The following diagram
+    illustrates the solutions to these challenges:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.6 – Multi-cluster solution](img/B18129_10_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.6 – Multi-cluster solution
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, to understand some of the challenges, let’s look at one approach to migrating
+    workloads between two clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do you move workloads?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When using kubectl or Helm, the current context defines which cluster you will
+    use. By switching context, the same manifest can be deployed on either cluster.
+    In *Figure 10**.6*, a CI/CD pipeline can automate the provisioning of the service
+    on either cluster. For example, **Cluster 1** (v1.19) is running **Service A**;
+    **Cluster 2** can be created with v1.20, and this can trigger a deployment of
+    **Service A** on **Cluster 2**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do you provide consistent ingress and egress network access?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Egress (Pod initiating connections out) can use either an internal or external
+    `VPC NAT` gateway to mask the IP address of the Pods from both clusters, masking
+    any Pod IP address changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An `TargetGroupBinding` instance, which will reuse an existing ALB or NLB target
+    group for both clusters configured outside the EKS cluster using IaC. An example
+    is shown next and references the `testapp` service on port `80`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, let’s look at how applications typically manage state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do you manage state?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Your application may need to maintain state in a database or on a filesystem.
+    As long as these services are configured outside the cluster using an AWS service
+    such as **Relational Database Service** (**RDS**) or **Elastic File System** (**EFS**),
+    they can be referenced by either cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With these solutions in place, you can easily flip between clusters. By deploying
+    to the new cluster first and making sure the service is registered with the ELB,
+    you can make the transition almost seamless; however, you will pay more for this
+    type of configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have looked at how to upgrade key EKS components and the
+    different approaches required for managed and unmanaged node groups. We’ll now
+    revisit the key learning points from this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we explored why you will need to upgrade your cluster: either
+    you want to use a new Kubernetes feature or a bug fix or AWS is deprecating the
+    version you are using. We identified you will need to perform three actions for
+    each cluster: upgrade the control plane, upgrade the worker nodes, and upgrade
+    the core components such as `kube-proxy` and `coreDNS`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also discussed how the control plane upgrade is pretty straightforward as
+    it’s a managed service, but node group and component upgrades can be more challenging.
+    Using managed node groups and add-ons simplifies this, but you could also use
+    a second cluster and move the workload between them, upgrading the non-active
+    cluster. This approach—sometimes referred to as blue/green cluster deployments—will
+    add cost and complexity, so it is not recommended, but it can minimize application
+    outages due to upgrades.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will look at how you can use AWS **Elastic Container
+    Repository** (**ECR**) as a source of your applications and Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Pod disruption budgets: [https://kubernetes.io/docs/concepts/workloads/pods/disruptions/](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: )
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Managed node group update process: https://docs.aws.amazon.com/eks/latest/userguide/managed-node-update-behavior.html'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'AWS Load Balancer Controller TargetGroupBinding: [https://kubernetes-sigs.github.io/aws-load-balancer-controller/v2.1/guide/targetgroupbinding/targetgroupbinding/](https://kubernetes-sigs.github.io/aws-load-balancer-controller/v2.1/guide/targetgroupbinding/targetgroupbinding/'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: )
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'EKS add-ons: [https://docs.aws.amazon.com/eks/latest/userguide/eks-add-ons.html](https://docs.aws.amazon.com/eks/latest/userguide/eks-add-ons.html'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: )
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Kubernetes upgrades: [https://kubernetes.io/docs/tasks/administer-cluster/cluster-upgrade/](https://kubernetes.io/docs/tasks/administer-cluster/cluster-upgrade/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Part 3: Deploying an Application on EKS'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This part will cover topics related to features that help you deploy your application
+    on EKS. This section includes a complete guide for storing container images on
+    Amazon ECR, providing persistent volumes for your application with AWS storage
+    services such as EBS and EFS, defining the Pod security and granting permissions
+    with IAM, and exposing and load balancing your Kubernetes application. In the
+    last two chapters, we will look at more advanced topics such as using AWS Fargate,
+    and how to use App Mesh to control and monitor our deployments
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This section contains the following chapters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[*Chapter 11*](B18129_11.xhtml#_idTextAnchor162), *Building Applications and
+    Pushing Them to Amazon ECR*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[*Chapter 12*](B18129_12.xhtml#_idTextAnchor175), *Deploying Pods with Amazon
+    Storage*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[*Chapter 13*](B18129_13.xhtml#_idTextAnchor193), *Using IAM for Granting Access
+    to Applications*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[*Chapter 14*](B18129_14.xhtml#_idTextAnchor205), *Setting Load Balancing for
+    Applications on EKS*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[*Chapter 15*](B18129_15.xhtml#_idTextAnchor220), *Working with AWS Fargate*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[*Chapter 16*](B18129_16.xhtml#_idTextAnchor232), *Working with a Service Mesh*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

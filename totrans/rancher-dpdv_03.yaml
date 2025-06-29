@@ -1,0 +1,954 @@
+- en: '*Chapter 2*: Rancher and Kubernetes High-Level Architecture'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter will cover the high-level processes of **Rancher**, **Rancher Kubernetes
+    Engine** (**RKE**), **RKE2** (also known as **RKE Government**), **K3s**, and
+    **RancherD**. We will discuss the core design philosophy of each of these products
+    and explore the ways in which they are different. We'll dive into Rancher's high-level
+    architecture and see how Rancher server pods communicate with downstream clusters
+    using the Cattle agents, which include both the Cattle-cluster-agent and the Cattle-node-agent.
+    We'll also look at how the Rancher server uses RKE and how Rancher-machine provisions
+    downstream nodes and Kubernetes (**K8s**) clusters. After that, we'll cover the
+    high-level architecture of K8s, including **kube-api-server**, **kube-controller-manager**,
+    and **kube-scheduler**. We'll also discuss how each of these components maintains
+    the state of the cluster. Finally, we'll examine how an end user can change the
+    desired state and how the controllers can update the current state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we''re going to cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is the Rancher server?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What are RKE and RKE2?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is K3s (five less than K8s)?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is RancherD?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What controllers run inside the Rancher server pods?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What does the Cattle agent do?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How does Rancher provision nodes and clusters?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What are kube-apiserver, kube-controller-manager, kube-scheduler, etcd, and
+    kubelet?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do the current state and the desired state work?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is the Rancher server?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The **Rancher server** forms the core of the Rancher ecosystem, and it contains
+    almost everything needed by any other component, product, or tool depending on
+    or connecting to the Rancher server via the Rancher API. The *Rancher server*
+    is usually shortened to just *Rancher*, and in this section, when I say *Rancher*,
+    I will be talking about the *Rancher server*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The heart of Rancher is its API. The **Rancher API** is built on a custom API
+    framework called **Norman** that acts as a translation layer between the Rancher
+    API and the K8s API. Everything in Rancher uses the Rancher or K8s API to communicate.
+    This includes the Rancher **user interface** (**UI**), which is 100% API-driven.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, how do you connect to the Rancher API? The Rancher API is a standard `CustomResource`
+    object. Of course, because everything is being stored in a `CustomResource` object
+    in K8s, the Rancher request flow is stateless and doesn't require session persistence.
+    Finally, once the `CustomResource` object is created, changed, or deleted, the
+    controller for the object type will take over and process that request. We'll
+    go deeper into the different controllers later in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What are RKE and RKE2?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: What do I need, RKE or RKE2? Traditionally, when building a K8s cluster, you
+    would need to carry out several steps. First, you'd need to generate a root **CA
+    key** as well as the certificates for the different K8s components and push them
+    out to every server that was part of the cluster. Second, you'd then install/configure
+    **etcd**, and this would include setting up the **systemd** service on your management
+    nodes. Next, you would need to bootstrap the etcd cluster and verify that all
+    etcd nodes were communicating and replicating correctly. At this point, you would
+    install kube-apiserver and connect it back to your etcd cluster. Finally, you
+    would need to install kube-controller-manager and kube-scheduler and connect them
+    back to the kube-apiserver objects. If you wanted to bring up the control plane
+    for your cluster, even more steps would be needed to join your worker nodes to
+    the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This process is called *K8s the hard way*, and it's called that for a reason,
+    as this process can be very complicated and can change over time. And in the early
+    days of K8s, this was the only way to create K8s clusters. Because of this, users
+    needed to make large scripts or **Ansible Playbooks** to create their K8s clusters.
+    These scripts would need lots of care and feeding to get up and running, with
+    even more work required to keep them working as K8s continually changed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rancher saw this issue and knew that for K8s to become mainstream, it needed
+    to be *crazy easy* to build clusters for both end users and the Rancher server.
+    Initially, in the Rancher v1.6 days, Rancher would build K8s clusters on its container
+    clustering software called **Cattle**. Because of this, everything needed had
+    to run as a container, and this was the starting point of RKE.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, what is RKE?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: RKE is Rancher's cluster orchestration tool for creating and managing **Cloud
+    Native Computing Foundation** (**CNCF**)-certified K8s clusters on a wide range
+    of operating systems with a range of configurations. The core concept of RKE is
+    that everything that makes up the K8s cluster should run entirely within **Docker**
+    containers. Because of this, RKE doesn't care what operating system it's deployed
+    on, as long as it's within a Docker container. This is because RKE is not installing
+    binaries on the host, configuring services, or anything similar to this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does RKE work?
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: RKE is a `cluster.yml` (see *Figure 2.1*). RKE then uses that configuration
+    file to create all of the containers needed to start the cluster, that is, etcd,
+    kube-apiserver, kube-controller-manager, kube-scheduler, and kubelet. Please see
+    the *How does Rancher provision nodes and clusters?* section in this chapter for
+    further details on nodes and clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 2.1 – A code snippet from the cluster.yaml file](img/B18053_02_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2.1 – A code snippet from the cluster.yaml file
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is RKE2?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: RKE2 is Rancher's next-generation K8s solution and is also known as RKE Government.
+    RKE2 was designed to update and address some of the shortfalls of RKE, and it
+    also brought the *crazy easy* setup methods from K3s to improve its functionality.
+    RKE2 is also a fully CNCF-certified K8s distribution. But RKE2 was created specifically
+    for Rancher's US federal government and their customers, as they have several
+    special requirements for their K8s use – the first being that it is highly secure
+    by default.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When setting up RKE, you must follow a hardening guide and take several manual
+    steps to comply with **CIS benchmarks**. RKE2, on the other hand, is designed
+    to be secure with little to no action required by the cluster administrator. US
+    federal customers need their K8s clusters to be **FIPS-enabled** (**FIPS** stands
+    for the United States **Federal Information Processing Standards**). Also, because
+    RKE2 is built on K3s, it inherits a number of its features – the first being the
+    support of **ARM64**-based systems. So, you could set up RKE2 on a **Raspberry
+    Pi** if you chose to. This provides users with the flexibility to mix and match
+    ARM64 and **AMD64** nodes in the same cluster and that means customers can run
+    workloads such as multiple arch builds using the **Drone Continuous Integration
+    (CI)** platform inside their cluster. This also provides support for low-power
+    and cost-effective ARM64 nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second feature inherited from K3s is **self-bootstrapping**. In RKE, you
+    would need to define the cluster as YAML and then use the RKE binary to try to
+    create and manage the cluster. But with RKE2, once the first node has been created,
+    all of the other nodes simply join the cluster using a registration endpoint running
+    on the master nodes. Note that this does require an external load balancer or
+    a round-robin DNS record to be successful. Because RKE2 can manage itself, it
+    allows you to do very cool tasks, such as defining a K8s upgrade with kubectl
+    and just letting the cluster take care of it for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third feature that RKE2 inherited from K3s was built-in `kubectl -n kube-system
+    get pods`, you can see your etcd containers, and you can even open a shell to
+    them or capture logs, just like you would with any other pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Last but not the least, the most crucial feature of RKE2 is that it's fully
+    open source with no paywall – just like every other Rancher product.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is K3s (five less than K8s)?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'K3s is a fully CNCF-certified K8s distribution. This means that in K3s, the
+    YAML you would deploy is just a standard K8s cluster deployed in a K3s cluster.
+    K3s was created because traditional K8s clusters – or even RKE clusters – were
+    designed to run at scale, meaning that they would require three etcd nodes, two
+    control plane nodes, and three or more worker nodes for a standard configuration.
+    In this case, the minimum size for nodes would be around four cores, with 8 gigabits
+    of RAM for the etcd objects and control plane nodes, with the worker nodes having
+    two cores and 4 gigabits of RAM. These would just be the background requirements
+    when talking about K8s clusters at the scale of an IE 50 node cluster, with the
+    worker nodes having 64 cores and 512 GB of RAM. But when you start looking at
+    deploying K8s at the edge, where physical space, power, and compute resources
+    are all at a premium, standard K8s and RKE are just too big. So, the question
+    is: *how do we shrink K8s?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'K3s was based on the following core principles: no legacy code, duplicate code,
+    or extras. With RKE and other standard K8s distributions, each component exists
+    as its separate code with its own runtime. At Rancher, they asked themselves a
+    question:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Hey, there is a lot of duplicate code running here. What if we just merged
+    kube-apiserver, kube-controller-manager, kube-scheduler, and kubelet into a single
+    binary?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: And that was how K3s was born. K3s only has *master* and *worker* nodes, with
+    the master node running all of the core components. The next big breakthrough
+    was what they did with etcd. The etcd object is not small. It eats memory like
+    it's going out of style and doesn't play nice when it's in a cluster of one. This
+    is where **kind** comes into the picture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The kind database adapter makes standard **SQL** databases such as **SQLite3**,
+    **MySQL**, or **Postgres** look like an etcd database. So, as far as kube-apiserver
+    knows, it's talking to an etcd cluster. The CPU and memory footprint is much smaller
+    because you can run a database like SQLite3 in place of etcd. It is important
+    to note that Rancher does not customize any of the standard K8s libraries in the
+    core components. This allows K3s to stay up to date with upstream K8s. The next
+    big area of saving in K3s was in-tree storage drivers and cloud providers. Upstream
+    K8s has several storage drivers built into the core components. For example, RKE
+    has storage drivers to allow K8s to connect to the **AWS** API and use **Amazon**
+    **EBS** volumes to provide storage directly to pods. This is great if you are
+    running in AWS, but if you are running in **VMware** then this code is just wasting
+    resources. It's the same the other way round, with VMware's **vSphere** having
+    a storage provider for mounting **Virtual Machine Disks (VMDKs)** to nodes. The
+    idea was that most of these storage and cloud providers are not used. For example,
+    if I'm running a cluster on Amazon, why do I need libraries and tools for Azure?
+    Plus there are out-of-tree alternatives that can be deployed as pods instead of
+    being baked in. Also, most of the major storage providers are moving to out-of-tree
+    provisioning anyway. So, K3s removes them. This eliminates a significant overhead.
+    Because of all these optimizations, K3s clusters can fit on a 40 MB binary file
+    and run on a node with only 512 MB of RAM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The other significant change in K3s to K8s was the idea that it should be *crazy
+    easy* to spin up a K3s cluster. For example, creating a single-node K3s cluster
+    only requires the `curl -sfL https://get.k3s.io | sh -` command to run, with the
+    only dependency being that it's within a Linux ARM64 or AMD64 operating system
+    with `curl` installed. Because of this ease of use, K3s is frequently deployed
+    in single-node clusters where a user wants to use all of the management tools
+    that K8s provides but without the scale. For example, a developer might spin up
+    a K3s cluster on their laptop using a **virtual machine** (**VM**) to deploy their
+    application just as they would in their production K8s cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another great use case for K3s is deploying to a retail environment where you
+    might have hundreds or even thousands of locations all over the country (or world)
+    and have a single K3s node running on a small PC at each location. K3s helps in
+    this situation because it is so tiny, so common problems such as slow internet
+    connections are not that big of a problem, and also K3s can keep running even
+    if it loses its connection back to a corporate data center. An even more extraordinary
+    kind of deployment for K3s is a wind turbine in the middle of nowhere with only
+    a **Long-Term Evolution** (**LTE**) connection for internet access. These are
+    the kinds of deployments K3s was built for.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is RancherD?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '`curl -sfL https://get.rancher.io | sh –` command on a Linux AMD64 or ARM64
+    server. This binary is similar to RKE2 but has been optimized to host the Rancher
+    server. RancherD also includes extra tools to support the Rancher server application.
+    For example, the `rancherd reset-admin` command will reset the administrator password
+    for the Rancher server.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To change this password with a normal RKE or RKE2 cluster, you would need to
+    find the Rancher server pod and open a shell into the container. Then you would
+    run the `reset-admin` command. The main idea behind RancherD is to make it very
+    easy to manage Rancher. It does this by using the RKE2 Helm operator to handle
+    deploying the Rancher server pods. And because it uses the same Helm chart that
+    you would use in an RKE cluster, all of the customization options are still available
+    (the best feature being the ease of management of SSL certificates). In a standard
+    Rancher server deployment, you must configure and manage the SSL certificates
+    that support the Rancher API. This can be a pain when using internally signed
+    certificates, as you need to edit a secret inside the cluster, which can be difficult
+    for new K8s users. RancherD solves this problem by simply having the user drop
+    the certificate files into `/etc/rancher/ssl/` on one of the RancherD nodes, at
+    which point it takes over the process and handles the update for you. Most of
+    the time, you'll use RancherD when you don't want to manage the K8s cluster that
+    hosts Rancher but can't use a hosted K8s option such as **AWS** **EKS**, **Azure**
+    **AKS**, or **Google** **GKE**, or if you need to manage a large number of different
+    Rancher installations. For example, if you were running a hosted environment where
+    you were providing *Rancher as a service*, you might use RancherD to simplify
+    the management of these clusters at scale.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What controllers run inside the Rancher server pods?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Rancher is made of a set of pods – three pods by default – that run in a K8s
+    cluster. These pods can service requests from the ingress controller – **ingress-nginx**
+    by default – using Norman to translate the Rancher API requests into the K8s API
+    requests to access the custom resource objects that Rancher uses. But the Rancher
+    server pods also host several controllers, with the primary controllers as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`TokenReview` requests from K8s. This service then calls the LDAP server and
+    validates the username and password. If it passes the validation, the service
+    will respond with a `200 OK` response, with all other response codes representing
+    a failed authentication. Because of this, the setup process can be very complex
+    and unreliable. As a result, Rancher chose the approach of building its controller
+    to validate the username and password with external authentication providers such
+    as LDAP, AD, GitHub, Okta, and more. Once the user has been validated, Rancher
+    will give the user a bearer token that they can use to authenticate directly to
+    the K8s API. The controller does this by creating matching service accounts, roles,
+    and role bindings on the downstream clusters ahead of time. The controller also
+    provides some higher-level controls via the Rancher concept of *projects*. You
+    can define a group of namespaces called a *project* and manage permissions at
+    the project level instead of managing them only at the cluster or namespace level.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Rancher Catalog Controller**: This controller is responsible for managing
+    the catalogs inside Rancher. But what is a *catalog*? Rancher uses the concept
+    of *catalogs* that are repositories for Helm charts. Rancher calls them catalogs
+    because they give users a catalog of applications to deploy to their cluster.
+    The default catalogs have several great applications including **WordPress**,
+    **MySQL**, **Rancher** **Longhorn**, the **Datadog** **Cluster Agent**, and many
+    more. All of these catalogs come together in Rancher under what is called the
+    **Apps and Marketplace** feature, allowing users to deploy Helm-based applications
+    to your cluster. You can also add your repository as a catalog, which is excellent
+    for DevOps teams that want to provide their application teams with standardized
+    toolsets. For example, if an application team wanted their own monitoring systems,
+    they could modify and tune the system based on their preferences. You might create
+    a **Prometheus** Helm chart with a basic configuration that the application team
+    could simply click to deploy on their cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Another great example of the use of a Helm chart is for environments where there
+    might be one primary application – for example, the core application for the business
+    that other teams must write their applications to connect to and work with. You
+    can create a Helm chart for the monolithic application that an application team
+    can quickly spin up to do integration testing with and then spin down to save
+    costs. In this case, all of this would be managed by the Rancher catalog controller,
+    which handles caching the catalogs (for speed reasons) and for legacy applications,
+    deploying the application, that is, running the `helm install` command inside
+    the Rancher server pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But with Rancher v2.6, this process has been moved over to Fleet to handle the
+    deployment process, where Fleet will spin up a Helm operator pod on the downstream
+    cluster and run the Helm commands. Note that this is excellent for speed, scalability,
+    and flexibility, as Fleet gives you many options for customizing the Helm chart
+    and is part of Rancher's DevOps at scale. Fleet is designed to manage up to a
+    million clusters at once. It is important to note that the Rancher catalog controller
+    only runs on the Rancher leader pod. If that is deleted or lost, the cache will
+    need to be rebuilt, but this process usually only takes a few minutes. This controller
+    also synchronizes the cache on a schedule (6 hours by default), but the syncing
+    process can be forced to update, with this process running the `helm repo update…`
+    command but as Go code instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`cluster.yaml` and `cluster.rkestate` files for you and handles running `rke
+    up` from inside the Rancher leader pod. Note that when troubleshooting the cluster
+    if it is stuck when updating status issues, this is the controller we''ll look
+    at the most. Please see the *How does Rancher provision nodes and clusters?* section
+    later in this chapter for more details on how this controller works.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Rancher Node Controller**: This controller is responsible for managing the
+    Rancher-provisioned nodes. This controller is only used for Rancher-provisioned
+    clusters on virtualized platforms such as **Amazon** **EC2**, **Google** **GCP**,
+    VMware vSphere, and so on. This controller is built on top of the Go code that
+    makes up a Rancher machine, which in turn is built on top of **Docker Machine**.
+    This controller''s main function is to handle the creation and deletion of VMs
+    in a node pool. Please see the *How does Rancher provision nodes and clusters?*
+    section later in this chapter for more details about this process. Note, when
+    troubleshooting node provisioning errors such as SSH timeout or configuration
+    validation errors, this is the controller we''ll look at the most.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`rancher-pipelines.yml` file to configure the pipeline.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: As of Rancher v2.5, Git-based deployment pipelines are now recommended to handle
+    Rancher Continuous Delivery, powered by Fleet. As a result, this controller was
+    removed in Rancher v2.6.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '`vanilla` upstream Prometheus monitoring stack deployment instead of a Rancher
+    customized Prometheus deployment.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Rancher Logging Controller**: This controller manages the integration between
+    the logging systems in the Rancher UI and the **Banzai Cloud** **Logging** operator.
+    This controller is a translation layer that allows users to define logging Flows
+    and ClusterFlows via the Rancher UI, which get translated into **Custom Resource
+    Definition** (**CRD**) objects that the Banzai Cloud Logging operator uses for
+    configuring both applications and cluster-level logging. Before Rancher v2.5,
+    Rancher used several different logging providers, including **Syslog**, **Splunk**,
+    **Apache** **Kafka**, and **Fluentd**. However, this was a custom Rancher solution
+    and wasn''t very flexible. So, as part of the logging v2 migration, everything
+    was moved over to Banzai to be better aligned with where the industry is heading
+    to.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`istioctl` binary or the Istio operator. This controller also handles deploying
+    **Kiali** for graphing traffic flows throughout the service mesh. This allows
+    users to see what applications connect to other applications, including the traffic
+    rates and latencies between pods. This can be extremely valuable for application
+    owners and teams.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`--insecure-bind-address` flag set to something besides `localhost` on kube-apiserver.
+    Note that this setting allows requests to bypass the authentication and authorization
+    modules, and they must not be exposed outside the node. In this case, Sonobuoy
+    would collect this setting and then kube-bench would flag that value as a failed
+    check. Finally, the **rancher-cis-benchmark** tool would collect all of the checks
+    together in an excellent report that can be sent off by email to the security
+    team.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What do the Cattle agents do?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The Cattle agents that Rancher deploys on downstream clusters (that is, clusters
+    that Rancher is managing) provide Rancher with access to the cluster and its nodes.
+    This is done using two different sets of pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`localhost`. This tunnel will then allow connections for the Rancher server
+    pod to the downstream cluster. Because of this, Rancher does not need firewall
+    rules to open from the Rancher servers to the downstream cluster, including the
+    need to port-forward, which can be a security issue. This WebSocket connection
+    is held open by Rancher and the Cattle-cluster-agent, as if this connection drops,
+    Rancher will lose access to the cluster until the connection can be restored.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Cattle-node-agent**: This runs as a **DaemonSet** on all nodes with a toleration
+    that ignores just about everything. This pod uses the same kind of WebSocket connection
+    as the previous example, with a TCP tunnel back to Rancher. Still, RKE uses this
+    connection inside the Rancher server pod to provide a socket connection to the
+    Docker Engine running on the node. This is needed for RKE to spin up the non-K8s
+    containers that make up an RKE cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Cattle-node-agent is only used in clusters where Rancher manages the cluster,
+    that is, when Rancher built the cluster using RKE. For imported clusters, such
+    as an Amazon EKS cluster, the Cattle-node-agent is not needed.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Both agents use HTTPS to connect to the Rancher API. They do this by passing
+    some environment variables into the pods. The first variable is `CATTLE_SERVER`;
+    this variable is the hostname of the Rancher API. An example hostname is `rancher.example.com`.
+    Note that there is no HTTP or HTTPS in this variable, as it is a requirement for
+    the agents to connect to Rancher over an HTTPS connection. The second variable
+    is `CATTLE_CA_CHECKSUM`, a `CATTLE_CA_CHECKSUM` variable, so long as they match,
+    the agents will trust that HTTPS connection. It's important to note that if you
+    renew the certificate in place, that is, without changing the chain, the `CATTLE_CA_CHECKSUM`
+    variable will not change if you change certificates to a different authority –
+    for example, if you are switching from a self-signed certificate to a publicly
+    signed certificate from a company such as `CATTLE_CA_CHECKSUM` variable to have
+    longer matches, thereby requiring manual work to update the agents. This process
+    is documented at [https://github.com/rancherlabs/support-tools/tree/master/cluster-agent-tool](https://github.com/rancherlabs/support-tools/tree/master/cluster-agent-tool).
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does Rancher provision nodes and clusters?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Rancher can provision a number of different nodes and clusters using the following
+    methods. There are three main types of clusters in Rancher. *Rancher-created clusters
+    using RKE*, *Rancher-created clusters using a hosted provider*, and *imported
+    clusters*. Each of these types has subtypes, which we will describe in detail
+    here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Rancher-created clusters using RKE are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Rancher-created nodes**: One of the great things about Rancher is that if
+    you choose Rancher, it can build the cluster for you, and they can manage the
+    VMs themselves. This is done by using a tool called **Rancher-machine**. This
+    tool is based on Docker Machine, which lets you create VMs and install Docker.
+    Docker Machine does this by using driver plugins. These driver plugins act as
+    a translation layer between Docker Machine and the virtualization provider – for
+    example, **Amazon AWS**, **Linode**, **OVHcloud**, or VMware vSphere.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How Docker Machine works is that you give it credentials to your virtualization
+    provider and define the specifications on the VM, such as how many cores, how
+    much RAM, and so on. Then, the driver plugin takes over to call the cloud provider's
+    API endpoint to provision the VM. Docker Machine then creates an SSH key pair
+    for each VM and then uses the driver plugin to push the SSH key to the VM. It
+    then waits for the SSH connection to become available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the SSH connection has been created, Docker Machine then installs Docker.
+    This is where Rancher-machine comes into the picture. Rancher-machine builds on
+    top of Docker Machine by adding additional driver plugins such as **DigitalOcean**
+    and **Rackspace**. It then provides additional features such as implementing cloud-init.
+    You can run other steps during the node provisioning process such as creating
+    a filesystem for Docker or applying customizations to Docker Engine. Rancher provides
+    higher-level functions such as defining node templates to deploy nodes in a repeatable
+    process that is expanded even more by defining node pools (a group of nodes using
+    node templates). Node pools allow Rancher to add and remove nodes from the group
+    at will. For example, if a node crashes in the pool and doesn't recover during
+    the default 15-minute timeout (customized), Rancher can create a new replacement
+    VM and destroy the crashed node. This process can also be used to perform a rolling
+    replacement of nodes for use cases where you don't want to *patch in place* but
+    want to update your base image and recreate all of your nodes in a rolling fashion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Bring your own nodes**: These nodes are for use cases where you would like
+    or need to create the VMs yourself or use physical servers. In this case, you
+    will define your cluster configuration in Rancher. Then, Rancher will create a
+    command for you to run that looks like the following:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Let's break down this command. First, this is a Docker command that can run
+    on any Linux host that has Docker installed. The next part is `run`, which says
+    to create a new container, with the next flag being `-d`, which says to run in
+    *detached* mode. This will start the container and put it in the background. The
+    `–privileged` flag then tells Docker that it will be a privileged container –
+    meaning that this container can access all of the devices on the host. Think of
+    it like running the process directly on the host operating system with little
+    to no limits. The `--restart=unless-stopped` flag just tells Docker to keep restarting
+    this container until we tell it to stop. Next is the `--net=host` flag, which
+    gives the container the same network as the host. Therefore, the container's IP
+    will be the host's IP. The next two flags pass the `/etc/kubernetes` and `//var/run`
+    directories inside the container. The `/etc/kubernetes` directory is used to store
+    node-level configuration files and, most importantly, the SSL certificates used
+    for the K8s components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following section is the container image and tag. This image will match
+    the Rancher version, and this image includes all of the binaries that will be
+    needed to bootstrap this node. The `--server` flag is the Rancher API server path.
+    This will be passed into the container, creating and tunneling back to the Rancher
+    leader pod (please see the *What do the Cattle agents do?* section earlier in
+    this chapter for more details). Next, we have the `–token` flag. This is used
+    to authenticate the agent to the Rancher server and tie this agent to a cluster.
+    Each cluster will have a unique token, but all of the agents in a cluster will
+    share the same token. Finally, we have the `role` flags. These flags are used
+    to assign the different roles of the RKE cluster to the node. Note that nodes
+    can have more than one role, but a cluster requires at least one node for each
+    role: one etcd node, one control plane, and one worker node. You can mix and match
+    roles as you choose, but there are best practices for this that should be followed.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In both Rancher-created nodes and *bring your own nodes*, once the bootstrap
+    agent has been successfully started on the node, the agent will tunnel back to
+    the Rancher leader pod and register the new node in Rancher RKE. It then uses
+    the registered nodes to dynamically create the `cluster.yaml` file using the registered
+    or registering nodes to the cluster. If this cluster has already been successfully
+    started once before, Rancher will also pull `cluster.rkestate` from the CRD `clusters.management.cattle.io`
+    object. This file includes the current state of the cluster, the root and server
+    certificates, and the authentication tokens that RKE will use to communicate to
+    the cluster. Then, the cluster controller will use the port binding on the Rancher
+    leader pod to connect the Docker engines on the nodes. At this point, RKE will
+    create the certificates and configuration files, deploy them to the nodes, and
+    start creating/updating the etcd cluster. RKE performs this process in a serial
+    fashion, working on only one node at a time, and if RKE runs into any issues,
+    it will throw an error and exit the function. Also, an etcd backup is taken on
+    each etcd node for existing clusters before making any changes. Once the etcd
+    plane has been successfully started, RKE will begin working on the control plane,
+    where RKE will start up the kube-apiserver objects, kube-controller-manager, and
+    kube-scheduler, working again in a serial fashion by running one node at a time
+    and running health checks as it goes. And again, if any step in this process fails,
+    RKE will fail too. Finally, RKE will come to the worker plane. This process is
+    different, because it is designed to create a parallel to doing multiple worker
+    nodes at once, and it will continue even if a failure happens, so long as the
+    settings defined in the `zero downtime` configuration have not been violated.
+    The default settings are only one etcd or control plane node down at any given
+    time, with up to 10% of the worker nodes down. Note, this number is rounded down
+    to the nearest node, with a minimum of one node per batch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Rancher-created clusters using a hosted provider**: One of the nice things
+    about Rancher is you can use a hosted K8s cluster such as AWS EKS, Google GKE,
+    or Azure AKS if you don''t want to deal with VMs and just want to let your cloud
+    provider manage the VMs for you. Rancher can help by using the cloud provider''s
+    **software development kit** (**SDK**) to provide the cluster for you. This is
+    mainly for reasons of convenience and consistency, as there are no unique or hidden
+    options that Rancher has that you can''t do yourself. As part of its new hosted
+    cluster option in v2, Rancher also allows for the three-way synchronization of
+    configurations between Rancher, the cloud provider, and the end user. What is
+    remarkable is that if you want to change some settings for your AWS EKS cluster,
+    you can manage it directly in the AWS console and your changes will be reflected
+    in Rancher. Note that this can be done for RKE clusters too but requires a few
+    extra steps.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Imported K8s clusters**: Finally, if you don''t want Rancher to manage your
+    clusters whatsoever, but you do want Rancher to be a friendly web UI for your
+    cluster, you can utilize the excellent *convenience features* of Rancher such
+    as **Active Directory** (**AD**) authentication, web kube-proxy access, and more.
+    You can import the cluster where Rancher will deploy the cluster-Cattle-agent
+    on the cluster but will not have access to items such as etcd, kubelet, the Docker
+    CLI, and more. In this instance, Rancher will only be able to access the kube-apiserver
+    endpoint. Note that Rancher supports any certificated K8s distribution for the
+    imported cluster option, and this can include *K8s the hard way*, EKS, a self-managed
+    RKE cluster, or even a K3s/RKE2 cluster. As of Rancher v2.6.0, K3s and RKE2 clusters
+    are unique in that they can be imported into Rancher and Rancher can then take
+    over management of the cluster moving forward. Please note that this is still
+    a new process and has its limitations and bugs.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What are kube-apiserver, kube-controller-manager, kube-scheduler, etcd, and
+    kubelet?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The etcd object is a distributed and consistent key-value pair database. **CoreOS**
+    initially developed etcd to handle OS upgrades in cluster management systems and
+    store configuration files in 2013\. Because of this, etcd needed to be highly
+    available and consistent. The etcd object is currently affiliated with the CNCF
+    and has been widely adopted in the industry. An etcd cluster is based on the idea
+    of maintaining consistency across nodes – most clusters contain three or five
+    nodes, and there is a requirement that there be an odd number of nodes. This is
+    due to the requirements of the Raft consensus algorithm. This algorithm selects
+    a master node, which etcd calls the *leader*. This node is responsible for synchronizing
+    data between nodes. If the leader node fails, another election will happen, and
+    another node will take over this role. The idea here is that etcd is built on
+    the concept of a *quorum*. This means that more than half of the nodes in the
+    cluster must be in consensus. In a standard three-node cluster, the etcd cluster
+    will continue to accept writes if a single node fails, but if two nodes fail,
+    the surviving etcd node will take the safest option and go into read-only mode
+    until a quorum can be restored in the cluster. A five-node cluster is the same,
+    but it requires three of the five nodes to fail to lose service. All write processes
+    go to the etcd leader node, which are written to the Raft log and then broadcast
+    to all cluster nodes during operations. Once the majority of the nodes have successfully
+    acknowledged the write (that is, two nodes in a three-node cluster and threes
+    nodes in a five-node cluster), the Raft log entry is committed, and the write
+    is acknowledged back to the client. If a majority of the nodes do not acknowledge
+    the write, then the write will fail and will not be committed. Because of Raft,
+    adding more nodes to the cluster will increase the fault tolerance, but this also
+    increases the load on the leader node without improving performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For now, etcd stores the data because etcd is built on top of **BoltDB**, which
+    writes its data into a single memory-mapped file. This means the operating system
+    is responsible for handling the data caching and will keep as much data in memory
+    as possible – this is why etcd can be a *memory hog* and requires a high-speed
+    disk, preferably an **SSD** or **NVME**. Then for the data, etcd uses **multiversion
+    concurrency control** (**MVCC**) to handle concurrent write operations safely.
+    The MVCC works in conjunction with Raft, where every write is tracked by a revision.
+    By keeping a history of the revisions, etcd can provide the version history of
+    all of the keys. This impacts read performance because key-value pairs are written
+    to disk in the order created in the transaction log, not by an index (as in a
+    traditional database). This means that key-value pairs written simultaneously
+    are faster to read than key-value pairs written at different times. However, with
+    etcd keeping revisions over time, the disk and memory usage can grow very large.
+    Even if you delete a large number of keys from etcd, the space will continue to
+    grow since the prior history of those keys will still be retained. This is where
+    etcd compaction and defragmenting come into the picture wherein etcd will drop
+    superseded revisions, that is, older data that has been *overwritten,* where the
+    memory-mapped file will have several holes so etcd will then run a defrag to release
+    free pages back to the operating system. However, it is essential to note that
+    all incoming reads and writes will be blocked during a defragmentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: kube-apiserver is a critical component in a K8s cluster, as it is the server
+    that provides the REST API endpoint for the whole cluster. kube-apiserver is the
+    only K8s component that connects to the etcd cluster and acts as an access point
+    for all of the other K8s components. Now, kube-apiserver is intended to be relatively
+    simple, with most of the business logic being done by other controllers and plugins.
+    But one of its primary responsibilities is authentication and **RBAC** (**role-based
+    access control**). The default access control behavior is that all clients should
+    be authenticated to interact with kube-apiserver.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The other central role that kube-apiserver serves is managing secret encryption.
+    By default, K8s stores secrets in plain text inside the etcd database. This can
+    be a security issue, as secrets store items like passwords, database connection
+    strings, and so on. To protect secrets, kube-apiserver supports an encryption
+    provider. What happens is, any time a secret is created or updated, kube-apiserver
+    will call the encryption provider to access the encryptions algorithm and keys
+    to encrypt the data, then send this data to the etcd cluster. Then whenever a
+    secret is read from the etcd cluster, kube-apiserver uses the reverse process
+    to decrypt the data before sending the response back to the client. Because of
+    this, the clients are unaware that secrets are encrypted, with the only impact
+    being performance. The standard for Rancher is to use `aescbc` for its encryption
+    algorithm, as this provides a good balance between performance and strength, and
+    also has the added benefit that most modern CPUs support AES with CBC mode in
+    hardware. As a result, encryption and decryption performance are usually not an
+    issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another one of the critical things to remember about kube-apiserver is that
+    it's stateless; besides some in-memory caching, kube-apiserver stores no data.
+    This means kube-apiserver is great for horizontal scaling. It also has no leader
+    election process as there is no leader node. So, typically, clusters will have
+    at least two nodes running kube-apiserver, but you can have more with larger clusters.
+    You also don't have the limitation of old numbers of nodes in the way you do with
+    etcd. The kube-apiserver is also where a lot of core cluster configuring happens.
+    For example, when using a cloud provider such as AWS or VMware vSphere, you need
+    to create a configure file and pass that file path into the kube-apiserver component
+    as a command-line flag. Note, kube-apiserver does not support hot changing settings
+    and requires a restart to alter its configurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The K8s controller manager, kube-controller-manager, is the core controller
+    for K8s and is typically called the *controller for controllers*, as its main
+    job is to sit in a non-terminating loop that regulates the state of the cluster.
+    It connects to the kube-apiserver component and creates several watch handles
+    that monitor the current state of the cluster and compare it to the desired state.
+    The kube-controller-manager component does this by having several smaller controllers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first of these smaller controllers is the *replication controller*. This
+    controller ensures that the specified number of pods in a **ReplicaSet** are running
+    at any given time. An example of this is if a ReplicaSet has five pods in the
+    desired state, but it only has hour pods in the current state. The replication
+    controller will create a new pod object in the unscheduled state, thereby bringing
+    the ReplicaSet back up to the required five pods. Another example is when a node
+    fails – here, the replication controller will see that the pod has been disabled,
+    deleted, or terminated, and it will create a new pod object again. The replication
+    controller also handles terminating pods when the current state is greater than
+    the desired state. There is some business logic built inside the termination process.
+    Here, the main rule is that pods that are currently not in the ready status, that
+    is, they are pending or failed, are the first pods to be set for terminations,
+    with the oldest pods being the next in line. Note that the replication controller
+    does not delete pods or call nodes directly, or even connect to other controllers.
+    All communication happens between the controller and kube-apiserver.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second controller is the *endpoints controller*, which is responsible for
+    maintaining the endpoints that join services and their assigned pods, with endpoint
+    and service records being part of the cluster DNS system. K8s needs to track pods
+    being created and deleted in the cluster to update those records with the correct
+    IP addresses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third controller is the *service account and token controller*. This controller
+    is responsible for creating and managing service accounts in the cluster and creating
+    tokens for the service accounts to use to authenticate the kube-apiserver component.
+    Note that the tokens are stored as secrets in the namespace where the service
+    accounts are hosted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fourth controller is the *node controller*. This controller is responsible
+    for watching the status of the nodes in the cluster by watching the node leases
+    that kubelet is periodically updating by sending a heartbeat. Suppose a node lease
+    violates the node timeout that is five minutes by default. The node controller
+    will decide that this node must be down and start the pod eviction process wherein
+    the controller updates the pods running on that node with the status of `Unknown`
+    and will taint the node object with the taint of `unschedulable`. This will trigger
+    the replication controller to begin deleting pods that cannot tolerate that taint.
+    It is essential to remember the following things about this process. First, K8s
+    has no way of knowing if a node is genuinely down or if it's just having issues
+    communicating with the kube-apiserver, which means if a kubelet on the node crashes
+    or locks up, then the pods running on the node will continue to run without issue,
+    even though the node controller has flagged them and the replication controller
+    has deleted them. And also, because K8s has no way for the cluster to block I/O
+    to the failed node, you could run into a split-brain issue with the same pod/application
+    running in two locations simultaneously. You also must remember that pods that
+    have tolerations for the `unschedulable` taint will not be rescheduled.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An example of this is a canal pod that has a toleration for any taint placed
+    on a node, meaning this pod will be scheduled on a node no matter what. The next
+    thing to remember is that the eviction process does have rate limiting, which,
+    by default, will evict pods at a rate of ten pods per second. This is to prevent
+    a flood of pods from being rescheduled in the cluster. Finally, only a single
+    kube-controller-manager is allowed to be active at any one time. It does this
+    by using a leader election process. All kube-controller-manager processes try
+    to grab a lease in kube-apiserver. One process becomes the leader, allowing the
+    other controllers to start taking action in the cluster. The leader will continue
+    to refresh this lease while the other nodes continue monitoring the lease, comparing
+    the last renewal timestamp to the expiration timestamp. If the lease is ever allowed
+    to expire, the standby kube-controller-manager will race to become the new leader.
+    All this being said, scaling the kube-controller-manager horizontally only improves
+    fault tolerance and will not improve performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: kube-scheduler is the controller that handles assigning pods to nodes. It does
+    this by watching for unscheduled pods, at which point kube-scheduler is evaluating
+    nodes. kube-scheduler first builds a list of nodes that meets all of the requirements.
+    For example, if a pod requires a node selector rule, only nodes with that label
+    will be added to the node candidate list. Next, kube-scheduler will evaluate the
+    taints and tolerations of the nodes and pods. For example, by default, a pod will
+    not tolerate the node with taint scheduling disabled. This taint is typically
+    applied to master, etcd, or control-plane nodes. In this case, the node wouldn't
+    be added to the node candidate list. Next, kube-scheduler will create what it
+    calls a node *score*. This score is based on the availability of the resources,
+    such as CPU, memory, disk, network, and more, that are available on the node.
+    For example, a node that is underutilized, that is, with a lot of CPU and memory
+    available will score higher than a node that is highly utilized, that is, with
+    little to no CPU or memory available. Once all of the scores are calculated, kube-scheduler
+    will sort them from the highest to lowest. If there is only one node with the
+    highest score, then that node wins. If there is a tie, kube-scheduler will randomly
+    pick a winner from the nodes that tied. Finally, kube-scheduler will update the
+    pod object in kube-apiserver with its node assignment. An important thing to remember
+    is kube-scheduler can be tuned and even replaced with other third-party schedulers.
+    This is mainly done for environments with burst workloads where many pods will
+    be created at once. This is because kube-scheduler doesn't know about resource
+    utilization and its pods over time. It only gets whatever the current value is
+    at scheduling. So, what can happen is one node will get flooded with new pods
+    and fall over. Those pods are then rescheduled on a new node, which in turn knocks
+    that node over as well. But during that event, the first node is recovered, and
+    so now all of the new pods will go to that node because it is empty, and the process
+    repeats repeatedly. There is also an essential idea to understand here, kube-scheduler
+    only touches a pod at the time of creation. Once the pod has been scheduled to
+    a node, that's it. The kube-scheduler component does not rebalance or move pods
+    around. There are also tools like kube-descheduler that can fill in this gap and
+    help you balance your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In simple terms, kubelet is the node agent in K8s. kubelet runs on every worker
+    node, and in the case of RKE, all nodes. kubelet has several different roles and
+    responsibilities. The first is taking the pod specifications in kube-apiserver
+    that have the node assignments of the node where kubelet is running. kubelet then
+    compares that pod specification to the current state of the node. kubelet does
+    this by connecting to Docker or containerd to gather what containers are currently
+    running on the node. Then, if there is a difference, kubelet will create or destroy
+    the containers for them to match. The kubelet component's second responsibility
+    is *pod health*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pods can have *probes* defined as a part of their specifications. These include
+    *liveness probes*, which are responsible for checking whether the application
+    inside a pod is healthy. These checks are simple `HTTP GET` request to `/` every
+    5 seconds to confirm that NGINX is up and responding to requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `kubelet` component only accepts `200 OK` responses as evidence of a healthy
+    request. All other response codes will return a failure. Another type of probe
+    is called the *startup probe*. This probe is similar to the liveness probe but
+    mainly tells `kubelet` that a pod has successfully started.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An example might be a database inside a pod where the database could take a
+    few minutes to fully start up. If you just used the liveness probes, you would
+    need to space out your schedule to allow the database to start before kubelet
+    killed the pod entirely. So, you'd want to use a *startup probe* with a delay
+    of a minute or two, then, once that is successful, the liveness probe could take
+    over and run every few seconds. Finally, the *readiness probe* is very similar
+    to the startup probe, but it is used for controlling when K8s can start sending
+    traffic to a pod. An example of this could be a web server that might start up
+    and be healthy but can't connect to a backend database. In this case, you don't
+    want kubelet to kill the pod, as it is fine, but you also don't want to start
+    sending traffic to the pod until it can connect to the database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do the current state and the desired state work?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '**Desired state** is one of the core concepts of Rancher and K8s. The idea
+    is that you should declare the state of an object (for example, a pod, deployment,
+    or volume) as you would like it to be. Then, the cluster should report the current
+    state of the object, at which point it''s the role of the controller (the kube-controller-manager
+    component in the case of most of K8s core objects) to compare these two states.
+    If no difference is found, don''t do anything, but if a discrepancy is found,
+    the controller''s job is to create a *plan* for making the current state match
+    the desired state.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, if you had a deployment with a replica of three pods deployed in
+    a cluster, the ReplicaSet controller will see that the replica count is set to
+    three (desired state) with an image of *v2*. The controller will then call the
+    kube-apiserver component and pull a copy of the current and desired state for
+    that ReplicaSet at which point, the controller will start comparing settings.
+    In this example, the current state will now have three healthy pods using the
+    *v1* image tag, because pods can't be modified after being created. The controller
+    will need to create new replacement pods and will need to destroy the old pods.
+    It does this by creating a new pod object with the updated image tag. This pod
+    object will have the status of *waiting to be scheduled*. At this point, kube-scheduler
+    takes over to assign that pod to a node. Then, kubelet takes over to create the
+    container(s), IP address, mount volumes, and so on that are needed for the pod.
+    Then, once everything has been started and the probes are successful, kubelet
+    will update the pod object to the state of `Ready`. This takes us back to the
+    ReplicaSet controller, which will then detect that one of the number pods has
+    successfully been started. If yes, pick the oldest pod that doesn't meet the spec
+    and terminate that pod by setting the status to terminating. This will trigger
+    kubelet to destroy the pod and its resources. Then, once everything is cleaned
+    up, kube-controller-manager will remove the terminated pod object in kube-apiserver.
+    This process then starts again and will repeat until all of the pods in the ReplicaSet
+    match the desired state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The controllers are designed to always aim to have the current state matching
+    the desired state. If the controllers run into an issue, such as the new pods
+    keep crashing, the image can't be pulled, or a `configmap` object is missing,
+    then after several failed attempts, the controller will keep trying, but it will
+    put that object in a **CrashLooping** status. This tells the controller to stop
+    fixing that state for a set amount of time (the default is 5 minutes). The controller
+    does this to prevent spamming the cluster with requests for failing resources
+    (for example, if you had entered a typo in the image tag). We don't want the controller
+    to keep creating and deleting the same pod over and over again as fast as it can,
+    as this will put a load on kube-apiserver, etcd, kube-scheduler, and so on, which
+    would create an extreme case of a large number of pods all crashlooping at the
+    same time, and this could take the cluster down.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we learned about Rancher, RKE, RKE2, K3s, and RancherD. We
+    went over some of the pros and cons of each product. We then went over how they
+    were designed and how they work. Next, we covered all of the controllers that
+    make up Rancher and explored how they work behind the scenes. After that, we dove
+    into how Rancher uses its Cattle agents for communicating with its clusters and
+    nodes. Finally, we went into detail on the different core components of K8s, including
+    kube-apiserver, kube-controller-manager, and kube-scheduler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will see how to install Rancher in a single-node environment.
+  prefs: []
+  type: TYPE_NORMAL

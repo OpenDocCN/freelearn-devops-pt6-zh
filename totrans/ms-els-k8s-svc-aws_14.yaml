@@ -1,0 +1,738 @@
+- en: '14'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Setting Load Balancing for Applications on EKS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In [*Chapter 4*](B18129_04.xhtml#_idTextAnchor067), we looked at how you can
+    use a NodePort, Ingress, and/or AWS **Load Balancer** (**LB**) to expose a simple
+    application. In this chapter, we will dive into more detail on how to scale and
+    provide greater resilience in your application using **AWS Elastic Load** **Balancers**
+    (**ELBs**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In most modern web or cloud-native applications, you want to ensure that the
+    application is available to its client (resilient) and copes as the Kubernetes
+    scheduler scales your application by replacing, removing, and adding Pods when
+    necessary. Placing an LB in front of your application allows these Kubernetes
+    actions to be hidden from the client, which has a consistent endpoint to access
+    the application regardless of the location or number of Pods. Hence, specifically,
+    we will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What LBs are available in AWS, and how to choose the right one for your needs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How EKS can create and use AWS LBs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You should be familiar with YAML, AWS **Identity and Access Management** (**IAM**),
+    and **Elastic Kubernetes Service** (**EKS**) architecture. Before getting started
+    with this chapter, please ensure that you have the following in place:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Network connectivity to your EKS cluster API endpoint
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The AWS `kubectl` binary are installed on your workstation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A basic understanding of AWS networking
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Choosing the right load balancer for your needs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'One of the key characteristics of a modern, cloud-based application is to be
+    able to scale horizontally (adding more instances to meet demand or recover from
+    failure). In [*Chapter 4*](B18129_04.xhtml#_idTextAnchor067), we looked at how
+    you can use deployments to create and manage multiple Pods, but you also need
+    to distribute user traffic over those Pods. This is what an LB does, and we will
+    work with two main types in EKS: the **Application Load Balancer** (**ALB**) and
+    the **Network Load Balancer** (**NLB**), which are both types of ELB. In the next
+    two sections, we will consider two key concepts that can be applied to any LB.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Concept 1 – understanding Layer 4 and Layer 7 load balancer networking
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When we talk about layers in a networking context, we are talking about the
+    **Open Systems Interconnection** (**OSI**) model, which was developed in the 1980s
+    to simplify interconnection between different networks. The OSI model describes
+    a seven-layer model in which the top layer, Layer 7 (application), describes the
+    interface that applications use. Layer 4 (transport) describes how lower-level
+    protocols, such as **User Datagram Protocol** (**UDP**)/**Transmission Control
+    Protocol** (**TCP**), should behave. A complete description of the OSI model is
+    out of the scope of this book, but it’s worth noting that Layer 3 (networks) can
+    be used to describe the underlying networks, which in 99% of cases will be either
+    IPv4 or IPv6 (unless you are describing a **wide area** **network** (**WAN**)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: LBs that operate at Layer 7 have an understanding of the application protocols,
+    such as HTTP/HTTPS, and will inspect and distribute traffic using HTTP paths/URLs
+    and can perform actions such as redirection and health checks. It’s worth noting
+    that as HTTPS is encrypted, the LB must act as a proxy (see *Concept 2 – understanding
+    proxy and DSR modes*) and, in most cases, will terminate traffic from the client
+    before forwarding it to a (backend) service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: LBs that operate at Layer 3/4 have no understanding of higher-layer protocols,
+    such as HTTP/HTTPS, and work at a lower level. That means they can support web
+    applications and other traffic, such as **Secure Shell Protocol** (**SSH**) or
+    **Simple Mail Transfer Protocol** (**SMTP**). As these LBs operate at a lower
+    level, they can’t inspect HTTP headers, so how they inspect and distribute network
+    traffic is much simpler, and they tend to be faster. It also means they can operate
+    as both a **proxy** and in **Direct Server Return** (**DSR**) mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following diagram illustrates the two types of LBs. Both LBs see the client
+    traffic (denoted by the `1.1.1.1` IP address in the diagram) and can do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Serve web traffic to the Layer 7 LB and understand the HTTP verbs (`POST` in
+    the diagram) and the path or URL (`/users/user` in the diagram)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Distribute traffic on them, whereas the Layer 4 LB will simply see the type
+    of traffic (in the case of HTTP/HTTPS TCP) and the port (`8080` in the diagram)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![Figure 14.1 – L7 versus L4 LB](img/B18129_14_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.1 – L7 versus L4 LB
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know the differences between the network layers, let’s review the
+    differences between proxy and **DSR** modes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Concept 2 – understanding proxy and DSR modes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To inspect the HTTPS traffic (which is encrypted), the LB needs to terminate
+    it, so this normally means it holds the encryption certificate. This model is
+    known as a **reverse proxy mode**, as the LB will proxy the request to the backend
+    server(s) on behalf of the client. This can be seen in the following diagram,
+    where the source IP address of the client is replaced by the LB, which means that
+    the request and the response traffic go through the LB:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 14.2 – Comparison of proxy and DSR modes](img/B18129_14_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.2 – Comparison of proxy and DSR modes
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In DSR, the return/response traffic goes directly to the client. This means
+    that the LB handles fewer requests and can theatrically scale more with less latency
+    being introduced into the request/response traffic. It also means that the backend
+    (web service) needs to know the client’s IP address and be able to route back
+    to it. The following table describes each of the steps in the previous diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|  | **Proxy Request–Response** | **DSR Request–Response** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 1 | A **Domain Name System** (**DNS**) request for the service IP address
+    resolves to the IP address of the LB, and traffic is sent to the LB IP address
+    from the client’s IP. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 2 | HTTP/HTTPS traffic is inspected, and based on the protocol type/URL/port,
+    the traffic is sent to a set of registered backend servers (targets) typically
+    based on their health/load or on a round-robin basis. The client IP address is
+    normally added to the **X-Forwarded-For** header so that the backend server can
+    identify where the request has come from, but this is optional. | UDP/TCP traffic
+    is inspected, and based on the protocol type/port, the traffic is sent to a set
+    of registered backend servers (targets) typically on a round-robin basis using
+    a Layer 2 address such as a `X-header`, so the backend knows how to return the
+    traffic, but the approach will vary depending on how the LB is implemented. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 3 | The request is handled by the backend, and the `X-Forwarded-for` header
+    may be used to validate the request. The response is sent back to the LB. | The
+    request is handled by the backend. The response is sent back to the client using
+    either the preserved source IP address of `X-header` or by mimicking the LB IP.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 4 | The LB returns the response to the client. | This step is not needed
+    for a DR router as the response is returned to the client in the previous step.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: Table 14.1 – Request/response steps
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we have looked at how a generic balancer works, let’s look at the options
+    available in AWS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which load balancers are available in AWS?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'There are a number of different types of LBs available in AWS, but we will
+    focus on the two types of ELBs commonly used with EKS: the ALB and the NLB. An
+    ELB can be either external or internal, but not both. External means that it is
+    accessible from the internet, and internal means it can only be accessed from
+    the **virtual private cloud** (**VPC**) or internal addresses that have a route
+    to the VPC hosting the ELB. The following diagram illustrates both ELB options
+    available in AWS:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 14.3 – AWS ELB](img/B18129_14_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.3 – AWS ELB
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Both LBs are configured using three key concepts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You create an instance of an NLB or ALB and connect it to a VPC.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You configure a listener, defining the protocol and either a port (NLB) or a
+    URL path (ALB) that the LB will accept traffic on.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You configure a target group, which defines the targets for the traffic sent
+    to it from the LB listener. It also defines the health checks needed to ensure
+    that the targets are healthy and can respond to traffic.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The ALB works as an Layer 7 proxy, so it can handle HTTP/HTTPS and HTTPv2\.
+    So if your application uses RESTful or gRPC-based APIs, an ALB will be able to
+    support the traffic. The ALB can send traffic to targets based on *registered*
+    IP addresses (both VPC addresses and on-premises, in the RFC 1918 address range,
+    as long as there is a VPC route), EC2 instances, and Lambda functions. The ALB
+    attaches to the VPC’s availability zones and scales to meet traffic demands. So
+    AWS provides a DNS **Canonical Name** (**CNAME**) record as its reference, as
+    it may have multiple network interfaces in a VPC, and the IP addresses associated
+    with the ALB can change. An ALB has an associated security group, meaning you
+    can control access to either its public or private interfaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Support for gRPC is limited, so while the ALB can forward gRPC traffic, it can’t
+    make traffic distribution decisions in the same way it can with RESTful APIs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The NLB lives in the AWS **software-defined networking** (**SDN**) fabric and
+    so it works quite differently from the ALB. The NLB works as an Layer-4 LB, supporting
+    both a proxy and DSR mode, depending on the type of backend servers and protocols
+    configured. The following are examples of these:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the backend services are specified by the EC2 instance ID they reside on,
+    the client IP is preserved and visible to your backend service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If the backend’s services are specified by IP address, then we see the following:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the target group protocol is TCP/**Transport Layer Security** (**TLS**),
+    client IP preservation is disabled, and the backend service sees the LB as the
+    source of the traffic (the client IP address can be accessed through the proxy
+    protocol headers)
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the target group protocol is UDP/TCP_UDP, the client IP is preserved and
+    is visible to your backend service
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Even if the backend sees the client IP address, as the NLB is an SDN construct,
+    return traffic is sent back through the NLB without any additional configuration.
+    This means that the client only sees the NLB addresses, and you don’t have asymmetrical
+    routing where the response goes to one IP and the response comes back from another.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This *return traffic magic* is not explained by AWS but ensures that any traffic
+    that is in the VPC will be routed back to the NLB even if the client IP address
+    is the source IP; outside the VPC, you may get different, asymmetrical routing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The NLB can send traffic to targets based on *registered* IP addresses (both
+    VPC addresses and on-premises in the RFC 1918 address range, as long as there
+    is a VPC route), EC2 instances, and ALBs. The NLB attaches to VPCs through fixed
+    **Elastic Network Interfaces** (**ENIs**), so AWS provides these IP addresses
+    (public or private), so once allocated, the IP addresses remain the same and don’t
+    change. The NLB has *no* associated security group, so external NLBs are *open*
+    to the internet. As you can see, while there are similarities between these two
+    ELBs, there are also differences. In the next section, let’s look at how you can
+    choose which one to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choosing the right ELB
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Imagine the scenario where you want to expose a simple microservice running
+    on EKS to the outside world in a scalable and resilient manner. Which ELB would
+    you choose? Of course, we would assume that both ELB types are available in your
+    desired Region! Here are some questions you might want to ask to help you make
+    your decision:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What type of interface are you exposing? If it’s not based on HTTP/HTTPS or
+    HTTPv2, you will need to use an NLB.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Do you want to offload encryption? If so, in most cases, you will want to use
+    SSL/TLS, and in a lot of cases, you will offload the encryption/decryption process
+    to the ELB. Both NLBs and ALBs support this, but if you want your Pod to do the
+    encryption/decryption (end-to-end encryption), you will need an NLB, as it can
+    pass the traffic through to the Pods.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Do you need advanced web security? Only an ALB integrates with AWS **Web Application
+    Firewall** (**WAF**) and **AWS Shield**, which acts as a **distributed denial-of-service**
+    (**DDoS**) protection service. NLB can be protected if you have Shield Advanced
+    but doesn’t integrate with WAF and, as we mentioned, has no security group associated
+    with it.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Do you need static IP addresses for whitelisting? NLBs provides static IP addresses,
+    whereas an ALB uses a DNS name, which can return different IP addresses. It is
+    possible to put an NLB *in front* of an ALB to provide static IP addresses, but
+    you are adding another network hop and increasing latency.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Do you need low latency, or can you cope with large traffic bursts? As the NLB
+    is an SDN construct, it is very low-latency and scales much faster than an ALB.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Do I want to use a Kubernetes Ingress or Service in the deployment? Similar
+    to an NLB, a Kubernetes service, for example, a **NodePort**, is a simple construct
+    that distributes traffic over a set of Pods. An Ingress, on the other hand, allows
+    much more control over routing, using different paths to distribute the load over
+    your Pods and is analogous to an ALB. So if you want to have different Pods handling
+    updates for users and groups, you can use path-based routing to point the user
+    actions to one Pod and the group actions to another Pod. If you need a single
+    Pod to handle all actions and expose a single port, you need an NLB/Service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There are, of course, other areas you might consider, but these are the main
+    ones I found useful when considering which ELB to use. In the next section, let’s
+    look at how we can use the **AWS Load Balancer Controller** (**ALBC**) to create
+    and use ELBs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using EKS to create and use AWS LBs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We can use the ALBC, which is an open source project, to create either an ALB/NLB
+    or use existing ones in our AWS account. Let’s start with installing the controller
+    and configuring the right privileges to access the AWS APIs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the ALBC in your cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The following steps should be followed in order to successfully install the
+    ALBC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first thing you need to do is make sure your VPC is set up correctly so
+    that, if you want to create an internal or external ELB, it is deployed into the
+    right subnets. You do this by tagging your public subnets with `kubernetes.io/role/elb`
+    and your private subnets with `kubernetes.io/role/internal-elb` and setting `Value`
+    to `1`. The following commands show you how you can tag and verify a public subnet:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now you have tagged all your subnets, we can deploy the controller to your
+    cluster. We will use `eksctl` and Helm. The next thing we need to do is create
+    a role and service account for the controller to use (we will use v2.4.5, but
+    this may change):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now we have the policy, we can create the service account using the `Arn` that
+    was provided in the previous command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now we have the service account created, we can deploy the controller and use
+    the Kubernetes service account we just created. To do this, we use the following
+    Helm commands with the service account created in the previous steps:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Next, we verify the deployment and version using the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now we have the controller deployed, let’s look at how we can use it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using an ALB with your application
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this section, we will work through the official sample located at [https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.4.7/docs/examples/2048/2048_full.yaml](https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.4.7/docs/examples/2048/2048_full.yaml).
+    To use an ALB with your application, please follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first thing we will do is create the namespace for the application components
+    using the following section of the YAML file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Next, we will create a deployment of three (Pods) replicas using the official
+    Docker image (note that your worker nodes must have internet access to pull the
+    image) and expose port `80` on each of the Pods in the deployment using the following
+    code snippet:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Finally, we create a `NodePort` service to expose the Pod outside of the EKS
+    cluster with the following code snippet:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'So far, we haven’t done anything different to many of the services we have
+    deployed throughout the book. The key difference is in the following snippet,
+    where the Ingress uses the `alb.ingress` annotations to define the type of ALB
+    to create, in this case, an external ALB with a target group based on IP addresses.
+    If you remember, the ALB is a Layer 7 proxy, so we also have to define what path
+    and port to register. In this case, we are defining [http://loadbalancername:80/](http://loadbalancername:80/):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The controller (ALBC) will see the annotations in the manifest and make calls
+    to the AWS API to create an external ALB listening on port `80` and a target group
+    with the Pod’s IP addresses defined as targets, which are registered with the
+    service we created as part of the manifest.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If we look at the deployed Pods using the following `kubectl` command, we can
+    see the VPC IP addresses that have been assigned (the output has been truncated):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now, if we go to the **EC2** | **Load Balancers** section of the AWS Console,
+    you will see the ALB created for the game application and the **DNS name** value
+    associated with it (remember that IP addresses can change, so you need to always
+    use the provided DNS name). An example is shown in the following screenshot:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 14.4 – Game app ALB](img/B18129_14_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.4 – Game app ALB
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we look at the associated `80`. An example is shown in the following screenshot:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 14.5 – Game app ALB target group](img/B18129_14_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.5 – Game app ALB target group
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we open up the target group and look at `kubectl` command. An example is
+    shown in the following screenshot:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: "![Figure 14.6 – \uFEFFRegistered targets\uFEFF for the game app](img/B18129_14_06.jpg)"
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.6 – Registered targets for the game app
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can see that the targets are all shown with a `80` every **15 seconds**
+    to make sure each Pod is able to receive traffic:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: "![Figure 14.7 – \uFEFFHealth checks\uFEFF for the game app](img/B18129_14_07.jpg)"
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.7 – Health checks for the game app
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you now browse to the ALB DNS name, you will be presented with the game
+    screen and can play the game, which involves moving blocks around the screen:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 14.8 – The game app service](img/B18129_14_08.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.8 – The game app service
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s now look at how we can modify the previous Kubernetes configuration to
+    use an NLB instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using an NLB with your application
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We can reuse the `namespace` and `Deployment` specifications from the previous
+    examples in the *Using an ALB with your* *application* section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As the NLB is an L4 LB, we don’t need the Ingress object, but we do need to
+    modify the `Service` definition. The first difference is that the annotations
+    we use define the same thing as the ALB annotations, that is, the type of NLB
+    and target group. As this is a service, we then define the ports rather than the
+    paths. In the example shown in the following code block, an external NLB will
+    be created with an IP target group and expose port `80`, which maps to the backend
+    port `80`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As before, the controller (ALBC) will see the annotations and make calls to
+    the AWS API to create an external NLB listening on port `80` and a target group
+    with the Pods' IP addresses defined by the `selector` statement.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If we look at **EC2** | **Load balancers** on the AWS Console, you will see
+    another LB for the game application, but in this case, it’s an NLB. An example
+    is shown in the following screenshot:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 14.9 – The game app NLB](img/B18129_14_09.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.9 – The game app NLB
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: While you can see the DNS name in the previous example, the NLB IP addresses
+    are static, unlike the ALB, which can change if AWS scales the service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we review **Target groups** associated with the NLB and **Registered targets**,
+    as shown in the following screenshot, we can see the same Pod IP addresses are
+    associated with the NLB and in a **healthy** state:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 14.10 – The game app NLB registered targets](img/B18129_14_10.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.10 – The game app NLB registered targets
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Again, a health check has been automatically created, but as this is a Layer
+    4 LB, the health check is port-based. In the example shown in the following screenshot,
+    a `80` check is used to make sure each Pod is able to receive traffic:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 14.11 – The game app NLB health check](img/B18129_14_11.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14.11 – The game app NLB health check
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you browse to the DNS name of the NLB, you will see the same game screen
+    as with the ALB (*Figure 14**.8*).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Reusing an existing LB
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In some cases, you might want to reuse an existing ELB. This will save you costs
+    and also simplify your configuration. You can do this by using the `TargetGroupBinding`
+    custom resource. This resource allows you to associate a service with an existing
+    **TargetGroup** and by NLB.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s assume we have created an NLB and an associated IP-based target group
+    but without registering any IP addresses. The following code snippet shows how
+    we can use `TargetGroupBinding`, which allows the ALBC to register Pods associated
+    with a Kubernetes Service with an existing NLB or ALB. The key is to specify the
+    given `ARN` of `TargetGroup` in the definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The NLB is outside of the security group associated with the worker nodes where
+    the Pods are running. So you will need to allow TCP:`80` from the NLB ENIs to
+    the worker nodes’ security groups as the ALBC will not do this for you when you
+    use `TargetGroupBinding`. The service referenced by `serviceRef` can be configured,
+    as `type: ClusterIP` rather than `LoadBalancer` or `NodePort`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have looked at how general LBs work, what options are available
+    in AWS, and how to configure and use the ALBC on EKS. We’ll now revisit the key
+    learning points from this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we explored how LBs help applications scale and provide resilience.
+    They tend to fall into two categories, either Layer 7 or Layer 4 LBs. Layer 7
+    LBs, which normally work on HTTP, understand protocol-specific attributes such
+    as paths or headers, whereas L4 LBs work at the port level and are protocol-agnostic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also reviewed the differences between the proxy and DSR modes; a proxy LB
+    always sits between the client and the backend system, whereas in DSR mode, the
+    backend can return traffic directly to the client (albeit by faking the source
+    address to be that of the LB).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We reviewed the different types of ELBs typically used with EKS, namely the
+    ALB and NLB, and how they differ. We then learned how to install the ALBC on an
+    EKS cluster and then how you can use annotations and custom configuration to create
+    either an NLB or ALB and register Pods with them so you can access the service
+    based on the path (ALB) or ports (NLB).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we quickly reviewed how you can use `TargetGroupBinding` to register
+    Pods with an existing NLB (or ALB). You should now be able to talk about the different
+    options available to you in AWS and configure deployments and services in EKS
+    to take advantage of an ALB or NLB.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will look at how you can use AWS Fargate to provide
+    enhanced security, support small workloads, or simply not manage or pay for EC2
+    instances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Understanding the OSI network model: [https://www.imperva.com/learn/application-security/osi-model/](https://www.imperva.com/learn/application-security/osi-model/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Understanding how HTTPS works: [https://www.cloudflare.com/learning/ssl/what-is-https/](https://www.cloudflare.com/learning/ssl/what-is-https/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Understanding how `X-Forwarded-For` works: [https://en.wikipedia.org/wiki/X-Forwarded-For](https://en.wikipedia.org/wiki/X-Forwarded-For)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Understanding ALB support for gRPC: https://aws.amazon.com/blogs/aws/new-application-load-balancer-support-for-end-to-end-http-2-and-grpc/'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Understanding NLB client IP address preservation: https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html#client-ip-preservation'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Understanding NLB proxy protocol: [https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html#proxy-protocol](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html#proxy-protocol)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Understanding AWS advanced web security features: [https://docs.aws.amazon.com/waf/latest/developerguide/what-is-aws-waf.html](https://docs.aws.amazon.com/waf/latest/developerguide/what-is-aws-waf.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Downloading the ALBC: [https://github.com/kubernetes-sigs/aws-load-balancer-controller](https://github.com/kubernetes-sigs/aws-load-balancer-controller)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'How to create an NLB: [https://docs.aws.amazon.com/elasticloadbalancing/latest/network/create-network-load-balancer.html](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/create-network-load-balancer.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

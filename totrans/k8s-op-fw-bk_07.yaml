@@ -1,0 +1,1617 @@
+- en: '*Chapter 5*: Developing an Operator – Advanced Functionality'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: While a cluster with Operators that are capable of basic installation and upgrade
+    functionality is a considerable improvement over non-Operator-based Kubernetes
+    clusters, there is still more that can be done to improve cluster administration
+    and user experience. Advanced features can help users to achieve more sophisticated
+    automation, guide failure recovery, and inform data-driven deployment decisions
+    with features such as metrics and status updates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'These are some of the fundamental features for higher-level Operators within
+    the **Capability Model** (as described in [*Chapter 1*](B18147_01_ePub.xhtml#_idTextAnchor015),
+    *Introduction to the Operator Framework*). As such, this chapter will first explain
+    the cost and benefits of implementing advanced functionality (in relation to the
+    effort necessary to do so) before demonstrating ways to add these features in
+    the following sections:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the need for advanced functionality
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reporting status conditions
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Implementing metrics reporting
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Implementing leader election
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Adding health checks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Conveniently, the code required to implement these features does not require
+    any significant refactoring of the existing Operator code. In fact, the hierarchical
+    nature of the Capability Model and the development patterns provided by the Operator
+    SDK encourage this iterative construction. It is, therefore, the goal of this
+    chapter to build upon the basic Operator code from [*Chapter 4*](B18147_04_ePub.xhtml#_idTextAnchor066),
+    *Developing an Operator with the Operator SDK*, to create a more complex Operator
+    capable of providing the features we just listed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The examples shown throughout this chapter build upon the project code that
+    was started in [*Chapter 4*](B18147_04_ePub.xhtml#_idTextAnchor066), *Developing
+    an Operator with the Operator SDK*. Therefore, it is recommended to start with
+    that chapter (and the prerequisites for it), which covers project initialization
+    and basic Operator functionality. This is not required, however, and the sections
+    in this chapter can be generally applied to any Operator SDK project. That is,
+    any project initialized by the Operator SDK will work with the following steps
+    and you do not need to specifically implement all of the code from previous chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With that in mind, the requirements for this chapter are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Any existing Operator SDK project
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Go 1.16+
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The Code in Action video for this chapter can be viewed at: [https://bit.ly/3zbsvD0](https://bit.ly/3zbsvD0)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the need for advanced functionality
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With a basic, functional Operator already built and ready for deployment, you
+    may be asking, What else do I really need? Indeed, now that your operand is installable
+    and its health is managed by your Operator, there may be nothing more to do. This
+    is a perfectly acceptable level of functionality for an Operator to have. In fact,
+    it may be preferable to start with a simple Operator and iterate as your development
+    resources allow (recall discussing this in [*Chapter 3*](B18147_03_ePub.xhtml#_idTextAnchor050),
+    *Designing an Operator – CRD, API, and Target Reconciliation*).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The point is that there is no shame during the development of your Operator
+    in stopping here. The Capability Model defines lower-level Operators for a reason
+    (in other words, if it was unacceptable to have an Operator that can only install
+    an operand, then why would Level I be defined at all?).
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, the Capability Model does define higher-level Operators for a reason
+    too. It is not difficult to imagine, for example, that during the course of a
+    user's interaction with your Operator, they may wish to see more detailed insights
+    into how it performs within a production environment. This is a good use case
+    for adding custom metrics to an Operator. Or, there may be a common failure state
+    that is difficult to debug (wherein status conditions would help expose more information
+    about the failure in an efficient way).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following sections are just a few of the most common additional features
+    that help elevate an Operator to a higher level of functionality. Some of these
+    are also covered in additional detail by the Operator SDK documentation on *Advanced
+    Topics* ([https://sdk.operatorframework.io/docs/building-operators/golang/advanced-topics/](https://sdk.operatorframework.io/docs/building-operators/golang/advanced-topics/)).
+    It is, of course, not feasible to list every possible feature that you could add
+    to your Operator. But hopefully, these examples serve as a good starting point
+    for your own development.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reporting status conditions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Status conditions were discussed in [*Chapter 3*](B18147_03_ePub.xhtml#_idTextAnchor050),
+    *Designing an Operator – CRD, API, and Target Reconciliation*, as a way to efficiently
+    communicate human-readable information about the Operator's health to administrators.
+    By presenting directly in an Operator's **CustomResourceDefinition** (**CRD**),
+    the information they provide is more easily highlighted and viewable in a more
+    centralized starting point for debugging issues. In this way, they provide an
+    advantage over error logs, which can contain lots of unrelated information and
+    often lack direct context, making them hard to trace to a root cause.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementing conditions in an Operator is made easier by the `Condition` type
+    was implemented in *KEP-1623* ([https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/1623-standardize-conditions](https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/1623-standardize-conditions))
+    around Kubernetes 1.19\. That type is now part of the Kubernetes API in the `k8s.io/apimachinery/pkg/api/meta`
+    module. This allows developers to work with a consistent understanding of how
+    conditions should be reported in Kubernetes with all of the compatibility assurances
+    of Kubernetes API support.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Operator Framework has also implemented conditions based on the Kubernetes
+    type, both in the Operator SDK and the `OperatorCondition` resource that the OLM
+    creates. This section will cover both approaches.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Operator CRD conditions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'As part of the Kubernetes API conventions covered in [*Chapter 3*](B18147_03_ePub.xhtml#_idTextAnchor050)*,*
+    *Designing an Operator – CRD, API, and Target Reconciliation*, objects (including
+    custom resources) should include both a `spec` and `status` field. In the case
+    of Operators, we are using `spec` as an input for configuring the Operator''s
+    parameters already. However, we have not yet modified the `status` field. We will
+    now change that by adding a list of conditions as a new field in `api/v1alpha1/nginxoperator_types.go`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we will run `make generate` (to update the generated client code) and
+    `make manifests` (to update the Operator''s CRD with the new field), or simply
+    `make` (which runs all generators, though we don''t need some of them right now).
+    The new field is now reflected in the CRD:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note that this also imports all of the embedded validation requirements for
+    the `Condition` type from the Kubernetes API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that the Operator''s CRD has a field to report the latest status conditions,
+    the code can be updated to implement them. For this, we can use the `SetStatusCondition()`
+    helper function, which is available in the `k8s.io/apimachinery/pkg/api/meta`
+    module. For this example, we will start with a single condition called `OperatorDegraded`,
+    which will default to `False` to indicate that the Operator is successfully reconciling
+    changes in the cluster. If the Operator does encounter an error, however, we will
+    update this condition to `True` with a message indicating the error. This will
+    involve some refactoring of the `Reconcile()` function in `controllers/nginxoperator_controller.go`
+    to match the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE79]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE80]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE81]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE82]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding code will now attempt to report a degraded status condition if
+    the controller is initially unable to access the Operator''s CRD. The code continues
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE83]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE84]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE85]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE86]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE87]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE88]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE89]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE90]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE91]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE92]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE93]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE94]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE95]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE96]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE97]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE98]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE99]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This section of code works similarly to the previous, but now reporting a degraded
+    condition if the Deployment manifest for the nginx operand is unavailable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE100]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE101]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE102]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE103]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE104]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE105]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE106]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE107]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE108]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE109]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE110]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE111]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE112]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE113]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE114]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE115]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE116]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE117]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE118]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE119]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE120]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE121]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE122]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE123]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If the attempt to update the operand Deployment fails, this block will report
+    that the Operator is degraded as well. If the controller is able to succeed past
+    this point, then there is no degradation to report. For this reason, the next
+    block of code will finish the function by updating the Operator''s CRD to show
+    that there is no degraded condition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE124]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE125]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE126]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE127]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE128]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE129]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE130]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE131]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE132]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In this code, we have added four calls to `SetStatusCondition()`, in which
+    the condition with the type of `"OperatorDegraded"` is updated with the current
+    time and a brief reason:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the Operator is unable to access its custom resource (for any reason besides
+    a simple `IsNotFound` error), set the condition to `True` with the reason, `OperatorResourceNotAvailable`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If we are unable to get the nginx Deployment manifest from the embedded YAML
+    file, update the condition to `True` with the reason, `OperandDeploymentNotAvailable`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the Deployment manifest is successfully found but a call to create or update
+    it fails, set the condition to `True` with the reason, `OperandDeploymentFailed`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Finally, if the `Reconcile()` function has completed with no critical errors,
+    set the `OperatorDegraded` condition to `False`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: True or False as a Success Indicator
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Note that, as discussed in the status conventions in [*Chapter 3*](B18147_03_ePub.xhtml#_idTextAnchor050),
+    *Designing an Operator – CRD, API, and Target Reconciliation*, the `False` condition
+    indicates a successful run. We could just as easily have inverted this logic,
+    naming the condition something like `OperatorSucceeded`, where the default case
+    is `True` and any failures change the condition to `False`. Doing so would still
+    be consistent with Kubernetes conventions, so the decision is ultimately up to
+    the developer based on the intent they wish to convey.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'In this example, we have used string literals for each `Reason` update. In
+    a practical application, it is common to define various `Reason` constants in
+    the Operator''s API, which allows for consistent reusability. For example, we
+    could define the following in `api/v1alpha1/nginxoperator_types.go` and use them
+    through their constant names:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE133]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE134]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE135]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE136]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE137]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE138]'
+  prefs: []
+  type: TYPE_PRE
+- en: The exact naming scheme for a condition reason is up to the preference of the
+    developer, with the only Kubernetes condition being that it must be CamelCase.
+    For that reason, different condition types and reasons can be named whatever is
+    relevant and preferred for that specific Operator. The only standard condition
+    name that currently exists is `Upgradeable`, which is consumed by the OLM. We
+    will show how to use that condition in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With these conditions implemented, we will be able to see the following output
+    when interacting with a custom resource for our Operator:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE139]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE140]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE141]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE142]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE143]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE144]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE145]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE146]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE147]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE148]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE149]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE150]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE151]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE152]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE153]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE154]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE155]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE156]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the next section, we will show how to report Operator conditions directly
+    to the OLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the OLM OperatorCondition
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We have already discussed how the OLM is capable of managing the currently installed
+    list of Operators, including upgrading and downgrading. In [*Chapter 7*](B18147_07_ePub.xhtml#_idTextAnchor108),
+    *Installing and Running Operators with the Operator Lifecycle Manager*, we will
+    show the OLM in action for some of these features. But, for the moment, we can
+    implement condition reporting in our Operator so that the OLM is aware of certain
+    states that could prevent the Operator from upgrading. Combined with status conditions
+    that are unique to the Operator (as reported in its CRD), this can help inform
+    the OLM of critical information regarding the Operator's current state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To read Operator conditions, the OLM creates a custom resource called `OperatorCondition`.
+    The OLM will automatically create an instance of this object for every Operator
+    that it manages from a CRD. A sample `OperatorCondition` object looks like the
+    following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE157]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE158]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE159]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE160]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE161]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE162]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE163]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE164]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE165]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE166]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE167]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE168]'
+  prefs: []
+  type: TYPE_PRE
+- en: This object uses the same `Condition` type from the Kubernetes API as shown
+    earlier (when implementing status conditions in the Operator CRD). This means
+    it also includes all of the same fields, such as `type`, `status`, `reason`, and
+    `message`, which can be updated the same way we did before. The difference is
+    that now, setting `type` to `Upgradeable` will instruct the OLM to block any attempts
+    to upgrade the Operator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The other difference is that the Operator needs to report this status change
+    to a different CRD (rather than its own). To do that, there is a library available
+    at [https://github.com/operator-framework/operator-lib](https://github.com/operator-framework/operator-lib),
+    which includes helper functions to update the `OperatorCondition` CRD. Details
+    on using this library are available in the Operator Framework enhancements repository
+    at [https://github.com/operator-framework/enhancements/blob/master/enhancements/operator-conditions-lib.md](https://github.com/operator-framework/enhancements/blob/master/enhancements/operator-conditions-lib.md).
+    One way this can be done is in our nginx Operator by modifying the `Reconcile()`
+    function in `controllers/nginxoperator_controller.go` like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE169]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE170]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE171]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE172]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE173]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE174]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE175]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE176]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE177]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE178]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE179]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE180]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE181]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE182]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE183]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE184]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE185]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE186]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE187]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE188]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This code imports two new modules: the Operator Framework V2 API and the `operator-lib/conditions`
+    library. It then instantiates a new `Factory` object, which uses the same Kubernetes
+    client that is already available to the Operator. That factory can then create
+    new `Condition` objects with `NewCondition()`, which accepts `ConditionType` (which
+    is really just a string) and creates a condition with that type.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this example, `Condition` is created with the `apiv2.Upgradeable` type, which
+    is a constant defined by the Operator Framework for the `Upgradeable` condition
+    that is understood by the OLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, the `condition.Set()` function updates the `OperatorCondition` CRD object
+    that the OLM created for our Operator. Specifically, this adds (or updates) the
+    list of conditions with the new condition we just created and the status that
+    is passed to it (in this case, `True`). There are also two functions available
+    that can be optionally passed to `Set()` (`WithReason()` and `WithMessage()`),
+    which set the reason and message for the condition.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using these helpers greatly simplifies the work necessary to retrieve and update
+    the `OperatorCondition` CRD object created for our Operator by the OLM. In addition,
+    the OLM takes steps to make sure that Operators cannot delete the CRD or modify
+    anything outside of the object''s status. However, there are some other fields
+    in the `OperatorCondition` CRD `spec` that can be modified by administrators.
+    Specifically, the `overrides` field allows users to manually bypass automatically
+    reported condition updates that would otherwise block upgrading. A sample usage
+    of this field looks as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE189]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE190]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE191]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE192]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE193]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE194]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE195]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE196]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE197]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE198]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE199]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE200]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE201]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE202]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE203]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE204]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE205]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE206]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using `overrides` like this can be useful in the case of known issues or bugs
+    that should not prevent the Operator from upgrading.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementing metrics reporting
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Metrics are a crucial aspect of any Kubernetes cluster. Metrics tools can provide
+    detailed insights into almost any measurable data in the cluster. This is why
+    metrics are a key part of graduating an Operator to Level IV in the Capability
+    Model. In fact, most native Kubernetes controllers already report metrics about
+    themselves, for example, `schedule_attempts_total`, which reports the number of
+    attempts the scheduler has made to schedule Pods onto Nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The original design for the Kubernetes monitoring architecture ([https://github.com/kubernetes/design-proposals-archive/blob/main/instrumentation/monitoring_architecture.md](https://github.com/kubernetes/design-proposals-archive/blob/main/instrumentation/monitoring_architecture.md))
+    defines metrics such as `schedule_attempts_total` as **service metrics**. The
+    alternative to service metrics is **core metrics**, which are metrics that are
+    generally available from all components. Core metrics currently include information
+    about CPU and memory usage and are scraped by the Kubernetes **metrics-server**
+    application ([https://github.com/kubernetes-sigs/metrics-server](https://github.com/kubernetes-sigs/metrics-server)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the other hand, service metrics expose application-specific data that is
+    defined in the code of individual components. All of this data can be scraped
+    and aggregated by tools such as **Prometheus** ([https://prometheus.io](https://prometheus.io))
+    or **OpenTelemetry** ([https://opentelemetry.io](https://opentelemetry.io)), and
+    presented with frontend visualization applications such as **Grafana** ([https://grafana.com](https://grafana.com)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The entire concept of metrics in Kubernetes extends far beyond just implementation
+    with regard to Operators. While that, unfortunately, means there is a lot of information
+    that is outside the scope of this chapter, there is a great deal of community
+    and documentation resources available that cover the fundamentals of this topic.
+    Instead, this section will focus on the relevant Operator implementation steps
+    for a new service metric with an assumed prior understanding of the basics related
+    to metrics in general.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding a custom service metric
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The boilerplate code that is scaffolded by `operator-sdk` when the project is
+    initialized already includes the code and dependencies necessary to expose a metrics
+    endpoint in the Operator Pod. By default, this is the `/metrics` path on port
+    `8080`. This eliminates the need for meticulous HTTP handler code and allows us
+    to focus instead on simply implementing the metrics themselves, as described in
+    the Prometheus documentation (https://prometheus.io/docs/guides/go-application/#adding-your-own-metrics).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubebuilder Metrics
+  prefs: []
+  type: TYPE_NORMAL
+- en: The built-in metrics handler code is another aspect of the Operator SDK that
+    is actually provided by Kubebuilder under the hood. This implementation relies
+    on the metrics library imported from `sigs.k8s.io/controller-runtime`. That library
+    includes features such as a global registry of metrics that is already available
+    to the core Operator code. This library is easy to hook into in order to register
+    new metrics and update them from anywhere in the Operator's code base. More information
+    on metrics and their use is available in the kubebuilder book at [https://book.kubebuilder.io/reference/metrics.html](https://book.kubebuilder.io/reference/metrics.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `controller-runtime` library that this functionality is built with includes
+    several metrics about the Operator''s controller code already, each indicated
+    by the prefix `controller_runtime_`. These include the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`controller_runtime_reconcile_errors_total` – A counter metric that shows the
+    cumulative number of times the `Reconcile()` function returned a non-nil error'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`controller_runtime_reconcile_time_seconds_bucket` – A histogram showing the
+    latency for individual reconciliation attempts'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`controller_runtime_reconcile_total` – A counter that increases with every
+    attempt to call `Reconcile()`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For this example, we will be recreating the last metric, `controller_runtime_reconcile_total`,
+    as a way to report the number of attempts our Operator has made to reconcile its
+    state in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RED metrics
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'When it comes to what type of metrics to define in any application, the possibilities
+    are practically infinite. This can cause overwhelming decision fatigue for developers,
+    as it may seem there is no good place to start. So, what are the most important
+    metrics for an Operator to expose? The Operator SDK documentation recommends following
+    the **RED method**, which outlines three key types of metrics that every service
+    should expose in a Kubernetes cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`hotloop` conditions or suboptimal request pipelines.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`controller_runtime_reconcile_errors_total`). When correlated with the Rate
+    metric, this can help debug common failures that are degrading an Operator''s
+    performance.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`controller_runtime_reconcile_time_seconds`). This information can indicate
+    poor performance or other conditions that degrade the cluster''s health.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These basic metrics can provide the foundation for defining **service-level
+    objectives** (**SLOs**) to ensure your Operator functions within the expected
+    standards of your application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To begin adding a custom metric to our Operator, it is a good practice to organize
+    metrics definitions into their own package by creating a new file under `controllers/metrics/metrics.go`.
+    This new module will hold the declaration of our new metric and automatically
+    register it with the global registry available from `sigs.k8s.io/controller-runtime/pkg/metrics`.
+    In the following code, we define this file and instantiate a new custom metric:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'controllers/metrics/metrics.go:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE207]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE208]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE209]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE210]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE211]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE212]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE213]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE214]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE215]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE216]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE217]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE218]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE219]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE220]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE221]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE222]'
+  prefs: []
+  type: TYPE_PRE
+- en: This file depends on the Prometheus client library to define a new counter (a
+    simple, increasing metric) that we store in the `ReconcilesTotal` public variable.
+    The actual name of the metric is `reconciles_total`, which is the name that will
+    be exposed to Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Metrics Naming Best Practices
+  prefs: []
+  type: TYPE_NORMAL
+- en: In a real environment, it is best to include a prefix to a metric's name that
+    is specific to the application exporting that metric. This is one of the best
+    practices recommended by `_total` to this cumulative metric. It is helpful to
+    be familiar with these practices, not just for developing your own metrics, but
+    also to know what to expect when interacting with other metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With this file''s `init()` function automatically registering the new metric
+    with the global registry, we can now update this metric from anywhere in the Operator''s
+    code. Since this is a measure of the total number of reconciliation attempts by
+    the controller, it makes sense to update it at the start of the `Reconcile()`
+    function declaration in `controllers/nginxoperator_controller.go`. This can be
+    done with two new lines of code, shown in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'controllers/nginxoperator_controller.go:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE223]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE224]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE225]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE226]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE227]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE228]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE229]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE230]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE231]'
+  prefs: []
+  type: TYPE_PRE
+- en: All that is necessary is to import the new `metrics` package just created and
+    call `metrics.ReconcilesTotal.Inc()`. This function doesn't return anything, so
+    there is no need to add any error handling or status updates. We also want to
+    make this the first line of the function since the goal is to increment for every
+    call to `Reconcile()` (regardless of whether the call succeeds or not).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The updated metric value is automatically reported by the metrics endpoint
+    initialized by kubebuilder, so it is available to view through a properly configured
+    Prometheus instance, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5.1 – Screenshot of reconciles_total metric graph in the Prometheus
+    UI'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18147_05_001.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 5.1 – Screenshot of reconciles_total metric graph in the Prometheus UI
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When compared to the built-in `controller_runtime_reconcile_total` metric,
+    we see that the values are the same:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5.2 – Screenshot comparing custom reconciles_total metric to built-in
+    controller_runtime_reconcile_total](img/B18147_05_002.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 5.2 – Screenshot comparing custom reconciles_total metric to built-in
+    controller_runtime_reconcile_total
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will cover more about how to install and configure Prometheus to capture
+    this custom metric in [*Chapter 6*](B18147_06_ePub.xhtml#_idTextAnchor090), *Building
+    and Deploying Your Operator*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementing leader election
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Leader election is an important concept in any distributed computing system,
+    not just Kubernetes (and not just for Operators, either). High-availability applications
+    will often deploy multiple replicas of their workload Pods to support the uptime
+    guarantees their users expect. In situations where only one workload Pod can do
+    work in a cluster at a time, that replica is known as the **leader**. The remaining
+    replicas will wait, running but not doing anything significant, until the current
+    leader becomes unavailable or gives up its status as the leader. Those Pods will
+    then determine among themselves who should be the new leader.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Enabling proper leader election can greatly benefit the application's uptime.
+    This can include graceful failover handling if one replica fails, or help to maintain
+    application accessibility during rolling upgrades.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Operator SDK makes leader election for Operators simple to implement. The
+    boilerplate code scaffolded by `operator-sdk` creates a flag in our Operator,
+    `--leader-elect`, which defaults to `false` and disables leader election. That
+    flag is passed to the `LeaderElection` option value in the controller initialization
+    function `ctrl.NewManager()`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'main.go:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE232]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE233]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE234]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE235]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE236]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE237]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE238]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE239]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE240]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE241]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE242]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE243]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE244]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE245]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE246]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE247]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE248]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `LeaderElectionID` field represents the name of the resource that the Operator
+    will use in order to hold the leader lock.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This setup (using the `LeaderElection` option in `ctrl.NewManager()`) sets
+    up the Operator to use the first of two possible leader election strategies, known
+    as **leader-with-lease**. The other possible strategy for leader election is **leader-for-life**.
+    There are some benefits and trade-offs to each strategy, as described in the Operator
+    SDK documentation ([https://sdk.operatorframework.io/docs/building-operators/golang/advanced-topics/#leader-election](https://sdk.operatorframework.io/docs/building-operators/golang/advanced-topics/#leader-election)):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Leader-with-lease** – The default leader election strategy wherein the current
+    leader periodically attempts to renew its status as the leader (known as its *lease*).
+    If it is unable to do so, the leader relinquishes its position to a new leader.
+    This strategy improves availability by enabling fast transitions between leaders
+    when necessary. However, this strategy makes it possible to end up with a so-called
+    **split-brain** scenario, in which multiple replicas believe they are the leader.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`RenewDeadline` and `LeaseDuration` fields when calling `ctrl.NewManager()`
+    to add approximate toleration for the ratio of clock skew rate between the fastest
+    and slowest nodes. This is because `LeaseDuration` is the amount of time that
+    current non-leaders will wait before attempting to acquire leadership, and `RenewDeadline`
+    is the time that the control plane will wait to attempt refreshing the current
+    leadership. Therefore, as an example, setting `LeaseDuration` to some multiple
+    of `RenewDeadline` will add a tolerance for that same ratio of clock skew rate
+    within the cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For example, assume the current leader runs on Node A, which keeps time accurately.
+    If the fail over backup replica is waiting on Node B, which is slow and keeps
+    time at half the speed of Node A, then there is a clock skew rate between Nodes
+    A and B with a ratio of 2:1\.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In this scenario, if the leader has `LeaseDuration` of 1 hour and fails for
+    some reason, then it may take 2 hours for Node B to notice that the lease has
+    expired and attempt to acquire a new lease.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: However, with `RenewDeadline` of 30 minutes, the original leader will fail to
+    renew its lease within that time frame. This allows the replica on the slower
+    node to act at what it believes is only 30 minutes, but the actual time has surpassed
+    `LeaseDuration` of 1 hour. This is an obscure detail in the leader election library,
+    but one worth noting for Operators in clusters that may be affected by this skew.
+    There is more discussion on this topic in the original GitHub pull request to
+    add leader election to the Kubernetes clients at [https://github.com/kubernetes/kubernetes/pull/16830](https://github.com/kubernetes/kubernetes/pull/16830).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'To make our Operator configurable so that users can decide between leader-with-lease
+    and leader-for-life election strategies, we can leverage the existing `--leader-elect`
+    flag to enable or disable a call to the `leader.Become()` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE249]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE250]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE251]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE252]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE253]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE254]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE255]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE256]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE257]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE258]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE259]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE260]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE261]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE262]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE263]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE264]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE265]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE266]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE267]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE268]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE269]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE270]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE271]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE272]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE273]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE274]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE275]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, our Operator will always use some method of leader election. The `leader.Become()`
+    function is a blocking call that will prevent the Operator from running if it
+    cannot acquire the leader lock. It will attempt to do so every second. If it succeeds,
+    it will create the lock as a ConfigMap (in our case, that ConfigMap will be named
+    nginx-lock).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding health checks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Health checks (also known as liveness and readiness probes) are a way for any
+    Pod to make its current functional state discoverable by other components in the
+    cluster. This is usually done by way of exposing an endpoint in the container
+    (traditionally `/healthz` for liveness checks and `/readyz` for readiness). That
+    endpoint can be reached by other components (such as the kubelet) to determine
+    whether the Pod is healthy and ready to serve requests. The topic is covered in
+    detail in the Kubernetes documentation at [https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The code initialized by the Operator SDK in `main.go` contains the `healthz`
+    and `readyz` check setup by default:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: main.go
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE276]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE277]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE278]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE279]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE280]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE281]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE282]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE283]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE284]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE285]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE286]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE287]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE288]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE289]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE290]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE291]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE292]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE293]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE294]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE295]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE296]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE297]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE298]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE299]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE300]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE301]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE302]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE303]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE304]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code sets up the two endpoints to begin serving immediately before the
+    main controller is started. This makes sense because, at this point, all other
+    startup code has already run. It wouldn't make sense to start advertising your
+    Operator as healthy and ready to serve requests before it has even attempted to
+    create a client connection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The two functions, `mgr.AddHealthzCheck` and `mgr.AddReadyzCheck`, each take
+    two parameters: a string (for the name of the check) and a function that returns
+    the status of the check. That function must have the following signature:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE305]'
+  prefs: []
+  type: TYPE_PRE
+- en: This signature shows that the function accepts an HTTP request (because the
+    check is serving an endpoint that will be queried by components such as the kubelet)
+    and returns an error (if the check fails). The `healthz.Ping` function that the
+    Operator is already populated with in this code is a simple `nil` error (indicating
+    success). This is not very insightful, but its location in the code does provide
+    the minimum of reporting that the Operator has successfully passed most of the
+    initialization process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, following the preceding function signature, it is possible to implement
+    custom health checks. These additional checks can be added by simply calling `mgr.AddHealthzCheck`
+    or `mgr.AddReadyzCheck` again (depending on the type of check) and passing the
+    new function to each call. The checks are run sequentially (in no guaranteed order)
+    when the `/healthz` or `/readyz` endpoints are queried, and if any checks fail,
+    then an `HTTP 500` status is returned. With this, it is possible to develop your
+    own liveness and readiness checks with more sophisticated logic that is unique
+    to your Operator (for example, relying on dependent components to be accessible
+    before reporting readiness).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter highlighted some additional options for functionality beyond the
+    bare minimum that was established in [*Chapter 4*](B18147_04_ePub.xhtml#_idTextAnchor066),
+    *Developing an Operator with the Operator SDK.* This list is obviously not exhaustive
+    of every possibility for advanced features, but it is intended to showcase some
+    of the most common additional features added to Operators. At this point, some
+    of the patterns for feature development should start to become clear (for example,
+    startup and initialization code usually goes in `main.go`, while features related
+    to core logic can fit nicely with the controller code in `nginxoperator_controller.go`,
+    or its own package).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The work done in this chapter shows some of the steps necessary in order to
+    graduate an Operator from lower-level functionality to higher levels in the Capability
+    Model. For example, metrics are a key aspect of a Level IV (*Deep Insights*) Operator
+    and, therefore, something that is expected of the highest-function Operators available
+    to users. In addition, leader election can help establish fail over processes
+    (helpful in reaching Level III – *Full lifecycle*). Adding functionality like
+    this helps build a useful and feature-rich Operator that improves application
+    performance and, by extension, user experience.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will begin compiling the code that has been built throughout
+    [*Chapter 4*](B18147_04_ePub.xhtml#_idTextAnchor066), *Developing an Operator
+    with the Operator SDK*, and [*Chapter 5*](B18147_05_ePub.xhtml#_idTextAnchor078),
+    *Developing an Operator – Advanced Functionality*. We will then demonstrate how
+    to deploy this code and run our nginx Operator in a local Kubernetes cluster (without
+    the use of the OLM). This will be a useful development process, as bypassing the
+    need for the OLM in a testing environment can simplify and expedite our ability
+    to iterate and test new changes.
+  prefs: []
+  type: TYPE_NORMAL

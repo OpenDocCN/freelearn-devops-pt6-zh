@@ -1,0 +1,968 @@
+- en: '7'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Running Stateful Applications with Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we will learn how to run stateful applications on Kubernetes.
+    Kubernetes takes a lot of work out of our hands by automatically starting and
+    restarting pods across the cluster nodes as needed, based on complex requirements
+    and configurations such as namespaces, limits, and quotas. But when pods run storage-aware
+    software, such as databases and queues, relocating a pod can cause a system to
+    break.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, we’ll explore the essence of stateful pods and why they are much more
+    complicated to manage in Kubernetes. We will look at a few ways to manage the
+    complexity, such as shared environment variables and DNS records. In some situations,
+    a redundant in-memory state, a `DaemonSet`, or persistent storage claims can do
+    the trick. The main solution that Kubernetes promotes for state-aware pods is
+    the `StatefulSet` (previously called `PetSet`) resource, which allows us to manage
+    an indexed collection of pods with stable properties. Finally, we will dive deep
+    into a full-fledged example of running a Cassandra cluster on top of Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This chapter will cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Stateful versus stateless applications in Kubernetes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Running a Cassandra cluster in Kubernetes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you will understand the challenges of state management
+    in Kubernetes, get a deep look into a specific example of running Cassandra as
+    a data store on Kubernetes, and be able to determine the state management strategy
+    for your workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Stateful versus stateless applications in Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A stateless Kubernetes application is an application that doesn’t manage its
+    state in the Kubernetes cluster. All the state is stored in memory or outside
+    the cluster, and the cluster containers access it in some manner. A stateful Kubernetes
+    application, on the other hand, has a persistent state that is managed in the
+    cluster. In this section, we’ll learn why state management is critical to the
+    design of a distributed system and the benefits of managing the state within the
+    Kubernetes cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the nature of distributed data-intensive apps
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s start with the basics here. Distributed applications are a collection
+    of processes that run on multiple machines, process inputs, manipulate data, expose
+    APIs, and possibly have other side effects. Each process is a combination of its
+    program, its runtime environment, and its inputs and outputs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The programs you write at school get their input as command-line arguments;
+    maybe they read a file or access a database, and then write their results to the
+    screen, a file, or a database. Some programs keep state in memory and can serve
+    requests over a network. Simple programs run on a single machine and can hold
+    all their state in memory or read from a file. Their runtime environment is their
+    operating system. If they crash, the user has to restart them manually. They are
+    tied to their machine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A distributed application is a different animal. A single machine is not enough
+    to process all the data or serve all the requests quickly enough. A single machine
+    can’t hold all the data. The data that needs to be processed is so large that
+    it can’t be downloaded cost-effectively into each processing machine. Machines
+    can fail and need to be replaced. Upgrades need to be performed over all the processing
+    machines. Users may be distributed across the globe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Taking all these issues into account, it becomes clear that the traditional
+    approach doesn’t work. The limiting factor becomes the data. Users/clients must
+    receive only summary or processed data. All massive data processing must be done
+    close to the data itself because transferring data is prohibitively slow and expensive.
+    Instead, the bulk of processing code must run in the same data center and network
+    environment of the data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why manage the state in Kubernetes?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The main reason to manage the state in Kubernetes itself as opposed to a separate
+    cluster is that a lot of the infrastructure needed to monitor, scale, allocate,
+    secure, and operate a storage cluster is already provided by Kubernetes. Running
+    a parallel storage cluster will lead to a lot of duplicated effort.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why manage the state outside of Kubernetes?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s not rule out the other option. It may be better in some situations to
+    manage the state in a separate non-Kubernetes cluster, as long as it shares the
+    same internal network (data proximity trumps everything).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Some valid reasons are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You already have a separate storage cluster and you don’t want to rock the boat
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Your storage cluster is used by other non-Kubernetes applications
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Kubernetes support for your storage cluster is not stable or mature enough
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You may want to approach stateful applications in Kubernetes incrementally,
+    starting with a separate storage cluster and integrating more tightly with Kubernetes
+    later
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Shared environment variables versus DNS records for discovery
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Kubernetes provides several mechanisms for global discovery across the cluster.
+    If your storage cluster is not managed by Kubernetes, you still need to tell Kubernetes
+    pods how to find it and access it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two common methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: DNS
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Environment variables
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In some cases, you may want to use both, as environment variables can override
+    DNS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accessing external data stores via DNS
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The DNS approach is simple and straightforward. Assuming your external storage
+    cluster is load-balanced and can provide a stable endpoint, then pods can just
+    hit that endpoint directly and connect to the external cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accessing external data stores via environment variables
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Another simple approach is to use environment variables to pass connection information
+    to an external storage cluster. Kubernetes offers the `ConfigMap` resource as
+    a way to keep configuration separate from the container image. The configuration
+    is a set of `key-value` pairs. The configuration information can be exposed in
+    two ways. One way is as environment variables. The other way is as a configuration
+    file mounted as a volume in the container. You may prefer to use secrets for sensitive
+    connection information like passwords.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a ConfigMap
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The following file is a `ConfigMap` that keeps a list of addresses:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Save it as `db-config-map.yaml` and run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `data` section contains all the `key-value` pairs, in this case, just a
+    single pair with a key name of `db-ip-addresses`. It will be important later when
+    consuming the `ConfigMap` in a pod. You can check out the content to make sure
+    it’s OK:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: There are other ways to create a `ConfigMap`. You can directly create one using
+    the `--from-value` or `--from-file` command-line arguments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Consuming a ConfigMap as an environment variable
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'When you are creating a pod, you can specify a `ConfigMap` and consume its
+    values in several ways. Here is how to consume our configuration map as an environment
+    variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This pod runs the `busybox` minimal container and executes an `env bash` command
+    and it immediately exists. The `db-ip-addresses` key from the `db-configmap` is
+    mapped to the `DB_IP_ADDRESSES` environment variable, and is reflected in the
+    logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using a redundant in-memory state
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In some cases, you may want to keep a transient state in memory. Distributed
+    caching is a common case. Time-sensitive information is another one. For these
+    use cases, there is no need for persistent storage, and multiple pods accessed
+    through a service may be just the right solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can use standard Kubernetes techniques, such as labeling, to identify pods
+    that belong to the distributed cache, store redundant copies of the same state,
+    and expose them through a service. If a pod dies, Kubernetes will create a new
+    one and, until it catches up, the other pods will serve the state. We can even
+    use the pod’s anti-affinity feature to ensure that pods that maintain redundant
+    copies of the same state are not scheduled to the same node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Of course, you could also use something like Memcached or Redis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using DaemonSet for redundant persistent storage
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Some stateful applications, such as distributed databases or queues, manage
+    their state redundantly and sync their nodes automatically (we’ll take a very
+    deep look into Cassandra later). In these cases, it is important that pods are
+    scheduled to separate nodes. It is also important that pods are scheduled to nodes
+    with a particular hardware configuration or are even dedicated to the stateful
+    application. The `DaemonSet` feature is perfect for this use case. We can label
+    a set of nodes and make sure that the stateful pods are scheduled on a one-by-one
+    basis to the selected group of nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Applying persistent volume claims
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If the stateful application can use effectively shared persistent storage, then
+    using a persistent volume claim in each pod is the way to go, as we demonstrated
+    in *Chapter 6*, *Managing Storage*. The stateful application will be presented
+    with a mounted volume that looks just like a local filesystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Utilizing StatefulSet
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: StatefulSets are specially designed to support distributed stateful applications
+    where the identities of the members are important, and if a pod is restarted,
+    it must retain its identity in the set. It provides ordered deployment and scaling.
+    Unlike regular pods, the pods of a `StatefulSet` are associated with persistent
+    storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When to use StatefulSet
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: '`StatefulSets` are great for applications that necessitate any of the following
+    capabilities:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Consistent and distinct network identifiers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Persistent and enduring storage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Methodical and orderly deployment and scaling
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Systematic and organized deletion and termination
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The components of StatefulSet
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'There are several elements that need to be configured correctly in order to
+    have a working `StatefulSet`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A headless service responsible for managing the network identity of the `StatefulSet`
+    pods
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `StatefulSet` itself with a number of replicas
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Local storage on nodes or persistent storage provisioned dynamically or by an
+    administrator
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Here is an example of a headless service called `nginx` that will be used for
+    a `StatefulSet`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, the `StatefulSet` manifest file will reference the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next part is the pod template, which includes a mounted volume named `www`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Last but not least, `volumeClaimTemplates` use a claim named `www` matching
+    the mounted volume. The claim requests 1 Gib of storage with `ReadWriteOnce` access:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Working with StatefulSets
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Let’s create the `nginx` headless service and `statefulset`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can use the `kubectl get all` command to see all the resources that were
+    created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: As expected, we have the `statefulset` with three replicas and the headless
+    service. What is not pre-set is a `ReplicaSet`, which you find when you create
+    a Deployment. StatefulSets manage their pods directly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note that the `kubectl get all` doesn’t actually show all resources. The StatefulSet
+    also creates a persistent volume claim backed by a persistent volume for each
+    pod. Here they are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we delete a pod, the StatefulSet will create a new pod and bind it to the
+    corresponding persistent volume claim. The pod `nginx-1` is bound to the `www-nginx-1`
+    pvc:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let’s delete the `nginx-1` pod and check all remaining pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, the StatefulSet immediately replaced it with a new `nginx-1`
+    pod (14 seconds old). The new pod is bound to the same persistent volume claim:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The persistent volume claim and its backing persistent volume were not deleted
+    when the old `nginx-1` pod was deleted, as you can tell by their age:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: That means that the state of the StatefulSet is preserved even as pods come
+    and go. Each pod identified by its index is always bound to a specific shard of
+    the state, backed up by the corresponding persistent volume claim.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, we understand what StatefulSets are all about and how to work
+    with them. Let’s dive into the implementation of an industrial-strength data store
+    and see how it can be deployed as a StatefulSet in Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running a Cassandra cluster in Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this section, we will explore in detail a very large example of configuring
+    a Cassandra cluster to run on a Kubernetes cluster. I will dissect and give some
+    context for interesting parts. If you wish to explore this even further, the full
+    example can be accessed here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://kubernetes.io/docs/tutorials/stateful-application/cassandra](https://kubernetes.io/docs/tutorials/stateful-application/cassandra)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The goal here is to get a sense of what it takes to run a real-world stateful
+    workload on Kubernetes and how StatefulSets help. Don’t worry if you don’t understand
+    every little detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, we’ll learn a little bit about Cassandra and its idiosyncrasies, and
+    then follow a step-by-step procedure to get it running using several of the techniques
+    and strategies we covered in the previous section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A quick introduction to Cassandra
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Cassandra is a distributed columnar data store. It was designed from the get-go
+    for big data. Cassandra is fast, robust (no single point of failure), highly available,
+    and linearly scalable. It also has multi-data center support. It achieves all
+    this by having a laser focus and carefully crafting the features it supports and—just
+    as importantly—the features it doesn’t support.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In a previous company, I ran a Kubernetes cluster that used Cassandra as the
+    main data store for sensor data (about 100 TB). Cassandra allocates the data to
+    a set of nodes (node ring) based on a **distributed hash table** (**DHT**) algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The cluster nodes talk to each other via a gossip protocol and learn quickly
+    about the overall state of the cluster (what nodes joined and what nodes left
+    or are unavailable). Cassandra constantly compacts the data and balances the cluster.
+    The data is typically replicated multiple times for redundancy, robustness, and
+    high availability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From a developer’s point of view, Cassandra is very good for time-series data
+    and provides a flexible model where you can specify the consistency level in each
+    query. It is also idempotent (a very important feature for a distributed database),
+    which means repeated inserts or updates are allowed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a diagram that shows how a Cassandra cluster is organized, how a client
+    can access any node, and how a request will be forwarded automatically to the
+    nodes that have the requested data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.1: Request interacting with a Cassandra cluster](img/B18998_07_01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 7.1: Request interacting with a Cassandra cluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Cassandra Docker image
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Deploying Cassandra on Kubernetes as opposed to a standalone Cassandra cluster
+    deployment requires a special Docker image. This is an important step because
+    it means we can use Kubernetes to keep track of our Cassandra pods. The Dockerfile
+    for an image is available here: [https://github.com/kubernetes/examples/blob/master/cassandra/image/Dockerfile](https://github.com/kubernetes/examples/blob/master/cassandra/image/Dockerfile).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: See below the Dockerfile that builds the Cassandra image. The base image is
+    a flavor of Debian designed for use in containers (see [https://github.com/kubernetes/kubernetes/tree/master/build/debian-base](https://github.com/kubernetes/kubernetes/tree/master/build/debian-base)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Cassandra Dockerfile defines some build arguments that must be set when
+    the image is built, creates a bunch of labels, defines many environment variables,
+    adds all the files to the root directory inside the container, runs the `build.sh`
+    script, declares the Cassandra data volume (where the data is stored), exposes
+    a bunch of ports, and finally, uses `dumb-init` to execute the `run.sh` scripts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here are all the files used by the Dockerfile:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will not cover all of them, but will focus on a couple of interesting scripts:
+    the `build.sh` and `run.sh` scripts.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring the build.sh script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Cassandra is a Java program. The build script installs the Java runtime environment
+    and a few necessary libraries and tools. It then sets a few variables that will
+    be used later, such as `CASSANDRA_PATH`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It downloads the correct version of Cassandra from the Apache organization
+    (Cassandra is an Apache open source project), creates the `/cassandra_data/data`
+    directory where Cassandra will store its `SSTables` and the `/etc/cassandra` configuration
+    directory, copies files into the configuration directory, adds a Cassandra user,
+    sets the readiness probe, installs Python, moves the Cassandra JAR file and the
+    seed shared library to their target destination, and then cleans up all the intermediate
+    files generated during this process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: Exploring the run.sh script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The `run.sh` script requires some shell skills and knowledge of Cassandra to
+    understand, but it’s worth the effort. First, some local variables are set for
+    the Cassandra configuration file at `/etc/cassandra/cassandra.yaml`. The `CASSANDRA_CFG`
+    variable will be used in the rest of the script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If no `CASSANDRA_SEEDS` were specified, then set the `HOSTNAME`, which is used
+    by the `StatefulSet` later:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then comes a long list of environment variables with defaults. The syntax, `${VAR_NAME:-}`,
+    uses the `VAR_NAME` environment variable, if it’s defined, or the default value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A similar syntax, `${VAR_NAME:=}`, does the same thing but also assigns the
+    default value to the environment variable if it’s not defined. This is a subtle
+    but important difference.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Both variations are used here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: By the way, I contributed my part to Kubernetes by opening a PR to fix a minor
+    typo here. See [https://github.com/kubernetes/examples/pull/348](https://github.com/kubernetes/examples/pull/348).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next part configures monitoring JMX and controls garbage collection output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then comes a section where all the variables are printed on the screen. Let’s
+    skip most of it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: The next section is very important. By default, Cassandra uses a simple snitch,
+    which is unaware of racks and data centers. This is not optimal when the cluster
+    spans multiple data centers and racks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Cassandra is rack-aware and data center-aware and can optimize both for redundancy
+    and high availability while limiting communication across data centers appropriately:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Memory management is also important, and you can control the maximum heap size
+    to ensure Cassandra doesn’t start thrashing and swapping to disk:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The rack and data center information is stored in a simple Java `propertiesfile`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next section loops over all the variables defined earlier, finds the corresponding
+    key in the `Cassandra.yaml` configuration files, and overwrites them. That ensures
+    that each configuration file is customized on the fly just before it launches
+    Cassandra itself:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next section is all about setting the seeds or seed provider depending
+    on the deployment solution (`StatefulSet` or not). There is a little trick for
+    the first pod to bootstrap as its own seed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following section sets up various options for remote management and JMX
+    monitoring. It’s critical in complicated distributed systems to have proper administration
+    tools. Cassandra has deep support for the ubiquitous **JMX** standard:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, it protects the data directory such that only the `cassandra` user
+    can access it, the `CLASSPATH` is set to the Cassandra `JAR` file, and it launches
+    Cassandra in the foreground (not daemonized) as the `cassandra` user:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: Hooking up Kubernetes and Cassandra
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Connecting Kubernetes and Cassandra takes some work because Cassandra was designed
+    to be very self-sufficient, but we want to let it hook into Kubernetes at the
+    right time to provide capabilities such as automatically restarting failed nodes,
+    monitoring, allocating Cassandra pods, and providing a unified view of the Cassandra
+    pods side by side with other pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cassandra is a complicated beast and has many knobs to control it. It comes
+    with a `Cassandra.yaml` configuration file, and you can override all the options
+    with environment variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Digging into the Cassandra configuration file
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'There are two settings that are particularly relevant: the seed provider and
+    the snitch. The seed provider is responsible for publishing a list of IP addresses
+    (seeds) for nodes in the cluster. Each node that starts running connects to the
+    seeds (there are usually at least three) and if it successfully reaches one of
+    them, they immediately exchange information about all the nodes in the cluster.
+    This information is updated constantly for each node as the nodes gossip with
+    each other.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The default seed provider configured in `Cassandra.yaml` is just a static list
+    of IP addresses, in this case, just the loopback interface:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The other important setting is the snitch. It has two roles:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cassandra utilizes the snitch to gain valuable insights into your network topology,
+    enabling it to effectively route requests.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Cassandra employs this knowledge to strategically distribute replicas across
+    your cluster, mitigating the risk of correlated failures. To achieve this, Cassandra
+    organizes machines into data centers and racks, ensuring that replicas are not
+    concentrated on a single rack, even if it doesn’t necessarily correspond to a
+    physical location.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Cassandra comes pre-loaded with several snitch classes, but none of them are
+    Kubernetes-aware. The default is `SimpleSnitch`, but it can be overridden:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Other snitches are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`GossipingPropertyFileSnitch`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`PropertyFileSnitch`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Ec2Snitch`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Ec2MultiRegionSnitch`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`RackInferringSnitch`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The custom seed provider
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: When running Cassandra nodes as pods in Kubernetes, Kubernetes may move pods
+    around, including seeds. To accommodate that, a Cassandra seed provider needs
+    to interact with the Kubernetes API server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Creating a Cassandra headless service
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The role of the headless service is to allow clients in the Kubernetes cluster
+    to connect to the Cassandra cluster through a standard Kubernetes service instead
+    of keeping track of the network identities of the nodes or putting a dedicated
+    load balancer in front of all the nodes. Kubernetes provides all that out of the
+    box through its services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is the `Service` manifest:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `app: cassandra` label will group all the pods that participate in the
+    service. Kubernetes will create endpoint records and the DNS will return a record
+    for discovery. The `clusterIP` is `None`, which means the service is headless
+    and Kubernetes will not do any load-balancing or proxying. This is important because
+    Cassandra nodes do their own communication directly.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `9042` port is used by Cassandra to serve CQL requests. Those can be queries,
+    inserts/updates (it’s always an upsert with Cassandra), or deletes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using StatefulSet to create the Cassandra cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Declaring a `StatefulSet` is not trivial. It is arguably the most complex Kubernetes
+    resource. It has a lot of moving parts: standard metadata, the StatefulSet spec,
+    the pod template (which is often pretty complex itself), and volume claim templates.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Dissecting the StatefulSet YAML file
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Let’s go methodically over this example StatefulSet YAML file that declares
+    a three-node Cassandra cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is the basic metadata. Note the `apiVersion` string is `apps/v1` (`StatefulSet`
+    became generally available in Kubernetes 1.9):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The StatefulSet spec defines the headless service name, the label selector
+    (`app: cassandra`), how many pods there are in the StatefulSet, and the pod template
+    (explained later). The `replicas` field specifies how many pods are in the StatefulSet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: The term “replicas” for the pods is an unfortunate choice because the pods are
+    not replicas of each other. They share the same pod template, but they have a
+    unique identity, and they are responsible for different subsets of the state in
+    general. This is even more confusing in the case of Cassandra, which uses the
+    same term, “replicas,” to refer to groups of nodes that redundantly duplicate
+    some subset of the state (but are not identical, because each can manage an additional
+    state too).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I opened a GitHub issue with the Kubernetes project to change the term from
+    replicas to members:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/kubernetes/kubernetes.github.io/issues/2103](https://github.com/kubernetes/kubernetes.github.io/issues/2103)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The pod template contains a single container based on the custom Cassandra image.
+    It also sets the termination grace period to 30 minutes. This means that when
+    Kubernetes needs to terminate the pod, it will send the containers a `SIGTERM`
+    signal notifying them they should exit, giving them a chance to do so gracefully.
+    Any container that is still running after the grace period will be killed via
+    `SIGKILL`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is the pod template with the `app: cassandra` label:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `containers` section has multiple important parts. It starts with a name
+    and the image we looked at earlier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, it defines multiple container ports needed for external and internal
+    communication by Cassandra nodes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `resources` section specifies the CPU and memory needed by the container.
+    This is critical because the storage management layer should never be a performance
+    bottleneck due to CPU or memory. Note that it follows the best practice of identical
+    requests and limits to ensure the resources are always available once allocated:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Cassandra needs access to **inter-process communication** (**IPC**), which
+    the container requests through the security context’s capabilities:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `lifecycle` section runs the Cassandra `nodetool drain` command to make
+    sure data on the node is transferred to other nodes in the Cassandra cluster when
+    the container needs to shut down. This is the reason a 30-minute grace period
+    is needed. Node draining involves moving a lot of data around:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `env` section specifies the environment variables that will be available
+    inside the container. The following is a partial list of the necessary variables.
+    The `CASSANDRA_SEEDS` variable is set to the headless service, so a Cassandra
+    node can talk to seed nodes on startup and discover the whole cluster. Note that
+    in this configuration we don’t use the special Kubernetes seed provider. `POD_IP`
+    is interesting because it utilizes the Downward API to populate its value via
+    the field reference to `status.podIP`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The readiness probe makes sure that requests are not sent to the node until
+    it is actually ready to service them. The `ready-probe.sh` script utilizes Cassandra’s
+    `nodetool status` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last part of the container spec is the volume mount, which must match a
+    persistent volume claim:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: That’s it for the container spec. The last part is the volume claim templates.
+    In this case, dynamic provisioning is used. It’s highly recommended to use SSD
+    drives for Cassandra storage, especially its journal. The requested storage in
+    this example is 1 GiB. I discovered through experimentation that 1–2 TB is ideal
+    for a single Cassandra node. The reason is that Cassandra does a lot of data shuffling
+    under the covers, compacting and rebalancing the data. If a node leaves the cluster
+    or a new one joins the cluster, you have to wait until the data is properly rebalanced
+    before the data from the node that left is properly redistributed or a new node
+    is populated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that Cassandra needs a lot of disk space to do all this shuffling. It is
+    recommended to have 50% free disk space. When you consider that you also need
+    replication (typically 3x), then the required storage space can be 6x your data
+    size. You can get by with 30% free space if you’re adventurous and maybe use just
+    2x replication depending on your use case. But don’t get below 10% free disk space,
+    even on a single node. I learned the hard way that Cassandra will simply get stuck
+    and will be unable to compact and rebalance such nodes without extreme measures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The storage class `fast` must be defined in this case. Usually, for Cassandra,
+    you need a special storage class and can’t use the Kubernetes cluster default
+    storage class.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The access mode is, of course, `ReadWriteOnce`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: When deploying a StatefulSet, Kubernetes creates the pods in order per their
+    index number. When scaling up or down, it also does so in order. For Cassandra,
+    this is not important because it can handle nodes joining or leaving the cluster
+    in any order. When a Cassandra pod is destroyed (ungracefully), the persistent
+    volume remains. If a pod with the same index is created later, the original persistent
+    volume will be mounted into it. This stable connection between a particular pod
+    and its storage enables Cassandra to manage the state properly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we covered the topic of stateful applications and how to integrate
+    them with Kubernetes. We discovered that stateful applications are complicated
+    and considered several mechanisms for discovery, such as DNS and environment variables.
+    We also discussed several state management solutions, such as in-memory redundant
+    storage, local storage, and persistent storage. The bulk of the chapter revolved
+    around deploying a Cassandra cluster inside a Kubernetes cluster using a StatefulSet.
+    We drilled down into the low-level details in order to appreciate what it really
+    takes to integrate a third-party complex distributed system like Cassandra into
+    Kubernetes. At this point, you should have a thorough understanding of stateful
+    applications and how to apply them within your Kubernetes-based system. You are
+    armed with multiple methods for various use cases, and maybe you’ve even learned
+    a little bit about Cassandra.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will continue our journey and explore the important
+    topic of scalability, in particular auto-scalability, and how to deploy and do
+    live upgrades and updates as the cluster dynamically grows. These issues are very
+    intricate, especially when the cluster has stateful apps running on it.
+  prefs: []
+  type: TYPE_NORMAL

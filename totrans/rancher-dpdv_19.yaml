@@ -1,0 +1,659 @@
+- en: '*Chapter 15*: Rancher and Kubernetes Troubleshooting'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we'll explore the master components of Kubernetes, their interactions,
+    and how to troubleshoot the most common problems. Next, we'll explore some common
+    failure scenarios, including identifying the failures and resolving them as quickly
+    as possible, using the same troubleshooting steps and tools that Rancher's support
+    team uses when supporting Enterprise customers. Then, we'll discuss recovery from
+    some common cluster failures. This chapter includes scripts and documentation
+    for reproducing all of these failures in a lab environment (based on actual events).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we''re going to cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Recovering an RKE cluster from an etcd split-brain
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rebuilding from etcd backup
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pods not being scheduled with OPA Gatekeeper
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A runaway app stomping all over a cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Can rotating kube-ca break my cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A namespace is stuck in terminating
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: General troubleshooting for RKE clusters
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Recovering an RKE cluster from an etcd split-brain
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we are going to be covering what an etcd spilt-brain is, how
+    to detect it, and finally, how to recover from it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is an etcd split-brain?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Etcd is a leader-based distributed system. Etcd ensures that the leader node
+    periodically sends heartbeats to all followers in order to keep the leader lease.
+    Etcd requires a majority of nodes to be up and healthy to accept writes using
+    the model **(n+1)/2** members. When fewer than half of the etcd members fail,
+    the etcd cluster can still accept read/write requests. For example, if you have
+    a five-node etcd cluster and lose two nodes, the Kubernetes cluster will still
+    be up and running. But if you lose an additional node, then the etcd cluster will
+    lose quorum, and the remaining nodes will go into read-only mode until a quorum
+    is restored.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After a failure, the etcd cluster will go through a recovery process. The first
+    step is to elect a new leader that verifies that the cluster has a majority of
+    members in a healthy state – that is, responding to health checks. The leader
+    will then return the cluster to a healthy state and begin accepting `write` requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, another common failure scenario is what we call a **network partition**.
+    This is when most or all nodes in the etcd cluster lose access to one another,
+    which generally happens during an infrastructure outage such as a switch failure
+    or a storage outage. But this can also occur if you have an even number of etcd
+    nodes – for example, if you have three etcd nodes in data center *A* and three
+    etcd nodes in data center *B*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having etcd running across two data centers is not recommended.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, the network connection between the data center fails. In this case, this
+    means that all etcd nodes will go into read-only mode because of quorum loss.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You should rarely run into a split-brain cluster if you have an odd number of
+    nodes in the preceding scenario. But it still can happen. Of course, the question
+    that comes up is, what is a `initial-cluster-token`. As nodes join that cluster,
+    they will each be assigned a unique member ID and sent the cluster ID. At this
+    point, the new node will be syncing data from other members in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are only three main reasons why the cluster ID would be changed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first is data corruption; this is a rare occurrence (I have only seen it
+    once before, during an intentional data corruption test), that is, using the `dd`
+    command to write random data to the drive storing the etcd database filesystem.
+    Most of the time, the safeguards and consistency checks built into etcd prevent
+    this.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A misconfiguration is the second reason, which is more common when someone is
+    making a cluster change. For example, when an etcd node fails, some users will
+    try to add a new etcd node without removing the broken node first, causing the
+    new etcd node to fail to join correctly, putting the cluster into a weird broken
+    state. The new node sometimes generates a new cluster ID instead of joining the
+    existing nodes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The third reason is a failed etcd restore. During the etcd restore process,
+    a new etcd cluster is created, with the first node being used as a bootstrap node
+    to create a new etcd cluster, with the original data being injected into this
+    new cluster. The rest of the etcd node should join the *new* etcd cluster, but
+    this process can fail if the connection between Rancher and the cluster/nodes
+    is unstable, or if there is a bug in `Rancher/RKE/RKE2`. The other reason is that
+    the restore fails partway through, leaving some etcd nodes running on older data
+    and some nodes running on *newer* data.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now we know how etcd can get into a split-brain state. In the next section,
+    we are going to cover how to identify this issue in the real world, including
+    common error messages that you should find.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Identifying the common error messages
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When etcd goes into a split-brain state, it is typically found when a cluster
+    is found offline – that is, a request to the kube-apiserver(s) start failing,
+    which generally shows itself as a cluster going offline in the Rancher UI.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You should run the following commands for `RKE(1)` clusters and review the
+    output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '2021-05-04 07:50:10.140405 E | rafthttp: request cluster ID mismatch (got ecdd18d533c7bdc3
+    want a0b4701215acdc84)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '2021-05-04 07:50:10.142212 E | rafthttp: request sent was ignored (cluster
+    ID mismatch: peer[fa573fde1c0b9eb9]=ecdd18d533c7bdc3, local=a0b4701215acdc84)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '2021-05-04 07:50:10.155090 E | rafthttp: request sent was ignored (cluster
+    ID mismatch: peer[fa573fde1c0b9eb9]=ecdd18d533c7bdc3, local=a0b4701215acdc84)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note in the output that the `fa573fde1c0b9eb9` member responds with a cluster
+    ID different from the local copy in the following command; we are jumping into
+    the etcd container and then connecting the etcd server using the etcd command-line
+    tool. Finally, we are running the `member list` sub-command to show all the nodes
+    in this etcd cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 15de45eddfe271bb, started, etcd-a1ublabat03, https://172.27.5.33:2380, https://172.27.5.33:2379,
+    false
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1d6ed2e3fa3a12e1, started, etcd-a1ublabat02, https://172.27.5.32:2380, https://172.27.5.32:2379,
+    false
+  prefs: []
+  type: TYPE_NORMAL
+- en: 68d49b1389cdfca0, started, etcd-a1ublabat01, https://172.27.5.31:2380, https://172.27.5.31:2379,
+    false
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that the output shows that all etcd members are in the `started` state,
+    which would make you think that they are all healthy, but this output may be misleading,
+    particularly that the members have successfully joined the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'https://172.27.5.31:2379 is healthy: successfully committed proposal: took
+    = 66.729472ms'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'https://172.27.5.32:2379 is healthy: successfully committed proposal: took
+    = 70.804719ms'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'https://172.27.5.33:2379 is healthy: successfully committed proposal: took
+    = 71.457556ms'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note that the output shows that all etcd members are reporting as healthy even
+    though one of the members has the wrong cluster ID. This output reports that the
+    etcd process is up and running, responding to its health check endpoint.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You should run the following commands for RKE2 clusters and review the output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that the output is very similar to the output for the RKE1 cluster, with
+    the only difference being that etcd runs as a Pod instead of a standalone container.
+    In the following commands, we are doing a `for` loop, going through each etcd
+    server and testing the endpoint. This endpoint will tell us whether the etcd server
+    is healthy or having issues:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the following screenshot, we can see that we are testing a total of five
+    etcd servers, with each server reporting health that equals `true`, along with
+    output showing how long each server took to respond to this health check request.
+    Finally, the last block will show us whether there are any known errors with the
+    etcd server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 15.1 – The RKE2 endpoint health output table'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_15_01.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 15.1 – The RKE2 endpoint health output table
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that the output shows the health status of each of the master nodes. It
+    is crucial to note that this script uses `kubectl` to execute into each etcd Pod
+    and runs the `etcdctl endpoint health` command, which checks itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If `kubectl` is unavailable, you can SSH into each of the master nodes and
+    run the following command instead:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: export CRI_CONFIG_FILE=/var/lib/rancher/rke2/agent/etc/crictl.yaml
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: etcdcontainer=$(/var/lib/rancher/rke2/bin/crictl ps --label io.kubernetes.container.name=etcd
+    --quiet)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: /var/lib/rancher/rke2/bin/crictl exec $etcdcontainer sh -c "ETCDCTL_ENDPOINTS='https://127.0.0.1:2379'
+    ETCDCTL_CACERT='/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt' ETCDCTL_CERT='/var/lib/rancher/rke2/server/tls/etcd/server-client.crt'
+    ETCDCTL_KEY='/var/lib/rancher/rke2/server/tls/etcd/server-client.key' ETCDCTL_API=3
+    etcdctl endpoint health --cluster --write-out=table"
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: The command directly connects to the container process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To recover from this issue in an RKE(1) cluster, you''ll want to use try the
+    following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Triggering a cluster update process by running the `rke up --config cluster.yml`
+    command, or for Rancher-managed RKE(1) clusters, you'll need to change the cluster
+    settings.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the `rke up` command fails, use `etcd-tools`, found at [https://github.com/rancherlabs/support-tools/tree/master/etcd-tools](https://github.com/rancherlabs/support-tools/tree/master/etcd-tools),
+    to rebuild the etcd cluster manually.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If `etcd-tools` fails, you need to restore the cluster from an etcd snapshot.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: At this point, we know how to resolve an etcd failure such as this. We now need
+    to take steps to prevent these issues from happening again. In the next section,
+    we are going to go over some common steps that you can take to protect your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here are the preventive tasks to take:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If hosted in VMware, use **VM Anti-Affinity** rules to make sure that etcd nodes
+    are hosted on different **ESXi** hosts. The **VMware Knowledge Base** can be found
+    at [https://docs.vmware.com/en/VMware-vSphere/7.0/com.vmware.vsphere.resmgmt.doc/GUID-FBE46165-065C-48C2-B775-7ADA87FF9A20.html](https://docs.vmware.com/en/VMware-vSphere/7.0/com.vmware.vsphere.resmgmt.doc/GUID-FBE46165-065C-48C2-B775-7ADA87FF9A20.html).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If hosted in a cloud provider such as `etcd1` in `us-west-2a` and `etcd2` in
+    `us-west-2b`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only apply patching in a rolling fashion. An example script can be found at
+    [https://github.com/mattmattox/Kubernetes-Master-Class/blob/main/disaster-recovery/etcd-split-brain/rolling_reboot.sh](https://github.com/mattmattox/Kubernetes-Master-Class/blob/main/disaster-recovery/etcd-split-brain/rolling_reboot.sh).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To reproduce this issue in a lab environment, you should follow the steps located
+    at [https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery/etcd-split-brain#reproducing-in-a-lab](https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery/etcd-split-brain#reproducing-in-a-lab).
+    Note that this process only applies to RKE(1) clusters, as finding a repeatable
+    process for RKE2 is very difficult due to the built-in self-healing processes
+    that are part of RKE2.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, we have handled a broken etcd cluster and will need to restore
+    the cluster in place. We, of course, need to take this to the next step, which
+    is how to recover when the cluster is lost and we need to rebuild. In the next
+    section, we are going to cover the steps for rebuilding a cluster from zero.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rebuilding from an etcd backup
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Cluster data, including Deployments, Secrets, and configmap, is stored in etcd.
+    Using RKE1/2, we can take an etcd backup and seed a cluster using the backup.
+    This feature can be helpful in cases of disasters such as a large-scale storage
+    outage or accidental deletion of data for a cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For RKE v0.2.0 and newer versions, etcd backups are turned on by default. Using
+    the default setting, RKE will take a backup every 12 hours, keeping 6 copies locally
+    on each etcd node, located at `/opt/rke/etcd-snapshots`. You can, of course, customize
+    these settings by overriding the values in `cluster.yaml` in the Rancher UI details,
+    which can be found at [https://rancher.com/docs/rke/latest/en/etcd-snapshots/recurring-snapshots/#configuring-the-snapshot-service-in-yaml](https://rancher.com/docs/rke/latest/en/etcd-snapshots/recurring-snapshots/#configuring-the-snapshot-service-in-yaml).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The most important settings are the Amazon **Simple Storage Service** (**S3**)
+    settings that allow you to store the etcd snapshots in an S3 bucket instead of
+    locally on the etcd nodes. This is important because we want to get the backups
+    off the server that is being backed up. Note that RKE uses a standard S3 GO library
+    that supports any S3 provider that follows the S3 standard. For example, you can
+    use **Wasabi** in place of AWS S3, but you cannot use **Azure Blob**, as it's
+    not fully S3 compatible. For environments where sending data to the cloud is not
+    allowed, you can use some enterprise storage arrays such as **NetApp** and **EMC**,
+    as they can become an S3 provider.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RKE can restore an etcd snapshot up into the same cluster or a new cluster.
+    For restoring etcd, run the `rke etcd snapshot-restore --name SnapshotName` command,
+    with RKE taking care of the rest. Restoring a snapshot into a new cluster is slightly
+    different because the etcd snapshot restores all the cluster data, including items
+    such as the node object for the *old* nodes. In addition, the Kubernetes certificates
+    are regenerated. This causes the service account tokens to be invalided, breaking
+    several services such as `canal`, `coredns`, and `ingress-nginx-controllers`.
+    To work around this issue, I created a script that deleted all the broken service
+    account tokens and recycled the services and nodes. This script can be found at
+    [https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery/rebuild-from-scratch#restoringrecovering](https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery/rebuild-from-scratch#restoringrecovering).
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find more details about the backup and restore process in Rancher's
+    official documentation, located at [https://rancher.com/docs/rke/latest/en/etcd-snapshots/](https://rancher.com/docs/rke/latest/en/etcd-snapshots/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the RKE2 cluster, you can restore an etcd snapshot using the built-in `rke2`
+    command on the master nodes, using the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Stop `rke2` on all master nodes using the `systemctl stop rke2-server` command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Reset a cluster on one of the master nodes using the `rke2 server --cluster-reset`
+    command. This command creates a new etcd cluster with only a single node one.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Clean the other master nodes using the `mv /var/lib/rancher/rke2/server/db/etcd
+    /var/lib/rancher/rke2/server/db/etcd-old-%date%` command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Then, rejoin the other master nodes to the cluster by running `systemctl start
+    rke2-server`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can find more details on this process in the official RKE2 documentation
+    at [https://docs.rke2.io/backup_restore/](https://docs.rke2.io/backup_restore/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, you should be able to take an etcd backup and rebuild a cluster
+    using just that backup. This process includes both the RKE1 and RKE2 clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to resolve Pods not being able to be scheduled due to OPA Gatekeeper
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we covered in [*Chapter 12*](B18053_12_Epub.xhtml#_idTextAnchor198), *Security
+    and Compliance Using OPA Gatekeeper*, `ValidatingWebhookConfigurations` to screen
+    updates requests sent to kube-apiserver to verify whether they pass OPA Gatekeeper
+    policies. If OPA Gatekeeper Pod(s) are down, these requests will fail, which will
+    break kube-scheduler because all the update requests will be blocked. This means
+    that all new Pods will fail to be created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: OPA Gatekeeper can be set to `fail open` – that is, if OPA Gatekeeper is down,
+    assume that it would have been approved and move forward. I have seen in larger
+    clusters that the delay caused by OPA Gatekeeper timing out caused a ton of load
+    on the kube-apiservers, which caused the cluster to go offline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can identify this issue by reviewing the kube-scheduler logs using the
+    following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For RKE(1) clusters, run the `docker logs --tail 10 -t kube-scheduler` command
+    if the output looks like the following. It''s telling us that the kube-scheduler
+    is having issues connecting the OPA Gatekeeper service endpoint:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: kubectl -n kube-system logs -f -l component=kube-scheduler
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'kubectl get ValidatingWebhookConfiguration gatekeeper-validating-webhook-configuration
+    -o yaml | sed ''s/failurePolicy.*/failurePolicy: Ignore/g'' | kubectl apply -f
+    -.'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: kubectl get validatingwebhookconfigurations.admissionregistration.k8s.io gatekeeper-validating-webhook-configuration
+    -o yaml > webhook.yaml
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: kubectl delete validatingwebhookconfigurations.admissionregistration.k8s.io
+    gatekeeper-validating-webhook-configuration.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: kubectl get ns | awk '{print $1}' | grep -v NAME | xargs -I{} kubectl patch
+    namespace {}  -p '{"metadata":{"finalizers":[]}}' --type='merge' -n {}
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: kubectl get ns NamespaceName  -o yaml.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: for ns in $(kubectl get ns --field-selector status.phase=Terminating -o jsonpath='{.items[*].metadata.name}');
+    do  kubectl get ns $ns -ojson | jq '.spec.finalizers = []' | kubectl replace --raw
+    "/api/v1/namespaces/$ns/finalize" -f -; done.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: kubectl api-resources --verbs=list --namespaced -o name   | xargs -n 1 kubectl
+    get --show-kind --ignore-not-found -n longhorn-system,
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: docker exec etcd etcdctl member list
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: curl https://raw.githubusercontent.com/mattmattox/etcd-troubleshooting/master/etcd-endpoints
+    | bash
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`health check for peer xxx could not connect: dial tcp IP:2380: getsockopt:
+    connection refused`'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '`xxx is starting a new election at term x`'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '`connection error: desc = "transport: Error while dialing dial tcp 0.0.0.0:2379:
+    i/o timeout"; Reconnecting to {0.0.0.0:2379 0 <nil>}`'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: '`rafthttp: failed to find member.`'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '```'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You can find more scripts and commands at [https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/troubleshooting-kubernetes](https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/troubleshooting-kubernetes).
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, you should be able to detect and resolve the most common failures
+    that can happen with your RKE cluster. In addition, we covered how to prevent
+    these kinds of failures from happening.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter went over the main parts of an RKE1 and RKE2 cluster. We then dove
+    into some of the common failure scenarios, covering how these scenarios happen,
+    how to find them, and finally, how to resolve them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We then closed out the chapter by covering some common troubleshooting commands
+    and scripts that can be used to debug other issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we are going to dive into the topic of CI/CD pipelines
+    and image registries, including how to install tools such as Drone and Harbor.
+    Then, we'll be covering how to integrate with our clusters. Finally, we'll be
+    covering how to set up our applications to use the new pipelines.
+  prefs: []
+  type: TYPE_NORMAL

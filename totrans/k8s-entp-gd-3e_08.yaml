@@ -1,0 +1,1660 @@
+- en: '8'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Managing Secrets
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Everyone has secrets, and Kubernetes clusters are no different. **Secrets**
+    can be used to store credentials for connecting to databases, private keys for
+    encryption or authentication, or anything else that’s deemed confidential. In
+    this chapter, we’ll explore why secret data has to be handled differently than
+    other configuration data, how to model threats against your cluster’s secrets,
+    and different ways to integrate external secret managers into your clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In *Chapter 6**, Integrating Authentication into Your Cluster*, we created some
+    secrets for **OpenUnison**. These Secrets were simple Kubernetes objects and weren’t
+    treated any differently then we’d treat other configuration data. This makes it
+    difficult to follow common enterprise requirements for secret data, such as periodic
+    rotation and tracking usage. It’s important to understand why enterprises generally
+    have these requirements and how to implement them. It’s also important to be able
+    to model threats from a realistic perspective and to avoid creating security holes
+    by trying to make things more secure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This chapter will walk through why you need to treat secret data different
+    from other configuration data and provide you the tools you’ll need to determine
+    your secrets management requirements and to build out your secrets management
+    platform. We’ll cover:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Examining the difference between Secrets and Configuration Data
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understanding Secrets Managers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Integrating Secrets into your Deployments
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical Requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This chapter has the following technical requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An Ubuntu 22.04+ server running Docker with a minimum of 4 GB of RAM, though
+    8 GB is suggested
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Scripts from the `chapter8` folder from the repo, which you can access by going
+    to this book’s GitHub repository: [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Getting Help
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We do our best to test everything, but there are sometimes half a dozen systems
+    or more in our integration labs. Given the fluid nature of technology, sometimes
+    things that work in our environment don’t work in yours. Don’t worry, we’re here
+    to help! Open an issue on our GitHub repo at [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues)
+    and we’ll be happy to help you out!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Examining the difference between Secrets and Configuration Data
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: What makes a `Secret` different than the configuration data stored in a `ConfigMap`
+    or a **CRD**? From a Kubernetes perspective, the only real difference is that
+    both `ConfigMaps` and CRDs are represented as text, where as a `Secret` is represented
+    as a **base64** encoded string, allowing secrets to contain binary data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are new to base64, it is an encoding process, known for using a 64-character
+    set that converts binary data into an ASCII character string. This provides a
+    reliable method to send binary information during transmission as text, which
+    is beneficial when direct binary support is unsupported or where the risk of data
+    corruption in a plain text transmission is a concern, making it useful for transmitting
+    images, audio, and binary files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There can be some confusion between the terms encoding and encryption. Encryption
+    requires a key to decode, while encoding does not. While encoding might provide
+    some obscurity to text, it doesn’t protect it. If you didn’t need a key to encode
+    your data, it’s not encrypted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let’s look at a `Secret` object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This looks very similar to a `ConfigMap`, but there are two differences:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The addition of the `type` directive tells Kubernetes what kind of Secret this
+    is.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All of the fields in the `data` section are base64 encoded.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `type` directive tells Kubernetes what kind of `Secret` you’re creating.
+    In this case, `type` `Opaque` means that there is no format to the `Secret`'s
+    `data` section. This will likely be the most common `type` you will see.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are no requirements for the `type` directive; you can specify whatever
+    you want if you wish to provide your own value. That said, if you do provide one
+    of Kubernetes’ pre-defined types, the cluster will validate that the format matches.
+    You can find the list of pre-defined types in Kubernetes’ `Secret` documentation:
+    [https://kubernetes.io/docs/concepts/configuration/secret/#secret-types](https://kubernetes.io/docs/concepts/configuration/secret/#secret-types)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For instance, if you were to set the `type` to `kubernetes.io/tls` your `Secret`
+    must have a key called `tls.crt` (i.e., a base64-encoded PEM encoded certificate)
+    and a key called `tls.key` (i.e., a base64 encoded PEM private key), otherwise
+    the API server will fail to create your `Secret` and give you an error. Here’s
+    an example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The base64 encoding of data is for a very simple reason, but is also the source
+    of considerable confusion. Kubernetes `Secret` data *must* be base64 encoded because
+    secret data is often case sensitive or binary and so must be encoded to ensure
+    that it survives the translation from YAML -JSON -binary storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s important to understand how YAML gets stored in the Kubernetes API server
+    to understand why.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we work with a YAML file, the text is represented in the file by a byte
+    (or more). This YAML is then converted to JSON by `kubectl` for interacting with
+    the Kubernetes API. The JSON that is sent to the API server is then translated
+    into a binary format when it is stored. The problem we run into with many text-based
+    formats is that there are multiple ways to represent text-based data in a binary
+    format.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For instance, **UTF-8**, which is one of the most common encodings, can use
+    from one to four bytes to represent a certain character. **UTF-16** uses one to
+    four 16-bit “code units”. **ASCII** can only encode the English alphabet, Arabic
+    numerals, and common English punctuation. If the encoding from YAML – JSON - binary
+    and back involves switches encoding types, data can be lost or corrupted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preserving binary data in text is where the base64 standard comes in. Base64
+    allows any data to be stored as ASCII text, which is a subset universally across
+    different encoding types. This means that the base64-encoded data can be reliably
+    transmitted across encoding types.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you’re still skeptical of why base64 encoding your secret data is important,
+    have you ever copied a file created on Windows to a Linux system and started seeing
+    `^M` in the text? That’s an additional risk of traversing systems: different systems
+    represent new lines with different control characters. Base64 encoding your secret
+    data means that the information in the YAML file is the same as what’s stored
+    byte-for-byte.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One thing that’s incredibly important to understand is that base64 encoding
+    is not encryption. There is no security benefit to encoding, it will not stop
+    someone from snooping on your secrets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know why `Secret` `data` is base64 encoded, why are `Secrets` their
+    own objects? Why don’t we just base64 encode `ConfigMaps`? The answer is to more
+    easily use RBAC to restrict access. In the last chapter, we explored Kubernetes’
+    RBAC system for authorizing access to resources. In the chapter before that, we
+    explored how Kubernetes creates `ServiceAccount` tokens, which can be stored in
+    `Secret` objects. Combining the knowledge from these two chapters, we see how
+    storing sensitive data in a `ConfigMap` can generate unintended consequences when
+    we consider the `view` `ClusterRole`, which is intended to give read-only access
+    to a `namespace`. This `ClusterRole` does not include the `Secret` type, so `view`
+    will allow you to read `ConfigMaps`, view pod status, etc., but not read a `Secret`.
+    This is because a `Secret` might contain a token for a `ServiceAccount`, which
+    is bound to a higher-privilege `Role` or `ClusterRole`, so a user with read-only
+    access can escalate that access if we’re not careful. If secret data were stored
+    in `ConfigMaps`, RBAC would either need to support some way to exclude resources
+    or enumerate specific `ConfigMap` objects that should be allowed to be viewable
+    by the `view ClusterRole`, making it likely to not be used properly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know what makes a `Secret` different than other configuration objects,
+    we will explore why you need to treat `Secret` objects differently than `ConfigMaps`
+    and CRDs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing Secrets in an Enterprise
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The title of this book includes the word “enterprise,” and secret data management
+    is a big area where this is important. Most enterprises have very specific rules
+    around secrets management. Some of these rules involve being able to audit when
+    a secret is used, and others require that secrets be rotated on a periodic basis.
+    Following these rules is a process referred to as “compliance” and is often one
+    of the largest cost drivers for any enterprise deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Security and compliance are often grouped together, but they do not mean the
+    same thing. It’s quite easy to build a 100% compliant system that makes your auditors
+    happy, but will fail to secure your applications and data. That’s why it’s important
+    to understand why you’re building certain features into your platforms. You need
+    to ask yourself, are they satisfying compliance, security, or both?
+  prefs: []
+  type: TYPE_NORMAL
+- en: In order to answer this question, you need to understand the threats to your
+    data and systems. This process is referred to as **threat modeling**, and several
+    books have been written on the topic. In this chapter, we’re going to build a
+    very basic threat model for Kubernetes secrets based on where they are in the
+    application’s deployment. We’ll start with secrets at rest.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Threats to Secrets at Rest
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: When a secret, such as a credential or a key, is in storage it is referred to
+    being “at rest,” since data is not being moved. Nearly every compliance framework
+    requires that secrets at rest be encrypted. This makes sense; why wouldn’t you
+    encrypt your data at rest? In Kubernetes, you can configure `etcd` to encrypt
+    data at rest and you may think you’ve not only met a compliance requirement (often
+    referred to as “checking the box”) but increased the security of your cluster!
+    The truth is much more complicated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we dive into how Kubernetes encrypts data at rest, let’s do a quick
+    recap of how encryption works. All encryption involves three basic components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Data**: Either encrypted (cipher text) or decrypted (plain text).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Key**:Used to encrypt your plain text to cipher text and to decrypt your
+    cipher text to plain text.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Algorithm**: Some process to combine the key and data to encrypt or decrypt
+    it.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Every encryption class or book will teach you that the key is always a secret
+    while hiding the algorithm should never be relied upon for secrecy. This means
+    that if an attacker knows you’re using AES-256, it really doesn’t matter because
+    it’s the key that’s the secret.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What’s important here is that if you’re using encryption, you must have a key
+    available to encrypt and decrypt the data. There is a great deal of nuance in
+    how the different algorithms work, differences between block and stream ciphers,
+    how keys are generated, etc. That nuance isn’t important to this discussion, no
+    matter how fascinating it is. The fact that you need your key and data in the
+    same place at the same time limits the security impact of encrypting data at rest
+    because the security is only increased if the data and the key are separate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With that sidebar in encryption completed, you might start to see the issue
+    with encrypting data in Kubernetes’ database. Kubernetes does support encrypting
+    data and we’re not going to cover it here because of the complexities, other than
+    to describe it at a high level.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes encryption works by configuring an `EncryptionConfiguration` object
+    that identifies what data is encrypted and with what keys. This object is accessible
+    from the host running your API servers. Do you see the flaw with this? If someone
+    has access to the cluster, they have the keys!
+  prefs: []
+  type: TYPE_NORMAL
+- en: If your `etcd` instances are run on different servers there’s some additional
+    security, but does that benefit offset the risks involved when you need to decrypt
+    and re-encrypt for key rotation? That’s a decision you need to make on your own.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Does encrypting your data at rest make your clusters less secure? Consider
+    the “**CIA triad** of security” that’s most often used to describe the security
+    requirements and impacts on a system. **CIA** stands for:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Confidentiality**: Can we ensure we’re the only ones who have access to this
+    data?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Integrity**: How sure are we that the data hasn’t been tampered with?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Availability**: Is the data available when we need it?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Encrypting the data helps with the C+I portion of the CIA triad, assuming we
+    can trust the keys (we’ll talk about that in a moment). If the key rotation requires
+    downtime, or has a high risk of an outage, our “A” can be impacted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There’s an argument that encryption doesn’t provide data integrity assurances
+    because encrypted data can be corrupted and you need signatures to validate data.
+    **Signatures** are just a form of encryption with a private key that can be validated
+    with a public key, so it’s all still encryption. If someone can tamper with encrypted
+    data in a way that bypasses your keys, or using your keys, then the data can’t
+    be trusted. This is why I include integrity as a benefit of encryption.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Speaking of the keys, maybe we don’t store the keys locally. Kubernetes does
+    support external key management systems. We’ll dive into the details of how your
+    cluster authenticates with a vault or **KMS** later in the chapter. For now, what’s
+    important is that to make sure that generated authentication tokens are being
+    given to the correct system, you need a local key to use for authenticating, leading
+    to the same impact as having the decryption key local to your cluster: a local
+    compromise means an attacker will have both the keys and the encrypted data at
+    the same time and so can decrypt it.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, you’ve gone through the process of encrypting data in your cluster and you’ve
+    checked the box. Is your cluster secure? This is where security and compliance
+    aren’t the same thing. If you’ve deployed this encrypted database onto a system
+    with a single user account that’s shared across multiple users, you’ve created
+    a new way to get attacked while thinking you’re secure! It’s important to note
+    that most compliance frameworks still require some form of authorization management,
+    but many vendors push this off to another system and often the answer is “we keep
+    the keys in a vault,” creating a circular compliance issue. These complexities
+    are what make securing Kubernetes and being compliant so difficult.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having examined how we can approach encryption of Kubernetes’ data at rest,
+    we’ll next explore threats to Kubernetes’ secrets in transit between systems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Threats to Secrets in Transit
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: After spending time looking at the issues with encrypting data at rest you may
+    think that the same issues apply to data in transit. The keys need to be in the
+    same place as the data, so why bother?
+  prefs: []
+  type: TYPE_NORMAL
+- en: It turns out this isn’t the case. Kubernetes and API driven certificate authorities
+    like **JetStack’s** cert-manager make certificate management pretty much non-existent.
+    We already deployed cert-manager in the authentication chapter with an internal
+    certificate when we tested out pipeline authentication. We deployed cert-manager
+    with a private key and a self-signed root certificate that is good for ten years.
+    We trust that certificate throughout our cluster and configure our Ingress objects
+    to use that internal CA to generate three-month certificates. A combination of
+    NGINX and cert-manager make sure that we don’t ever think about renewing certificates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For intracluster communications, you can use the same approach, or you can deploy
+    a service mesh like Istio to generate certificates and provide TLS. We’ll dive
+    into this later in the book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From an availability standpoint, data in transit is much more ephemeral than
+    data at rest. If there is a break in availability due to an expired certificate,
+    there are technologies to perform retries that can be used to mitigate this risk.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The point is there’s no reason not to encrypt your data in transit. It’s true
+    that the CA and private key are still in the cluster, so a compromised cluster
+    leads to decryptable traffic, but the likelihood of availability going down due
+    to key rotation is much reduced, making this a much easier decision.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If encrypting data in transit increases security, is it compliant? This is where
+    we get the opposite of the “data at rest” scenario. From a technical perspective,
+    a certificate authority is easy to build. Back before we had cert-manager or Kubernetes,
+    I built a simple API-based CA for a customer that wanted to lock down APIs from
+    a mobile app using Java and the `openssl` command. Building a compliant CA is
+    much harder. It often involves volumes of management and regulations. For this
+    reason, while most large enterprises have an internal CA that could be used, you
+    can’t use it from within Kubernetes. If your cluster doesn’t match all the rules
+    of your CA, it invalidates the compliance of those rules and breaks your compliance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The compromise that is often struck is for your ingress controller to have a
+    wildcard certificate while an internal CA is used for communications within a
+    cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is a strong argument that the increase in automation overcomes the introduced
+    weakness of an in-cluster key for a CA, but as compliance is often a legal requirement
+    those arguments generally fail. This is why it’s so important to understand the
+    difference between security and compliance. In these two use cases we’ve shown
+    how they conflict and why you need to understand those conflicts to make design
+    choices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having walked through how to encrypt secret data in transit, the last scenario
+    to explore is secrets when they’re used in your applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Protecting Secrets in Your Applications
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Let’s walk through a potential, and all too common, scenario. You’ve built a
+    “secure” cluster. Your secret data is all stored in a well-designed secrets manager.
+    You’re following all the guidance on how to manage that data. Every connection
+    is encrypted. Your application loads, gets a password, and connects to a database.
+    It turns out that two years ago someone found a flaw in your parsing library that
+    lets an attacker open a shell on your app and get access to that password and
+    since you need to talk to that database they can connect and extract all the data!
+  prefs: []
+  type: TYPE_NORMAL
+- en: What went wrong? Going back to the previous two scenarios, we established multiple
+    times that you must have the secret in hand to use it. This means that if your
+    application has a security flaw, it doesn’t matter how well designed your secrets
+    management process is, it becomes the weakest link.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This doesn’t mean we should abandon secrets management. Supply chain security
+    is its own focus and one we will cover later in this book. The point is that when
+    you consider how to build your secrets management systems and processes, remember
+    that your application is probably the easiest place to lose control and you must
+    plan accordingly. For instance, adding additional layers that impact automation
+    will not likely buy you additional security, but you may push your developers
+    into spending time to work around your systems or drive up costs unnecessarily.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve walked through how secrets can be attacked, we can explore how
+    secrets managers work and look at different strategies for managing secret data
+    in your clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding Secrets Managers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We’ve covered what makes `Secrets` special and how to approach secret data,
+    now we need to talk about how to manage them. There are four ways most clusters
+    manage `Secrets`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Kubernetes Secrets**: Storing all secrets as `Secret` objects without any
+    kind of external management.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Sealed Secrets**: Secret data is encrypted in files stored in Git.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**External Secrets Manager**: An external service, such as HashiCorp’s Vault
+    or a cloud-based secrets manager, is used to store secrets for your cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Hybrid**: By syncing secret data from an external secrets manager into generic
+    Kubernetes `Secret` objects you get an approach that allows for the `Secrets`
+    API while still maintaining your source of truth about secret data outside of
+    your cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let’s walk through each approach to managing secrets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Storing Secrets as Secret Objects
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The first option seems like the easiest. Leveraging Kubernetes `Secret` objects
+    provides several benefits:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There’s a standard API for accessing `Secret` objects.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The API can be restricted via RBAC, mostly.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There are multiple ways for containers to access `Secret` objects without having
+    to make API calls.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The last two points can be a double-edged sword. When Kubernetes was first created,
+    one of the goals was to allow application developers to run a workload on Kubernetes
+    without the application knowing anything about Kubernetes. This meant that having
+    a standard `Secret` API was less important than having an easy way for applications
+    to access the secret data. To this end, Kubernetes made the easiest path to accessing
+    secret data either mounting the secrets as virtual files in the container or setting
+    them as environment variables. We’ll discuss the benefits and risks of both approaches
+    later in this chapter. The impact of this design decision is that while you can
+    limit who can access a `Secret` via an API using RBAC, you can’t limit who can
+    mount a `Secret` into a pod within a `Namespace`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This point been said previously in this book and will be repeated often. The
+    `Namespace` is the security boundary in Kubernetes. If you want to limit access
+    to specific `Secrets` within a `Namespace`, it’s time to create a new `Namespace`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In April 2022, Mac Chaffee wrote a great blog post titled *Plain Kubernetes
+    Secrets are fine* ([https://www.macchaffee.com/blog/2022/k8s-secrets/](https://www.macchaffee.com/blog/2022/k8s-secrets/))
+    where he gave a great summary of why, from a security standpoint, it’s OK to use
+    plain Kubernetes `Secrets`. The blog post points out that you need to model the
+    threats to your secret data before assuming a path forward for securing them.
+    You may recognize many of the same arguments from this blog post in the previous
+    section. Mac did a better job of articulating what I always thought to be true,
+    and I really enjoyed his approach. The “too long, didn’t read” of the post is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Secret managers, like **Vault**, are rarely deployed in a way that adds any
+    additional security over any other key/value database.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Encrypting secrets at rest doesn’t accomplish anything.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Your application is the most likely spot where you’ll lose a secret.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If a Kubernetes `Secret` is fine, why are we bothering with secrets managers
+    at all? There are two reasons: compliance and **GitOps**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: From a compliance perspective, most compliance frameworks require that you not
+    only know when secret data changes, but also when it’s used. For instance, **NIST-800-53**
+    requires that you continuously monitor the usage of credentials (which makes up
+    the bulk of secret data). While you could set up logging in Kubernetes to track
+    this, it makes it much easier to audit by having it in a central location.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next reason why we should evaluate a secrets manager is **GitOps**. In the
+    last two chapters, we’re going to explore GitOps, a large part of which is storing
+    our configuration in a Git repository. You should never, ever, EVER, **EVER**,
+    **EVER** store secret data in a Git repository either in plain text or as encrypted
+    data. Git repositories are designed to be easily forked. Once forked, you’ve lost
+    control of that repository. Going back to compliance, this is a big risk as you
+    have no way of knowing if a developer forked your internal repository and accidentally
+    pushed it to a public GitHub repository. There are other reasons why keeping secrets
+    in Git should be considered an anti-pattern, but we’ll cover that when we talk
+    about sealed secrets. Using a secrets manager allows us to externalize our secret
+    data from our cluster, even though `Secret` objects are most likely fine for most
+    clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having looked at why regular Kubernetes `Secrets` are usually fine from a security
+    standpoint, let’s look at what sealed secrets are and why they’re an anti-pattern.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sealed Secrets
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If you are externalizing your Kubernets manifests into a Git repository, you
+    may be tempted to store sensitive secret data there too. You don’t want anyone
+    to get that data though, so you decide to encrypt it. Now, however, you need to
+    decrypt it to get it back into your clusters. Bitnami (now owned by VMware) released
+    a tool called **Sealed Secrets** ([https://github.com/bitnami-labs/sealed-secrets](https://github.com/bitnami-labs/sealed-secrets))
+    that does just this. You install the operator into your cluster and when it sees
+    a `SealedSecret`, it decrypts it for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This seems like a simple and elegant solution for externalizing secret data
+    securely. Unfortunately, its apparent simplicity is what leads to this solution
+    being an anti-pattern.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first issue with Sealed Secrets is that secret data is stored in Git. We
+    pointed out in the previous section that this is a bad idea from a security perspective.
+    One of the main goals of secrets management is being able to track the usage of
+    secrets. It’s incredibly easy for a developer to push an internal repository to
+    a public service like GitHub or GitLab. Take this simple command line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: So long as the user is signed into GitHub, your internal repo is now public!
+    In theory you could limit access to public Git repositories, but that would probably
+    be counterproductive. My general advice is never put something in Git that you
+    wouldn’t want on GitHub. Once the code is on GitHub, or any other remote repository,
+    you’ve lost all control.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Your first response to this issue of pushing to public repositories may be:
+    “But it’s encrypted!” As a species, we’re bad at keeping secrets. As an industry,
+    we’re very bad at protecting the keys used to encrypt secrets. If you’ve lost
+    the repository, there’s a good chance you’ll also lose the keys.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Three may keep a secret, if two are dead – Benjamin Franklin
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'This isn’t just true in the Kubernetes world, but really any technology. This
+    is why it’s so important to plan for losing secrets and being able to quickly
+    change them. If your Git repository with secrets, whether encrypted or not, were
+    to be pushed outside of your enterprise, you’d want to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Go through all of the Sealed Secrets and generate new secret data (i.e. credentials).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Generate a new encryption key.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Re-encrypt and re-post all of the Sealed Secrets to Git.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Depending on the size of your clusters and how well you manage your keys this
+    could become a monumental task very quickly. It turns out a secret manager is
+    pretty good at handling this failure mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition to being able to handle the failure mode of losing your repository,
+    you need to account for losing the keys used to encrypt and decrypt your secrets.
+    If you lose the key used to encrypt the secrets and lose the secrets…suffice it
+    to say that you’re setting yourself up for a bad week, or what some call a *resume-building
+    event*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While Sealed Secrets appears to be a simple way to handle secrets management,
+    they fail to account for failure in a way that would be acceptable in the aftermath
+    of most breaches. While you wouldn’t want to store your secret data in Git, it
+    is acceptable to store metadata about secrets in Git. We’ll see in the next section
+    that secret managers can be integrated into your cluster using metadata that describes
+    where to get secret data without having any secrets in the repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: External Secrets Managers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In the last section we discussed why storing `Secrets` in Git, whether encrypted
+    or not, is an antipattern. We also discussed that you may want to externalize
+    your secret data management to make compliance and **GitOps** easier. The most
+    common approach to satisfying these requirements is a secrets manager.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Secrets managers are key/value databases that have some additional features
+    not often found in generic key/value databases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Authentication**: Secrets managers can generally authenticate with multiple
+    methods. The best solutions allow you to use either your Pod’s credentials directly
+    or using a credential derived from it. This allows your secret manager to track
+    which workloads are working with secret data and provide richer policies for managing
+    access to that data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Policies**: Most secret managers provide a richer policy framework than generic
+    databases. When combined with flexible authentication, options for the secrets
+    manager can help lock down secrets to the workload while also tracking usage without
+    an administrator getting involved with each onboarding.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Auditing**: In addition to tracking changes, secrets managers track reads
+    as well. This is a key compliance requirement.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The authentication tools for secrets managers are important. It doesn’t really
+    add much to your security or your compliance if you’re using a generic credential
+    to access your secrets manager. Back in *Chapter 6*, *Integrating Authentication
+    into Your Cluster*, we discussed how each pod gets a unique identity based on
+    their `ServiceAccount` and how that `ServiceAccount` can be validated either by
+    using the cluster’s OIDC discovery document or by submitting a `TokenReview` to
+    validate that the token is still valid. This token should be used when communicating
+    with your secret manager. If you’re running on a cloud-managed Kubernetes, this
+    can also be an identity supplied by your cloud. The point is, you’re using a local
+    identity, not a static key. This local identity is what shows up in your audit
+    logs, allowing your security team and auditors to know who is accessing secrets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, utilizing your `Pod`'s identity to access your secrets manager makes
+    onboarding and automation easier. We’ll look at multiple forms of multitenancy
+    later in the book, which all have automation in common. Most secrets managers
+    make it easier to design policies that allow for segmenting secrets access based
+    on information in the authentication token, such as the `namespace`. This means
+    you don’t need to make API calls to your secrets manager whenever you onboard
+    a new tenant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are several secrets managers available; every major cloud has its own
+    offering and there are several open-source managers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**HashiCorp Vault**: [https://github.com/hashicorp/vault](https://github.com/hashicorp/vault)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**CyberArk Conjur**: [https://github.com/cyberark/conjur](https://github.com/cyberark/conjur)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**VMware Tanzu Secrets Manager**: [https://github.com/vmware-tanzu/secrets-manager](https://github.com/vmware-tanzu/secrets-manager)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We don’t want you to have to sign up for a cloud service, so for the examples
+    in this chapter (and whenever we need secrets for the rest of the book), we’ll
+    use HashiCorp’s Vault.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In August, 2023, HashiCorp announced a change of license for its projects, including
+    **Vault**, from the **Mozilla Public License** (**MPL**) to the **Business Source
+    License** (**BUSL**). While the BUSL is not an approved Open Source™ license from
+    the Open Source Institute, it does allow for free use in both production and non-production
+    environments. We decided to continue with Vault because even though the community
+    around HashiCorp’s projects is making calls for forks or moves, enterprises have
+    invested hundreds of thousands of dollars between software, people, and automation
+    for Vault deployments. It’s still the most common secrets manager and likely will
+    be for some time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To deploy Vault, start with a fresh cluster and run the `chapter8/vault/deploy_vault.sh`
+    script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This script deploys vault into your cluster by:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying cert-manager with a self-signed CA for ingress certificates
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Installing the **Vault Helm chart**
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Deploying Vault into the cluster with the UI and with `ClusterIP` `Service`
+    objects
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Retrieving the keys used to unseal the Vault database
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Unsealing the Vault database
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Deploying `Ingress` objects you can access the UI and web services via NGINX
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Vault encrypts its data, so when you start the pod you need to “unseal” it
+    so it can be managed. You can log in to your Vault instance by first retrieving
+    the token from the `~/unseal-keys.json` file generated by the deployment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, use this token to log in to Vault by going to [https://vault.apps.IP.nip.io](https://vault.apps.IP.nip.io),
+    where `IP` is the IP address of your Kubernetes cluster with dashes instead of
+    dots. For instance, our cluster is at `192.168.2.82` so our Vault URL is [https://vault.apps.192-168-2-82.nip.io/](https://vault.apps.192-168-2-82.nip.io/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’re not going to dig too deeply into how Vault is configured outside of specific
+    examples to illustrate how to integrate an external secrets manager into your
+    cluster. If you want to go through all its options, the documentation is available
+    online at [https://developer.hashicorp.com/vault/docs](https://developer.hashicorp.com/vault/docs).
+    It’s also important to point out that this isn’t a production-capable deployment
+    either, since it’s not highly available nor are there any processes built around
+    starting and managing onboarding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With our Vault deployed, the next step is to integrate Vault into our cluster.
+    Earlier, we discussed that it’s important to use the `Pod`''s identity to interact
+    with your secrets manager. We’ll do that with Vault by configuring Vault to submit
+    a `TokenReview` to our cluster to validate that the token was issued by our cluster
+    and that the pod that the identity is tied to is still running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Diagram  Description automatically generated](img/B21165_08_01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.1: Vault integration with Kubernetes'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The above diagram shows the flow:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A pod makes a request to the Vault API using its `ServiceAccount` token projected
+    via the `TokenRequest` API
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Vault submits a `TokenReview` request to the API server with the `Pod's` token
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The API server validates whether the token is still valid or not.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Using the above process gives us the ability to validate a `Pod's` token, getting
+    confidence that the pod it’s assigned to is still valid. If an attacker were to
+    exfiltrate a Pod’s token and attempt to use it after the Pod’s been destroyed,
+    then `TokenReview` will be rejected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition to using the `TokenReview` API, Vault can be configured to use OIDC
+    to validate tokens without a callback to the API server. We aren’t going down
+    this route because we want Vault to validate that the pod associated with the
+    token is still valid.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To integrate our Vault into our cluster, run `chapter8/vault/vault_integrate_cluster.sh`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This script will integrate your Vault deployment with the KinD cluster by:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating the `vault-integration` `namespace` and the `vault-client ServiceAccount`
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creating a `ClusterRoleBinding` for the `vault-client ServiceAccount` to the
+    `system:auth-delegator ClusterRole`
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creating a token for the vault-client `ServiceAccount` that’s good for about
+    a year
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creating an `Ingress` for our API server so that Vault can communicate with
+    it
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creating a Vault Kubernetes authentication configuration with our cluster
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The Vault deployment is being treated as a stand-alone deployment, even though
+    it’s running on our cluster because Vault is often run this way in enterprise
+    deployments. Vault is a complex system that requires highly specialized knowledge
+    to run, so it’s much easier to centralize Vault knowledge into a centralized team.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might also notice that we’re creating a token for Vault to use to interact
+    with your cluster that’s good for a year. This violates our goal of using short-lived
+    tokens. This is a chicken-and-egg problem, because Vault needs to authenticate
+    to Kubernetes in order to validate the token. The cluster could be configured
+    to allow anonymous `TokenReview` access, which would leave it opened to potential
+    escalation attacks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It would be great if Vault supported using its own OIDC tokens to talk to Kubernetes
+    like a workload we defined in *Chapter 6*, *Integrating Authentication into Your
+    Cluster*, but that’s not a capability at this time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ve covered what makes an external secrets manager different than other key/value
+    stores and deployed HashiCorp’s vault. Vault’s been deployed and integrated into
+    the cluster. You now have a foundation for working with externalized secrets and
+    exploring the different ways to integrate that foundation into your cluster. Next,
+    we’ll cover a hybrid approach between using an external secrets manager and native
+    Kubernetes `Secrets`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using a Hybrid of External Secrets Management and Secret Objects
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: So far, we have covered the use of generic Kubernetes `Secret` objects, the
+    antipattern of storing secret data in encrypted files in git, and finally using
+    an external secrets manager. Since we’ve already established that plain Kubernetes
+    `Secrets` are likely not a substantial risk based on our threat model, but we
+    prefer to externalize secrets into a tool like Vault, it would be great if we
+    could use the Kubernetes `Secrets` API to access secret data in external vaults.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The use of the `Secret` API to access external secret data is unlikely to ever
+    happen. However, we can synchronize secret data from our Vault into Kubernetes
+    `Secret` objects. This hybrid approach allows us to get the best of both approaches:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Centralized secret data**: The source of truth for our secret data is our
+    vault. The data in the `Secret` object is a replica of that data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Metadata can be stored in git**: The metadata that’s used to describe where
+    the secret data is stored is not itself secret. It can be stored in Git without
+    the same adverse consequences of storing the actual secrets in Git.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Audit Data**: The access audit logs can be configured in both the API server’s
+    access logs and the vault’s access logs.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'There are multiple projects that support synchronizing secrets from a vault
+    into Kubernetes. The two that come up the most are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Kubernetes Secret Store CSI Driver** [(https://secrets-store-csi-driver.sigs.k8s.io/introduction](https://secrets-store-csi-driver.sigs.k8s.io/introduction)):
+    The Secret Store CSI driver is a **special interest group** (**SIG**) in the Kubernetes
+    project provides a storage driver for accessing secret stores such as Vault. It
+    includes a synchronization engine that will generate generic `Secret` objects.
+    The main challenge of using this project is that before you can synchronize from
+    a vault into a `Secret`, you need to mount it a pod.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**External Secrets Operator** ([https://external-secrets.io/latest/](https://external-secrets.io/latest/)):
+    The External Secrets Operator project provides a direct synchronization of secret
+    data into `Secret` objects.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'This section will focus on using the **External Secrets Operator** project.
+    We chose to use External Secrets Operator because it doesn’t require a pod to
+    first mount the secret data before synchronizing it into a `Secret`. First, deploy
+    the synchronization operator:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The above script does several things:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploys **External Secrets Operator**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creates a `Namespace` to store the synchronized Secret object
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creates a `ServiceAccount` to access Vault
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creates a secret password in Vault
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creates a policy in Vault to access the secret with the above `ServiceAccount`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creates a `ExternalSecret` object to tell the operator where and how to synchronize
+    our secret data into our cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'There’s quite a bit going on here. The operator itself is deployed via a Helm
+    chart. The `namespace` where we keep the `Secret` and its associated `ServiceAccount`
+    builds off of our Vault integration to allow pods to use a specific identity instead
+    of using a static `ServiceAccount''s` token. After creating the `Namespace` and
+    `ServiceAccount`, a Vault policy is created to allow the `ServiceAccount` to read
+    the secret data. Finally, a `SecretStore` and `ExternalSecret` object is created
+    to tell the operator how to synchronize the secret data. Let’s take a look at
+    these objects. First, we created the `SecretStore` to tell the operator where
+    the Vault is and how to access it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first object, `SecretStore`, tells **External Secrets Operator** where the
+    secrets are stored and how to access them. In this case, we’re connecting to Vault
+    using the URL `https://vault.apps.192-168-2-82.nip.io` using the certificate stored
+    in the `cacerts` `ConfigMap` to trust for TLS. The `auth` section tells the operator
+    how to authenticate, using a token for the `ServiceAccount ext-secret-vault`.
+    With the `SecretStore` defined, the next step is to begin defining what `Secret`
+    objects need to be created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In order to synchronize secret data into `Secret` objects, there needs to be
+    an `ExternalSecret` object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `ExternalSecret` object defines how to synchronize data from your vault
+    into your cluster. Here, the data is being pulled from the `SecretStore` that
+    was created to communicate with the Vault deployment. This object tells **External
+    Secrets Operator** to create the `somepassword` key on the `Secret secret-to-be-created`
+    from the `/data/extsecret/config` object in Vault, getting the value from the
+    `some-password` property.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To give some context, here’s the Vault configuration from the script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the synchronization process runs, we see that there’s now data from Vault
+    in our `Secret`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Given the approach provided by the **External Secrets Operator** project, metadata
+    for where and how to access secret data can be created and stored in a git repository
+    without adverse security impacts. Clusters are able to access secrets using the
+    well-defined `Secrets` API while still getting the benefits of externalizing their
+    secret data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we’re going to take the secret data that is now available
+    in our cluster and look at how to consume that data from workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating Secrets into Your Deployments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So far, this chapter has been focused on how to store and manage secret data.
+    We’ve covered different strategies for managing secrets with their associated
+    risks and benefits. In this section, the focus will be on consuming that secret
+    data in your workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are four ways that a workload can consume secret data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Volume mounts**: Similar to reading a file from a `PersistentVolumeClaim`,
+    secrets can be mounted to a pod and be accessed as a file. This approach can be
+    used with both external secrets and with `Secret` objects. This is generally the
+    preferred approach when working with security teams. If a `Secret` is updated
+    while a pod is running, the volume will eventually get updated, though this can
+    take some time based on your Kubernetes distribution.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Environment variables**: Secret data can be injected into environment variables
+    and consumed from the workload like any other environment variable. This is often
+    referred to as “insecure” since it’s a common practice for application developers
+    to dump environment variables for debugging purposes. It’s not an uncommon occurrence
+    for debugging components to be accidently kept in production that are leaking
+    environment variables. It’s better to avoid this approach if possible. It’s important
+    to note that if a `Secret` is updated while a pod is running, the environment
+    variable in the running pod is not updated.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Secrets API**: Kubernetes is an API and `Secrets` can be accessed directly
+    via the `Secret` API. This approach provides more flexibility than either environment
+    variables or volume mounts, but requires knowledge of how to call the API. If
+    you need to be able to dynamically retrieve `Secrets`, this is a good approach
+    but is probably overkill for most applications.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Vault API**: Every external vault provides an API. While we’re using tools
+    like **External Secrets Operator** or a sidecar to interact with these APIs, there’s
+    nothing stopping a developer from calling these APIs on their own. It would cut
+    down on the external configuration, but at the cost of tightly binding your system
+    to a particular project or vendor.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Next, we’re going to walk through these options to see how they’re implemented.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Volume Mounts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The preferred way to add `Secrets` to your workloads is to treat them as files
+    and load them into your application. This approach has multiple advantages over
+    the other approaches listed above:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Less likely to be leaked during debugging**: There’s nothing that stops a
+    developer from printing the contents of a file to the logs or an output stream,
+    but a call to the `env` command won’t automatically print out secret data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Can be updated**: When a file is updated, that update is reflected in your
+    pod. The same is true for secret data that is mounted via a volume. If the application
+    in your pod knows to look for updates, it will eventually get them.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Richer options**: A configuration file mounted onto a volume can be more
+    than name/value pairs. It can be full configuration files, simplifying management.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Mounting a secret as a volume has been a feature of Kubernetes since `Secrets`
+    were available. In this section we’ll walk through mounting both generic Kubernetes
+    `Secret` objects and interacting with our Vault deployment directly using the
+    **Vault Sidecar**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Kubernetes Secrets
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Mounting a Kubernetes `Secret` as a volume into your pods is a matter of naming
+    the `Secret` in your spec. For instance, if you created the pod from `chapter8/integration/volumes/volume-secrets.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It will generate the following log:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This pod added the `Secret` we synchronized from Vault directly to our pod.
+    We can update that secret in Vault and see what happens to the mounted value in
+    a longer-running pod. First, create the pod in `chapter8/integration/volumes/volume-secrets-watch.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we’re watching our mounted volume, let’s update the secret in Vault:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It may take a minute or two, but the `Secret` in our cluster gets synchronized.
+    Next, let’s look at our running pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that the volume did get updated. So, if we do have a long running
+    pod, we can watch mounted volumes to look for updates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we integrated a `Secret` directly into our pod. When using
+    an external secrets vault, such as HashiCorp’s Vault, this requires synchronizing
+    the `Secret` using a tool like **External Secrets Operator**. Next, we’ll create
+    a volume directly from Vault using Vault’s injector sidecar.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Vault’s Sidecar Injector
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In the previous section, we integrated a generic Kubernetes `Secret` into our
+    pod. In this section, we’ll integrate directly with Vault using its injector **sidecar**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A **sidecar** is a special container that runs along with your primary workload
+    to perform additional functions transparently and independently of your main workload.
+    The sidecar pattern allows you to create containers that intercept network traffic,
+    manage logs, or in the case of Vault, inject secrets. Starting in 1.28, sidecars
+    moved from being a well-known pattern to becoming a first-class configuration
+    option. This approach is still very new and has not yet been adopted by most implementations.
+    You can learn more about the changes to sidecars in the Kubernetes blog at [https://kubernetes.io/blog/2023/08/25/native-sidecar-containers/](https://kubernetes.io/blog/2023/08/25/native-sidecar-containers/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Vault’s **sidecar injector** has two primary components that let us inject
+    secret data into our pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Injector Mutating Admission Controller**: We’ll cover admission controllers
+    in more detail in *Chapter 11*, *Extending Security Using Open Policy Agent*.
+    For now, what you need to know about this controller is that it looks for pods
+    to be created with specific `annotations` to configure the sidecar that interacts
+    with the Vault service.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Sidecar**: The sidecar does the work of interacting with our Vault deployment.
+    You don’t need to configure the sidecar manually, the admission controller mutator
+    will do that for you based on `annotations`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'First, let’s look at our pod that is getting secret data directly from Vault:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let’s focus on the Vault connection options:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The first `annotation` tells the admission controller that we want to generate
+    the sidecar configuration for this pod. The next `annotation` tells Vault where
+    the Vault service is. We then enable detailed logging and then set the role for
+    authentication. This role in Vault was created in `chapter8/external-secrets/install_external_secrets.sh`
+    with the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The role maps our `ServiceAccount` to an allowed policy. Finally, we tell the
+    agent to skip TLS verification. In a production deployment, you don’t want to
+    skip TLS verification. We could mount our CA certificate, and that’s what you’ll
+    want to do in production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice, we didn’t specify a key or a `Secret` for authentication. That’s because
+    we’re using our `Pod's` own identity. The `serviceAccount` and `serviceAccountName`
+    options on the pod dictate which identity is used. When we configured external
+    secrets, we use the `ext-secret-vault ServiceAccount`, so we reused that identity
+    here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Having defined how we talk to Vault, next let’s look at how we define our data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first annotation says, “Create a configuration called `myenv` that points
+    to the Vault object `/secret/data/extsecret/config`.” `myenv` is like a variable
+    that allows you to track configuration options across multiple `annotations`.
+    The next `annotation` says that we want to place everything into the `/etc/secrets/myenv`
+    file. If we didn’t specify this annotation, the sidecar would have put the resulting
+    `myenv` file in the `/vault/secrets` directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The final `annotation` creates the content of the `myenv` file. If the syntax
+    looks like Helm, that’s because it uses the same template engine. Here, we’re
+    creating a file with a name/value pair. This can be a configuration file template
+    too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we’ve walked through the configuration, let’s create the object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our original workload is unaware of Vault, but is able to retrieve the secret
+    data from the generated template. There are scenarios where Vault will refresh
+    the template, but they’re Vault-specific configuration options that we’re not
+    going to dive into.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The annotation-based injection of sidecars is a common pattern amongst secrets
+    management integrations with Kubernetes. If you’re looking to integrate other
+    external secrets management systems, this is a consistent approach to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ve looked at how to use volumes to bind secrets to workloads using both standard
+    Kubernetes `Secret` objects and our external Vault. Both approaches allow you
+    to externalize your secrets. Next, we’ll look at how to inject secret data as
+    environment variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Environment Variables
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Using environment variables is the easiest way to consume any data. Every language
+    and platform has a standard way to access an environment variable. The downside
+    to this ease of access is that it’s common for developers to print out or dump
+    all their environment variables for debugging. This means that the data could
+    end up in a log, or even worse a debugging webpage that prints out environment
+    variables. This mechanism will often be flagged by security teams, so it should
+    be avoided if possible. That said, some workloads require environment variables,
+    so let’s look at how to integrate both plain Kubernetes `Secrets` and secrets
+    from our external Vault into a pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Kubernetes Secrets
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Kubernetes can plug a `Secret` object’s data directly into an environment variable
+    inside of the `Pod` definition of the container. Here’s a simple example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Looking at `.spec.containers[name=test].env`, you can see that we create an
+    environment variable from an existing `Secret`. The command of this container
+    is simply the `env` command, which prints out all the environment variables. To
+    see this container in action, apply the YAML from the `chapter8/integration/envvars/envars-secrets.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What happens if we update our `Secret`? Kubernetes won’t update the environment
+    variable. Let’s verify this point. First, create a pod that watches our environment
+    variables:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This pod will continuously echo the environment variable we created. Next,
+    let’s update Vault:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It can take up to a minute for our new password to be synchronized into the
+    `Secret`. Wait until that synchronization is complete. Once synchronized, let’s
+    watch our logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The environment variables in the pod are not updated. You can continue to let
+    this run, but it won’t change. You’ll need something to watch the `Secret` and
+    restart your workload if you want to support dynamic changes with environment
+    variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’re able to incorporate a Kubernetes `Secret` as an environment variable,
+    next, we’ll work with the Vault sidecar to integrate that same variable into a
+    pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the Vault Sidecar
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The **Vault sidecar** doesn’t support injecting environment variables directly,
+    because sidecar images can’t share environment variables. If your pod does require
+    environment variables, you need to generate a file that has a script that exports
+    those variables. Here’s an example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: This pod definition looks almost identical to the volume-based Vault integration
+    we created before. The main difference is that we are running a command in our
+    container to generate the environment variables from the template we created in
+    our annotations. While this approach will work, it means updating your manifests
+    so that they are looking looking for a specific file. This approach breaks accepted
+    patterns for manifest reusability and will make it difficult to use externally
+    generated images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The issues with trying to generate environment variables with an external secrets
+    manager reinforces that this is an antipattern that should be avoided. Next, we’ll
+    look at using the Kubernetes API directly for retrieving `Secrets`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the Kubernetes Secrets API
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So far, we have focussed on abstractions for interacting with APIs so that our
+    workloads do not need to know about the Kubernetes API. For most workloads, this
+    makes sense as secret metadata is often static. For instance, your application
+    may need to talk to a database whose credentials may change but the fact that
+    you need credentials won’t. What if you need something more dynamic? If you’re
+    building a system that services other systems, this might be the case. In this
+    section, we’ll walk through why you would call the `Secrets` API directly from
+    your pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first question you might be asking is “why?” With the multiple options
+    for abstraction on top of the Kubernetes `Secrets` API, why would you want to
+    call the Kubernetes API directly? There have been some interesting trends that
+    will likely make this more of a reality:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**More monoliths**: In recent months there’s been a trend of re-examining if
+    microservices are the right architecture for most systems. One of the most visible
+    moves to monoliths was Amazon’s Prime Video **Quality of Service** (**QoS**) going
+    from Lambda to a monolith. We discuss the trade-offs between these approaches
+    when we talk about Istio in *Chapter 17*, *Building and Deploying Applications
+    on Istio*. If you were to build a monolith, you may need to provide more flexibility
+    in how you access your `Secrets`. Static metadata definitions may not be adequate.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Kubernetes as a data center API**: It turns out that Kubernetes’ API is simple
+    enough to be easily adapted to multiple use cases, yet powerful enough to be scaled
+    out. A great example is the **KubeVirt** ([https://kubevirt.io/](https://kubevirt.io/))
+    project that lets your Kubernetes cluster manage and deploy virtual machines.
+    More workloads are using **custom resource definitions** (**CRDs**) to store configuration
+    information, and since you’d never keep a secret in a CRD, you may need to interact
+    with the `Secrets` API to get access to your secret data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Platform engineering**: More teams are moving to the idea of creating an
+    **internal developer platform** (**IDP**) that provides a one-stop-shop for self-service
+    access to services such as Kubernetes. If your IDP is built on Kubernetes, you’ll
+    likely need to interact with the `Secrets` API.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This book spends quite a bit of time on identity in Kubernetes and will often
+    refer to IdPs. The case of the “d” is important because an **IdP** is an **Identity
+    Provider**, while an **IDP** is an **Internal Developer Portal**.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: With these points in mind, you may find yourself needing to interact directly
+    with the Kubernetes API to retrieve `Secrets`. The good news is that you’re not
+    really doing anything different for the `Secrets` API than any other API. Most
+    of the Kubernetes client SDKs even handle base64 decoding the data from `Secret`
+    objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since this isn’t a programming book, and there are many ways to interact with
+    the API, we’re not going to dive into any SDK specifics. We’re going to cover
+    some specific guidance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Use Your Pod’s Identity**: Just like interacting with external vaults, use
+    your Pod’s own identity when interacting with the API server. Don’t use a hardcoded
+    Secret.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Use an SDK**: This is good general advice. Yes, you can use the Kubernetes
+    API via a direct RESTful call, but let the SDK do the work for you. It will make
+    life easier and lead to fewer security issues (who hasn’t accidently logged a
+    token while testing an HTTPS call? I mean, besides me).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Store Metadata in CRDs**: Any situation where you’re going to describe a
+    secret should be done in a CRD. This gives you the benefit of having a schema
+    language that you can use to generate your own SDKs.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While it is more difficult to interact with the `Secrets` API than to use Kubernetes’
+    multiple abstractions for interacting with secrets, it does provide tremendous
+    flexibility that is not available to the more common abstractions. Next, we’ll
+    look at whether interacting directly with our vault’s API can provide the same
+    benefits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the Vault API
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Every vault service has an API. That’s how the sidecars that integrate with
+    them interact with their vaults so that they can inject secrets into your workloads.
+    In the previous section, we walked through the advantages of directly calling
+    the Kubernetes `Secrets` API. Does the same logic apply to the Vault API? The
+    reasoning for calling the Vault API, or any secrets management API, directly is
+    the same as calling the `Secrets` API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What are the disadvantages of calling the Vault API directly? The main drawback
+    is that you are now tightly binding your workload to a specific vendor or project.
+    One of the benefits of the Kubernetes API is that it is relatively consistent
+    across implementations. While this isn’t always true, at least for the `Secret`
+    API it is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is unfortunately no standard API for secrets, nor is there likely to ever
+    be one. HashiCorp, AWS, Microsoft, Google, VMWare, etc. all have their own ideas
+    as to how secrets should be managed and there isn’t much incentive to create a
+    standard. There’s also no standard for integrating language bindings. For instance,
+    the database world often has common standards for integrating into programming
+    languages such as the JDBC standard in Java. It would be great for Kubernetes
+    to make the `Secrets` API pluggable, but that will never happen. The complexities
+    at both the technical and non-technical levels are just too high for Kubernetes
+    to own such an undertaking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With that said, the same recommendations that were made for using the Kubernetes
+    `Secrets` API should be followed when integrating your workloads directly into
+    the Vault API. Make sure that you’re using a language SDK and rely on your workload’s
+    identity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter walked through multiple aspects of secrets management. We began
+    by discussing the difference between secret data and more generic configuration
+    data. We considered why Kubernetes stores and represents Secret objects as base64-encoded
+    text, and why you shouldn’t store secret data in git. There was also a discussion
+    on threat modelling secret data in Kubernetes clusters. Next, we then walked through
+    various ways to store and manage secret data including Secret objects, external
+    vaults, Sealed Secrets, and hybrid approaches. Finally, we walked through integrating
+    your secrets into your workloads via volume mounts, environment variables, and
+    directly with APIs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having finished this chapter, you should now have enough information and examples
+    to build your own secrets management strategy for your clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we are going to begin focusing on multi-tenancy with virtual
+    clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Compliance and security are the same thing.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Base64 is a type of encryption.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The best way to authenticate to an external vault is:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Using a password
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Using your `Pod's` identity
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Using a password that changes every 3 months
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Which integration type is automatically updated in a pod when a secret is updated?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A `Secret` with an environment variable
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: An external vault with an environment variable
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: An external vault with a volume
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A `Secret` with a volume
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: When discussing IT security, what does CIA stand for?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Confidentiality, Integrity, Availability
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Central Intelligence Agency
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Confidentiality, Interesting, Availability
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Culinary Institute of America
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: b – False
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: b – False
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: c – Using your `Pod's` identity
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: d – A `Secret` with a volume
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a – Confidentiality, Integrity, Availability
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

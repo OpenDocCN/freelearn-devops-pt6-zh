@@ -1,0 +1,785 @@
+- en: '10'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Running Production-Grade Kubernetes Workloads
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapters, we focused on containerization concepts and the fundamental
+    Kubernetes building blocks, such as Pods, Jobs, and ConfigMaps. Our journey so
+    far has covered mostly single-machine scenarios, where the application requires
+    only one container host or Kubernetes node. For **production-grade** Kubernetes,
+    you have to consider different aspects, such as **scalability**, **high availability**
+    (**HA**), and **load balancing**, and this always requires **orchestrating** containers
+    running on multiple hosts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Briefly, **container orchestration** is a way of managing multiple containers’
+    life cycles in large, dynamic environments—this can include deploying and maintaining
+    the desired states for container networks, providing redundancy and HA of containers
+    (using external components), scaling up and down the cluster and container replicas,
+    automated health checks, and telemetry (log and metrics) gathering. Solving the
+    problem of efficient container orchestration at cloud scale is not straightforward—this
+    is why Kubernetes exists!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensuring High Availability and Fault Tolerance on Kubernetes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is ReplicationController?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is ReplicaSet?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For this chapter, you will need the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Kubernetes cluster deployed. You can use either a local or a cloud-based cluster,
+    but in order to fully understand the concepts, we recommend using a multi-node,
+    cloud-based Kubernetes cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The Kubernetes **command-line interface** (**CLI**) (`kubectl`) installed on
+    your local machine and configured to manage your Kubernetes cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Kubernetes cluster deployment (local and cloud-based) and `kubectl` installation
+    were covered in *Chapter 3*, *Installing Your First Kubernetes Cluster*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can download the latest code samples for this chapter from the official
+    GitHub repository at [https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter10](https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter10).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensuring High Availability and Fault Tolerance on Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: First, let’s quickly recap how we define HA and **fault tolerance** (**FT**)
+    and how they differ. These are key concepts in cloud applications that describe
+    the ability of a system or a solution to be continuously operational for a desirably
+    long length of time. From a system end user perspective, the aspect of availability,
+    alongside data consistency, is usually the most important requirement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: High availability
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In short, the term *availability* in systems engineering describes the percentage
+    of time when the system is fully functional and operational for the end user.
+    In other words, it is a measure of system uptime divided by the sum of uptime
+    and downtime (which is basically the total time). For example, if, in the last
+    30 days (720 hours), your cloud application had 1 hour of unplanned maintenance
+    time and was not available to the end user, it means that the availability measure
+    of your application is ![](img/B22019_10_001.png). Usually, to simplify this notation
+    when designing systems, the availability will be expressed in so-called nines:
+    for example, if we say that a system has an availability of five nines, it means
+    it is available at least 99.999% of the total time. To put this into perspective,
+    such a system can have up to only 26 seconds per month of downtime! These measures
+    are often the base indicators for defining **service-level agreements** (**SLAs**)
+    for billed cloud services.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The definition of HA, based on that, is relatively straightforward, although
+    not precise—a system is highly available if it is operational (available) without
+    interruption for long periods of time. Usually, we can say that five nines of
+    availability is considered the gold standard of HA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Achieving HA in your system usually involves one or a combination of the following
+    techniques:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Eliminating single points of failure (SPOFs) in the system**. This is usually
+    achieved by components’ redundancy.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Failover setup**, which is a mechanism that can automatically switch from
+    the currently active (possibly unhealthy) component to a redundant one.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Load balancing**, which means managing traffic coming into the system and
+    routing it to redundant components that can serve the traffic. This will, in most
+    cases, involve proper failover setup, component monitoring, and telemetry.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let’s introduce the related concept of FT, which is also important in distributed
+    systems such as applications running on Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fault tolerance
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Now, FT can be presented as a complement to the HA concept: a system is fault-tolerant
+    if it can continue to be functional and operating in the event of the failure
+    of one or more of its components. For example, FT mechanisms like RAID for data
+    storage, which distributes data across multiple disks, or load balancers that
+    redirect traffic to healthy nodes, are commonly used to ensure system resilience
+    and minimize disruptions. Achieving full FT means achieving 100% HA, which, in
+    many cases, requires complex solutions actively detecting faults and remediating
+    the issues in the components without interruptions. Depending on the implementation,
+    the fault may result in a graceful degradation of performance that is proportional
+    to the severity of the fault. This means that a small fault in the system will
+    have a small impact on the overall performance of the system while serving requests
+    from the end user.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HA and FT for Kubernetes applications
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In previous chapters, you learned about Pods and how Services expose them to
+    external traffic (*Chapter 8*, *Exposing Your Pods with Services*). Services are
+    Kubernetes objects that provide a stable network address for a set of healthy
+    Pods. Internally, inside the Kubernetes cluster, the Service makes Pods addressable
+    using virtual IP addresses managed by the `kube-proxy` component on each node.
+    Externally, cloud environments typically use a cloud load balancer to expose the
+    Service. This load balancer integrates with the Kubernetes cluster through a cloud-specific
+    plugin within the `cloud-controller-manager` component. With an external load
+    balancer in place, microservices or workloads running on Kubernetes can achieve
+    load balancing across healthy Pods on the same or different nodes, which is a
+    crucial building block for HA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Services are required for load balancing requests to Pods, but we haven’t yet
+    covered how to maintain multiple replicas of the same Pod object definition that
+    are possibly redundant and allocated on different nodes. Kubernetes offers multiple
+    building blocks to achieve this goal, outlined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A ReplicationController object**—the original form of defining Pod replication
+    in Kubernetes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**A ReplicaSet object**—the successor to ReplicationController. The main difference
+    is that ReplicaSet has support for set-based requirement selectors for Pods.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The preferred way to manage ReplicaSets is through a Deployment object, which
+    simplifies updates and rollbacks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A Deployment object**—another level of abstraction on top of ReplicaSet.
+    This provides *declarative* updates for Pods and ReplicaSets, including rollouts
+    and rollbacks. It is used for managing *stateless* microservices and workloads.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**A StatefulSet object**—similar to Deployment but used to manage *stateful*
+    microservices and workloads in the cluster. Managing the state inside a cluster
+    is usually the toughest challenge to solve in distributed systems design.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**A DaemonSet object**—used for running a singleton copy of a Pod on all (or
+    some) of the nodes in the cluster. These objects are usually used for managing
+    internal Services for log aggregation or node monitoring.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the next sections, we will cover the basics of ReplicationController and
+    ReplicaSets. The more advanced objects, such as Deployment, StatefulSet, and DaemonSet,
+    will be covered in the next chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter covers HA and FT for Kubernetes workloads and applications. If
+    you are interested in how to ensure HA and FT for Kubernetes itself, please refer
+    to the official documentation at [https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/high-availability/](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/high-availability/).
+    Please note that in managed Kubernetes offerings in the cloud, such as **Azure
+    Kubernetes Service** (**AKS**), Amazon **Elastic Kubernetes Service** (**EKS**),
+    or **Google Kubernetes Engine** (**GKE**), you are provided with highly available
+    clusters, and you do not need to manage the master nodes yourself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is ReplicationController?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Achieving HA and FT requires providing redundancy of components and proper
+    load balancing of incoming traffic between the replicas of components. Let’s take
+    a look at the first Kubernetes object that allows you to create and maintain multiple
+    replicas of the Pods in your cluster: ReplicationController. Please note that
+    we are discussing ReplicationController mainly for historical reasons as it was
+    the initial way of creating multiple Pod replicas in Kubernetes. We advise you
+    to use ReplicaSet whenever possible, which is basically the next generation of
+    ReplicationController with an extended specification API.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Controller objects in Kubernetes have one main goal: to observe the current
+    and the desired cluster state that is exposed by the Kubernetes API server and
+    command changes that attempt to change the current state to the desired one. They
+    serve as continuous feedback loops, doing all they can to bring clusters to the
+    desired state described by your object templates.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ReplicationController has a straightforward task—it needs to ensure that a specified
+    number of Pod replicas (defined by a template) are running and healthy in a cluster
+    at any time. This means that if ReplicationController is configured to maintain
+    three replicas of a given Pod, it will try to keep exactly three Pods by creating
+    and terminating Pods when needed. For example, right after you create a ReplicationController
+    object, it will create three new Pods based on its template definition. If, for
+    some reason, there are four such Pods in the cluster, ReplicationController will
+    terminate one Pod, and if by any chance a Pod gets deleted or becomes unhealthy,
+    it will be replaced by a new, hopefully healthy, one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since a Deployment, which configures a ReplicaSet, is now the recommended method
+    for managing replication, we will not cover ReplicationController here. In the
+    next section, we will focus on understanding and practicing the ReplicaSet concept.
+    A detailed exploration of Deployments will follow in *Chapter 11*, *Using Kubernetes
+    Deployments for Stateless Workloads*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is ReplicaSet?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let’s introduce another Kubernetes object: ReplicaSet. This is very closely
+    related to ReplicationController, which we have just discussed. In fact, this
+    is a **successor** to ReplicationController, which has a very similar specification
+    API and capabilities. The purpose of ReplicaSet is also the same—it aims to maintain
+    a fixed number of healthy, identical Pods (replicas) that fulfill certain conditions.
+    So, again, you just specify a template for your Pod, along with appropriate label
+    selectors and the desired number of replicas, and Kubernetes ReplicaSetController
+    (this is the actual name of the controller responsible for maintaining ReplicaSet
+    objects) will carry out the necessary actions to keep the Pods running.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we learn more about ReplicaSet, let us learn the major differences between
+    ReplicationController and ReplicaSet in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does ReplicaSet differ from ReplicationController?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The differences between ReplicaSet and ReplicationController are summarized
+    in the following table:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Feature** | **ReplicaSet** | **ReplicationController** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Label selectors | Supports set-based selectors (e.g., inclusion/exclusion
+    of labels). Allows more complex logic, such as including `environment=test` or
+    `environment=dev`, while excluding `environment=prod`. | Only supports equality-based
+    selectors (e.g., `key=value`). No advanced label matching. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Integration with other Kubernetes objects | Acts as a foundation for more
+    advanced objects like **Deployment** and **HorizontalPodAutoscaler** (**HPA**).
+    | Primarily manages Pod replication directly, without such integrations. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Pod update rollout | Managed declaratively through Deployment objects, allowing
+    for **staged rollouts** and **rollbacks**. | Managed manually with the now-deprecated
+    `kubectl rolling-update` imperative command. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Future support | A more modern and flexible resource with future-proof features.
+    | Expected to be deprecated in the future. |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Table 10.1: Differences between ReplicaSet and ReplicationController'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The bottom line—always choose ReplicaSet over ReplicationController. However,
+    you should also remember that using bare ReplicaSets is generally not useful in
+    production clusters, and you should use higher-level abstractions such as Deployment
+    objects for managing ReplicaSets. We will introduce this concept in the next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, let us learn about creating and managing ReplicaSet objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a ReplicaSet object
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'For the following demonstration, we are using a multi-node cluster using `kind`,
+    which you have already learned about in *Chapter 3*, *Installing Your First Kubernetes
+    Cluster*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: First of all, let us create a namespace to park our ReplicaSet resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, let’s take a look at the structure of an `nginx-replicaset.yaml` example
+    YAML manifest file that maintains three replicas of an `nginx` Pod, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There are three main components of the ReplicaSet specification, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`replicas`: Defines the number of Pod replicas that should run using the given
+    `template` and matching label `selector`. Pods may be created or deleted in order
+    to maintain the required number.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`selector`: A label selector that defines how to identify Pods that the ReplicaSet
+    object owns or acquires. Again, similar to the case of ReplicationController,
+    please take note that this may have a consequence of existing bare Pods being
+    acquired by ReplicaSet if they match the selector!'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`template`: Defines a template for Pod creation. Labels used in `metadata`
+    must match the `selector` label query.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'These concepts have been visualized in the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.2 – Kubernetes ReplicaSet'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B22019_10_01.png)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Figure 10.1: Kubernetes ReplicaSet'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see, the ReplicaSet object uses `.spec.template` in order to create
+    Pods. These Pods must match the label selector configured in `.spec.selector`.
+    Please note that it is also possible to acquire existing bare Pods that have labels
+    matching the ReplicaSet object. In the case shown in *Figure 10.1*, the ReplicaSet
+    object only creates two new Pods, whereas the third Pod is a bare Pod that was
+    acquired.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the preceding example, we have used a simple, **equality-based** selector
+    specified by `spec.selector.matchLabels`. A more advanced, **set-based** selector
+    can be defined using `spec.selector.matchExpressions`—for example, like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: This specification would make ReplicaSet still match only Pods with `app=nginx`,
+    and `environment=test` or `environment=dev`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When defining ReplicaSet, `.spec.template.metadata.labels` must match `spec.selector`,
+    or it will be rejected by the API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let’s apply the ReplicaSet manifest to the cluster using the `kubectl
+    apply` command, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can immediately observe the status of your new ReplicaSet object named
+    `nginx-replicaset-example` using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can use the `kubectl get pods -n rs-ns` command to observe the Pods that
+    are managed by the ReplicaSet object. If you are interested, you can use the `kubectl
+    describe pod <podId>` command in order to inspect the labels of the Pods and also
+    see that it contains a `Controlled By: ReplicaSet/nginx-replicaset-example` property
+    that identifies our example ReplicaSet object.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When using `kubectl` commands, you can use an `rs` abbreviation instead of typing
+    `replicaset`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s move on to testing the behavior of ReplicaSet in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing the behavior of ReplicaSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To demonstrate the agility of our ReplicaSet object, let’s now delete one of
+    the Pods that are owned by the `nginx-replicaset-example` ReplicaSet object using
+    the following `kubectl delete` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, if you are quick enough, you will be able to see from using the `kubectl
+    get pods` command that one of the Pods is being terminated and ReplicaSet is immediately
+    creating a new one in order to match the target number of replicas!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you want to see more details about events that happened in relation to our
+    example ReplicationController object, you can use the `kubectl describe` command,
+    as illustrated in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this case, the `nginx-replicaset-example-krdrs` Pod is a new Pod that was
+    created by the ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let’s try something different and create a bare Pod that matches the label
+    selector of our ReplicaSet object. You can expect that the number of Pods that
+    match the ReplicaSet will be four, so ReplicaSet is going to terminate one of
+    the Pods to bring the replica count back to three.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Be careful with labels on bare Pods (Pods without a ReplicaSet manager). ReplicaSets
+    can take control of any Pod with matching labels, potentially causing them to
+    manage your bare Pod unintentionally. Use unique labels for bare Pods to avoid
+    conflicts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, let’s create a simple bare Pod manifest file named `nginx-pod-bare.yaml`,
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The metadata of `Pod` must have labels matching the ReplicaSet selector. Now,
+    apply the manifest to your cluster using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Immediately after that, check the events for our example ReplicaSet object
+    using the `kubectl describe` command, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the ReplicaSet object has immediately detected that there is
+    a new Pod created matching its label selector and has terminated the Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Similarly, it is possible to remove Pods from a ReplicaSet object by modifying
+    their labels so that they no longer match the selector. This is useful in various
+    debugging or incident investigation scenarios.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the following section, we will learn how ReplicaSet helps with the HA and
+    FT of an application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing HA and FT with a ReplicaSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To demonstrate the scenario, let us use the previously deployed ReplicaSet `nginx-replicaset-example`.
+    However, we will create a Service to expose this application, as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let’s forward the Service as follows for testing purposes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Open another console and verify the application access.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: You should get the response with a default NGINX page output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Previously we tested deleting the Pod and verified that the ReplicaSet will
+    recreate the Pod based on the replica count. In this case, let us remove one of
+    the Kubernetes nodes and see the behavior. Before we delete the node, let us check
+    the current Pod placement as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, let us check the Pod placement and number of replicas.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: As per the output, the ReplicaSet has already created the desired number of
+    Pods on the available nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If your `kubectl port-forward` is still running, you can again verify the application
+    access (`curl localhost:8080`) and confirm the availability. Please note that
+    for production environments, it is a best practice to integrate monitoring tools
+    like **Prometheus** or **Grafana** for real-time health and resource visualization,
+    and use **Fluentd** for logging to capture Pod logs to diagnose failures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have learned the behavior of ReplicaSet with multiple examples,
+    let us learn how to scale ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling ReplicaSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: For ReplicaSet, we can do a similar scaling operation as for ReplicationController
+    in the previous section. In general, you will not perform manual scaling of ReplicaSets
+    in usual scenarios. Instead, the size of the ReplicaSet object will be managed
+    by another, higher-level object, such as Deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s first scale up our example ReplicaSet object. Open the `nginx-replicaset.yaml`
+    file and modify the `replicas` property to `5`, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we need to declaratively apply the changes to the cluster state. Use the
+    following `kubectl apply` command to do this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: To see that the number of Pods controlled by the ReplicaSet object has changed,
+    you can use the `kubectl get pods` or `kubectl describe rs/nginx-replicaset-example`
+    command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can achieve similar results to the case of ReplicationController using the
+    `kubectl scale rs/nginx-replicaset-example --replicas=5` imperative command. In
+    general, such imperative commands are recommended only for development or learning
+    scenarios.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Similarly, if you would like to scale down, you need to open the `nginx-replicaset.yaml`
+    file and modify the `replicas` property to `2`, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Again, declaratively apply the changes to the cluster state. Use the following
+    `kubectl apply` command to do this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: At this point, you can use the `kubectl get pods` or `kubectl describe rs/nginx-replicaset-example`
+    command to verify that the number of Pods has been reduced to just `2`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Pod liveness probes together with ReplicaSet
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Sometimes, you may want to consider a Pod unhealthy and require a container
+    restart, even if the main process in the container has not crashed. You already
+    learned about probes in *Chapter 8*, *Exposing Your Pods with Services*. We will
+    quickly demonstrate how you can use **liveness probes** together with ReplicaSet
+    to achieve even greater resilience to failures of containerized components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our example, we will create a ReplicaSet object that runs `nginx` Pods with
+    an additional liveness probe on the main container, which checks whether an `HTTP
+    GET` request to the path: `/` responds with a *successful* HTTP status code. You
+    can imagine that, in general, your `nginx` process running in the container will
+    always be healthy (until it crashes), but that doesn’t mean that the Pod can be
+    considered healthy. If the web server is not able to successfully provide content,
+    it means that the web server process is running but something else might have
+    gone wrong, and this Pod should no longer be used. We will simulate this situation
+    by simply deleting the `/index.html` file in the container, which will cause the
+    liveness probe to fail.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, let’s create a YAML manifest file named `nginx-replicaset-livenessprobe.yaml`
+    for our new `nginx-replicaset-livenessprobe-example` ReplicaSet object with the
+    following content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: The highlighted part of the preceding code block contains the liveness probe
+    definition and is the only difference between our earlier ReplicaSet examples.
+    The liveness probe is configured to execute an HTTP `GET` request to the `/` path
+    at port `80` for the container every 2 seconds (`periodSeconds`). The first probe
+    will start after 2 seconds (`initialDelaySeconds`) from the container start.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are modifying an existing ReplicaSet object, you need to first delete
+    it and recreate it in order to apply changes to the Pod template.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, apply the manifest file to the cluster using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Verify that the Pods have been successfully started using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, you need to choose one of the ReplicaSet Pods in order to simulate the
+    failure inside the container that will cause the liveness probe to fail. In the
+    case of our example, we will be using the first Pod in the list and removing the
+    `index.html` file inside the Pod. To simulate the failure, run the following command.
+    This command will remove the `index.html` file served by the `nginx` web server
+    and will cause the HTTP `GET` request to fail with a non-successful HTTP status
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Inspect the events for this Pod using the `kubectl describe` command, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the liveness probe has correctly detected that the web server
+    became unhealthy and restarted the container inside the Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, please note that the ReplicaSet object itself did not take part in
+    the restart in any way—the action was performed at the Pod level. This demonstrates
+    how individual Kubernetes objects provide different features that can work together
+    to achieve improved FT. Without the liveness probe, the end user could be served
+    by a replica that is not able to provide content, and this would go undetected!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deleting a ReplicaSet object
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Lastly, let’s take a look at how you can delete a ReplicaSet object. There
+    are two possibilities, outlined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Delete the ReplicaSet object together with the Pods that it owns—this is performed
+    by first scaling down automatically.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Delete the ReplicaSet object and leave the Pods unaffected.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To delete the ReplicaSet object together with the Pods, you can use the regular
+    `kubectl delete` command, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will see that the Pods will first get terminated and then the ReplicaSet
+    object is deleted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, if you would like to delete just the ReplicaSet object, you need to use
+    the `--cascade=orphan` option for `kubectl delete`, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: After this command, if you inspect which Pods are in the cluster, you will still
+    see all the Pods that were owned by the `nginx-replicaset-livenessprobe-example`
+    ReplicaSet object. These Pods can now, for example, be acquired by another ReplicaSet
+    object that has a matching label selector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, you learned about the key building blocks for providing HA
+    and FT for applications running in Kubernetes clusters. First, we explained why
+    HA and FT are important. Next, you learned more details about providing component
+    replication and failover using ReplicaSet, which is used in Kubernetes in order
+    to provide multiple copies (replicas) of identical Pods. We demonstrated the differences
+    between ReplicationController and ReplicaSet and explained why using ReplicaSet
+    is currently the recommended way to provide multiple replicas of Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next chapters in this part of the book will give you an overview of how
+    to use Kubernetes to orchestrate your container applications and workloads. You
+    will familiarize yourself with concepts relating to the most important Kubernetes
+    objects, such as Deployment, StatefulSet, and DaemonSet. Also, in the next chapter,
+    we will focus on the next level of abstraction over ReplicaSets: Deployment objects.
+    You will learn how to deploy and easily manage rollouts and rollbacks of new versions
+    of your application.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'ReplicaSet: [https://kubernetes.io/docs/concepts/workloads/controllers/replicaset](https://kubernetes.io/docs/concepts/workloads/controllers/replicaset
+    )'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'ReplicationController: [https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller](https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Join our community on Discord
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Join our community’s Discord space for discussions with the authors and other
+    readers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://packt.link/cloudanddevops](https://packt.link/cloudanddevops)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/QR_Code119001106479081656.png)'
+  prefs: []
+  type: TYPE_IMG

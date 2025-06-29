@@ -1,0 +1,1046 @@
+- en: '11'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Monitoring the Edge with Prometheus and Grafana
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One use case for edge computing is to monitor devices that get data about temperature,
+    humidity, speed, noise, and so on. For this kind of use cases, monitoring would
+    be critical. This chapter shows a simple use case of how to visualize data that
+    comes from edge devices with sensors. This chapter presents a whole example of
+    how to distribute and process data across the different layers of an edge computing
+    system. This use case takes Prometheus and Grafana as the main components to visualize
+    and store data from sensors and uses Mosquitto (an MQTT message broker) together
+    with Redis to implement high availability queues to process data at the edge.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we’re going to cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring edge environments
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying Redis to persist Mosquitto sensor data
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing Mosquitto to process sensor data
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Processing Mosquitto topics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing Prometheus, a time series database
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying a custom exporter for Prometheus
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configuring a DHT11 sensor to send humidity and temperature weather data
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing Grafana to create dashboards
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To deploy our databases in this chapter, you need the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A single or multi-node K3s cluster that uses ARM devices with MetalLB and Longhorn
+    storage installed. If you are using Raspberry Pi devices, you will need at least
+    4 GB of RAM and at least the 4B model. Each node has to have an Ubuntu ARM64 operating
+    system in order to support the ARMv8 processor. This processor type is necessary
+    for some deployments to run, because they use ARM64 container images.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Kubernetes cluster hosted in your public cloud provider (AWS, Azure, or GCP)
+    or in your private cloud.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Raspberry Pi 4B with 2 or 4 GB for your edge device.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Keyes DHT11 sensor or similar connected to your edge device to read temperature
+    and humidity.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`kubectl` configured to be used in your local machine for your Kubernetes cloud
+    cluster and your edge cluster, to avoid using the `--kubeconfig` parameter.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A clone of the [https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch11](https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch11)
+    repository, if you want to run the YAML configuration by using `kubectl apply`
+    instead of copying the code from the book. Take a look at the `code` directory
+    for Python source code and the `yaml` directory for YAML configurations located
+    inside the `ch11` directory.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With this, you can deploy Prometheus and Grafana to start monitoring sensors
+    data in edge environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring edge environments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before starting to build our monitoring system, let’s describe the system across
+    the different layers of edge computing. For this, let’s take a look at the following
+    diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.1 – Monitoring with edge devices'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_01.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.1 – Monitoring with edge devices
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This diagram is divided into different layers. Let’s describe the different
+    components of this use case we want to implement:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`send.py`. This file prepares the sensor to read data and sends the information
+    to a queue in the Mosquitto broker.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`sensor1`. Every time the process detects new data, this data is sent to a
+    Redis queue called `sensor1` in the cloud layer. The idea is that the deployment
+    called `process` processes the information in the format to be shown in the cloud
+    layer. With this, you are processing data near the edge; that is the goal of edge
+    computing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Near edge**: This is the home router that connects the edge device with the
+    K3s cluster to process data. It is also the gateway to send data to the public
+    Redis cluster in the cloud layer.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`service1` is in charge of reading this data from the `sensor1` Redis queue
+    and exporting it to Prometheus. Prometheus calls the `service1` service endpoint
+    to get data. So, every time that Prometheus calls the `app1` endpoint, `service1`
+    returns data stored in Redis in a format that Prometheus can consume. Finally,
+    when data is stored in Prometheus, the data is visualized in real time in a Grafana
+    dashboard.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As you can see, this small use case includes a whole interaction across the
+    different edge computing layers. This use case pretends to be base code extensible
+    to your own system needs. Now, let’s start implementing our use case, beginning
+    with deploying Redis to persist Mosquitto sensor data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying Redis to persist Mosquitto sensor data
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To install our Redis to persist Mosquitto weather data, we are going to use
+    Redis with persistence and a single list of messages. To deploy this Redis setup
+    in your cluster, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create the PersistentVolume to persist Redis data using the `/mnt/data` directory
+    in the node:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a PersistentVolumeClaim using 5 GB of storage or more, depending on
+    how many sensors and how much data you are processing:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use the `longhorn` class if Longhorn is installed in your system. For
+    more information, see [*Chapter 5*](B16945_05_Final_PG.xhtml#_idTextAnchor097),
+    *K3s Homelab for Edge Computing Experiments*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let’s create a ConfigMap to use a custom configuration with the password
+    `YOUR_PASSWORD` and the `/data` directory to store Redis data:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create the Redis deployment using the previous ConfigMap called `redis-configmap`.
+    This ConfigMap is mounted as a volume and its content is available using the `redis.conf`
+    file. It also uses a PersistentVolumeClaim called `db-pv-claim` and uses resource
+    limits for CPU and memory. Let’s create this deployment by running the following
+    command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use the `arm64v8/redis:6.2` image instead of `redis:6.2` if you plan
+    to deploy Redis on an ARM node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now create the `redis` service, setting port `6379` in the configuration:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This service will be used by the exporter that Prometheus reads as `service1`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now create a `LoadBalancer` service called `redis-lb` to create a public load
+    balancer that the `process` service can use to store data going from the far edge
+    to the cloud layer:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This is going to create an external IP to access Redis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To get the public IP generated by the previous `LoadBalancer` service, run
+    the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This IP will be used by the deployment process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now our Redis is ready to be used in the far edge. Let’s install Mosquitto to
+    send sensor data to the `sensor1` topic from Mosquitto.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Mosquitto to process sensor data
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Mosquitto is an open source broker that implements the MQTT protocol, and it’s
+    lightweight too. It was designed to be used with low-power sensors and devices.
+    This makes Mosquitto suitable for edge computing and IoT applications. Mosquitto
+    provides a lightweight channel of communication for edge devices and uses the
+    publisher/subscriber pattern to send and read messages, but it is not persistent.
+    We are going to use Redis later to give this missing temporary persistence for
+    the data queues. Now, let’s move to install Mosquitto in our edge cluster, located
+    at the far edge. Remember that this single node cluster is using an ARM device.
+    To deploy Mosquitto, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a ConfigMap to listen over all the available network interfaces:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now create a deployment for Mosquitto, setting the ports to `1883` for the
+    MQTT protocol and `9001` for HTTP requests. This deployment is going to use the
+    previously created `mosquitto-configmap`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You can customize the amount of RAM and CPU that this deployment is using.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now create a `ClusterIP` service to expose Mosquitto, so that other services
+    inside the cluster can connect to Mosquitto to read messages:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now create a LoadBalancer service to expose Mosquitto, so that edge devices
+    can connect to Mosquitto to publish messages with weather metrics. In this example,
+    our device will publish in the `sensor1` topic:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now, let’s deploy the `process` service that sends all the weather data stored
+    in the Mosquitto topics to the Redis database located in the cloud layer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Processing Mosquitto topics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We have to deploy the deployment called `process` using the `mqttsubs` container
+    image, which sends the data published in Mosquitto to a public or private Redis
+    instance in the cloud layer. Let’s explore the code inside this container image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find the source of `mqttsubs` at [https://github.com/sergioarmgpl/containers/tree/main/mqttsubs/src](https://github.com/sergioarmgpl/containers/tree/main/mqttsubs/src).
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this code, we get the necessary values to connect to Redis, the name of
+    the topic that we are going to use. This value will be used to push sensor data
+    into a Redis list. Finally, `MOSQUITTO_HOST` is where this service will be listened
+    to. What this script basically does is it start listening to the `SENSOR_TOPIC`
+    topic called `sensor1` from Mosquitto, and when a message arrives, it is inserted
+    into a Redis list with the same name in the cloud layer to persist the information
+    temporarily. Redis uses port `6379` and is public but uses a password. Mosquitto
+    is internally deployed on the far edge. This is how this service works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To start deploying our `process` deployment, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a Secret to store the password to connect to Redis. Redis will be used
+    as a way to store all the information coming from our Mosquitto deployment:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The value of the password corresponds to the output of the next command using
+    base64 encoding:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Create the `process` deployment that receives data coming from a Mosquitto
+    topic and send it to the Redis service located in the cloud layer. For this run
+    the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The used variables are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**MOSQUITTO_HOST:** This is the hostname where the Mosquitto deployment is
+    listening.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**REDIS_HOST:** This is the IP address assigned to the LoadBalancer service
+    that exposes Redis in the cloud.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`db-password` secret value to set the password to connect with Redis.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**SENSOR_TOPIC:** This variable sets the Mosquitto topic to be listened to
+    in order to get data from the sensors.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you are using a private cloud, you might use an IP address like `192.168.0.242`,
+    for example. You can get this IP address by reading the *Deploying Redis to persist
+    Mosquitto sensor data* section. Then, change the `REDIS_HOST` IP address to this
+    value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have finished this section and have understood how data is processed. Let’s
+    continue deploying Prometheus service to store sensor data coming from the temporary
+    Redis list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Prometheus, a time series database
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Prometheus is a time series database that you can use to store your weather
+    data. It’s open source and it’s suitable for edge devices. It can be deployed
+    on ARM devices and it’s very flexible to manage metrics and alerts. In this use
+    case, we use Prometheus because of how flexible it is and the support it provides
+    to store and visualize metrics. But we are going to use Grafana for visualizing
+    data later. Now let’s install Prometheus in our Kubernetes cloud cluster, following
+    these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create the `monitoring` namespace, which will be used to install Prometheus
+    and Grafana:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a ConfigMap that contains static configurations for Prometheus. In this
+    case, we are going to create two services that insert data into Prometheus: one
+    stores a counter and the weather data. The first service is called `service1`
+    and the second `service2`. Each service uses port `5555`. Let’s call this ConfigMap
+    `prometheus-server-conf`. To create it, run the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Targets are services that export data in the format that Prometheus can read.
+    In this case, we are using two services. `service1` exports data from `sensor1`;
+    this data is collected by Redis and transformed to be consumed by Prometheus.
+    In this use case, we are going to use only `service1`, but you can create as many
+    services as you want.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now create the deployment for Prometheus, using the previous ConfigMap to configure
+    Prometheus when its created, by running the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This deployment listens on port `9090`. This port is used to connect to Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use the same YAML to deploy Prometheus in a Kubernetes cluster deployed
+    using a cloud provider, such as GCP, AWS, or Azure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now create a ClusterIP service that redirects port `9090` to port `8080` for
+    Prometheus:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let’s explore Prometheus by using `port-forward` to access the UI. For this,
+    run the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Access http://localhost:8080; you will see the following page:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.2 – Prometheus main page'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_02.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.2 – Prometheus main page
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now go to the **Status** | **Targets** menu:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.3 – Status menu'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_03.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.3 – Status menu
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You will see the following page:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.4 – Prometheus with targets down'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_04.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.4 – Prometheus with targets down
+  prefs: []
+  type: TYPE_NORMAL
+- en: On this page, you will see that the monitoring jobs are **down** at the moment.
+    Because the services are not already created. After these monitoring services
+    are created in the cluster, the state will change to **Up** using green color.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now the Prometheus deployment is ready. Let’s install our custom exporter in
+    the cloud layer to export the temporary sensor data from our Redis list to Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying a custom exporter for Prometheus
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'After configuring all the components, you need to deploy the exporter that
+    Prometheus calls to get data from Redis; this service will be called `service1`.
+    Remember that Redis was being used to persist temporary data that comes from the
+    Mosquitto topic on the far edge. Before deploying this service, let’s understand
+    the `exporter` container source code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In this code made using Python, first we set the `REDIS_HOST` and `REDIS_AUTH`
+    variables to connect to Redis and `SENSOR_TOPIC` to correspond to the list name
+    in Redis where sensor data is stored. So, every time Prometheus calls the `/metrics`
+    path, it extracts and returns one element inside the Redis list set with the value
+    of `SENSOR_TOPIC` and returns a response in a format that Prometheus can read.
+    For this, the code uses the `prometheus_client` library and sets two metrics using
+    the `Gauge` metric type, which represents simple values. In this code, we are
+    using two metrics: the first one is called `weather_metric1`, which contains the
+    temperature values, and the second is `weather_metric2`, which contains humidity
+    data. Once data is stored in Prometheus, it returns the JSON response `{"processed":"done"}`;
+    after that, you can access this information in Prometheus. Alternatively, you
+    can connect Prometheus to Grafana to create a new graph to show this data in real
+    time.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find the source of the exporter at [https://github.com/sergioarmgpl/containers/tree/main/exporter/src](https://github.com/sergioarmgpl/containers/tree/main/exporter/src).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let’s deploy the exporter by following these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create the exporter by creating the `service1` deployment:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You can use secrets instead of using the plain password in your YAML.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now create the `service1` service:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now if you return to your Prometheus targets, `service1` will appear as up and
+    in green.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now the exporter is running. It’s time to configure the Python script in the
+    edge device to get data coming from the DHT11 sensor and send it to the Mosquitto
+    topic. Let’s explore this in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring a DHT11 sensor to send humidity and temperature weather data
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before you start using your edge device with a DHT11 sensor to send data, you
+    need to follow these steps to configure it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Install at least Ubuntu 20.04 LTS on your Raspberry Pi. You can check [*Chapter
+    2*](B16945_02_Final_PG.xhtml#_idTextAnchor036), *K3s Installation and Configuration*,
+    and [*Chapter 5*](B16945_05_Final_PG.xhtml#_idTextAnchor097), *K3s Homelab for
+    Edge Computing Experiments*, for more on this.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Configure your DHT11 sensor to send data to the Raspberry Pi. For this use
+    case, we are going to use the DHT11 Keyes sensor, which comes from the Keystudio
+    Raspberry Pi 4B Complete RFID Starter kit. This is a common sensor that you can
+    find in other brands. This sensor gets the temperature and humidity. It often
+    comes with three pins, which are *G = Ground*, *V = VCC*, and *S = Signal*. The
+    way to connect is to connect G to a ground pin on the Raspberry and V to a 3V3
+    pin that powers the sensor with 3 volts. S, for signal, sends information to the
+    Raspberry using a GPIO pin. In this case, you can use any free GPIO pin on the
+    Raspberry; for this configuration, we are using the GPIO22 pin:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.5 – DHT11 Keyes temperature and humidity sensor'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_05.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.5 – DHT11 Keyes temperature and humidity sensor
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, install the system and Python libraries that we need to run the sensor
+    code in your edge device by running the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If `python3` is not installed in your Linux distribution, you can install it
+    using the following command:'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Then continue installing the needed libraries:'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Clone the repository:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Run the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Only run the `send.py` code inside your edge device until all the components
+    of the use case are deployed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now you are starting to send data from your edge device. But what is happening
+    inside the `send.py` code? Let’s take a look:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this code, first, it’s validated if the Raspberry Pi can read data from the
+    GPIO pins. Then, by using the Adafruit library, we set the GPIO22 pin of the Raspberry
+    Pi to read data from the sensor. After this, we set the Mosquitto host with the
+    IP of the LoadBalancer service where Mosquitto is listening. Finally, we start
+    a loop to read data with the `sensor` variable. This data is sent to the Mosquitto
+    `sensor1` topic. The loop sends data every 2 seconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you press *Ctrl* + *C*, the code stops and executes `sensor.exit()` to close
+    the sensor and clean the state of the sensor. Finally, you are sending data. At
+    this point, all the data passes across Mosquitto at the far edge and goes to Redis
+    and Prometheus in the cloud layer. The only part that’s missing is Grafana to
+    visualize this data. For this, let’s continue to the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Grafana to create dashboards
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Grafana is a web application that you can use to visualize data from different
+    data sources; it can also create alerts based on the data that you are visualizing.
+    In our use case, Grafana will be used to visualize data that comes from Prometheus.
+    Let’s remember that Prometheus is listening to `service1`, to get data that comes
+    from Mosquitto at the far edge. To deploy Grafana, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, create a ConfigMap to configure your Grafana deployment:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This will be the default data source configured in your `grafana` deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s create the `grafana` deployment by running the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let’s create the service:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let’s open the Grafana UI by running the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Let’s open the URL `http://localhost:3000`. When the login page appears, use
+    the username `admin` and password `admin`, and click on the **Log in** button:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.6 – Grafana login'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_06.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.6 – Grafana login
+  prefs: []
+  type: TYPE_NORMAL
+- en: After login, you will see the main page of Grafana:![Figure 11.7 – Grafana main
+    page
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_07.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Figure 11.7 – Grafana main page
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Click on **Configuration** | **Data sources**:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.8 – Grafana configuration menu'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_08.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.8 – Grafana configuration menu
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, check whether the Prometheus data source exists:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.9 – Grafana data sources'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_09.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.9 – Grafana data sources
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because of our ConfigMap configuration, our default data source will be `prometheus-service.monitoring.svc:8080`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now create a new folder or dashboard using the **+** icon. Let’s create a folder
+    first:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.10 – Grafana Create menu'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_10.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.10 – Grafana Create menu
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now in the opened dialog fill the `Dashboard Sensors` to create a folder with
+    this name, then click on the **Create** button:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.11 – Grafana New dashboard folder dialog'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_11.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.11 – Grafana New dashboard folder dialog
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use this folder to save your dashboards and alerts if you want.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As in *Figure 11.10*, let’s follow the same steps as for folders but this time
+    click **Dashboard**. You will then see the page in *Figure 11.12*. Click on the
+    **Add a new panel** button:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.12 – Grafana Add panel page](img/B16945_11_12.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.12 – Grafana Add panel page
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the next figure, you will see the settings to configure the new dashboard:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.13 – Grafana New dashboard/Edit Panel page'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_13.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.13 – Grafana New dashboard/Edit Panel page
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here you can configure this panel by setting the main part of the query. In
+    this case, you have to write `weather_metric1` or `weather_metric2`. Here, `weather_metric1`
+    gets the temperature and `weather_metric2` gets the humidity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Set a time range to visualize data. Then, click on **Apply time range**:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.14 – Grafana Absolute time range dialog](img/B16945_11_14.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.14 – Grafana Absolute time range dialog
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Set the refresh time to 5 seconds in the next dialog, **Query options**:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.15 – Setting real-time data values'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_15.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.15 – Setting real-time data values
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Alternatively, you can click on the **Refresh** icon:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.16 – Grafana setting refresh time'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_16.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.16 – Grafana setting refresh time
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, click on the `Dashboard sensors` or `Temperature Sensor1`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.17 – Saving a new dashboard'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_17.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.17 – Saving a new dashboard
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can also just apply the changes by clicking on the **Apply** button instead
+    of the **Save** button:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.18 – Applying changes to a new dashboard'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_18.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.18 – Applying changes to a new dashboard
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now you will see your dashboard:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.19 – Grafana Temperature Sensor1 dashboard'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_19.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.19 – Grafana Temperature Sensor1 dashboard
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can see the dashboards you have created by clicking on the **Search dashboards**
+    icon:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 11.20 – Search dashboards'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16945_11_20.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.20 – Search dashboards
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now you can start visualizing the data that your edge device is generating,
+    as shown in *Figure 11.18*. You can customize all the parameters to show the information
+    according to your needs. You can also modify the code to add as many sensors as
+    you want. We have now finished the chapter. Let’s get a quick summary of what
+    we learned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we learned how monitoring can help us to visualize data at
+    the edge, especially how to visualize data that comes from sensors, and how to
+    build a basic use case scenario to extend for production use cases. To build this
+    system, we used Prometheus as our time series database, Mosquitto as our basic
+    way to store data from sensors, and Redis as a temporary queue to prevent the
+    loss of our data from sensors. We also practiced how to build an edge computing
+    system, using its different layers from the far edge to the cloud layer. This
+    shows how important time series databases can be to manage sensor data and how
+    tools such as Grafana can help to visualize it. This scenario can also be extended
+    to farming, ocean and sea monitoring, animal populations, and so on. In the next
+    chapter, we are going to continue with a similar scenario but applied to GPS and
+    reading sensor data at long distances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Here are a few questions to validate your new knowledge:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do I set up an edge device to capture sensor data?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do I use Prometheus to store data from sensors?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do I use Grafana to create custom graphs to visualize sensor data?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do I design a persistent system to manage sensor data using Mosquitto and
+    Redis?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do I use Python to process and send sensor data?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You can refer to the following references for more information on the topics
+    covered in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Mosquitto official website: [https://mosquitto.org](https://mosquitto.org)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Prometheus Python Client: [https://github.com/prometheus/client_python](https://github.com/prometheus/client_python)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to set up Prometheus monitoring on a Kubernetes cluster [https://devopscube.com/setup-prometheus-monitoring-on-kubernetes](https://devopscube.com/setup-prometheus-monitoring-on-kubernetes)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'How to set up Grafana on Kubernetes: [https://devopscube.com/setup-grafana-kubernetes](https://devopscube.com/setup-grafana-kubernetes)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Getting started with Prometheus: [https://prometheus.io/docs/prometheus/latest/getting_started](https://prometheus.io/docs/prometheus/latest/getting_started)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Using Prometheus and Grafana for IoT monitoring: [https://cloud.google.com/community/tutorials/cloud-iot-prometheus-monitoring](https://cloud.google.com/community/tutorials/cloud-iot-prometheus-monitoring)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A step-by-step guide to setting up Prometheus Alertmanager with Slack, PagerDuty,
+    and Gmail: [https://grafana.com/blog/2020/02/25/step-by-step-guide-to-setting-up-prometheus-alertmanager-with-slack-pagerduty-and-gmail](https://grafana.com/blog/2020/02/25/step-by-step-guide-to-setting-up-prometheus-alertmanager-with-slack-pagerduty-and-gmail)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

@@ -1,0 +1,1498 @@
+- en: '9'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Building Multitenant Clusters with vClusters
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We’ve alluded to multitenancy in previous chapters, but this is the first chapter
+    where we will focus on the challenges of multitenancy in Kubernetes and how to
+    approach them with a relatively new technology called “virtual clusters.” In this
+    chapter, we’ll explore the use cases for virtual clusters, how they’re implemented,
+    how to deploy them in an automated way, and how to interact with external services
+    with your `Pod's` identity. We’ll finish the chapter by building and deploying
+    a self-service multitenant portal for Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we’ll cover:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The benefits and challenges of multitenancy
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using vClusters for tenants
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building a multitenant cluster with self service
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This chapter will involve a larger workload than previous chapters, so a more
+    powerful cluster will be needed. This chapter has the following technical requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An Ubuntu 22.04+ server running Docker with a minimum of 8 GB of RAM, though
+    16 GB is suggested
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Scripts from the `chapter9` folder from the repo, which you can access by going
+    to this book’s GitHub repository: [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Getting Help
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We do our best to test everything, but there are sometimes half a dozen systems
+    or more in our integration labs. Given the fluid nature of technology, sometimes
+    things that work in our environment don’t work in yours. Don’t worry, we’re here
+    to help! Open an issue on our GitHub repo at [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues)
+    and we’ll be happy to help you out!
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Benefits and Challenges of Multitenancy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we dive into virtual clusters and the **vCluster** project, let’s first
+    explore what makes multitenant Kubernetes valuable and so difficult to implement.
+    So far, we’ve alluded to challenges with multitenancy, but our focus has been
+    on configuring and building a single cluster. This is the first chapter where
+    we’re going to directly address multitenancy and how to implement it. The first
+    topic we will explore is what multitenant Kubernetes is, and why you should consider
+    using it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring the Benefits of Multitenancy
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Kubernetes orchestrates the allocation of resources for workloads through an
+    API and a database. These workloads are typically comprised of Linux processes
+    that require specific computing resources and memory. In the initial five to six
+    years of Kubernetes’ evolution, a prevailing trend was to have a dedicated cluster
+    for each “application.” It’s important to note that when we say “application,”
+    it could refer to a single monolithic application, a collection of microservices,
+    or several interrelated monolithic applications. This approach is notably inefficient
+    and results in the proliferation of management complexities and potential wasted
+    resources. To understand this better, let’s examine all of the elements within
+    a single cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**etcd Database**: You should always have an odd number of `etcd` instances;at
+    least three instances of `etcd` are needed to maintain high availability.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Control Plane Nodes**: Similar to `etcd`, you’ll want at least two control
+    plane nodes, but more likely three for high availability.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Worker Nodes**: You’ll want a minimum of two nodes, regardless of the load
+    you’re putting on your infrastructure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Your control plane requires resources, so even though most Kubernetes distributions
+    don’t require dedicated control plane nodes anymore, it’s still additional components
+    to manage. Looking at your worker nodes, how much utilization are the nodes using?
+    If you have a heavily used system, you will get the most out of the hardware,
+    but are all your applications always that heavily utilized? Allowing multiple
+    “applications” to use a single infrastructure can vastly reduce your hardware
+    utilization, requiring fewer clusters, whether you’re running on pre-paid infrastructure
+    or pay-as-you-go infrastructure. Over-provisioning resources will increase power,
+    cooling, rack space, etc., all of which will add additional costs. Fewer servers
+    also means reducing the maintenance requirements for hardware, further reducing
+    costs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition to hardware costs, there’s a human cost to the cluster-per-application
+    approach. Kubernetes skills are very expensive and difficult to find in the market.
+    It’s probably why you’re reading this book! If each application group needs to
+    maintain its own Kubernetes expertise, that means duplicating skills that are
+    difficult to obtain, also increasing costs. By pooling infrastructure resources,
+    it becomes possible to establish a centralized team responsible for overseeing
+    Kubernetes deployments, eliminating the necessity for other teams, whose primary
+    focus lies outside infrastructure development, to duplicate these skills.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are major security benefits to multitenancy as well. With common infrastructure,
+    it’s easier to centralize enforcement of security requirements. Taking authentication
+    as an example, if every application gets its own cluster, how will you enforce
+    common authentication requirements? How will you onboard new clusters in an automated
+    way? If you’re using OIDC, are you going to integrate a provider for each cluster?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another example of the benefits of centralized infrastructure is secret management.
+    If you have a centralized Vault deployment, do you want to integrate a new cluster
+    for each application? In *Chapter 8*, we integrated a cluster with Vault; if you
+    have massive cluster sprawl, the same integration needs to be done to each individual
+    cluster – how will that be automated and managed?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Moving to a multitenant architecture reduces your long-term costs by reducing
+    the amount of infrastructure needed to run your workload. It also cuts down on
+    the number of administrators needed to manage infrastructure and makes it easier
+    to centralize security and policy enforcement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While multitenancy provides a significant advantage, it does come with some
+    challenges. Next, we’ll explore the challenges of implementing multitenant Kubernetes
+    clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Challenges of Multitenant Kubernetes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We explored the benefits of multitenant Kubernetes, and while the adoption is
+    growing for multitenancy, why isn’t it as common as the cluster-per-application
+    approach?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a multitenant Kubernetes cluster requires several considerations for
+    security, usability, and management. Implementing solutions for these challenges
+    is often very implementation-specific and requires integration with third-party
+    tools, which are outside the scope of most distributions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most enterprises add an additional layer of complexity based on their management
+    silos. Application owners are judged based on their own criteria and by their
+    own management. Anyone whose pay is dependent on certain criteria will want to
+    make sure they have as much control of those criteria as possible, even if it’s
+    for the wrong reasons. This silo effect can have an adversely negative impact
+    on any centralization effort that doesn’t afford appropriate control to application
+    owners. Since these silos are unique to each enterprise, it’s impossible for a
+    single distribution to account for them in a way that is easily marketable. Rather
+    than deal with the additional complexities, it’s much easier for a vendor to market
+    a cluster-per-application approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the fact that there are few multitenant Kubernetes distributions on the
+    market, the next question becomes “What are the challenges of making a generic
+    Kubernetes cluster multitenant?”
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We’re going to break down the answers to this question by impact:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Security**: Most containers are just Linux processes. We’ll cover this in
+    more detail in *Chapter 12*, *Node Security with Gatekeeper*. What’s important
+    to understand for now is that there is very little security that separates processes
+    on a host. If you’re running processes from multiple applications, you want to
+    make sure that a breakout doesn’t impact other processes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Container breakouts**: While this is important for any cluster, it’s a necessity
+    in multitenant clusters. We will cover securing our container runtimes in *Chapter
+    13*, *KubeArmor Securing Your Runtime*.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Impact**: Any issues with centralized infrastructure will have adverse impacts
+    on multiple applications. This is often referred to as “blast radius.” If there’s
+    an upgrade that goes wrong or fails, who’s impacted? If there’s a container breakout,
+    who’s impacted?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Resource Bottlenecks**: While it’s true that a centralized infrastructure
+    gets better utilization of resources, it can also create bottlenecks. How quickly
+    can you onboard a new tenant? How much control do application owners have in their
+    own tenants? How difficult is it to grant or revoke access? If your multitenant
+    solution can’t keep up with application owners, application owners will take on
+    the infrastructure themselves. This will lead to wasted resources, configuration
+    drift, and difficulty reporting and auditing all of the clusters.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Restrictions**: A centralized platform that is overly restrictive will result
+    in application owners looking to either maintain their own infrastructure or outsource
+    their infrastructure to third-party solutions. This is one of the most common
+    issues with any centralized service that can be best illustrated by the continuous
+    rise and fall of **Platform as a Service** (**PaaS**) implementations that fail
+    to provide the flexibility needed for application workloads.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While these issues can be applied to any centralized service, they do have some
+    unique impacts on Kubernetes. For instance, if each application gets its own namespace,
+    how can an application properly subdivide that namespace for different logical
+    functions? Should you grant multiple namespace per application?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another major impact on Kubernetes cluster designs is the deployment and management
+    of **Custom Resource Definitions** (**CRDs**). CRDs are cluster-level objects,
+    and running multiple versions is nearly impossible in the same cluster; as we
+    have pointed out in previous chapters, CRDs are growing in popularity as a way
+    of storing configuration data. Multitenant clusters may have version conflicts
+    that need to be managed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Many of these challenges will be addressed in later chapters, but in this chapter,
+    we’re going to focus on two aspects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Tenant Boundaries**: What is the scope of a tenant? How much control within
+    the boundary does the tenant have?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Self-Service**: How does a centralized Kubernetes service interact with users?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Both aspects will be addressed by adding two components to our clusters. OpenUnison
+    has already been introduced to handle authentication and will be extended for
+    its self-service capabilities with namespace as a Service. The other external
+    system will be vCluster, from Loft Labs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we have already used OpenUnison to demonstrate namespace as a Service,
+    we can move on to the additional challenges, like CRD versioning issues in the
+    next section using the vCluster project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using vClusters for Tenants
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the *KinD* chapter, we explained that KinD is nested in Docker to provide
+    us with a full Kubernetes cluster. We compared this to nesting dolls, where components
+    are embedded in other components, which can cause confusion to users who are newer
+    to containers and Kubernetes. vCluster is a similar concept – it creates a virtual
+    cluster in the main host clusters, and while it does appear to be a standard Kubernetes
+    cluster, it is nested within the host clusters. Keep this in mind as you are reading
+    the rest of the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the previous section, we walked through the benefits and challenges of multitenancy
+    and how those challenges impact Kubernetes. In this section, we’re going to introduce
+    the vCluster project from Loft Labs, which allows you to run a Kubernetes control
+    plane inside of an unprivileged namespace. This allows each tenant to get their
+    own “virtual” Kubernetes infrastructure that they can have complete control over
+    without impacting other tenants’ own implementation or other workloads in the
+    “main cluster.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_09_01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.1: Logical layout of a vCluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the above diagram, each tenant gets their own namespace, which runs a vCluster.
+    The vCluster is a combination of three components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Database**: Somewhere that can store the vCluster’s internal information.
+    This may be `etcd` or a relational database, depending on which cluster type you
+    deploy vCluster with.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**API Server**: The vCluster includes its own API server for its pods to interact
+    with. This API server is backed by the database managed by the vCluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Synchronization Engine**: While a vCluster has its own API server, the pods
+    are all run in the host cluster. To achieve this, the vCluster synchronizes certain
+    objects between the host and vCluster. We’ll cover this in greater detail next.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The benefit of the vCluster’s approach is that from the `Pod's` perspective,
+    it’s working within a private cluster while it’s really running in a main host
+    cluster. The tenant can divide its own cluster into whatever namespace suit it
+    and deploy CRDs, or operators, as needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![A picture containing text  Description automatically generated](img/B21165_09_02.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.2: Pod’s perspective of a vCluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the above diagram, we see that the pod is deployed into our tenant’s namespace,
+    but instead of communicating with the host cluster’s API server, it’s communicating
+    with the vCluster’s API server. This is possible because the pod definition that
+    gets synchronized from the vCluster into the host cluster has its environment
+    variables and DNS overwritten to tell the pod that the host `kubernetes.default.svc`
+    points to the vCluster, not the host cluster’s API server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since the pod runs in the host cluster, and the vCluster runs in the host cluster,
+    all of the pods are subject to the `ResourceQuotas` put in place on the namespace.
+    This means that any pod deployed to a vCluster is bound by the same rules as a
+    pod deployed directly into a namespace including any restrictions created by quotas,
+    policies, or other admission controllers. In *Chapter 11*, *Extending Security
+    Using Open Policy Agent*, you’ll learn about using admission controllers to enforce
+    policies across your cluster. Since the pod is running in the host cluster, you
+    only need to apply those policies to your host. This vastly simplifies our security
+    implementation because, now, tenants can be given `cluster-admin` access to their
+    virtual clusters without compromising the security of the host cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another important note is that because the host cluster is responsible for running
+    your pod, it’s also responsible for all of the vClusters `Ingress` traffic. You
+    do not have to redeploy your `Ingress` controller on each vCluster – they share
+    the host `Ingress` controller, reducing the need for maintaining additional `Ingress`
+    deployments or creating multiple wildcard domains for each vCluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have a basic understanding of what a vCluster is and how it helps
+    to address some of the challenges of multitenancy in Kubernetes, the next step
+    is to deploy a vCluster and see how the internals work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying vClusters
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the previous section, we focused on the theory behind how a vCluster works
+    and is implemented. In this section, we’re going to deploy a vCluster and a simple
+    workload so that we can see what changes have occurred between a pod that runs
+    in a vCluster and what is deployed into the host cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first step is to create a new cluster – we will delete the existing KinD
+    cluster and deploy a fresh one. We will then execute a script called `deploy_vcluster_cli.sh`
+    in the `chapter9` directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: At this point, we have a fresh cluster and the CLI for deploying vClusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next step is to create a vCluster. First, we will create a new `namespace`
+    called `tenant1`, and then use the vCluster utility to create a new vCluster called
+    `myvcluster` in the new namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once the `vcluster` command has completed, we’ll have a running vCluster, built
+    using `k3s`, running on the host cluster. Logically, it is its own cluster and
+    we can “connect” directly to it using the vClusters kubeconfig or the `vcluster`
+    utility.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`vCluster` is designed to support multiple Kubernetes cluster implementations.
+    The default, and most common, is `k3s`, which is a Kubernetes implementation that
+    replaces `etcd` with a relational database and replaces the multiple binaries
+    with a single binary. It was originally developed for edge deployments but works
+    well for single tenants too. We could use `k0s` from **Mirantis** or even a vanilla
+    Kubernetes, but `k3s` does well for most situations.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s disconnect and see what’s running in our host:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As shown in the output above, there are two pods running in the `tenant1` namespace:
+    CoreDNS and our vCluster. If we look at the services in our namespace, you will
+    see a list of services similar to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: There are several services set up to point to our vCluster’s API server and
+    DNS server that provide access to the vCluster, making it logically appear as
+    a “full” standard cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let’s connect to our vCluster and deploy a pod. In the `chapter9/simple`
+    directory, we have a pod manifest that we will use for our example. First, we
+    will connect to the cluster and deploy the example pod using `kubectl` in the
+    `chapter9/simple` directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice that the `Pod''s` environment variables use `10.96.237.247` as the IP
+    address for the API server; this is the `ClusterIP` from the `mycluster` Service
+    that’s running on the host. Also, the nameserver is `10.96.142.24`, which is the
+    `ClusterIP` for our vCluster’s `kube-dns Service` in the host. As far as the pod
+    is concerned, it thinks it is running inside of the vCluster. It doesn’t know
+    anything about the host cluster. Next, disconnect from the vCluster and take a
+    look at the pods in our `tenant1` namespace on the host cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice that your vCluster’s pod is running in your host cluster. The `Pod`''s
+    name on the host includes both the name of the pod and the namespace from the
+    vCluster. Let’s take a look at the pod definition. We’re not going to put all
+    of the output here because it would take up multiple pages. What we want to point
+    out is that in addition to our original definition, the pod includes a hard-coded
+    `env` section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It also includes its own `hostAliases`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, while the `Pod` is running in our host cluster, all of the things that tell
+    the pod where it’s running are pointing to our vCluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we launched our first vCluster and a pod in that vCluster to
+    see how it gets mutated to run in our host cluster. In the next section, we’re
+    going to look at how we can access our vCluster with an eye on the same enterprise
+    security we’re required to use in our host cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Securely Accessing vClusters
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the previous section, we deployed a simple vCluster and accessed the vCluster
+    using the `vcluster connect` command. This command first creates a port-forward
+    to the vCluster’s API server `Service` and then adds a context with a master certificate
+    to our `kubectl` configuration file, which is similar to our KinD cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We spent much of *Chapter 6*, *Integrating Authentication into Your Cluster*,
+    walking through why this is an anti-pattern, and those reasons still apply to
+    vClusters. You’re still going to need to integrate enterprise authentication into
+    your vCluster. Let’s look at two approaches:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Decentralized**: You can leave authentication as an exercise to the cluster
+    owner. This negates many of the advantages of multitenancy and will require that
+    each cluster is treated as a new integration into your enterprise’s identity system.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Centralized**: If you host an **identity provider** (**IdP**) in your host
+    cluster, you can tie each vCluster to that IdP instead of directly to the centralized
+    identity store. In addition to providing centralized authentication, this approach
+    makes it easier to automate the onboarding of new vClusters and limits the amount
+    of secret information, such as credentials, that needs to be stored in the vCluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The choice is clear when working in a multitenant environment; your host cluster
+    should also host central authentication.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next issue to understand regarding vCluster access is the network path to
+    your vCluster. The `vcluster` command creates a local port-forward to your API
+    server. This means that every time a user wants to use their API server, they’ll
+    need to set up a port-forward to their API server. This isn’t a great **user experience**
+    (**UX**) and can be error-prone. It would be better to set up a direct connection
+    to our vCluster’s API server, as we would for any standard Kubernetes cluster.
+    The challenge with setting up direct network access to our vCluster’s API server
+    is that while it’s a `NodePort`, nodes are rarely exposed directly to the network.
+    They usually sit behind a load balancer and rely on `Ingress` controllers to provide
+    access to cluster resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The answer is to use the application infrastructure our host cluster already
+    provides for our vClusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In *Chapter 6*, *Integrating Authentication into Your Cluster*, we talked about
+    using impersonating proxies with cloud-managed clusters. The same scenario can
+    be applied to vClusters. While you can configure `k3s` to use OIDC for authentication,
+    using an impersonating proxy vastly simplifies the network management because
+    we’re not creating new load balancers or infrastructure to support our vClusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Diagram  Description automatically generated](img/B21165_09_03.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.3: vCluster with authentication'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the above diagram, we can see how the networking and authentication come
+    together in our host cluster. The host cluster will have an OpenUnison that authenticates
+    users to our Active Directory. Our vCluster will have its own OpenUnison with
+    a trust established with our host cluster’s OpenUnison. The vCluster will use
+    kube-oidc-proxy to translate the authentication tokens from OpenUnison into impersonation
+    headers to our vCluster’s API server. This approach gives us a central authentication
+    and networking system, while also making it easier for vCluster owners to incorporate
+    their own management applications without having to get the host cluster team
+    involved. Local cluster management applications such as **ArgoCD** and **Grafana**
+    can all be integrated into the vCluster’s OpenUnison instead of the host cluster’s
+    OpenUnison.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To show our setup in action, the first thing we need to do is update our vCluster
+    so that it will synchronize `Ingress` objects from our vCluster into our host
+    cluster, using the vcluster tool. In the `chapter/host` directory, we have an
+    updated values file called `vcluster-values.yaml`; we will use this values file
+    to upgrade the vCluster in the `tenant1` namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This command will update our vCluster to synchronize the `Ingress` objects
+    we create in our vCluster into our host cluster. Next, we’ll need OpenUnison running
+    in our host cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Before deploying anything, we want to make sure that we’re running against
+    the host, not our vCluster. The script we just ran is similar to what we ran in
+    *Chapter 6*, *Integrating Authentication into Your Cluster*; it will deploy our
+    “Active Directory” and OpenUnison to the vCluster. Once OpenUnison has been deployed,
+    the last step is to run the satellite deployment process for OpenUnison:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This script is like the host’s deployment script with some key differences:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The values for our OpenUnison do not contain any authentication information.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The values for our OpenUnison have a different cluster name from our host cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Instead of running `ouctl install-auth-portal`, the script runs `ouctl install-satelite`,
+    which sets up OpenUnison to use OIDC between the satellite cluster and the host
+    cluster. This command creates the `oidc` section of the `values.yaml` file for
+    us.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Once the script has completed executing, you can log in to OpenUnison just as
+    you did in *Chapter 6*. In your browser, go to `https://k8sou.apps.X-X-X-X.nip.io`,
+    where X-X-X-X is the IP address of your cluster, but with dashes instead of dots.
+    Since our cluster is at `192.168.2.82`, we use `https://k8sou.apps.192-168-2-82.nip.io/`.
+    To log in, use the user `mmosley` with the password `start123`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you’re logged in, you’ll see that there is now a tree with options for
+    **Host Cluster** and **tenant1**. You can click on **tenant1**, then click on
+    the **tenant1 Tokens** badge.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application, website, Teams  Description automatically
+    generated](img/B21165_09_04.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.4: OpenUnison portal page'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the new page loads, you can grab your `kubectl` configuration and paste
+    it into your terminal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`![Graphical user interface, text, application  Description automatically generated](img/B21165_09_05.png)`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Figure 9.5: OpenUnison kubectl configuration generator'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Depending on which client you’re running on, you can paste this command into
+    a Windows or Linux/macOS terminal and start using your vCluster without having
+    to distribute the `vcluster` CLI tool and while using your enterprise’s authentication
+    requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we looked at how to integrate enterprise authentication into
+    our vClusters and how to provide consistent network access to our vClusters as
+    well. In the next section, we’ll explore how to integrate our vClusters with external
+    services, such as HashiCorp’s Vault.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accessing External Services from a vCluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the previous chapter, we integrated a HashiCorp Vault instance into our cluster.
+    Our pods communicated with Vault using the tokens projected into our pods, allowing
+    us to authenticate to Vault without a pre-shared key or token and using short-lived
+    tokens. Relying on short-lived tokens reduces the risk that a compromised token
+    can be used against your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The pod-based identity used with Vault gets more complex with vClusters because
+    the keys used to create the `Pod's` tokens are unique to the vCluster. Also, Vault
+    needs to know about each vCluster in order to verify the projected tokens used
+    in the vCluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we are running our own Vault in our host cluster, we could automate the onboarding
+    so that each new vCluster is registered with Vault as its own cluster. The challenge
+    with this approach is that Vault is a complex system that’s often run by its own
+    team with its own onboarding process. Adding a new vCluster in a way that works
+    for the team that owns Vault may not be as simple as calling some APIs. Therefore,
+    before we can implement a strategy for integrating our vClusters into Vault, we
+    need to examine how vClusters handle identity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A pod running in a vCluster has two distinct identities:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**vCluster Identity**: The token that is projected into our pod from a vCluster
+    is scoped to the API server for the vCluster. It was signed by a unique key that
+    the host cluster has no knowledge of. It is associated with the `ServiceAccount`
+    the pod runs as inside of the vCluster’s API server.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Host Cluster Identity**: While the pod is defined on the vCluster, it’s executed
+    in the host cluster. This means that the security context of the pod will run
+    and it requires a distinct identity from the vCluster. It will have its own name
+    and its own signing keys.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If we inspect a pod from our vCluster as synchronized into our host cluster,
+    we’ll see that there’s an annotation that contains a token in it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This token is injected into our pod via the `fieldPath` configuration later
+    in the pod. This could be a security issue since anything that logs the `Pod`''s
+    creation, such as an audit log, can now leak a token. The vCluster project has
+    a configuration to generate `Secret` objects in the host cluster for project tokens
+    so that they’re not in the pod manifest. Adding the following to our `values.yaml`
+    file will fix this issue:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With that done, let’s update our cluster and redeploy all the `Pods`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: In a moment, the pods inside of the vCluster will come back. Inspecting the
+    `Pod`, we see that the token is no longer in the `Pod`'s manifest but is now mounted
+    to a `Secret` in the host. This is certainly an improvement, as audit systems
+    are generally more discreet about logging the contents of `Secrets`. Next, let’s
+    inspect our token’s claims.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we inspect this token, we’ll see some issues:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `exp` and `iat` claims are in bold because, when you translate this from
+    Unix Epoch time to something a human can understand, this token is good from `Sunday,
+    September 24, 2023 2:15:42 AM` until `Wednesday, September 21, 2033 2:15:42 AM`.
+    That’s a ten-year token! This ignores the fact that the token was configured in
+    the pod to only be good for ten minutes. This is a known issue in vCluster. The
+    good news is that the tokens themselves are projected, so when the pod they’re
+    projected into dies, the API server will no longer accept these tokens.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The issue of vCluster token length comes into play when accessing external services
+    because this will be true of any token we generate, not just tokens for the vCluster
+    API server. When we integrated our clusters into Vault in the previous chapter,
+    we did so using our `Pod's` identity so that we could leverage shorter-lived tokens
+    that aren’t static and have well-defined expirations. A ten-year token is effectively
+    a token with no expiration. The main mitigation is that we configured Vault to
+    verify the status of the token before accepting it, so a token bound to a destroyed
+    pod will be rejected by Vault.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The alternative to using the vCluster’s injected identity is to leverage the
+    host cluster’s injected identity. This identity will be governed by the same rules
+    as any other identity generated by the `TokenRequest` API in the host cluster.
+    There are two issues with this approach:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**vCluster disables host tokens**: In the host synced pod, `automountServiceAccountToken`
+    is false. This is to prevent a collision between the vCluster and the host cluster
+    because our pod shouldn’t know the host cluster exists! We can get around this
+    by creating a mutating webhook that will add a `TokenRequest` API projection in
+    the host cluster that can be accessed by our pod.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Host tokens don’t have vCluster namespaces**: When we do generate a host
+    token for our synced pod, the namespace will be embedded in the name of the `ServiceAccount`,
+    not as a claim in the token. This means that most external services’ policy languages
+    will not be able to accept policies based on the host token, but configured via
+    a namespace without creating a new policy for each vCluster namespace.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These approaches both have benefits and drawbacks. The biggest benefit to using
+    vCluster tokens is that you can easily create a policy that allows you to limit
+    access to secrets based on namespaces inside of your vCluster without creating
+    new policies for each namespace. The downside is the issues with vCluster tokens
+    and the fact that you now need to onboard each individual vCluster into your Vault.
+    Using host tokens better mitigates the issues with vCluster tokens, but you’re
+    not able to easily create generic policies for each vCluster in Vault.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we spent time understanding how vClusters manage pod identities
+    and how those identities can be used to interact with external services, such
+    as Vault. In the next section, we will spend time on what’s needed to create a
+    highly available vCluster and manage operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating and Operating High-Availability vClusters
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So far in this chapter, we’ve focused on the theory of how vClusters work, how
+    to access a vCluster securely, and how vClusters handle pod identity to interact
+    with external systems. In this section, we’ll focus on how to deploy and manage
+    vClusters for high availability. Much of the documentation and examples for vCluster
+    focuses on vCluster as a development or testing tool. For the use cases discussed
+    earlier in this chapter, we want to focus on creating vClusters that can run production
+    workloads. The first part of building production-ready vClusters is to understand
+    how to run a vCluster in a way that allows for failures or downtime of individual
+    components without hampering the vCluster’s ability to run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding vCluster High Availability
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Let’s define the goal of a highly available vCluster and the gap between our
+    current deployments and that goal. When you have a highly available vCluster,
+    you want to make sure that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can continue to interact with the API server during an upgrade or migration
+    to another physical node in either the host cluster or the vCluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If there’s a catastrophic issue, you can restore from a backup.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When running a vCluster, the first point about being able to interact with an
+    API server becomes clear while upgrading the host cluster’s nodes. During that
+    upgrade process, you want your API server to be able to continue to run. You want
+    to be able to continue syncing objects from your virtual API server into your
+    host; you also want pods that interact with the API server to still be able to
+    do so during a physical host upgrade. For instance, if you’re using OpenUnison,
+    then you want it to be able to create session objects so users can interact with
+    their vClusters while host cluster operations are happening.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second point about disaster recovery is also important. We hope to never
+    need it, but what happens if we’ve irrevocably broken our vCluster? Can we restore
+    back to a point that we know was functional?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first aspect of understanding how to run a highly available vCluster is
+    that it will need multiple instances of pods that run the API server, syncer,
+    and CoreDNS. If we look at our `tenant1` namespace, we’ll see that our vCluster
+    has one pod that is associated with a `StatefulSet` that hosts the vCluster’s
+    API server and syncer. There is also a pod that is synced from inside the vCluster
+    for CoreDNS. We’d want there to be at least two (better if three) instances of
+    each of these pods so that we can tell our API server to use `PodDisruptionBudget`
+    to make sure we have a minimum number of instances running so that one can be
+    brought down for whatever event is occurring.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The second aspect to understand is how vCluster manages data. Our current deployment
+    uses `k3s`, which uses a local SQLite database with data stored on a `PersistentVolume`.
+    This works well for development, but for a production cluster, we want each component
+    of our vCluster to be working off the same data. For `k3s`-based vClusters, this
+    means using one of the supported relational databases or `etcd`. We could deploy
+    `etcd`, but a relational database is generally easier to manage. We’re going to
+    deploy our database in-cluster, but it wouldn’t be unusual to use an external
+    database as well. In our exercises, we’ll use MySQL. We won’t worry about building
+    a highly available database for our examples, since each database has its own
+    mechanisms for high availability. If this were a production deployment though,
+    you’d want to make sure that your database is built using the project’s recommended
+    HA deployment and that you have a regular backup and recovery plan in place. With
+    that said, let’s start by tearing down our current cluster and creating a new
+    one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Wait for the new multi-node cluster to finish launching. Once it’s running,
+    deploy MySQL:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If the `deploy_mysql.sh` script fails with “Can’t connect to local MySQL server
+    through socket,” wait a moment and rerun it. It’s safe to rerun. This script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploys the cert-manager project with self-signed `ClusterIssuers`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creates TLS keypairs for MySQL.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Installs MySQL as a `StatefulSet` and configures it to accept TLS authentication.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creates a database for our cluster and a user that’s configured to authenticate
+    via TLS.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'With MySQL deployed and configured for TLS authentication, we’ll next create
+    the `tenant` namespace and a certificate that will map to our database user:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we can deploy our vCluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It will take a few minutes, but you’ll have four pods in the `tenant1` namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can now leverage `PodDisruptionBudget` to tell Kubernetes to keep one of
+    the vCluster pods running during upgrades.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Speaking of upgrades, the next question is how to upgrade our vCluster. Now
+    that we have a highly available vCluster, we can look to upgrade our vCluster
+    to a new version.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Upgrading vClusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: It’s important that you know how to upgrade your vClusters. You’ll want to make
+    sure that your vCluster and host cluster don’t drift too far apart. While the
+    pods that are synced into your host cluster will communicate with your vCluster’s
+    API server, any impact on the synchronized pods (and other synchronized objects)
+    could impact your workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Given the importance of staying up to date, it is great to report that upgrading
+    a vCluster is incredibly easy. It’s important to remember that vCluster orchestrates
+    the clusters and synchronizes objects, but the clusters themselves are managed
+    by their own implementation. In our deployments, we’re using `k3s`, which will
+    upgrade its data storage in the database when the new pods are deployed. Since
+    the `vcluster create` command is a wrapper for Helm, all we need to do is update
+    our values with the new image and redeploy:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This command upgrades our vCluster to use a `k3s 1.30` image, which is just
+    running a Helm upgrade on our installed chart. You’re leveraging the power of
+    Kubernetes to simplify upgrades! Once it’s done running, you can check that the
+    pods are now running `k3s 1.30`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: We’ve covered creating highly available clusters and how to upgrade our vClusters.
+    This is enough to embark on building a multitenant cluster. In the next section,
+    we’ll integrate what we have learned to build out a multitenant cluster where
+    each tenant gets their own vCluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building a Multitenant Cluster with Self Service
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous sections, we explored how multitenancy works, how the vCluster
+    project helps to address multitenancy challenges, and how to configure a vCluster
+    with secure access and high availability. Each of these individual components
+    was addressed as a separate component. The next question is how to integrate all
+    these components into a single service. In this section, we’ll walk through creating
+    a self-service platform for a multitenant cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One of the most important aspects of multitenancy is repeatability. Can you
+    create each tenant the same way consistently? In addition to making sure that
+    your approach is repeatable, what’s the amount of work that a customer needs to
+    go through to get a new tenant? Remember that this book has a focus on enterprise,
+    and enterprises almost always have compliance requirements. You also need to consider
+    how to integrate your compliance requirements into the onboarding process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The combination of needing repeatability and compliance often leads to the need
+    for a self-service portal for onboarding new tenants. Creating a self-service
+    portal has become the focus of many projects, often as part of a “Platform Engineering”
+    initiative. We’re going to build our self-service platform from OpenUnison’s namespace
+    as a Service portal. Using OpenUnison as our starting point, let’s us focus on
+    how the components will integrate, rather than diving into the specifics of writing
+    the code for the integrations. This multitenant self-service onboarding portal
+    will serve as a starting point that we’ll add to as we explore more aspects of
+    multitenancy through this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’re going to approach our multitenant cluster first by defining our requirements,
+    then analyze how each of those requirements will be fulfilled, and finally, we’ll
+    roll out our cluster and portal. Once we’re done with this section, you’ll have
+    the start of a multitenant platform you can build from.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Analyzing Requirements
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Our requirements for each individual tenant will be like requirements for a
+    physical cluster. We’re going to want to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Isolate tenants by authorization**: Who should have access to make updates
+    to each tenant? What drives access? So far, we’ve been mainly concerned with cluster
+    administrators, but now we need to worry about tenant administrators.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Enforce enterprise authentication**: When a developer or admin accesses a
+    tenant, we’ll need to ensure that we’re doing so using our enterprise authentication.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Externalized Secrets**: We want to make sure our source of truth for secret
+    data is outside of our cluster. This will make it easier for our security team
+    to audit usage.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**High Availability and Disaster Recovery**: There are going to be times that
+    we need to impact if a tenant’s API server is running. We’ll need to rely on Kubernetes
+    to make sure that, even during those times, there’s a way for tenants to do their
+    work.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Encryption in Transit**: All connections between components need to be encrypted.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**No Secrets in Helm Charts**: Keeping secret data in a chart would mean that
+    it’s stored as a `Secret` in our namespace, violating the requirement to externalize
+    secret data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We’ve worked with most of these requirements already in this chapter. The key
+    question is, “How do we pull everything together and automate it?” Having read
+    through this chapter and looked through the scripts, you can probably see where
+    this implementation is going. Just like any enterprise project, we need to understand
+    how silos are going to impact our implementation. For our platform, we’re going
+    to assume that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Active Directory cannot be automatically updated**: It’s not unusual that
+    you won’t be given the ability to create your own groups via an API to **Active
+    Directory** (**AD**). While interacting with AD only requires LDAP capabilities,
+    compliance requirements often dictate that a formal process is followed for creating
+    groups and adding members to those groups.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Vault can be automated**: Since Vault is API enabled and we have a good relationship
+    with the Vault team, they’ll let us automate the onboarding of new tenants directly.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Intra-Cluster Communication does not require the Enterprise CA**: Enterprises
+    often have their own **certificate authorities** (**CAs**) for generating TLS
+    certificates. These CAs are generally not exposed to an external facing API and
+    are not able to issue intermediate CAs that can be used by a local cert-manager
+    instance. We’ll use a CA specific to our cluster for issuing all certificates
+    for use within the cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Host Cluster-Managed MySQL**: We’re going to host our MySQL instance on the
+    cluster, but we won’t dive into operations around MySQL. We’ll assume that it’s
+    been deployed as highly available. Database administration is its own discipline,
+    and we won’t pretend to be able to cover it in this section.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With these requirements and assumptions in hand, the next step is to plan out
+    how to implement our multitenant platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Designing the Multitenant Platform
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In the previous section, we defined our requirements. Now, let’s construct
+    a matrix of tools that will tell us what each component will be responsible for:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Requirement** | **Component** | **Notes** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Portal Authentication | OpenUnison + Active Directory | OpenUnison will capture
+    credentials; Active Directory will verify them. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Tenant | Kubernetes namespace + vCluster | Each tenant will receive their
+    own namespace in the host cluster, with a vCluster deployed to it. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Tenant Authentication | OpenUnison | Each tenant will receive its own OpenUnison
+    instance. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Authorization | OpenUnison with Active Directory Groups | Each tenant will
+    have a unique Active Directory group that will provide administrative capabilities.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Certificate Generation | `cert-manager` Project | `cert-manager` will generate
+    the keys needed to communicate between vCluster and MySQL. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Secrets Management | Centralized Vault | Each tenant will receive its own
+    Vault database that will be enabled with Kubernetes authentication. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Orchestration | OpenUnison | We’ll use OpenUnison’s workflow engine for onboarding
+    new tenants. |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Table 9.1: Implementation matrix'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Given our requirements and implementation matrix, our multitenant platform
+    will look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Diagram  Description automatically generated](img/B21165_09_06.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.6: Multitenant platform design'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using the above diagram, let’s walk through the steps that will need to occur
+    to implement our platform:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: OpenUnison will create a namespace and RoleBinding to our Active Directory group
+    to the `admin` `ClusterRole`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: OpenUnison will generate a `Certificate` object in our tenant’s namespace, which
+    will be used by our vCluster to communicate with MySQL.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: OpenUnison will create a database in MySQL for the vCluster and a user tied
+    to the certificate generated in Step 2.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: OpenUnison will deploy a `Job` that will run the `vcluster` command and deploy
+    the tenant’s vCluster.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: OpenUnison will deploy a `Job` that will deploy the Kubernetes Dashboard, deploy
+    OpenUnison, and integrate the vCluster OpenUnison into the host cluster’s OpenUnison.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: OpenUnison will create an authentication policy in Vault that will allow tokens
+    from our tenant’s vCluster to authenticate to Vault using local pod identities.
+    It will also run a `Job` that will install the vault sidecar into our cluster.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We’re giving our vCluster capabilities in the centralized Vault for retrieving
+    secrets. In an enterprise deployment, you’d also want to control who can log in
+    to Vault using the CLI and web interface using the same authentication and authorization
+    as our clusters to tailor access, but that’s beyond the scope of this chapter
+    (and book).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, you could use any automation engine you’d like to perform these tasks,
+    such as **Terraform** or **Pulumi**. If you want to use one of these tools instead,
+    the same concepts can be used and translated into the implementation-specific
+    details. Now that we’ve designed our onboarding process, let’s deploy it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying Our Multitenant Platform
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The previous section focused on the requirements and design of our multitenant
+    platform. In this section, we’re going to deploy the platform and walk through
+    deploying a tenant. The first step is to start with a fresh cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once your cluster is running, the next step is to deploy the portal. We scripted
+    everything:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This script does quite a bit:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploys `cert-manager` with internal CAs for our cluster
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Deploys MySQL configured with our internal CA
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Deploys OpenUnison, using impersonation, and deploys our customizations for
+    vCluster
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Deploys Vault
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Integrates Vault and our control plane cluster
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Enables OpenUnison to create new authentication mechanisms and policies in Vault
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Depending on how much horsepower your infrastructure has, this script can take
+    ten to fifteen minutes to run. Once deployed, the first step will be to log in
+    to the portal at `https://k8sou.apps.IP.nip.io/`, where IP is your IP address
+    with the dots changed to dashes. My cluster’s IP is `192.168.2.82`, so the URL
+    is `https://k8sou.apps.192-168-2-102.nip.io/`. Use the user `mmosley` with the
+    password `start123`. You’ll notice a new badge called **New Kubernetes Namespace**.
+    Click on that badge.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_09_07.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.7: OpenUnison front page with the New Kubernetes Namespace badge'
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the next screen, you’ll be asked to provide some information for the new
+    namespace (and tenant). We created two groups in our “Active Directory” for managing
+    access to our tenant. While, out of the box, OpenUnison supports both the admin
+    and view `ClusterRole` for mappings, we’re going to focus on the admin `ClusterRole`
+    mapping. The admin group for our namespace will also be the `cluster-admin` for
+    our tenant vCluster. This means any user that is added to this group in Active
+    Directory will gain `cluster-admin` access to our vCluster for this tenant. Fill
+    out the form as you see in *Figure 9.8* and click **SAVE**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, text, application, email  Description automatically
+    generated](img/B21165_09_08.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.8: New Namespace'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once saved, close this tab to return to the main portal and hit Refresh. You’ll
+    see that there is a new menu option on the left-hand side called **Open Approvals**.
+    OpenUnison is designed around self-service, so the assumption is that the tenant
+    owners will request that a new tenant be deployed. In this case, mmosley will
+    be both the tenant owner and the approver. Click on **Open Approvals** and click
+    **Act on Request**
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_09_09.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.9: Approval screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fill in the **Justification** field and click on **APPROVE REQUEST** and **CONFIRM
+    APPROVAL**. This will approve the user’s request and launch a workflow that implements
+    the steps we designed in *Figure 9.6*. This workflow will take five to ten minutes,
+    depending on the horsepower of your cluster. Usually, OpenUnison will send the
+    requestor an email once a workflow is complete, but we’re using an SMTP blackhole
+    here to pull in all emails that are generated to make the lab implementation easier.
+    You’ll have to wait until the `tenant1` namespace is created and the OpenUnison
+    instance is running. If you look in the `tenant1` namespace on the host cluster,
+    you’ll see that the `vault-agent-injector` pod is running. This lets you know
+    the rollout is complete.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To track your vCluster’s deployment, there are three pods to look at:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`onboard-vcluster-openunison-tenant1` – The pod from this Job contains the
+    logs for creating and deploying vCluster into your tenant’s namespace.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`deploy-helm-vcluster-teant1` – The pod from this Job integrates Vault.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`openunison-orchestra` – The pod from this deployment runs OpenUnison’s onboarding
+    workflows.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If there are any errors in the process, you’ll find them here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that our tenant has been deployed, we can log in and deploy a pod. Log out
+    of OpenUnison, and log back in using the user name `jjackson` and the password
+    `start123`. The `jjackson` user is a member of our admin group in Active Directory,
+    so they’ll immediately be able to access and administer the vCluster in the `tenant1`
+    namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphical user interface, application, website, Teams  Description automatically
+    generated](img/B21165_09_10.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.10: Access to tenant1 vCluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `jjackson` user is able to interact with our vCluster the same way they
+    would with the host cluster, using either the dashboard or directly via the CLI.
+    We’re going to use `jjackson`''s session to log in to our `tenant` vCluster and
+    deploy a pod that uses secret data from our Vault. First, `ssh` into your cluster’s
+    host on a new session and create a secret in our Vault for our pod to consume:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: The last command creates our secret data in the Vault. Note that the path that
+    we created specifies that we’re working with the `tenant1` vCluster in the `default`
+    `namespace`. The way our cluster is deployed, only pods with `ServiceAccounts`
+    in the `default` `namespace` for our `tenant1` vCluster will be able to access
+    the `some-password` value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, let’s log in to our vCluster using `jjackson`. First, set your `KUBECONFIG`
+    variable to a temporary file and set `jjackson`''s session up using the `tenant1`
+    token:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The pod was able to authenticate to our Vault using its own `ServiceAccount`''s
+    identity to retrieve the secret! We did have to make two updates to our pod for
+    our vCluster to connect to Vault:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: We had to add a new `annotation` to tell the Vault sidecar where to authenticate.
+    The `auth/vcluster-tenant1` authentication path was created by our onboarding
+    workflow. We also needed to set the requested role to `cluster-read`, which was
+    also created by the onboarding workflow. Finally, we needed to tell the sidecar
+    where to look up our secret data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With that, we’ve now built the start of a self-service multitenant portal! We’re
+    going to expand on this portal as we dive into more topics that are important
+    to multitenancy. If you want to dive into the code for how we automated the vCluster
+    onboarding, `chapter9/multitenant/vlcluster-multitenant` is the Helm chart that
+    holds the custom workflows and `templates/workflows/onboard-vcluster.yaml` is
+    the starting point for all the work that gets done. We broke up each major step
+    in its own workflow to make it easier to read.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Multitenancy is an important topic in modern Kubernetes deployments. Providing
+    a shared infrastructure for multiple tenants cuts down on resource utilization
+    and can provide more flexibility while creating the isolation needed to maintain
+    both security and compliance. In this chapter, we worked through the benefits
+    and challenges of multitenancy in Kubernetes, introduced the vCluster project,
+    and learned how to deploy vClusters to support multiple tenants. Finally, we walked
+    through implementing a self-service multitenant portal and integrated our Vault
+    deployment so tenants could have their own secrets management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we’ll dive into the security of the Kubernetes Dashboard.
+    We’ve used it and deployed it in the last few chapters, and now we’re going to
+    understand how its security works and how those lessons learned apply to other
+    cluster management systems too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Kubernetes Custom Resource Definitions can support multiple versions.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the security boundary in Kubernetes?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: pods
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Containers
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: NetworkPolicies
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Namespaces
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Where do the pods in a vCluster run?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the vCluster
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the host cluster
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: There are no pods
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: vClusters have their own `Ingress` controllers.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: vClusters share keys with host clusters.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: b – False – There’s some version management, but generally you can only have
+    one version of a CRD.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: d – Namespaces are the security boundary in Kubernetes.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: b – When a pod is created in a vCluster, the syncer creates a matching pod in
+    the host cluster for scheduling.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: b – False – Generally, the `Ingress` object is synced into the host cluster.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: b – False – Each vCluster gets its own unique keys to identify it.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Join our book’s Discord space
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Join the book’s Discord workspace for a monthly *Ask Me Anything* session with
+    the authors:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://packt.link/K8EntGuide](https://packt.link/K8EntGuide)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/QR_Code965214276169525265.png)'
+  prefs: []
+  type: TYPE_IMG

@@ -1,0 +1,1310 @@
+- en: '19'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Advanced Techniques for Scheduling Pods
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: At the beginning of the book, in *Chapter 2*, *Kubernetes Architecture – from
+    Container Images to Running Pods*, we explained the principles behind the Kubernetes
+    scheduler (`kube-scheduler`) control plane component and its crucial role in the
+    cluster. In short, its responsibility is to schedule container workloads (Kubernetes
+    Pods) and assign them to healthy nodes that fulfill the criteria required for
+    running a particular workload.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter will cover how you can control the criteria for scheduling Pods
+    in the cluster. We will pay particular attention to Node **affinity**, **taints**,
+    and **tolerations** for Pods. We will also take a closer look at **scheduling
+    policies**, which give `kube-scheduler` flexibility in how it prioritizes Pod
+    workloads. You will find all of these concepts important in running production
+    clusters at the cloud scale.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Refresher – What is kube-scheduler?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Managing Node affinity
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using Node taints and tolerations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understanding Static Pods in Kubernetes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Extended Scheduler Configurations in Kubernetes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For this chapter, you will need the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A *multi-node* Kubernetes cluster is required. Having a multi-node cluster will
+    make understanding Node affinity, taints, and tolerations much easier.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The Kubernetes CLI (`kubectl`) installed on your local machine and configured
+    to manage your Kubernetes cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Basic Kubernetes cluster deployment (local and cloud-based) and `kubectl` installation
+    have been covered in *Chapter 3*, *Installing Your First Kubernetes Cluster*.
+    The previous chapters *15*, *16*, and *17* have provided you an overview of how
+    to deploy a fully functional Kubernetes cluster on different cloud platforms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can download the latest code samples for this chapter from the official
+    GitHub repository: [https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter19](https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter19).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Refresher – What is kube-scheduler?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In Kubernetes clusters, kube-scheduler is a critical component of the control
+    plane. The main responsibility of this component is scheduling container workloads
+    (Pods) and **assigning** them to healthy compute nodes (also known as worker nodes)
+    that fulfill the criteria required for running a particular workload. To recap,
+    a Pod is a group of one or more containers with a shared network and storage and
+    is the smallest **deployment unit** in the Kubernetes system. You usually use
+    different Kubernetes controllers, such as Deployment objects and StatefulSet objects,
+    to manage your Pods, but it is kube-scheduler that eventually assigns the created
+    Pods to particular Nodes in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For managed Kubernetes clusters in the cloud, such as **Azure Kubernetes Service**
+    (**AKS**) or Amazon **Elastic Kubernetes Service** (**EKS**), you typically do
+    not have access to the control plane or controller nodes as they are managed by
+    the cloud service provider. This means you won’t have direct access to components
+    like `kube-scheduler` or control over its configuration, such as scheduling policies.
+    However, you can still control all the parameters of Pods that influence their
+    scheduling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: kube-scheduler queries the **Kubernetes API Server** (`kube-apiserver`) at regular
+    intervals in order to list the Pods that have not been *scheduled*. At creation,
+    Pods are marked as *not* scheduled – this means no Node was elected to run them.
+    A Pod that is not scheduled will be registered in the `etcd` cluster state but
+    without any Node assigned to it and, thus, no running kubelet will be aware of
+    this Pod. Ultimately, no container described in the Pod specification will run
+    at this point.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Internally, the Pod object, as it is stored in `etcd`, has a property called
+    `nodeName`. As the name suggests, this property should contain the name of the
+    Node that will host the Pod. When this property is set, we say the Pod is in a
+    `scheduled` state; otherwise, the Pod is in a `pending` state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We need to find a way to fill this `nodeName` value, and this is the role of
+    kube-scheduler. For this, kube-scheduler polls kube-apiserver at regular intervals.
+    It looks for Pod resources with an empty `nodeName` property. Once it finds such
+    Pods, it will execute an algorithm to elect a Node and will update the `nodeName`
+    property in the Pod object by issuing a request to kube-apiserver. When selecting
+    a Node for the Pod, `kube-scheduler` will take into account its internal scheduling
+    policies and criteria that you defined for the Pods. Finally, the kubelet that
+    is responsible for running Pods on the selected Node will notice that there is
+    a new Pod in the `scheduled` state for the Node and will attempt to start the
+    Pod. These principles have been visualized in the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B22019_19_01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 19.1: Interactions of kube-scheduler and kube-apiserver'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The scheduling process for a Pod is performed in two phases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Filtering**: kube-scheduler determines the set of Nodes that are capable
+    of running a given Pod. This includes checking the actual state of the Nodes and
+    verifying any resource requirements and criteria specified by the Pod definition.
+    At this point, if there are no Nodes that can run a given Pod, the Pod cannot
+    be scheduled and remains pending.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Scoring**: kube-scheduler assigns scores to each Node based on a set of **scheduling
+    policies**. Then, the Pod is assigned by the scheduler to the Node with the highest
+    score. We will cover scheduling policies in a later section of this chapter.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`kube-scheduler` will consider criteria and configuration values you can optionally
+    pass in the Pod specification. By using these configurations, you can control
+    precisely how kube-scheduler will elect a Node for the Pod. To control where a
+    Pod runs, you can set constraints to restrict it to specific nodes or indicate
+    preferred nodes. We have learned that, typically, Kubernetes will handle Pod placement
+    effectively without any manual constraints, ensuring Pods are spread across Nodes
+    to prevent resource shortages. However, there are times when you might need to
+    influence Pod placement, such as ensuring a Pod runs on a Node with an SSD or
+    co-locating Pods that communicate frequently within the same availability zone.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The decisions of kube-scheduler are valid precisely at the point in time when
+    the Pod is scheduled. Once the Pod is scheduled and running, kube-scheduler will
+    not perform any rescheduling operations while it is running (which can be for
+    days or even months). So, even if the Pod no longer matches the Node according
+    to your rules, it will remain running. Rescheduling will only happen if the Pod
+    is terminated, and a new Pod needs to be scheduled.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can use the following methods to influence Pod scheduling in Kubernetes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use the `nodeSelector`field to match against node labels.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Set affinity and anti-affinity rules.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Specify the `nodeName` field.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Define Pod topology spread constraints.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Taints and tolerations.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the next sections, we will discuss these configurations to control the scheduling
+    of Pods. Before we jump into the hands-on practices, make sure you have a multi-node
+    Kubernetes cluster to experience the node scheduling scenarios.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our case, we are using a multi-node Kubernetes cluster using `minikube`
+    as follows (you may change the driver to kvm2, Docker, or Podman):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `--nodes=3` argument will trigger minikube to deploy a Kubernetes cluster
+    with the first node as a controller node (or Master node) and the second and third
+    nodes as compute nodes (or worker nodes), as shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you are using any other Kubernetes cluster for learning, then you may skip
+    this minikube cluster setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let’s take a look at Node affinity, together with Node name and Node selector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing Node affinity
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To understand how **Node affinity** works in Kubernetes, we first need to take
+    a look at the most basic scheduling options, which use **Node name** and **Node
+    selector** for Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using nodeName for Pods
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As we mentioned before, each Pod object has a `nodeName` field, which is usually
+    controlled by kube-scheduler. Nevertheless, it is possible to set this property
+    directly in the YAML manifest when you create a Pod or create a controller that
+    uses a Pod template. This is the simplest form of statically scheduling Pods on
+    a given Node and is generally *not recommended* – it is not flexible and does
+    not scale at all. The names of Nodes can change over time, and you risk running
+    out of resources on the Node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You may find setting `nodeName` explicitly useful in debugging scenarios when
+    you want to run a Pod on a specific Node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are going to demonstrate all scheduling principles on an example Deployment
+    object that we introduced in *Chapter 11*, *Using Kubernetes Deployments for Stateless
+    Workloads*. This is a simple Deployment that manages *five* Pod replicas of an
+    `nginx` webserver.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we use `nodeName` in the Deployment manifest, we need to know what Nodes
+    we have in the cluster so that we can understand how they are scheduled and how
+    we can influence the scheduling of Pods. You can get the list of Nodes using the
+    `kubectl get nodes` command, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: In our example, we are running a three-Node cluster (remember to refer to your
+    correct cluster Node names in the manifest later). For simplicity, let’s refer
+    to `minikube` as `Node1`, `minikube-m02` as `Node2`, and `minikube-m02` as `Node3`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For the demonstration, we want to schedule all five nginx Pods to `minikube-m02`.
+    Create the following YAML manifest named `n01_nodename/nginx-deployment.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Apply the Deployment YAML as usual:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The Deployment object will create five Pod replicas. Use `kubectl get pods
+    -o wide` to see the Pods and Node names. Let’s use a customized output as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, by default, the Pods have been distributed uniformly – Node1
+    has received one Pod, Node2 two Pods, and Node3 two Pods. This is a result of
+    the default scheduling policies enabled in `kube-scheduler` for filtering and
+    scoring.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are running a **non-managed** Kubernetes cluster, you can inspect the
+    logs for the kube-scheduler Pod using the `kubectl logs` command, or even directly
+    in the control plane nodes in `/var/log/kube-scheduler.log`. This may also require
+    increased verbosity of logs for the kube-scheduler process. You can read more
+    at [https://kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, the Pod template in `.spec.template.spec` does not contain any
+    configurations that affect the scheduling of the Pod replicas.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will now **forcefully** assign all Pods in the Deployment to **Node2** (`minikube-m02`
+    in our case) in the cluster using the `nodeName` field in the Pod template. Change
+    the `nginx-deployment.yaml` YAML manifest so that it has this property set with
+    the correct Node name for *your* cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice the line `nodeName: minikube-m02`; we are explicitly stating that `minikube-m02`
+    should be used as the Node for deploying our nginx Pods.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Apply the manifest to the cluster using the `kubectl apply -f ./nginx-deployment.yaml`
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, inspect the Pod status and Node assignment again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: As expected, *all five* Pods are now running on Node2 (`minikube-m02`). These
+    are all new Pods – when you change the Pod template in the Deployment specification,
+    it causes an internal rollout using a new ReplicaSet object, while the old ReplicaSet
+    object is scaled down, as explained in *Chapter 11*, *Using Kubernetes Deployments
+    for Stateless Workloads*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this way, we have actually *bypassed* `kube-scheduler`. If you inspect events
+    for one of the Pods using the `kubectl describe pod` command, you will see that
+    it lacks any events with `Scheduled` as a reason.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we are going to take a look at another basic method of scheduling Pods,
+    which is `nodeSelector`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using nodeSelector for Pods
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Pod specification has a special field, `.spec.nodeSelector`, that gives you
+    the ability to schedule your Pod only on Nodes that have certain label values.
+    This concept is similar to **label selectors** for Deployments and StatefulSets,
+    but the difference is that it allows only simple *equality-based* comparisons
+    for labels. You cannot do advanced *set-based* logic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is especially useful in:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Hybrid clusters**: Ensure Windows containers run on Windows nodes and Linux
+    containers run on Linux nodes by specifying the operating system as a scheduling
+    criterion.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Resource allocation**: Target Pods to nodes with specific resources (CPU,
+    memory, storage) to optimize resource utilization.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Hardware requirements**: Schedule Pods requiring special hardware (e.g.,
+    GPUs) only on nodes with those capabilities.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Security zones**: Define security zones with labels and use `nodeSelector`
+    to restrict Pods to specific zones for enhanced security.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Every Kubernetes Node comes by default with a set of labels, which include
+    the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`kubernetes.io/arch`: Describes the Node’s processor architecture, for example,
+    `amd64` or `arm`. This is also defined as `beta.kubernetes.io/arch`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`kubernetes.io/os`: Has a value of `linux` or `Windows`. This is also defined
+    as `beta.kubernetes.io/os`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`node-role.kubernetes.io/control-plane`: The role of the node in the Kubernetes
+    cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If you inspect the labels for one of the Nodes, you will see that there are
+    plenty of them. In our case, some of them are specific to `minikube` clusters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Of course, you can define your *own* labels for the Nodes and use them to control
+    scheduling. Please note that in general you should use semantic labeling for your
+    resources in Kubernetes, rather than give them special labels just for the purpose
+    of scheduling. Let’s demonstrate how to do that by following these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Use the `kubectl label nodes` command to add a `node-type` label with a `superfast`
+    value to `Node` `1` and `Node` `2` in the cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Verify the node labels as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Edit the `./nginx-deployment.yaml` Deployment manifest (or create another one
+    called `02_nodeselector/nginx-deployment.yaml`) so that `nodeSelector` in the
+    Pod template is set to `node-type: superfast`, as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Apply the manifest to the cluster using the `kubectl apply -f 02_nodeselector/nginx-deployment.yaml`
+    command and inspect the Pod status and Node assignment again. You may need to
+    wait a while for the Deployment rollout to finish:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As you can see in the preceding output, Pods are now assigned to `minikube-m02`
+    and `minikube-m03` (`minikube-m02` has been assigned with three Pods and `minikube-m02`
+    with two Pods). The Pods have been distributed among Nodes that have the `node-type=superfast`
+    label.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In contrast, if you change the `./nginx-deployment.yaml` manifest so that `nodeSelector`
+    in the Pod template is set to `node-type: slow`, which no Node in the cluster
+    has assigned, we will see that Pods could not be scheduled and the Deployment
+    will be stuck. Edit the manifest (or copy to a new file called `02_nodeselector/nginx-deployment-slow.yaml`):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Apply the manifest to the cluster as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Inspect the Pod status and Node assignment again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The reason why three new Pods are pending and four old Pods are still running
+    is the default configuration of rolling updates in the Deployment object. By default,
+    `maxSurge` is set to `25%` of Pod replicas (the absolute number is *rounded up*),
+    so in our case, two Pods are allowed to be created above the desired number of
+    five Pods. In total, we now have seven Pods. At the same time, `maxUnavailable`
+    is also `25%` of Pod replicas (but the absolute number is *rounded down*), so
+    in our case, one Pod out of five cannot be available. In other words, four Pods
+    must be `Running`. And because the new `Pending` Pods cannot get a Node in the
+    process of scheduling, the Deployment is stuck waiting and not progressing. Normally,
+    in this case, you need to either perform a rollback to the previous version for
+    the Deployment or change `nodeSelector` to one that matches existing Nodes properly.
+    Of course, there is also an alternative of adding a new Node with matching labels
+    or adding missing labels to the existing ones without performing a rollback.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will now continue the topic of scheduling Pods by looking at the first of
+    some more advanced techniques: **Node affinity**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the nodeAffinity configuration for Pods
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The concept of Node affinity expands the `nodeSelector` approach and provides
+    a richer language for defining which Nodes are preferred or avoided for your Pod.
+    In everyday life, the word “affinity” is defined as “*a natural liking for and
+    understanding of someone or something*,” and this best describes the purpose of
+    Node affinity for Pods. That is, you can control which Nodes your Pod will be
+    *attracted* to or *repelled* by.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With Node affinity, represented in `.spec.affinity.nodeAffinity` for the Pod,
+    you get the following enhancements over simple `nodeSelector`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You get a richer language for expressing the rules for matching Pods to Nodes.
+    For example, you can use the `In`, `NotIn`, `Exists`, `DoesNotExist`, `Gt`, and
+    `Lt` operators for labels.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Similar to `nodeAffinity`, it is possible to do scheduling using `inter-Pod`
+    affinity (`podAffinity`) and additionally `anti-affinity` (`podAntiAffinity`).
+    Anti-affinity has the opposite effect of affinity – you can define rules that
+    repel Pods. In this way, you can make your Pods be attracted to Nodes that *already
+    run* certain Pods. This is especially useful if you want to collocate Pods to
+    decrease latency.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It is possible to define **soft** affinity and anti-affinity rules that represent
+    a *preference* instead of a **hard** rule. In other words, the scheduler can still
+    schedule the Pod, even if it cannot match the soft rule. Soft rules are represented
+    by the `preferredDuringSchedulingIgnoredDuringExecution` field in the specification,
+    whereas hard rules are represented by the `requiredDuringSchedulingIgnoredDuringExecution`
+    field.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Soft rules can be **weighted**, and it is possible to add multiple rules with
+    different weight values. The scheduler will consider this weight value together
+    with the other parameters to make a decision on the affinity.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Even though there is no Node anti-affinity field provided by a separate field
+    in the spec, as in the case of inter-Pod anti-affinity you can still achieve similar
+    results by using the `NotIn` and `DoesNotExist` operators. In this way, you can
+    make Pods be repelled from Nodes with specific labels, also in a soft way. Refer
+    to the documentation to learn more: [https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The use cases and scenarios for defining the Node affinity and inter-Pod affinity/anti-affinity
+    rules are *unlimited*. It is possible to express all kinds of requirements in
+    this way, provided that you have enough labeling on the Nodes. For example, you
+    can model requirements like scheduling the Pod only on a Windows Node with an
+    Intel CPU and premium storage in the West Europe region but currently not running
+    Pods for MySQL, or try not to schedule the Pod in availability zone 1, but if
+    it is not possible, then availability zone 1 is still OK.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To demonstrate Node affinity, we will try to model the following requirements
+    for our Deployment: “*Try* to schedule the Pod only on Nodes with a `node-type`
+    label with a `fast` or `superfast` value, but if this is not possible, use any
+    Node but *strictly* not with a `node-type` label with an `extremelyslow` value.”
+    For this, we need to use:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A soft Node affinity** rule of type `preferredDuringSchedulingIgnoredDuringExecution`
+    to match `fast` and `superfast` Nodes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**A hard Node affinity** rule of type `requiredDuringSchedulingIgnoredDuringExecution`
+    to repel the Pod strictly from Nodes with `node-type` as `extremelyslow`. We need
+    to use the `NotIn` operator to get the anti-affinity effect.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In our cluster, we are going to first have the following labels for Nodes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Node1`: `slow`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Node2`: `fast`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Node3`: `superfast`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As you can see, according to our requirements, the Deployment Pods should be
+    scheduled on Node2 and Node3, unless something is preventing them from being allocated
+    there, like a lack of CPU or memory resources. In that case, Node1 would also
+    be allowed as we use the soft affinity rule.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we will relabel the Nodes in the following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Node1`: `slow`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Node2`: `extremelyslow`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Node3`: `extremelyslow`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Subsequently, we will need to redeploy our Deployment (for example, scale it
+    down to zero and up to the original replica count, or use the `kubectl rollout
+    restart` command) to reschedule the Pods again. After that, looking at our requirements,
+    kube-scheduler should assign all Pods to Node1 (because it is still allowed by
+    the soft rule) but avoid *at all costs* Node2 and Node3\. If, by any chance, Node1
+    has no resources to run the Pod, then the Pods will be stuck in the `Pending`
+    state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To solve the issue of rescheduling already running Pods (in other words, to
+    make kube-scheduler consider them again), there is an incubating Kubernetes project
+    named **Descheduler**. You can find out more here: [https://github.com/kubernetes-sigs/descheduler](https://github.com/kubernetes-sigs/descheduler).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To do the demonstration, please follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Use the `kubectl label nodes` command to add a `node-type` label with a `slow`
+    value for Node1, a `fast` value for Node2, and a `superfast` value for Node3:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Edit the `03_affinity/nginx-deployment.yaml` Deployment manifest and define
+    the soft Node affinity rule as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'As you can see, we have used `nodeAffinity` (not `podAffinity` or `podAntiAffinity`)
+    with `preferredDuringSchedulingIgnoredDuringExecution` set so that it has only
+    one soft rule: `node-type` should have a `fast` value or a `superfast` value.
+    This means that if there are no resources on such Nodes, they can still be scheduled
+    on other Nodes. Additionally, we specify one hard anti-affinity rule in `requiredDuringSchedulingIgnoredDuringExecution`,
+    which says that `node-type` *must not* be `extremelyslow`. You can find the full
+    specification of Pod’s `.spec.affinity` in the official documentation: [https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Apply the manifest to the cluster using the `kubectl apply -f 03_affinity/nginx-deployment.yaml`
+    command and inspect the Pod status and Node assignment again. You may need to
+    wait a while for the Deployment rollout to finish:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Our Node affinity rules were defined to prefer Nodes that have `node-type` set
+    to either `fast` or `superfast`, and indeed the Pods were scheduled for Node2
+    and Node3 only.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we will perform an experiment to demonstrate how the soft part of Node
+    affinity works together with the hard part of Node anti-affinity. We will relabel
+    the Nodes as described in the introduction, redeploy the Deployment, and observe
+    what happens. Please follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Use the `kubectl label nodes` command to add a `node-type` label with a `slow`
+    value for `Node 0`, an `extremelyslow` value for `Node1`, and an `extremelyslow`
+    value for `Node2`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'At this point, if you were to check Pod assignments using `kubectl get pods`,
+    there would be no difference. This is because, as we explained before, a Pod’s
+    assignment to Nodes is valid only at the time of scheduling, and after that, it
+    is not changed unless they are restarted. To force the restart of Pods, we could
+    scale the Deployment down to zero replicas and then back to five. But there is
+    an easier way, which is to use an imperative `kubectl rollout restart` command.
+    This approach has the benefit of not making the Deployment unavailable, and it
+    performs a rolling restart of Pods without a decrease in the number of available
+    Pods. Execute the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Inspect the Pod status and Node assignment again. You may need to wait a while
+    for the Deployment rollout to finish:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The output shows that, as expected, all Pods have been scheduled to Node1, which
+    is labeled with `node-type=slow`. We allow such Nodes if there is nothing better,
+    and in this case, Node2 and Node3 have the `node-type=extremelyslow` label, which
+    is prohibited by the hard Node anti-affinity rule.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To achieve even higher granularity and control of Pod scheduling, you can use
+    *Pod topology spread constraints*. More details are available in the official
+    documentation: [https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/](https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Congratulations, you have successfully configured Node affinity for our Deployment
+    Pods! We will now explore another way of scheduling Pods – *T**aints and tolerations*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Node taints and tolerations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Using the Node and inter-Pod affinity mechanism for scheduling Pods is very
+    powerful, but sometimes you need a simpler way of specifying which Nodes should
+    *repel* Pods. Kubernetes has two slightly older and simpler features for this
+    purpose – **taints** and **tolerations**. You apply a taint to a given Node (which
+    describes some kind of limitation) and the Pod must have a specific toleration
+    defined to be schedulable on the tainted Node. If the Pod has a toleration, it
+    does not mean that the taint is *required* on the Node. The definition of *taint*
+    is “a trace of a bad or undesirable substance or quality,” and this reflects the
+    idea pretty well – all Pods will *avoid* a Node if there is a taint set for them,
+    but we can instruct Pods to *tolerate* a specific taint.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you look closely at how taints and tolerations are described, you can see
+    that you can achieve similar results with Node labels and Node hard and soft affinity
+    rules with the `NotIn` operator. There is one catch – you can define taints with
+    a `NoExecute` effect, which will result in the termination of the Pod if it cannot
+    tolerate it. You cannot get similar results with affinity rules unless you restart
+    the Pod manually.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Taints for Nodes have the following structure: `<key>=<value>:<effect>`. The
+    **key** and **value** pair *identifies* the taint and can be used for more granular
+    tolerations, for example, tolerating all taints with a given key and any value.
+    This is similar to labels, but please remember that taints are separate properties,
+    and defining a taint does not affect Node labels. In our example demonstration,
+    we will use our taint with a `machine-check-exception` key and a `memory` value.
+    This is, of course, a theoretical example where we want to indicate that there
+    is a hardware issue with memory on the host, but you could also have a taint with
+    the same key and instead a `cpu` or `disk` value.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In general, your taints should *semantically* label the type of issue that the
+    Node is experiencing. There is nothing preventing you from using any keys and
+    values for creating taints, but if they make semantic sense, it is much easier
+    to manage them and define tolerations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The taint can have different effects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`NoSchedule` – kube-scheduler *will not schedule* Pods to this Node. Similar
+    behavior can be achieved using a hard Node affinity rule.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`PreferNoSchedule` – kube-scheduler *will try to not schedule* Pods to this
+    Node. Similar behavior can be achieved using a soft Node affinity rule.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`NoExecute` – kube-scheduler *will not schedule* Pods to this Node and *evict*
+    (terminate and reschedule) running Pods from this Node. You cannot achieve similar
+    behavior using Node affinity rules. Note that when you define a toleration for
+    a Pod for this type of taint, it is possible to control how long the Pod will
+    tolerate the taint before it gets evicted, using `tolerationSeconds`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Kubernetes manages quite a few `NoExecute` taints automatically by monitoring
+    the Node hosts. The following taints are built in and managed by **NodeController**
+    or the `kubelet`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`node.kubernetes.io/not-ready`: Added when NodeCondition `Ready` has a `false`
+    status.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`node.kubernetes.io/unreachable`: Added when NodeCondition `Ready` has an `Unknown`
+    status. This happens when `NodeController` cannot reach the Node.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`node.kubernetes.io/memory-pressure`: Node is experiencing memory pressure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`node.kubernetes.io/disk-pressure`: Node is experiencing disk pressure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`node.kubernetes.io/network-unavailable`: Network is currently down on the
+    Node.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`node.kubernetes.io/unschedulable`: Node is currently in an `unschedulable`
+    state.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`node.cloudprovider.kubernetes.io/uninitialized`: Intended for Nodes that are
+    prepared by an external cloud provider. When the Node gets initialized by `cloud-controller-manager`,
+    this taint is removed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To add a taint on a Node, you use the `kubectl taint node` command in the following
+    way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'So, for example, if we want to use key `machine-check-exception` and a `memory`
+    value with a `NoExecute` effect for Node1, we will use the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To remove the same taint, you need to use the following command (bear in mind
+    the - character at the end of the taint definition):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can also remove all taints with a specified key:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To counteract the effect of the taint on a Node for specific Pods, you can
+    define tolerations in their specification. In other words, you can use tolerations
+    to ignore taints and still schedule the Pods to such Nodes. If a Node has multiple
+    taints applied, the Pod must tolerate all of its taints. Tolerations are defined
+    under `.spec.tolerations` in the Pod specification and have the following structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The operator can be either `Equal` or `Exists`. `Equal` means that the `key`
+    and `value` of the taint must match exactly, whereas `Exists` means that just
+    `key` must match and `value` is not considered. In our example, if we want to
+    ignore the taint, the toleration will need to look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please note, you can define multiple tolerations for a Pod to ensure the correct
+    Pod placement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the case of `NoExecute` tolerations, it is possible to define an additional
+    field called `tolerationSeconds`, which specifies how long the Pod will tolerate
+    the taint until it gets evicted. So, this is a way of having partial toleration
+    of taint with a timeout. Please note that if you use `NoExecute` taints, you usually
+    also need to add a `NoSchedule` taint. In this way, you can prevent any **eviction
+    loops** from happening when the Pod has a `NoExecute` toleration with `tolerationSeconds`
+    set. This is because the taint has no effect for a specified number of seconds,
+    which also includes *not* preventing the Pod from being scheduled for the tainted
+    Node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When Pods are created in the cluster, Kubernetes automatically adds two `Exists`
+    tolerations for `node.kubernetes.io/not-ready` and `node.kubernetes.io/unreachable`
+    with `tolerationSeconds` set to `300`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have learned about taints and tolerations, we will put this knowledge
+    into practice with a few demonstrations. Please follow the next steps to go through
+    the taints and tolerations exercise:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you have the `nginx-app` Deployment with Node affinity defined still running
+    from the previous section, it will currently have all Pods running on Node1 (`minikube`).
+    The Node affinity rules are constructed in such a way that the Pods cannot be
+    scheduled on Node2 and Node3\. Let’s see what happens if you taint Node1 with
+    `machine-check-exception=memory:NoExecute`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Check the Pod status and Node assignment:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: All Deployment Pods are now in the `Pending` state because kube-scheduler is
+    unable to find a Node that can run them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Edit the `./nginx-deployment.yaml` Deployment manifest (or check `04_taints/nginx-deployment.yaml`)
+    and remove `affinity`. Instead, define taint toleration for `machine-check-exception=memory:NoExecute`
+    with a timeout of 60 seconds as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: When this manifest is applied to the cluster, the old Node affinity rules which
+    prevented scheduling to Node2 and Node3 will be gone. The Pods will be able to
+    schedule on Node2 and Node3, but Node1 has taint `machine-check-exception=memory:NoExecute`.
+    So, the Pods should *not* be scheduled to `Node0`, as `NoExecute` implies `NoSchedule`,
+    *right*? Let’s check that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Apply the manifest to the cluster using the `kubectl apply -f 04_taints/nginx-deployment.yaml`
+    command and inspect the Pod status and Node assignment again. You may need to
+    wait a while for the Deployment rollout to finish:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This result may be a bit surprising. As you can see, we got Pods scheduled on
+    Node2 and Node3, but at the same time Node1 has received Pods, and they are in
+    an eviction loop every 60 seconds! The explanation for this is that `tolerationSeconds`
+    for the `NoExecute` taint implies that the whole taint is ignored for 60 seconds.
+    So, kube-scheduler can schedule the Pod on Node1, even though it will get evicted
+    later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s fix this behavior by applying a recommendation to use a `NoSchedule`
+    taint whenever you use a `NoExecute` taint. In this way, the evicted Pods will
+    have no chance to be scheduled on the tainted Node again, unless, of course, they
+    start tolerating this type of taint too. Execute the following command to taint
+    `Node0`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Inspect the Pod status and Node assignment again:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In the output, you can see that the Pods are now distributed between Node2 and
+    Node3 – exactly as we wanted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, remove *both* taints from Node1:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Restart the Deployment to reschedule the Pods using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Inspect the Pod status and Node assignment again:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The Pods are again distributed evenly between all three Nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'And finally, let’s see how the combination of the `NoExecute` and `NoSchedule`
+    taints work, with `tolerationSeconds` for `NoExecute` set to `60`. Apply two taints
+    to Node1 again:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Immediately after that, start watching Pods with their Node assignments. Initially,
+    you will see that the Pods are still running on Node1 for some time. But after
+    60 seconds, you will see:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: As we expected, the Pods were evicted after 60 seconds and there were no eviction-schedule
+    loops.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This has demonstrated a more advanced use case for taints that you cannot easily
+    substitute with Node affinity rules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s learn about static Pods in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding Static Pods in Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Static Pods offer a different way to manage Pods within a Kubernetes cluster.
+    Unlike regular Pods, which are controlled by the cluster’s Pod schedulers and
+    API server, static Pods are managed directly by the kubelet daemon on a specific
+    node. The API server isn’t aware of these Pods, except through mirror Pods that
+    the kubelet creates for them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Key characteristics**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Node-specific**: Static Pods are tied to a single node and can’t be moved
+    elsewhere in the cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Kubelet management**: The kubelet on the designated node handles starting,
+    stopping, and restarting static Pods.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Mirror Pods**: The kubelet creates mirror Pods on the API server to reflect
+    the state of static Pods, but these mirror Pods can’t be controlled through the
+    API.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Static Pods can be created using two main methods. The first method is the filesystem-hosted
+    configuration, where you place Pod definitions in YAML or JSON format in a specific
+    directory on the node. The kubelet scans this directory regularly and manages
+    Pods based on the files present. The second method is the web-hosted configuration,
+    where the Pod definition is hosted in a YAML file on a web server. The kubelet
+    is configured with the URL of this file and periodically downloads it to manage
+    the static Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Static Pods are often used for bootstrapping essential cluster components, like
+    the API server or controller manager, on each node. However, for running Pods
+    on every node in a cluster, DaemonSets are usually recommended. Static Pods have
+    limitations, such as not being able to reference other Kubernetes objects like
+    Secrets or ConfigMaps and not supporting ephemeral containers. Understanding static
+    Pods can be useful in scenarios where tight control over Pod placement on individual
+    nodes is needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, we have covered different mechanisms to control the Pod scheduling and
+    placement. In the next section, we will give a short overview of other scheduler
+    configurations and features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Extended scheduler configurations in Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In addition to the scheduler customizations, Kubernetes also supports some advanced
+    scheduling configurations, which we will discuss in this section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scheduler configuration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: You can customize this scheduling behavior using a configuration file. This
+    file defines how the scheduler prioritizes Nodes for Pods based on various criteria.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Key concepts**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Scheduling profiles**: The configuration file can specify multiple scheduling
+    profiles. Each profile has a distinct name and can be configured with its own
+    set of plugins.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Scheduling plugins**: Plugins are like building blocks that perform specific
+    tasks during the scheduling process. They can filter Nodes based on resource availability,
+    hardware compatibility, or other factors.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Extension points**: These are stages within the scheduling process where
+    plugins can be hooked in. Different plugins are suited for different stages, such
+    as filtering unsuitable Nodes or scoring suitable Nodes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**IMPORTANT: Scheduling Policies (Pre-v1.23 Kubernetes)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes versions before v1.23 allowed specifying scheduling policies via
+    kube-scheduler flags or ConfigMaps. These policies defined how the scheduler selected
+    nodes for Pods using predicates (filtering criteria) and priorities (scoring functions).
+    As of v1.23, this functionality is replaced by scheduler configuration. This new
+    approach allows more flexibility and control over scheduling behavior.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Kubernetes scheduler configuration file provides several benefits for managing
+    Pod placement within your cluster. It provides the flexibility to tailor scheduling
+    behavior to your needs. For instance, you can prioritize Pods requiring GPUs to
+    land on Nodes with those resources. Additionally, you can develop custom plugins
+    to handle unique scheduling requirements not addressed by default plugins. Finally,
+    the ability to define multiple profiles allows you to create granular controls
+    by assigning different scheduling profiles to different types of Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we conclude the chapter, let’s look at the Node restrictions feature
+    in Kubernetes scheduling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Node isolation and restrictions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Kubernetes allows you to isolate Pods on specific Nodes using node labels. These
+    labels can define properties like security requirements or regulatory compliance.
+    This ensures Pods are only scheduled on Nodes that meet these criteria. To prevent
+    a compromised node from manipulating labels for its own benefit, the `NodeRestriction`
+    admission plugin restricts the `kubelet` from modifying labels with a specific
+    prefix (e.g., `node-restriction.kubernetes.io/`). To leverage this functionality,
+    you’ll need to enable the `NodeRestriction` plugin and `Node authorizer`. Then,
+    you can add labels with the restricted prefix to your Nodes and reference them
+    in your Pod’s `nodeSelector` configuration. This ensures your Pods only run on
+    pre-defined, isolated environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tuning Kubernetes scheduler performance
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In large Kubernetes clusters, efficient scheduler performance is crucial. Let’s
+    explore a key tuning parameter: `percentageOfNodesToScore`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `percentageOfNodesToScore` setting determines how many Nodes the scheduler
+    considers when searching for a suitable Pod placement. A higher value means the
+    scheduler examines more Nodes, potentially finding a better fit but taking longer.
+    Conversely, a lower value leads to faster scheduling but might result in suboptimal
+    placement. You can configure this value in the kube-scheduler configuration file.
+    The valid range is 1% to 100%, with a default calculated based on cluster size
+    (50% for 100 nodes, 10% for 5,000 nodes).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To set `percentageOfNodesToScore` to 50% for a cluster with hundreds of nodes,
+    you’d include the following configuration in the scheduler file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: The optimal value depends on your priorities. If fast scheduling is critical,
+    a lower value might be acceptable. However, if ensuring the best possible placement
+    outweighs speed concerns, a higher value is recommended. Avoid setting it too
+    low to prevent the scheduler from overlooking potentially better Nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we have finished this chapter, and we have learned about different
+    mechanisms and strategies available in Kubernetes to control Pod placement on
+    Nodes, including `nodeName`, `nodeSelector`, `nodeAffinity`, taints and tolerations,
+    and also other useful advanced scheduler configurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter has given an overview of advanced techniques for Pod scheduling
+    in Kubernetes. First, we recapped the theory behind kube-scheduler implementation
+    and explained the process of scheduling Pods. Next, we introduced the concept
+    of Node affinity in Pod scheduling. We discussed the basic scheduling methods,
+    which use Node names and Node selectors, and based on that, we explained how more
+    advanced Node affinity works. We also explained how to use the affinity concept
+    to achieve anti-affinity, and what inter-Pod affinity/anti-affinity is. After
+    that, we discussed taints for Nodes and tolerations specified by Pods. You learned
+    about some different effects of taints, and put that knowledge into practice in
+    an advanced use case involving `NoExecute` and `NoSchedule` taints on a Node.
+    Lastly, we discussed some advanced scheduling features in Kubernetes such as scheduler
+    configurations, Node isolation, and static pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we are going to discuss the **autoscaling** of Pods and
+    Nodes in Kubernetes. This is a topic that shows how flexibly Kubernetes can run
+    workloads in cloud environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Kubernetes Scheduler: [https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/](https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/
+    )'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Assigning Pods to Nodes: [https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/
+    )'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Taints and Tolerations: [https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+    )'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Scheduler Configuration: [https://kubernetes.io/docs/reference/scheduling/config/](https://kubernetes.io/docs/reference/scheduling/config/
+    )'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For more information regarding Pod scheduling in Kubernetes, please refer to
+    the following PacktPub books:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*The Complete Kubernetes Guide*, by *Jonathan Baier*, *Gigi Sayfan*, *Jesse
+    White* ([https://www.packtpub.com/en-in/product/the-complete-kubernetes-guide-9781838647346](https://www.packtpub.com/en-in/product/the-complete-kubernetes-guide-9781838647346))'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Getting Started with Kubernetes – Third Edition*, by *Jonathan Baier*, *Jesse
+    White* ([https://www.packtpub.com/en-in/product/getting-started-with-kubernetes-9781788997263](https://www.packtpub.com/en-in/product/getting-started-with-kubernetes-9781788997263))'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Kubernetes for Developers*, by *Joseph Heck* ([https://www.packtpub.com/en-in/product/kubernetes-for-developers-9781788830607](https://www.packtpub.com/en-in/product/kubernetes-for-developers-9781788830607))'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'You can also refer to official documents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes documentation ([https://kubernetes.io/docs/home/](https://kubernetes.io/docs/home/)),
+    which is always the most up-to-date source of knowledge about Kubernetes in general.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Node affinity is covered at [https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Taint and tolerations are covered at [https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pod priorities and preemption (which we have not covered in this chapter) are
+    described at [https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/](https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Advanced kube-scheduler configuration using scheduling profiles (which we have
+    not covered in this chapter) is described at [https://kubernetes.io/docs/reference/scheduling/config](https://kubernetes.io/docs/reference/scheduling/config).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Join our community on Discord
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Join our community’s Discord space for discussions with the authors and other
+    readers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://packt.link/cloudanddevops](https://packt.link/cloudanddevops)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/QR_Code119001106479081656.png)'
+  prefs: []
+  type: TYPE_IMG

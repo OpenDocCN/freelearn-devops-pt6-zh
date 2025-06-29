@@ -1,0 +1,1832 @@
+- en: '*Chapter 4*: Creating an RKE and RKE2 Cluster'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The standard way of deploying Rancher is by creating an **Rancher Kubernetes
+    Engine (RKE**) cluster then using Helm to install Rancher on the cluster. The
+    new way to deploy Kubernetes clusters using RKE2 is built on K3s and the new internal
+    cluster management model. By doing so, Rancher can manage the cluster it lives
+    on directly without requiring an external tool such as RKE. This chapter will
+    cover when using RKE2 over RKE makes sense, and how to bootstrap the first node
+    and join additional nodes to the cluster. At this point, we'll install Rancher
+    on the cluster using the **Helm** tool, which installs the Rancher server workload
+    on the cluster. Finally, we'll cover how to configure a load balancer to support
+    the Rancher URL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we''re going to cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is an RKE cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is an RKE2 cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is RancherD?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Requirements and limitations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rules for architecting a solution
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Install steps (RKE)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Install steps (RKE2)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configuring an external load balancer (HAProxy)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configuring MetalLB
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's get started!
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is an RKE cluster?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: RKE is Rancher's Kubernetes distribution that runs entirely inside Docker containers.
+    Of course, RKE is a CNCF-certified distribution, so all the standard Kubernetes
+    components and API resources are available. The easiest way to understand RKE
+    clusters is to know where it originated and how it works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where did RKE come from?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Originally, when Rancher first started creating Kubernetes clusters, Rancher
+    used its clustering software called **Cattle**, with the idea being Kubernetes
+    was just another application in the cluster. This caused several problems ranging
+    from kubelet and Cattle fighting to control the containers to even needing a custom
+    load balancer solution built on top of HAProxy. But for most components, the most
+    significant issue was that the Rancher server managed the Cattle side of the cluster,
+    and Kubernetes managed the pod side. This meant that the cluster had a dependency
+    on Rancher to get pod IPs and needed Rancher to update the load balancer when
+    pod changes happened. This all changed with Rancher v2.x and the creation of RKE,
+    the idea being RKE will create and manage the cluster independent of the Rancher
+    server. Of course, some of the core ideas of Cattle were brought forward into
+    RKE, with the main idea being if everything is just a container, then Rancher
+    doesn't need to care about the OS. RKE doesn't need any libraries or packages.
+    At its core, RKE manages standalone Docker containers for core Kubernetes services.
+    These include etcd, kube-apiserver, kube-scheduler, kube-controller-manager, kubelet,
+    and kube-proxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does RKE work?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One of the core design principles is that RKE has desired state configuration
+    in the form of a configuration file called `cluster.yaml`. With this file, RKE
+    knows what kind of cluster you want to build, what nodes to use, and how each
+    Kubernetes component should be configured. This file is a YAML formatted file,
+    so you will need to follow the YAML standard when creating/editing this file with
+    a common trap for new players being tabs. YAML uses spaces and not taba, even
+    though they look the same. If you start running into syntax errors, it might be
+    because of tabs. What follows is an example `cluster.yaml` with the next section.
+    We'll break down the different parts of the config file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.1 – Example cluster.yml'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_001.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.1 – Example cluster.yml
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Full config: [https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch04/example_configs/simple_3_node_cluster.yml](https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch04/example_configs/simple_3_node_cluster.yml)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first section is `nodes`. In this section, you'll define the nodes used
+    to create the cluster. If we break down the node definition, we'll see the first
+    line, which is `address`. This is the hostname or IP address that RKE will use
+    to connect to the node. It is pretty standard to use a server's **FQDN** (**Fully
+    Qualified Domain Name**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The server where RKE is being run from must be able to resolve the hostname.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This address should not be changed without removing the node from the cluster
+    first then rejoining it as a new node. The `address` field is required when defining
+    a node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following section is `hostname_override`, which sets the node name in Kubernetes.
+    Most people will set this to be the short hostname. This name does not have to
+    be in DNS as it is just a label in Kubernetes. For example, AWS uses the naming
+    convention of `ip-12-34-56-78.us-west-2.compute.internal`, but you might want
+    to override this to be something more helpful such as `etcd01` or `prod-worker01`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Just like the address field, the hostname field should not be changed after
+    a node has been configured.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you would like to change the hostname, IP address, or role, you should remove,
+    clean it, and rejoin it. If this field is not set, RKE will default to using the
+    `address` field.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following field is `user`. This field is used by RKE when creating its SSH
+    tunnel to the nodes. This account should have permission to run the `docker` command
+    without `sudo`. This user must be a member of the group Docker or be root. If
+    a user is not defined at the node level, RKE will default to the currently running
+    user. It is standard for this to be root or a service account. Rancher recommends
+    typically not using a personal account as you will need to set up SSH keys.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This brings us to the next field: `ssh_key_path`. This should be the path to
+    the SSH private key for connecting to a node. RKE does require SSH keys to be
+    set up between the server running the RKE binary and all of the nodes. When you
+    SSH to the nodes, you get prompted with a password or `ssh_key_path` is not set
+    at the node level, it will default to the cluster''s default option as defined
+    in the `ssh_key_path` is not set, RKE will default to `~/.ssh/id_rsa`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This ties into the next section, `port`, which is the port that RKE will use
+    for connecting to the SSH server. RKE will default to port `22`. Usually, this
+    is not changed, but in rare cases, when using port forwarding, multiple servers
+    can share the same public IP address without RKE needing direct IP access to the
+    nodes. The following field is `docker_socket`, which is the file path to the Docker
+    socket. This file is a Unix domain socket, sometimes called an IPC socket. This
+    file provides API access to dockerd.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that this API does not have authentication or encryption and has complete
+    control over Docker and its containers. This file must be protected; hence, by
+    default, this file is owned by the root user and the Docker group. RKE uses this
+    file to connect to Docker Engine to run commands, create containers, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we get to the `role` fields. These fields define what role (`etcd`,
+    `controlplane`, or `worker`) is assigned to a node. You can mix and match these
+    role assignments as you want. For example, the standard three-node cluster has
+    all three nodes having all three roles. We will go into more detail in the *Rules
+    for architecting a solution* section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following section is what I call the global settings section. This section
+    is where you can define cluster-level settings. We'll be covering the most common
+    settings, with the complete list of cluster settings being located at [https://rancher.com/docs/rke/latest/en/config-options/](https://rancher.com/docs/rke/latest/en/config-options/).
+    The first field is `cluster_name`, which is used for setting the name of your
+    cluster. This setting doesn't affect the cluster, with the only real change being
+    the `kubeconfig` file that RKE generates will have the cluster name in it, which
+    can make mapping kubeconfig to a cluster much more straightforward. By default,
+    RKE will set this to local, and this setting can be changed at any time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next most common setting is `ignore_docker_version`. This setting tells
+    RKE if it should ignore an unsupported Docker version on a node. RKE has a built-in
+    metadata file that maps all the supported versions that have been tested and approved
+    by Rancher. It is expected that Docker will be upgraded with the operating system
+    as part of standard patching, which can cause RKE not to upgrade a cluster if
+    the RKE release is not as up to date. It is pretty common to set this setting
+    to `true` so that RKE will still throw a warning message in the logs, but it will
+    continue building the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next field is probably the most important setting you can set, which is
+    `kubernetes_version`. By default, when RKE is created, it will have a default
+    Kubernetes version set. This is usually the highest officially supported version
+    at build time. For example, RKE v1.2.3 will default the Kubernetes version `v1.19.4-rancher1-1`,
+    which is fine when the cluster is created. But if later, someone upgrades RKE
+    to v1.3.1, which has the new default of `v1.21.5-rancher1-1`, suppose you didn't
+    set your Kubernetes versions in your `cluster.yaml` file. The next RKE upgrade
+    event will cause what I call an accidental upgrade. This can be fine but has been
+    known to cause problems. We don't want to upgrade a cluster without testing and
+    planning. Hence, Rancher usually recommends setting `kubernetes_version` in your
+    `cluster.yaml` as a safety measure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: This setting also sets the image version tags of all the Kubernetes components
+    such as etcd, kube-apiserver, canal, ingress-nginx-controller, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This brings us to the next field, `system_images`. This section has a list
+    of all the Docker images and their tags for all the different components. For
+    example, the line `etcd: rancher/coreos-etcd:v3.1.12` sets the Docker image to
+    use for etcd. Note that, by default, Docker pulls images without a registry name
+    from Docker Hub. You can change the behavior using the `--registry-mirror` flag
+    to force Docker to use a private registry instead. This is usually used in air-gapped
+    environments where your servers cannot pull images from Docker Hub. If you want
+    to learn more about setting this up, please see Rancher''s documentation at [https://rancher.com/docs/rke/latest/en/config-options/system-images/#air-gapped-setups](https://rancher.com/docs/rke/latest/en/config-options/system-images/#air-gapped-setups).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we come to the `services` section. In this section, we'll define the
+    settings for each of the Kubernetes components, for e.g., if you want to configure
+    etcd backups. Note that you should have etcd backups turned on, and newer RKE
+    versions turn local backups on by default. You go to services, etcd, and `backup_config`.
+    There you can enable recurring etcd snapshots by setting `enabled` to `true`.
+    You can also set the backup schedule using `interval_hours`. RKE doesn't use a
+    schedule like cron for its backup schedule. The schedule is based on when the
+    `etcd-tools` container is started. The basic process is that `etcd-tools` will
+    take a backup as soon the container starts, then sleep for X number of hours as
+    defined in `interval_hours` until taking another backup and repeating this process.
+    Currently, there is no way of telling RKE to take a backup at a scheduled time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next setting is `retention`, which sets how many hours `etcd-tools` will
+    keep a snapshot before purging them. The current default is 6 hours. But it is
+    common to increase this setting to something like 72 hours. This is mainly to
+    stop backups from rolling off too quickly. For example, if a change was made late
+    on a Friday, you might not catch it until Monday. With the default setting, you
+    will have lost that recovery point. But if you set it to 72 hours, you still have
+    a chance. It is important to note that etcd snapshots are complete copies of the
+    database, so if your etcd database is 1 GB in size, your backup will be 1 GB before
+    compression, with most backups being in the 100~200 MB range after compression.
+    By default, RKE will back up locally on the etcd nodes to the directory `/opt/rke/etcd-snapshots`
+    with each etcd node having a full copy of the backups. This is great for ease
+    of use but leads to the problem that you are storing your backups on the same
+    server you are backing up. You can, of course, set up `rsync` scripts to copy
+    this data off another server or use a backup tool such as TSM to back up this
+    directory, or even use a tool such as Veeam to take an image backup of the whole
+    server. But what I usually recommend is to use the S3 backup option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This leads us into the next section, which is `s3backupconfig`. These settings
+    allow you to configure `etcd-tools` to send its etcd snapshots to an S3 bucket
+    instead of local storage. This helps in disaster recovery cases where you lose
+    a data center or when someone deleted all your etcd nodes in vCenter by mistake,
+    because with `cluster.yaml`, `cluster.rkestate`, and an etcd backup, we can rebuild
+    a cluster from nothing. Please have a look at my Kubernetes Master Class on Disaster
+    Recovery located at [https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery](https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery)
+    for more details on this process. It's also important to note that just because
+    this is S3, it doesn't mean you have to use AWS's S3 offering. Any S3 provider
+    will work assuming they are following the S3 standard.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is an RKE2 cluster?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: RKE2, also known as RKE Government, is Rancher's new Kubernetes distribution.
+    RKE2 differs from RKE in several ways, the first being its focus on security.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: To make things easier in this section, we will call the original RKE distribution
+    **RKE1**, with the new distribution being called **RKE2**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Originally in RKE1 clusters, the cluster was not entirely secure by default,
+    meaning you had to take steps (The Rancher Hardening Guide: https://rancher.com/docs/rancher/v2.6/en/security/#rancher-hardening-guide)
+    to pass the CIS Kubernetes Benchmark. Both because of the difficulty of the process
+    and the fact that some people didn''t even know about it meant a good number of
+    RKE1 clusters were left insecure. RKE2 flips that model around by being secure
+    by default and requiring you to go through several complex steps to make it less
+    secure. RKE2 also passes the CIS Kubernetes Benchmark v1.5 and v1.6 like RKE1
+    does and FIPS 140-2 compliance. Finally, on the security side, the RKE2 process
+    has been built from the start with CVE scanning as part of the build pipeline,
+    making it very difficult to include known CVE issues in the product.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second big difference is the conversion from Docker to containerd. With
+    RKE1, everything was built around Docker and Docker-based commands/APIs. And with
+    the announcement of removing support for the Docker runtime in Kubernetes v1.22,
+    this migration is a must in the long-term supportability of Kubernetes. I will
+    note that Dockershim, an adapter between the Kubernetes **CRI** (**Container Runtime
+    Interface**) and Docker, has allowed people to keep using Docker with Kubernetes
+    for the foreseeable future. Rancher is also going to maintain a fork of cri-dockerd.
+    Please see [https://github.com/rancher/rancher/issues/30307](https://github.com/rancher/rancher/issues/30307)
+    for more details and the official statement. With all that being said, RKE2 and
+    K3s moved to containerd because of speed and management overhead. Docker brings
+    a lot of tools and libraries into the picture that are not needed by a Kubernetes
+    host and wastes resources. This is because Docker is running containerd under
+    the hood, so why not remove that layer and just let kubelet directly manage containterd?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third significant change was moving from running everything in containers
+    to allowing some low-level components such as kubelet to run as a binary directly
+    on the host. Because items such as kubelet are outside of containterd, kubelet
+    can do tasks such as upgrading containerd without running into the chicken and
+    the egg issue as you would in RKE1\. Kubelet can't upgrade Docker because the
+    first step is to stop Docker, which stops kubelet, which stops the upgrade. As
+    you can see in the following diagram shown, RKE2 has **Managed processes**, which
+    run directly on the operating system and not as containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.2 – RKE2 server and agent high-level diagram'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_002.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.2 – RKE2 server and agent high-level diagram
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fourth significant change was no more containers that are not pods. In RKE1,
+    most of the core components such as the kubelet, etcd, kube-apiserver, kube-controller-manger,
+    and kube-scheduler were Docker containers but were not Kubernetes pods. This was
+    because these containers were created and managed by the RKE binary and not by
+    kubelet. With RKE2, kubelet is a binary on the host operating system, and kubelet
+    can use static pods. These pods are unique because they can be created and started
+    without etcd, kube-apiserver, and so on. This is done by making the manifest files
+    that include all the items usually provided by the cluster ahead of time, such
+    as the pod name, IP, MAC address, secrets, volumes, and so on, at which point,
+    kubelet can start and manage the pod just like any other pod. Once kubelet can
+    connect to the cluster, that pod can be discovered and added into etcd.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This leads us to the most significant change in RKE2 over RKE1: moving from
+    centralized control to a distributed control model. With RKE1, all the core cluster
+    management tasks were managed by the RKE1 binary itself. Even when Rancher is
+    managing the cluster, it creates the `cluster.yml` file and runs the RKE1 binary
+    inside the Rancher server. Because of this, with RKE1, you must update `cluster.yaml`
+    and run an `rke up` command. This process then causes the RKE1 binary to reconcile
+    the cluster. RKE2 takes this process and moves it into the cluster, meaning an
+    RKE2 cluster can manage itself. RKE2 uses an approach where you bootstrap the
+    first master node in the cluster then join the other master and worker nodes.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As part of moving to a distributed model with RKE1, you had the option to deploy
+    simple YAML files as an add-on job. RKE2 builds on this to allow you to deploy
+    YAML files and Helm charts as part of the deployment process. This allows you
+    to move several tasks into the cluster creation process. For example, you are
+    deploying Rancher's Longhorn product, which provides a distributed storage provider,
+    as part of cluster creation. This is important as a good number of environments
+    will need storage to start deploying over services such as Prometheus. RKE2 integrates
+    K3s' Helm controller, which allows you to define a Helm chart installation via
+    YAML. Then the Helm controller will spin up a pod to handle deploying and upgrading
+    that chart, with the end goal being to move most of the cluster tasks, such as
+    adding and removing nodes to and from clusters, from a process inside the Rancher
+    server to a process on the downstream cluster itself. This helps Rancher support
+    managing clusters at a mass scale (1 million+ clusters for a single Rancher deployment),
+    including better data handling for edge clusters by lowering traffic between the
+    Rancher servers and the edge cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, the process of joining a node to an existing RKE2 cluster is a lot
+    different than an RKE1 cluster. With RKE1, the binary handles deploying the containers
+    to the new node. With RKE2, there is a simple process where the first node is
+    started with a special flag, `cluster-init`. This tells RKE2 to create a new cluster.
+    This includes creating a new etcd cluster and creating a fresh root CA (kube-ca),
+    and if it is not set, RKE2 will generate a token for the cluster. Once the first
+    node has been created, the Kubernetes API should be available and used by the
+    rest of the nodes to join the cluster. This is why you need a round-robin DNS
+    record or a load balancer for your Kubernetes API endpoint. Moving forward, you
+    need to set the RKE2 cluster token on each new node in the cluster along with
+    the server endpoint. Both these settings are required for RKE2 even to start.
+    These settings are defined in the file `/etc/rancher/rke2/config.yaml`. Note that
+    with RKE2, this file configures RKE2 in general. So if you want to define kubelet
+    settings, node labels/taints, and so on, this file must be protected as the token
+    stored in that file is used for several security-related tasks such as Kube-API
+    access and etcd encryption. So, the token should be treated as a password, that
+    is, it should be unique, random, and long. The default length is 32 characters.
+    You should also avoid using special control characters such as the dollar sign,
+    backslash, quotemarks, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is RancherD?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: RancherD is a special binary designed to bootstrap a Kubernetes cluster (K3s/RKE2)
+    and Rancher. The idea is to simplify the creation of the K3s/RKE2 cluster that
+    directly supports the Rancher server application and its components. RancherD
+    is designed only to be run once on a node, at which point RancherD takes care
+    of setting up K3s/RKE2 and the manifest files needed for Rancher. This process
+    can be beneficial when you want to deploy large numbers of Rancher deployments.
+    For example, if you wish each of your Kubernetes clusters to have its own Rancher
+    dashboard, environments do not share a single Rancher deployment. This is seen
+    a lot with hosting companies that provide Rancher as a service to their customers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is important to note that RancherD uses RKE2 behind the scenes, so the same
+    requirements and limitations apply. We'll be covering those requirements and limitations
+    in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Requirements and limitations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll discuss the basic requirements for RKE and RKE2 clusters
+    along with their limitations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basic requirements
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let''s have a look at the basic requirements for **RKE** first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: RKE requires Docker to be installed on the host before RKE can join it to the
+    cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE runs on almost any Linux OS, but you should refer to the Rancher Support
+    Matrix located at [https://rancher.com/support-maintenance-terms/](https://rancher.com/support-maintenance-terms/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE requires SSH access to all nodes in the cluster using an SSH key.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE requires permissions to run Docker commands without sudo or a password.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All nodes in a cluster must be routable to all other nodes, meaning you can
+    have nodes on direct subnets, but you must be able to connect between nodes directly
+    without using an NAT.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE requires firewall rules to be opened between nodes depending on the role
+    of the node. Please see https://rancher.com/docs/rke/latest/en/os/#ports for more
+    details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An RKE cluster requires at least one node for each role in the cluster, with
+    the roles being etcd, controlplane, and worker. The cluster will not come online
+    until this requirement is met. Note that a node can have multiple roles, including
+    having all three roles.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE only requires a minimum of one core, which changes with cluster size and
+    node role selection. It's recommended to at least have two cores, with the standard
+    size being four cores.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The memory requirement is based on the node's role, with the etcd role needing
+    about 4 GB, kube-apiserver needing 4 GB, and the worker role needing about 2 GB.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For storage, you'll need around 10 GB of tier 1/2 storage (SSD is preferred
+    but not required).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For the filesystem, RKE relies on Docker storage drivers, so please review Docker's
+    documentation at [https://docs.docker.com/storage/storagedriver/](https://docs.docker.com/storage/storagedriver/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE doesn't require its own filesystem, but it's recommended that `/var/lib/docker`
+    be on its own filesystem/disk to prevent Docker from filling up the root filesystem.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: On etcd nodes, the database is stored in a bind mount located at `/var/lib/etcd`
+    and is not required to be on its own dedicated disk. Also, with larger clusters,
+    it is recommended for this data to be stored on tier 1 storage as etcd can be
+    sensitive to storage latency.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you are using RKE's local backup option, the `/opt/rke/etcd-snapshots` directory
+    should be its own filesystem or an NFS share for safety reasons.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the requirements of **RKE2**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: RKE2 runs on almost any Linux OS, but you should refer to the Rancher Support
+    Matrix located at [https://rancher.com/support-maintenance-terms/](https://rancher.com/support-maintenance-terms/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing and configuring RKE2 requires root-level permissions on the host.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All nodes in a cluster must be routable to all other nodes, meaning you can
+    have nodes on direct subnets, but you must be able to connect between nodes directly
+    without using an NAT.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE2 requires firewall rules to be opened between nodes depending on the role
+    of the node. Please see [https://rancher.com/docs/rancher/v2.5/en/installation/requirements/ports/](https://rancher.com/docs/rancher/v2.5/en/installation/requirements/ports/)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE2 requires a master and worker node in the cluster. Note that both roles
+    can be on the same node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE2 only requires a minimum of one core, which changes with cluster size and
+    node role selection. It's recommended to have at least have two cores, with the
+    standard size being four cores.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The memory requirement is based on the node's role, with the master role needing
+    4 GB and the worker/agent role requiring about 2 GB.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE2 stores its data under the mount point `/var/lib/rancher`, which includes
+    containerd data, images, etcd, and so on.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For master nodes, etcd is stored under `/var/lib/rancher/rke2/server/db/etcd`;
+    it is recommended that this data be stored on tier 1 storage as etcd can be sensitive
+    to storage latency.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE2 has etcd backups turned on by default and stores the backups under `/var/lib/rancher/rke2/server/db/snapshots,`
+    which should be its own filesystem or can be an NFS share for safety reasons.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Design limitations and considerations
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now, let's discuss the design limitations for both clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following lists the design considerations for RKE:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: After creating a cluster, you cannot change the network provider (CNI), called
+    the network plugin in the RKE documentation located at [https://rancher.com/docs/rancher/v2.5/en/faq/networking/cni-providers/](https://rancher.com/docs/rancher/v2.5/en/faq/networking/cni-providers/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By default, RKE will use the subnets `10.42.0.0/16` and `10.43.0.0/16` for the
+    pod overlay and service network. This cannot be changed after cluster creation,
+    so if these networks overlap with your current network, you'll need to choose
+    different subnets for your cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Support for Windows worker nodes is currently limited to Rancher-managed RKE
+    clusters. You cannot use RKE directly to join a Windows node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE currently doesn't provide support for the ARM64 OS.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE supports an air-gapped environment, but you are required to do some additional
+    steps, which are located at https://rancher.com/docs/rke/latest/en/config-options/system-images/#air-gapped-setups.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Switching an RKE to an air-gapped environment can be done by reconfiguring the
+    cluster, deployments, and applications.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE clusters can be built across data centers so long as there is an odd number
+    of data centers with an etcd and control plane node in each data center.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Network latency between etcd nodes should be less than 10 ms.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the design considerations for RKE2:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: After creating a cluster, you cannot change the network provider (CNI), called
+    the network plugin in the RKE2 documentation located at [https://docs.rke2.io/install/network_options/](https://docs.rke2.io/install/network_options/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By default, RKE2 will use the subnets `10.42.0.0/16` and `10.43.0.0/16` for
+    the pod overlay and service network. This cannot be changed after cluster creation
+    so if you are currently using one of these subnets in your current network, you
+    should change this setting.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As of writing, RKE2 provides experimental support for Windows nodes, but you
+    still need to provide a Linux node in the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As of writing, RKE2 doesn't provide support for the ARM64 OS even though K3s
+    does.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: There is an open feature request ([https://github.com/rancher/rke2/issues/1946](https://github.com/rancher/rke2/issues/1946))
+    to offer ARM64 support.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: RKE2 supports an air-gapped environment, but you are required to do some additional
+    steps, which are located at [https://docs.rke2.io/install/airgap/](https://docs.rke2.io/install/airgap/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE2 in an air-gapped environment can work in private registry mode and tarball
+    mode with the steps located at [https://docs.rke2.io/install/airgap/](https://docs.rke2.io/install/airgap/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE2 clusters can be built across data centers so long as there is an odd number
+    of data centers with a master node in each data center.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Network latency between etcd nodes should be less than 10 ms.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now that we understand the limitations of RKE1 and RKE2, we'll be using these
+    along with a set of rules and examples to help us design a solution using RKE1
+    and RKE2.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rules for architecting a solution
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll cover some standard designs and the pros and cons of
+    each. It is important to note that each environment is unique and will require
+    tuning for the best performance and experience. It's also important to note that
+    all CPU, memory, and storage sizes are recommended starting points and may need
+    to be increased or decreased by your workloads and deployment processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before designing a solution, you should be able to answer the following questions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Will multiple environments be sharing the same cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Will production and non-production workloads be on the same cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What level of availability does this cluster require?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Will this cluster be spanning multiple data centers in a metro cluster environment?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How much latency will there be between nodes in the cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How many pods will be hosted in the cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What are the average and maximum size of pods you will be deploying in the cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Will you need GPU support for some of your applications?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Will you need to provide storage to your applications?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you need storage, do you need only **RWO** (**Read Write Once**), or will
+    you need **RWX** (**Read Write Many**)?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RKE clusters
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The following are designs for RKE clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Single-node clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying an RKE cluster on a single node with all
+    roles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.3 – RKE single-node cluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_003.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.3 – RKE single-node cluster
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example config: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/00_single_node_cluster/cluster.yaml](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/00_single_node_cluster/cluster.yaml)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** of a single-node cluster are listed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Simple to set up.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Fast and easy to create.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No external load balancer is needed.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A great cluster for CI/CD pipelines that need a Kubernetes cluster for testing
+    that can be destroyed later.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Useful for sandbox testing where HA and scale is not needed.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Can be installed on a developer's laptop where resources are minimal.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A single-node RKE cluster can be converted to an HA cluster later.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are listed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: No HA.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Downtime is required during patching and upgrades.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Can encourage bad application behavior by using the server's IP or hostname
+    for the application endpoint instead of VIP or CNAME.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Many Kubernetes components get their HA features from the cluster itself, so
+    a lot of the components won't be able to handle failures as cleanly as they would
+    in an HA cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User applications share the same nodes as management services, meaning that
+    a runaway application can take down the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the **hardware requirements**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Servers(s): 1 physical/virtual server'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 4 cores'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 4-8GB'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Small three-node clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying the smallest RKE cluster with full HA,
+    a three-node cluster with all nodes having all roles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.4 – Standard three-node RKE cluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_004.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.4 – Standard three-node RKE cluster
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example config: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/cluster.yaml](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/cluster.yaml)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** of a small three-node cluster are listed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full HA – you can lose any node in the cluster and still have full cluster and
+    application availability.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Simple to manage as all nodes have the same roles, so all nodes are the same.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during patching and upgrades. Please see Rancher's zero
+    downtime documentation for more details at [https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/](https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are listed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An external load balancer or a round-robin DNS record is needed for external
+    application access.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User applications share the same nodes as management services, meaning that
+    a runaway application can take down the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only `N+1` of availability, so during maintenance tasks, you cannot suffer a
+    failure of a node without loss of service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the **hardware requirements**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Servers(s): 3 physical/virtual servers'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 4 cores per server'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 4-8GB per server'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Medium clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying the standard RKE cluster where we have
+    migrated the core management services for Kubernetes to their nodes. This is done
+    because as clusters grow in size, protecting the management services for Kubernetes
+    becomes even more critical. This design tries to balance HA with cost. This is
+    done by having etcd and the control plane share the same nodes but with the change
+    of moving the worker roles to their own set nodes. This design works for 2 to
+    10 worker node clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.5 – RKE cluster with separate nodes for management services'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_005.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.5 – RKE cluster with separate nodes for management services
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Diagram: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/02_medium_cluster/README.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/02_medium_cluster/README.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example config: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/02_medium_cluster/cluster.yaml](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/02_medium_cluster/cluster.yaml)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** of a medium cluster are listed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full HA – you can lose any one of the management nodes (etcd and control plane)
+    in the cluster and still have complete cluster management.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User workloads and management services run on different nodes, stopping runaway
+    applications from taking down the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Due to the scalable limitations of etcd, having more than five etcd nodes causes
+    a decrease in performance. So it is normally recommended to scale the design vertically
+    instead of horizontally.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: More than one worker node can fail without loss of service, assuming you have
+    enough CPU and memory available on the remaining workers.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during patching and upgrades. Please see Rancher's zero
+    downtime documentation for more details at [https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/](https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are listed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An external load balancer or a round-robin DNS record is needed for external
+    application access.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only `N+1` of availability, so during maintenance tasks, you cannot suffer a
+    failure of a node without loss of service at the management plane (etcd and control
+    plane).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional complexity when creating nodes as you might need to size management
+    nodes differently than worker nodes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the **hardware requirements** for etcd and the control plane:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Servers(s): 3 physical/virtual servers'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 8 cores per server'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 8-16 GB'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Worker node sizing should be based on your workload and its requirements.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Large clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we're expanding on the design for a medium cluster but breaking
+    up etcd and the control plane and then changing the node sizing and node count.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.6 – RKE cluster with separate nodes for etcd and control plane'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_006.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.6 – RKE cluster with separate nodes for etcd and control plane
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Diagram: [https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke/03_large_cluster/README.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke/03_large_cluster/README.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example config: [https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke/03_large_cluster/cluster.yaml](https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke/03_large_cluster/cluster.yaml)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** of large clusters are listed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full HA – you can lose any two management nodes (etcd and control plane) in
+    the cluster and still have complete cluster management.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User workloads and management services run on different nodes, stopping runaway
+    applications from taking down the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Due to the scalable limitations of etcd because having more than five etcd nodes
+    causes slowness. So it is normally recommended to as etcd to design to scale vertically
+    instead of horizontally.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The control plane isn't designed to scale by adding more nodes because kube-apiserver
+    is active on all nodes, but each node has a caching layer to increase performance
+    so scaling horizontally makes the caching less efficient.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`N+2` of availability, so during maintenance tasks, you can suffer a failure
+    of a node without loss of service at the management plane (etcd and control plane).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: More than one worker node can fail without loss of service, assuming you have
+    enough CPU and memory available on the remaining workers.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during patching and upgrades. Please see Rancher's zero
+    downtime documentation for more details at [https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/](https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are listed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An external load balancer or a round-robin DNS record is needed for external
+    application access.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The controllers in the control plane are not scalable, with only one controller
+    being the leader at a time.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional complexity when creating nodes as you might need to size management
+    nodes differently than worker nodes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the **hardware requirements**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**etcd plane**:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Servers(s): 5 physical/virtual servers.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 8-16 cores per server.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 32-64 GB per server for the management plane.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Storage: NVME storage is recommended.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Control plane**:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Servers(s): 4 physical/virtual servers.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 8-16 cores per server.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 32-64 GB per server for the management plane. Note: It is recommended
+    for the control plane node to match the size of etcd nodes as a starting point.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Worker node sizing should be based on your workload and its requirements.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: RKE2 clusters
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The following are design recommendations for RKE2 clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Single-node clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying an RKE2 cluster on a single node with all
+    roles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.7 – Single-node RKE2'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_007.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.7 – Single-node RKE2
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Diagram: [https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke2/00_single_node_cluster/README.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke2/00_single_node_cluster/README.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Simple to set up.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Fast and easy to create.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No external load balancer needed.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Great for CI/CD pipeline jobs that need a Kubernetes cluster to test their deployments
+    with, after which the cluster will be destroyed.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Great for sandbox testing where HA and scale are not needed.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Can be installed on a developer's laptop environments where resources are minimal.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A single-node RKE2 cluster can be converted to an HA cluster at a later date.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: No HA.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Downtime is required during patching and upgrades.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Can encourage bad application behavior by using the server's IP or hostname
+    for the application endpoint instead of VIP or CNAME.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Many Kubernetes components get their HA features from the cluster itself, so
+    a lot of the components won't be able to handle failures as cleanly as they would
+    in an HA cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User applications share the same nodes as management services, meaning that
+    a runaway application can take down the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the **hardware requirements**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Servers(s): 1 physical/virtual server'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 2 cores'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 4 GB'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Small three-node clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying the smallest RKE2 cluster with full HA,
+    a three-node cluster with all nodes having all roles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.8 – Three-node RKE2 cluster with HA'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_008.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.8 – Three-node RKE2 cluster with HA
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Diagram: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/01_small_cluster/README.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/01_small_cluster/README.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example commands: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/01_small_cluster/commands.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/01_small_cluster/commands.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full HA – you can lose any node in the cluster and still have full cluster and
+    application availability.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Simple to manage as all nodes have the same roles, so all nodes are the same.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during patching and upgrades. Please see Rancher's zero
+    downtime documentation for more details at [https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/](https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An external load balancer or a round-robin DNS record is needed for external
+    application access and RKE2 management.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User applications share the same nodes as management services, meaning that
+    a runaway application can take down the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only `N+1` of availability, so during maintenance tasks, you cannot suffer a
+    failure of a node without loss of service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the **hardware requirements**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Servers(s): 3 physical/virtual servers'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 2-4 cores per server'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 4-8 GB per server'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Medium clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying the standard RKE2 cluster where we have
+    migrated the core management services for Kubernetes to their own nodes. This
+    is done because as clusters grow in size, protecting the management services for
+    Kubernetes becomes even more critical. This design tries to balance HA with cost.
+    This is done by having the master role on its own nodes with the worker roles
+    on their own nodes. This design works for 2 to 10 worker node clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.9 – RKE2 cluster with separate nodes for management services'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_009.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.9 – RKE2 cluster with separate nodes for management services
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Diagram: [https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke2/02_medium_cluster/README.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke2/02_medium_cluster/README.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example commands: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/02_medium_cluster/commands.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/02_medium_cluster/commands.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full HA – you can lose any one of the master nodes in the cluster and still
+    have complete cluster management.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User workloads and management services run on different nodes, stopping runaway
+    applications from taking down the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Due to the scalable limitations of etcd, having more than five etcd nodes causes
+    a decrease in performance. So it is normally recommended to scale the design vertically
+    instead of horizontally.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: More than one worker node can fail without loss of service, assuming you have
+    enough CPU and memory available on the remaining workers.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during patching and upgrades. Please see Rancher's zero
+    downtime documentation for more details at [https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/](https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An external load balancer or a round-robin DNS record is needed for external
+    application access and RKE2 management.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only `N+1` of availability, so during maintenance tasks, you cannot suffer a
+    failure of a node without loss of service at the management plane (etcd and control
+    plane).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional complexity when creating nodes as you might need to size management
+    nodes differently than worker nodes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are the **hardware requirements**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Master node:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Servers(s): 3 physical/virtual servers'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 4 cores per server'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 8 GB'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Worker node sizing should be based on your workload and its requirements.
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Large clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: For a larger cluster with RKE2, you are limited in your design because in an
+    RKE2 cluster, etcd and control plane services are tied together and cannot be
+    separated into different planes. The only real change that can be made is to increase
+    the master node count from 3 to 5 then start increasing the size of the node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Install steps (RKE)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Once you have created `cluster.yaml`, you have RKE create a cluster for you.
+    This is done by running the `rke up --config cluster.yaml` command. RKE will look
+    for the `cluster.rkestate file`. If it cannot find that file, RKE will assume
+    that you are creating a new cluster, which causes RKE to create a new root CA
+    certificate called `/etc/kubernetes/ssl directory`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RKE will then check if any etcd nodes are being added or removed from the cluster.
+    Suppose RKE detects that the downtime settings for etcd are currently violated.
+    By default, RKE only allows one etcd node to be down. RKE then handles the process
+    of removing etcd nodes by stopping the etcd container and removing the etcd member
+    from the etcd leader. RKE will then take care of adding any new etcd nodes to
+    the cluster. It is important to note that this process is designed to be slow
+    and safe – RKE will only do one etcd node at a time and take an etcd snapshot
+    before changing each node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the etcd plane has been completed successfully, RKE will take care of starting
+    the controlplane. This process includes kube-apiserver, kube-controller-manager,
+    and kube-scheduler. RKE will start each component on each control plane node one
+    at a time. RKE will test that its health check endpoint is available for each
+    component, which for most components is `/healthz`. It is vital to note RKE follows
+    the same process as the etcd plane of verifying the max unavailable settings are
+    not currently violated. Suppose the settings become violated during this process.
+    RKE will stop and fail with an error.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, RKE will handle creating the worker plane. This process is different than
+    the etcd and control plane because it's designed to be done in parallel. This
+    is mainly done for larger clusters where you might have hundreds of worker nodes
+    in the cluster. So, by default, RKE will process 10% of the worker nodes at once.
+    For the existing node, RKE will cordon the node to prevent changes to the node.
+    It is important to note that the application pods continue to run during this
+    process, with the only impact being that the CNI provider might need to be restarted.
+    The effect is like unplugging the NIC from the node for a few seconds before plugging
+    it back in. This can affect applications that use long-lived connections that
+    need to be held open. This is typically seen with applications that use database
+    connection pooling, where the application will create several database connections
+    then keep them open. Depending on the application, these connections might not
+    reconnect automatically and may need to be restarted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Install steps (RKE2)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: RKE2 handles the process of cluster creation very differently compared to RKE1\.
+    With RKE2, the first master node in the cluster is unique because it handles bootstrapping
+    the cluster. The bootstrap process creates a root CA certificate, and if the cluster
+    token has not been set, RKE2 will handle creating one. Then RKE2 will initialize
+    the etcd cluster. Finally, RKE2 will create the etcd encryption key based on the
+    cluster token. RKE2 then stores the cluster state in a unique bootstrap key pair
+    in etcd called `bootstrap`. This bootstrap data includes the Kubernetes certificates,
+    private keys, and the etcd encryption keys. Once the cluster has been bootstrapped,
+    the additional master nodes can join the cluster using the Kubernetes API endpoint
+    to connect to the first node in the cluster. The RKE2 will use the cluster token
+    to authenticate and decrypt the bootstrap data. Finally, once all the master nodes
+    have been created, the same process is done for the worker nodes, with the only
+    difference being the `INSTALL_RKE2_TYPE="agent"` install option, which tells RKE2
+    to configure this node as a worker node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following are some example commands for creating a standard three master
+    node cluster with worker nodes. More details about these commands can be found
+    at [https://docs.rke2.io/install/ha/](https://docs.rke2.io/install/ha/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: This preceding code handles bootstrapping the first node in the cluster along
+    with setting up the SAN certificate for the Kubernetes API endpoint and the node
+    taint to prevent user workloads from running on this server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We need this token in the preceding code block in order for the other nodes
+    to join the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: This preceding code handles joining the additional master nodes to the existing
+    cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: This preceding code then handles joining the worker nodes to the cluster we
+    just built.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example commands: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/02_medium_cluster/commands.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/02_medium_cluster/commands.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have successfully created the cluster, the next step will be to
+    prepare an external load balancer to act as a frontend endpoint for the cluster.
+    In the next section, we'll be configuring HAProxy in both HTTP and TCP mode. These
+    settings are fairly standard, and you should be able to use them as a template
+    for other load balancer technologies, for example, F5 or A10\.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring an external load balancer (HAProxy)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With RKE/RKE2 clusters, you will get an ingress-nginx-controller. This is a
+    daemonset that, by default, runs on all worker nodes. And by default, nginx will
+    listen on ports `80` and `443`. Nginx will then act as a layer 7 (HTTP/HTTPS mode)
+    load balancer for applications hosted inside the Kubernetes cluster. This is great
+    for load balancing applications inside the cluster, but the issue you run into
+    is how you provide redundancy across nodes. The simplest way is to create a **DNS
+    A** record with all the worker nodes' IP addresses in the cluster and just use
+    round-robin DNS to load balance between the nodes and handle fault-tolerance.
+    The downside is round-robin DNS can be very slow to update, and you must rely
+    on the clients operating the failover. In the real world, this process can be
+    very unreliable. To solve this issue, we're going to place an HAProxy server in
+    front of the cluster. This process would be very similar for other load balancers,
+    such as A10, F5, nginx, and so on. Next, we're going to cover two different ways
+    for configuring HAProxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: TCP mode
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This mode is only responsible for transferring data at the transport protocol
+    layer, and in this case, we're only looking at TCP/80 and TCP/443\. HAProxy is
+    not terminating the connection, so things such as host-based routing and SSL are
+    not available. Because of this, TCP mode is sometimes called *Layer 4* load balancing
+    because it's just passing traffic. So, in this case, we will have a frontend **Virtual
+    IP Address (VIP**) that does a one-to-one mapping for the TCP ports. It is important
+    to note that by default, TCP mode doesn't have any session management enabled.
+    It is normal to allow sticky sessions in TCP mode using source IP matching. This
+    can be needed for applications that use server-based session management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.10 – HAProxy example design'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_010.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.10 – HAProxy example design
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Diagram: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/diagrams/tcp_mode.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/diagrams/tcp_mode.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s a sample configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.11 – Example HAProxy config when in TCP mode'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_011.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.11 – Example HAProxy config when in TCP mode
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Full config: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/config/tcp.cfg](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/config/tcp.cfg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that in this example config, I have the two additional endpoints exposed
+    in HAProxy, the first being the Prometheus metrics endpoint, which allows a Prometheus
+    server to scrape HAProxy for metrics. Please see [https://www.haproxy.com/blog/haproxy-exposes-a-prometheus-metrics-endpoint/](https://www.haproxy.com/blog/haproxy-exposes-a-prometheus-metrics-endpoint/)
+    for more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second is the `stats` endpoint, enabling you to view the current status
+    of the frontend and backend sections. This can be very helpful when troubleshooting
+    an issue. Please see [https://www.haproxy.com/blog/exploring-the-haproxy-stats-page/](https://www.haproxy.com/blog/exploring-the-haproxy-stats-page/)
+    for more details. It is important to note that these endpoints should be protected
+    by a basic user login page and firewall rules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTTP/HTTPS mode
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This mode is responsible for terminating the HTTP and SSL connection. Because
+    of this, HAProxy can modify the request or make routing decisions. For example,
+    `dev.example.com` can be routed to the dev RKE cluster, with `prod.example.com`
+    being routed to the production RKE cluster even though they share the same VIP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4.12 – Example HAProxy config when in HTTP mode'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_04_012.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 4.12 – Example HAProxy config when in HTTP mode
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Diagram: [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/diagrams/http_mode.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/diagrams/http_mode.md)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For environments where you don't want an external load balancer, MetalLB is
+    an alternative option, and in the next section, we'll cover installing and configuring
+    MetalLB in the simplest form, which is in Layer2 mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring MetalLB
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: MetalLB replaces the need for an external load balancer. It does this by announcing
+    external IP addresses using a **VIP** or **Border Gateway Protocol (BGP**), then
+    using port mapping to forward the traffic to the Kubernetes service. Each service
+    exposed by MetalLB has its own IP address, which is pulled from a pool of IP addresses
+    defined in the ConfigMap. MetalLB uses a daemonset called **speaker** to handle
+    assigning the IP address on nodes, with the controller handling the orchestration.
+    For more details about how this process works, please see the MetalLB documentation
+    at [https://metallb.universe.tf/concepts/](https://metallb.universe.tf/concepts/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The following steps will install MetalLB''s controller and its speaker. More
+    details about this process can be found at [https://metallb.universe.tf/installation/](https://metallb.universe.tf/installation/):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: Configuration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this step, we'll define the IP address pool. More details about this process
+    can be found at [https://metallb.universe.tf/configuration/](https://metallb.universe.tf/configuration/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a configmap with the following values:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, to add a MetalLB IP to a cluster service, simply add the following
+    annotation to the service definition. More details about this process can be found
+    at [https://metallb.universe.tf/usage/](https://metallb.universe.tf/usage/):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we learned about RKE, RKE2, and RancherD, including how each
+    of these tools works. We then went over the requirements and limitations of each
+    tool. We covered the rules of architecting RKE and RKE2 clusters, including some
+    example configs and the pros and cons of each solution. We finally went into detail
+    about the steps for creating clusters using the configs we made earlier. We then
+    ended the chapter by covering how to install and configure HAProxy and MetalLB
+    as a load balancer for both RKE and RKE2 clusters. After completing this chapter,
+    you should be able to design a solution that meets your environment needs, then
+    deploy the cluster types. Also, by understanding how each of the clusters operate,
+    you should be able to troubleshoot most basic issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will cover how to deploy Rancher on a hosted cluster
+    and some of the limitations and rules that need to be followed.
+  prefs: []
+  type: TYPE_NORMAL

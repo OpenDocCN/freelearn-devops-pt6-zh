@@ -1,0 +1,1479 @@
+- en: '*Chapter 5*: Deploying Rancher on a Hosted Kubernetes Cluster'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One of the great things about Rancher is it can be deployed on any certified
+    Kubernetes cluster. This means that Rancher can be installed on a hosted Kubernetes
+    cluster such as **Google Kubernetes Engine** (**GKE**), Amazon **Elastic Container
+    Service** (**EKS**) for Kubernetes, **Azure Kubernetes Service** (**AKS**), or
+    **Digital Ocean's Kubernetes Service** (**DOKS**). This can simplify management
+    on Rancher, but there are some limitations with hosted Kuberenetes solutions.
+    We will then cover the rules for designing the hosted Kubernetes cluster along
+    with some standard designs. At which point, we'll install Rancher on the cluster
+    using the **Helm** tool to install the Rancher server workload on the cluster.
+    Finally, we'll cover how to back up Rancher with a hosted Kubernetes cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we''re going to cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding hosted Kubernetes clusters
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Requirements and limitations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rules for architecting a solution
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating a hosted Kubernetes cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing and upgrading Rancher
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rancher-Backup-Operator
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's dive in!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding hosted Kubernetes clusters
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'One of the questions that always comes up when deploying a Kubernetes cluster
+    in the cloud is not just about using a hosted Kubernetes cluster, but what a hosted
+    Kubernetes cluster is. In short, it''s a cluster that is deployed and managed
+    by an outside party. Usually, this kind of cluster is provided as a service by
+    a cloud provider such as Amazon''s AWS, Google''s GCP, Microsoft''s Azure, and
+    so on. This kind of service is sometimes called **Kubernetes as a Service** (**KaaS**)
+    because these types of clusters are provided as a service. As a consumer, there
+    are some limitations with a hosted Kubernetes cluster versus one you build yourself:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Control**: When using a hosted Kubernetes cluster, you are an end user. You
+    do not have complete control of the cluster. Tasks such as upgrading Kubernetes
+    to a newer version are something your provider handles for you. Usually, this
+    is triggered by you going into the cloud provider''s dashboard and selecting a
+    more recent Kubernetes version. Still, most cloud providers have the option to
+    force an upgrade without your input. For example, in early 2020, EKS started to
+    deprecate Kubernetes v1.14 with official support ending by 11/2020\. As soon as
+    the end-of-support date passed, Amazon began to upgrade clusters automatically,
+    and there was little to nothing you could do to stop the upgrade. If the upgrade
+    broke your application, there was no going back and no downgrading. Your only
+    option was to fix your application. Google and Azure have the same process in
+    place, with their argument being the cluster endpoints are on the public internet
+    (in most cases) so keeping up to date with security patches is a must.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Access**: With a hosted Kubernetes cluster, you''ll get access to the Kube
+    API endpoint for tools such as kubectl, Helm, and even Rancher. But in most cases,
+    you will not get access to the Kubernetes node itself. So, you can''t just SSH
+    into the node and install software such as monitoring agents and backup software.
+    Plus, even if the cloud provider gives you SSH access to the nodes, it''s typically
+    only to the worker nodes for troubleshooting issues. Their support team will not
+    support any customizations you make to the nodes. Also, you shouldn''t be making
+    any changes in the first place because cloud providers can and do replace nodes
+    as needed with little to no notification beforehand.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: All major cloud providers allow you to set up a preferred maintenance window,
+    but they can do emergency maintenance outside that window if needed.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: This is generally for tasks such as replacing a failed node or applying a critical
+    security fix.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Customization**: With most hosted Kubernetes clusters, the cloud provider
+    defines items such as **etcd**, **kube-apiserver**, and **kubelet**. So, for example,
+    if your application is hitting the Kube API endpoint, creating a high number of
+    requests, with a self-hosted Kubernetes cluster, you can just increase the CPU
+    and memory available to kube-apiserver. With a hosted Kubernetes cluster, there
+    is no option to change that because the cloud provider owns that service. The
+    same goes for customizing security settings such as etcd encryption. With a self-hosted
+    Kubernetes cluster, you can set up the encryption however you like. With a hosted
+    Kubernetes cluster, you are limited to whatever they provide. For example, EKS
+    supports etcd encryption using AWS **Key Management Service (KMS)**. But with
+    AKS, Azure turns on encryption by default but gives you no way to change or force
+    rotate the key. And with other cloud providers such as DigitalOcean, they don''t
+    have etcd encryption at all.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The preceding statement is valid as of writing, but Azure has stated this is
+    on the roadmap, so this might change in the future.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '`tarball` file, then pushes it to a backup location.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now that we understand what a hosted Kubernetes cluster is, next, we're going
+    to go into the requirements and limitations of some of the most popular cloud
+    providers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Requirements and limitations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll be discussing the basic requirements of Rancher on various
+    clusters along with their limitations and design considerations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Amazon EKS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The **basic requirements** for Amazon EKS are as follows::'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rancher requires at least two worker nodes in the cluster, but three nodes are
+    highly recommended.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Each worker node should have at least two cores with 4 GB of memory.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rancher requires a network load balancer for accessing the Rancher console.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Once the EKS cluster has been created, you'll need to follow the procedure located
+    at [https://docs.aws.amazon.com/eks/latest/userguide/create-kubeconfig.html](https://docs.aws.amazon.com/eks/latest/userguide/create-kubeconfig.html)
+    to generate a kubeconfig file for accessing the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rancher requires EKS to have nginx-ingress-controller installed on the cluster.
+    Please follow the steps located at [https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/amazon-eks/#5-install-an-ingress](https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/amazon-eks/#5-install-an-ingress)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The inbound port `443/TCP` should open for all downstream nodes, clusters, and
+    end users that need Rancher UI/API access.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Port `80` will redirect end users to the HTTPS URL. So, port `80` is not required
+    but is recommended for the convenience of end users.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The **design limitations and considerations** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The cluster should span across three availability zones.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: EKS, by default, uses the DNS servers that are defined in the VPC. If you need
+    to access on-premise resources via DNS, you should follow the procedure located
+    at [https://docs.aws.amazon.com/vpc/latest/userguide/vpc-dns.html](https://docs.aws.amazon.com/vpc/latest/userguide/vpc-dns.html).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Suppose you are blocking outbound internet access for the cluster. In that case,
+    you will need to provide a private registry for the images if you plan to use
+    Amazon **Elastic Container Registry** (**ECR**) for this role. You'll need to
+    configure the IAM permissions for the cluster using the procedure located at [https://docs.aws.amazon.com/AmazonECR/latest/userguide/ECR_on_EKS.html](https://docs.aws.amazon.com/AmazonECR/latest/userguide/ECR_on_EKS.html).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can use node auto-scaling groups, but the scaling up and down of the cluster
+    can cause disruptions to the Rancher UI and cause cluster operations to fail for
+    a short period of time, including the loss of access to the downstream cluster
+    via the Rancher API.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you use AWS Certificate Manager, you should pick a certificate that auto-renews
+    with the same root CA This is because Rancher will need the checksum of the root
+    CA for the agents. So, changing the root CA does require a good amount of work,
+    which we will cover in a later chapter.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The Rancher server does have ARM64 based images. So, you could use ARM64 nodes
+    in the cluster, but you might still require an AMD64 node for other services and
+    containers such as Prometheus, which currently doesn't have ARM64 support.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: EKS does not automatically recover from kubelet failures and can require user
+    intervention.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: EKS limits the number of pods per node based on the size of the node. Please
+    see Amazon's documentation, located at [https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt](https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt),
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Google's GKE
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The **basic requirements** for GKE are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rancher requires at least two worker nodes in the cluster, but three nodes are
+    highly recommended.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Each worker node should have at least two cores with 4 GB of memory.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rancher requires a network load balancer for accessing the Rancher console.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Once the GKE cluster has been created, you'll need to follow the procedure located
+    at [https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl](https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl)
+    to generate a kubeconfig file for accessing the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rancher requires GKE to have nginx-ingress-controller installed on the cluster.
+    Please see the steps located at [https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/gke/#5-install-an-ingress](https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/gke/#5-install-an-ingress)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The inbound port `443`/TCP should open for all downstream nodes, clusters,
+    and end users that need Rancher UI/API access. Note: port `80` will redirect end
+    users to the HTTPS URL. So, it is not required but is recommended for convenience.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **design limitations and considerations** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The cluster should span three availability zones.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'You cannot customize your server configuration. You must use one of the two
+    server types they offer: Container OS or Ubuntu. You don''t get to pick the Kubernetes
+    versions or kernel versions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Cluster add-on services such as Kube-DNS and ip-masq-agent are very limited
+    when it comes to their configurability.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: GKE currently has no support for ARM64.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Azure's AKS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The **basic requirements** for AKS are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rancher requires at least two worker nodes in the cluster, but three nodes are
+    highly recommended.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Each worker node should have at least two cores with 4 GB of memory.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rancher requires a network load balancer for accessing the Rancher console.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Once the AKS cluster has been created, you'll need to follow the procedure located
+    at [https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl](https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl)
+    to generate a kubeconfig file for accessing the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rancher requires AKS to have nginx-ingress-controller installed on the cluster.
+    Please see the steps located at [https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/gke/#5-install-an-ingress](https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/gke/#5-install-an-ingress)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The inbound port `443`/TCP should open for all downstream nodes, clusters,
+    and end users that need Rancher UI/API access. Note: port `80` will redirect end
+    users to the HTTPS URL. So, it is not required but is recommended for convenience.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **design limitations and considerations** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The cluster should span three availability zones.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: AKS is relatively new compared to EKS and GKE, so many features are still not
+    **General Availability** (**GA**).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The only choices for the operating system are Ubuntu and Windows Server.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The Rancher server does not work on Windows nodes.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Node upgrades are not automated like GKE and require manual work to be applied.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: AKS does not automatically recover from kubelet failures and can require user
+    intervention.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: AKS currently has no support for ARM64.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We now understand the limitations of running Rancher on a hosted Kubernetes
+    cluster. Next, we'll be using this and a set of rules and examples to help us
+    design a solution using the major cloud providers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rules for architecting a solution
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll cover some standard designs and the pros and cons of
+    each. It is important to note that each environment is unique and will require
+    tuning for the best performance and experience. It's also important to note that
+    all CPU, memory, and storage sizes are recommended starting points and may need
+    to be increased or decreased based on the number of nodes and clusters to be managed
+    by Rancher.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before designing a solution, you should be able to answer the following questions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Will you be separating non-production and production clusters into their own
+    Rancher environments?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For a hybrid cloud environment, will you be separating clusters by their provider?
+    For example, will you deploy one instance of Rancher server for all AWS clusters
+    and another instance of Rancher server for all on-prem clusters?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Will you require both public and private IP addresses for your Kubernetes nodes?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Will you be hosting any additional applications on the Rancher cluster? If so,
+    what are the CPU, memory, and storage requirements?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Do you require site-to-site replication between regions?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How many nodes and clusters are you planning on supporting?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Rancher's official server sizing guide can be found at [https://rancher.com/docs/rancher/v2.5/en/installation/requirements/#rke-and-hosted-kubernetes](
+    https://rancher.com/docs/rancher/v2.5/en/installation/requirements/#rke-and-hosted-kubernetes).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Amazon EKS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we're going to cover some of the major cluster designs for
+    EKS clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: EKS small clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying the smallest EKS cluster that can still
+    run Rancher. Note that this design is only for testing or lab environments and
+    is not recommended for production deployments and can only handle a couple of
+    clusters with a dozen or so nodes each.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5.1 – EKS small cluster with two worker nodes'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_05_001.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 5.1 – EKS small cluster with two worker nodes
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Node-level redundancy; you can lose a worker without an outage to Rancher.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during EKS patching and upgrades. Please see [https://docs.aws.amazon.com/eks/latest/userguide/update-managed-node-group.html](https://docs.aws.amazon.com/eks/latest/userguide/update-managed-node-group.html)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are running additional applications such as Prometheus or Grafana, the
+    nodes can run out of resources.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only `N+1` of resource availability, so during maintenance tasks, you cannot
+    suffer a failure of a node without loss of service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: During node group upgrades, Amazon will add a new node before removing the old
+    one.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You do need to customize the Rancher install to only use one replica instead
+    of the default three.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **node sizing** requirements are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One node group with two nodes in the group
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 2 cores per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 4 GB per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: EKS using a typical cluster size with Availability Zone redundancy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will expand upon the EKS small design by adding a worker,
+    giving us three worker nodes. We'll also leverage AWS's **Availability Zone**
+    (**AZ**) redundancy by having a worker node in one of three AZs. By doing this,
+    the cluster can handle the failure of an AZ without impacting Rancher. We will
+    also increase the size of the worker nodes to manage up to 300 clusters with 3,000
+    nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5.2 – EKS standard with three worker nodes and AZ redundancy'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_05_002.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 5.2 – EKS standard with three worker nodes and AZ redundancy
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Node-level redundancy: You can lose a worker without an outage in Rancher.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'AZ redundancy: You can lose a whole AZ without an outage in Rancher; this also
+    includes at the load balancer level.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during EKS patching and upgrades. Please see [https://docs.aws.amazon.com/eks/latest/userguide/update-managed-node-group.html](https://docs.aws.amazon.com/eks/latest/userguide/update-managed-node-group.html)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`N+2` of availability: During maintenance tasks, you can suffer a failure of
+    a node without loss of service.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additional cost for the additional worker node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional complexity during setup because each AZ has its node group.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional complexity with the NLB because it must have an interface in each
+    AZ.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional complexity during an upgrade as each node group needs to upgrade
+    on its own.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The **node sizing** requirements are as follows
+  prefs: []
+  type: TYPE_NORMAL
+- en: Three node groups with one node in each group
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 8 cores per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 16 GB per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Google's GKE
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we're going to cover some of the major cluster designs for
+    GKE clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: GKE small clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying the smallest GKE cluster that can still
+    run Rancher. Note that this design is only for testing or lab environments, is
+    not recommended for production deployments, and can only handle a couple of clusters
+    with a dozen or so nodes each.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5.3 – GKE small cluster with two worker nodes'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_05_003.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 5.3 – GKE small cluster with two worker nodes
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Node-level redundancy: You can lose a worker without an outage in Rancher.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during GKE patching and upgrades. Please see [https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-upgrades](https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-upgrades)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are running additional applications such as Prometheus or Grafana, the
+    nodes can run out of resources.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only `N+1` of availability, so during maintenance tasks, you cannot suffer the
+    failure of a node without loss of service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: During cluster upgrades, Google will add a new node before removing the old
+    one.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Using GCP's cluster upgrade autopilot, it can get stuck terminating the Rancher
+    server pods. If the maintenance window is too small, the upgrade will be paused,
+    leaving the cluster in a partially upgraded state. I recommend a maintenance window
+    of at least 4 hours.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You do need to customize the Rancher install to only use one replica instead
+    of the default three.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **node sizing** requirements are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One node pool with two nodes in the pool
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 2 cores per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 4 GB per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: GKE using a typical cluster size with AZ redundancy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will expand upon the GKE small design by adding a worker,
+    giving us three worker nodes. We'll also leverage GCP's zone redundancy by having
+    a worker node in one of three zones. By doing this, the cluster can handle the
+    failure of an AZ without impacting Rancher. We will also increase the size of
+    the worker nodes to manage up to 300 clusters with 3,000 nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5.4 – GKE standard with three worker nodes and zone redundancy'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_05_004.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 5.4 – GKE standard with three worker nodes and zone redundancy
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Node-level redundancy: You can lose a worker without an outage in Rancher.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Zone redundancy: You can lose a whole AZ without an outage in Rancher; this
+    also includes at the load balancer level.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during GKE patching and upgrades. Please see [https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-upgrades](https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-upgrades)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`N+2` of availability: During maintenance tasks, you can suffer a failure of
+    a node without loss of service.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No additional complexity during an upgrade as autopilot will take care of the
+    upgrades for you.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additional cost for the additional worker node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional complexity during setup because each zone has its node pool.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **node sizing** requirements are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Three node pools with one node in each pool
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 8 cores per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 16 GB per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Azure's AKS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we're going to cover some of the major cluster designs for
+    AKS clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: AKS small clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying the smallest AKE cluster that can still
+    run Rancher. AKS is a little special in the fact that it support clusters with
+    only one node. As mentioned earlier, this design is only for testing or lab environments,
+    is not recommended for production deployments, and can only handle a couple of
+    clusters with a dozen or so nodes each. It is important to note that AKS does
+    support Windows node pools, but Rancher must run on a Linux node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5.5 – AKS single-node cluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_05_005.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 5.5 – AKS single-node cluster
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lower costs as you are only paying for a single node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Azure does support node surges during an upgrade, which is where Azure will
+    provide a new node to the cluster before cordoning and draining the old node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You cannot suffer a failure of a node without loss of service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: During cluster upgrades, Azure will add a new node before removing the old one.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: If you are running additional applications such as Prometheus or Grafana, the
+    node can run out of resources.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the node drain fails, Azure will stop the upgrade without rolling back.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You do need to customize the Rancher install to only use one replica instead
+    of the default three.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **node sizing** requirements are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One node pool with one node in the pool
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 2 cores per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 4 GB per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: AKS using a typical cluster size with zone redundancy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this design, we will expand upon the AKS single-node design by adding two
+    workers, giving us three worker nodes. We'll also leverage Azure's zone redundancy
+    by having a worker node in one of three zones. By doing this, the cluster can
+    handle the failure of an AZ without impacting Rancher. We will also increase the
+    size of the worker nodes to manage up to 300 clusters with 3,000 nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5.6 – AKS standard cluster with three nodes'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_05_006.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 5.6 – AKS standard cluster with three nodes
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Node-level redundancy: You can lose a worker without an outage in Rancher.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Zone redundancy: You can lose a whole zone without an outage in Rancher; this
+    also includes the load balancer level.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: No required downtime during AKS patching and upgrades. Please see [https://docs.microsoft.com/en-us/azure/aks/upgrade-cluster](https://docs.microsoft.com/en-us/azure/aks/upgrade-cluster)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`N+2` of availability: During maintenance tasks, you can suffer a failure of
+    a node without loss of service.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additional cost for the additional worker node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional complexity during setup because each zone has its node pool.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Zone availability support is limited to only some regions. Please see [https://docs.microsoft.com/en-us/azure/aks/availability-zones#limitations-and-region-availability](https://docs.microsoft.com/en-us/azure/aks/availability-zones#limitations-and-region-availability)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you are using Azure Disk Storage, volumes cannot be attached across zones.
+    Please see [https://docs.microsoft.com/en-us/azure/aks/availability-zones#azure-disks-limitations](https://docs.microsoft.com/en-us/azure/aks/availability-zones#azure-disks-limitations)
+    for more details.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **node sizing** requirements are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Three node pools with one node in each pool
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'CPU: 8 cores per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Memory: 16 GB per node'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now that we have a design for our cluster, in the next section, we'll be covering
+    the steps for creating each of the major cluster types.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a hosted Kubernetes cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we are going to walk through the commands for creating each
+    of the hosted Kubernetes clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Amazon EKS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This section will cover creating an EKS cluster with an ingress by using command-line
+    tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following steps are general guidelines. Please refer to [https://aws-quickstart.github.io/quickstart-eks-rancher/](https://aws-quickstart.github.io/quickstart-eks-rancher/)
+    for more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prerequisites
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: You should already have an AWS account with admin permissions along with a VPC
+    and subnets created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following tools should be installed on your workstation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**AWS CLI v2**: Please refer to [https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html)
+    for more details.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**eksctl**: Please refer to [https://docs.aws.amazon.com/eks/latest/userguide/eksctl.html](https://docs.aws.amazon.com/eks/latest/userguide/eksctl.html)
+    for more information.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**kubectl**: Please refer to [https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html](https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html)
+    for more information.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Helm**: Please refer to [https://helm.sh/docs/intro/install/](https://helm.sh/docs/intro/install/)
+    for more information.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating the cluster
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Let''s look at the steps next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Run the `aws configure` command and enter your access and secret keys. This
+    will provide you with access to the AWS account.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Run the following command to create the EKS cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: In this example, we'll be making a standard three-node cluster with one node
+    in each AZ.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Run the following command to add the first node pool to the cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This will create the node pool in `us-west-2a`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the following command to add the second node pool to the cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This will create the node pool in `us-west-2b`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the following command to add the third node pool to the cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This will create the node pool in `us-west-2c`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To verify the cluster, run the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: It might take 5 to 10 mins for the cluster to come online.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Next, install `nginx-ingress-controller` using the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Creating the load balancer
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If you are just testing, you can run the `kubectl get service ingress-nginx-controller
+    -n ingress-nginx` command to capture the external DNS record. Then you can create
+    a `CNAME` DNS record to point to this record.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: This should not be used for production environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For creating the frontend load balancer, please see [https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-to-elb-load-balancer.html](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-to-elb-load-balancer.html)
+    for more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, the cluster is ready for Rancher to be installed. We'll cover
+    this step in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Google's GKE
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This section will cover creating a GKE cluster with an ingress by using command-line
+    tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following steps are general guidelines. Please refer to [https://cloud.google.com/kubernetes-engine/docs/quickstart](https://cloud.google.com/kubernetes-engine/docs/quickstart)
+    for more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prerequisites
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: You should already have a GCP account with admin permissions. This section will
+    use Cloud Shell, which has most of the tools already installed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up Cloud Shell
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Go to the upper-right corner of the GCP console and click the **Terminal** button.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Run the `gcloud components install kubectl` command to install the kubectl client
+    in your GCP terminal.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Run the `gcloud init` command to configure the permissions.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Creating the cluster
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'To create a node in each zone, run this command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Grab the `kubeconfig` file using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: It might take 5 to 10 mins for the cluster to come online.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Install `nginx-ingress-controller` using the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Creating the load balancer
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If you are just testing, you can run the `kubectl get service ingress-nginx-controller
+    -n ingress-nginx` command to capture the external IP. Then you can create a DNS
+    record to point to this IP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: This should not be used for production environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For creating the frontend load balancer, please see [https://cloud.google.com/kubernetes-engine/docs/concepts/ingress](https://cloud.google.com/kubernetes-engine/docs/concepts/ingress)
+    for more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, the cluster is ready for Rancher to be installed. We'll cover
+    this step in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Azure's AKS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This section will cover creating an AKS cluster with an ingress by using command-line
+    tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following steps are general guidelines. Please refer to [https://docs.microsoft.com/en-us/azure/aks/kubernetes-walkthrough-portal](https://docs.microsoft.com/en-us/azure/aks/kubernetes-walkthrough-portal)
+    for more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prerequisites
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: You should already have an Azure account with admin permissions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following tools should be installed on your workstation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Azure CLI: Please refer to [https://docs.microsoft.com/en-us/cli/azure/](https://docs.microsoft.com/en-us/cli/azure/)
+    for more details.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'kubectl: Please refer to [https://kubernetes.io/docs/tasks/tools/#kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
+    for more information.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Helm: Please refer to [https://helm.sh/docs/intro/install/](https://helm.sh/docs/intro/install/)
+    for more information.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Logging in to Azure
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Run the `az login` command. This command is used to log in to Azure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might need to log in to a web browser if you are using **two-factor authentication
+    (2FA)**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating the cluster
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Run the following command to create a resource group:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Next, run the following command to create the cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Grab the `kubeconfig` file using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: It might take 5 to 10 mins for the cluster to come online.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Install `nginx-ingress-controller` using the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Creating the load balancer
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If you are just testing, you can run the `kubectl get service ingress-nginx-controller
+    -n ingress-nginx` command to capture the external IP. Then you can create a DNS
+    record to point to this IP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: This should not be used for production environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For creating the frontend load balancer, please see [https://docs.microsoft.com/en-us/azure/aks/load-balancer-standard](https://docs.microsoft.com/en-us/azure/aks/load-balancer-standard)
+    for more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, the cluster is ready for Rancher to be installed. We'll cover
+    this step in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing and upgrading Rancher
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we are going to cover installing and upgrading Rancher on a
+    hosted cluster. This process is very similar to installing Rancher on an RKE cluster
+    but with the difference being the need for Rancher Backup Operator, which we will
+    cover in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Rancher
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Run the following command to add the Helm Chart repository:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Run the `kubectl create namespace cattle-system` command to create the namespace
+    for Rancher.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: The namespace name should always be `cattle-system` and cannot be changed without
+    breaking Rancher.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'We are now going to install Rancher. In this case, we''ll be deploying Rancher
+    with three pods, and we''ll be using the load balancers to handle SSL certificates:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Please see [https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/#install-the-rancher-helm-chart](https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/#install-the-rancher-helm-chart)
+    for more details and options for installing Rancher.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Upgrading Rancher
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Before starting an upgrade, you should do a backup using the backup steps mentioned
+    in the next section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Run the `helm repo update` command to pull down the latest Helm Charts.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To grab your current values, run the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: If you saved your `install` command, you could reuse it as it has the `upgrade
+    --install` flag, which tells the Helm CLI to upgrade the deployment if it exists.
+    If the deployment is missing, install it. The only thing you need to change is
+    the version flag.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Please see [https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/upgrades/](https://rancher.com/docs/rancher/v2.5/en/installation/install-rancher-on-k8s/upgrades/)
+    for more details and options for upgrading Rancher.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, we have Rancher up and running. In the next section, we'll be
+    going into some common tasks such as backing up Rancher using the Rancher Backup
+    Operator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rancher-Backup-Operator
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Because we don't have access to the etcd database with hosted Kubernetes clusters,
+    we need to back up Rancher data differently. This is where the Rancher-Backup-Operator
+    comes into the picture. This tool provides the ability to back up and restore
+    Rancher's data on any Kubernetes cluster. It accepts a list of resources that
+    need to be backed up for a particular application. It then gathers these resources
+    by querying the Kubernetes API server, packages them to create a `tarball` file,
+    and pushes it to the configured backup storage location. Since it gathers resources
+    by querying the API server, it can back up applications from any type of Kubernetes
+    cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let''s look at the steps to install this tool:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the following command to add the Helm Chart repository:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Run the `helm repo update` command to pull down the latest charts.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To install the CRDs needed by Rancher-Backup-Operator, run the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Finally, install the application using this command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Creating a backup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To configure the backup schedule, encryption, and storage location, please see
+    the documentation located at [https://rancher.com/docs/rancher/v2.5/en/backups/configuration/backup-config/](https://rancher.com/docs/rancher/v2.5/en/backups/configuration/backup-config/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Take a one-time backup – before doing maintenance tasks such as upgrading Rancher,
+    you should take a backup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a file called `backup.yaml` with the following content:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Run the `kubectl apply -f backup.yaml` command to back up the Rancher data.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can find additional examples at [https://github.com/rancher/backup-restore-operator/tree/master/examples](https://github.com/rancher/backup-restore-operator/tree/master/examples).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we learned about hosted Kubernetes clusters such as EKS, GKE,
+    and AKS, including the requirements and limitations of each. We then covered the
+    rules of architecting each type of cluster, including some example designs and
+    the pros and cons of each solution. We finally went into detail about the steps
+    for creating each type of cluster using the design we made earlier. We ended the
+    chapter by installing and configuring the Rancher server and Rancher Backup Operator.
+    At this point, you should have Rancher up and ready to start deploying downstream
+    clusters for your application workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next chapter will cover creating a managed RKE cluster using Rancher IE,
+    a downstream cluster. We will cover how Rancher creates these clusters and what
+    the limitations are.
+  prefs: []
+  type: TYPE_NORMAL

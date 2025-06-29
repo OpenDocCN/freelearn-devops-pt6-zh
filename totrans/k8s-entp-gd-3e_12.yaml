@@ -1,0 +1,1305 @@
+- en: '12'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Node Security with Gatekeeper
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Most of the security discussed so far has focused on protecting Kubernetes APIs.
+    **Authentication** has meant the authentication of API calls. **Authorization**
+    has meant authorizing access to certain APIs. Even the discussion on the dashboard
+    centered mostly around how to securely authenticate to the API server by way of
+    the dashboard.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter will be different, as we will now shift our focus to securing our
+    nodes. We will learn how to use the **Gatekeeper** project to protect the nodes
+    of a Kubernetes cluster. Our focus will be on how containers run on the nodes
+    of your cluster and how to keep those containers from having more access than
+    they should. We’ll go into the details of impacts in this chapter, by looking
+    at how exploits can be used to gain access to a cluster when nodes aren’t protected.
+    We’ll also explore how these scenarios can be exploited even in code that doesn’t
+    need node access.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is node security?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Enforcing node security with Gatekeeper
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using pod security standards to enforce node security
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By the end of this chapter, you’ll have a better understanding of how Kubernetes
+    interacts with the nodes that run your workloads and how they can be better protected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To complete the hands-on exercises in this chapter, you will require an Ubuntu
+    22.04 server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can access the code for this chapter in the following GitHub repository:
+    [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter12](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter12).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is node security?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Each pod that is launched in your cluster runs on a node. That node could be
+    a VM, a “bare metal” server, or even another kind of compute service that is itself
+    a container. Every process started by a pod runs on that node and, depending on
+    how it is launched, can have a surprising set of capabilities on that node, such
+    as talking to the filesystem, breaking out of the container to get a shell on
+    the node, or even accessing the secrets used by the node to communicate with the
+    API server. It’s important to make sure that processes that are going to request
+    special privileges do so only when authorized and, even then, for specific purposes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many people have experience with physical and virtual servers, and most know
+    how to secure the workloads running on them. Containers need to be considered
+    differently when you talk about securing each workload. To understand why Kubernetes
+    security tools such as the **Open Policy Agent** (**OPA**) exist, you need to
+    understand how a container is different from a **virtual machine** (**VM**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the difference between containers and VMs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: “*A container is a lightweight VM*” is often how containers are described to
+    those new to containers and Kubernetes. While this makes for a simple analogy,
+    from a security standpoint, it’s a dangerous comparison. A container at runtime
+    is a process that runs on a node. On a Linux system, these processes are isolated
+    by a series of Linux technologies that limit their visibility to the underlying
+    system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Go to any node in a Kubernetes cluster and run the `top` command, and all of
+    the processes from containers will be listed. As an example, even though Kubernetes
+    runs in KinD, running `ps -A -elf | grep java` will show the OpenUnison and operator
+    container processes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: In contrast, a VM is, as the name implies, a complete virtual system. It emulates
+    its own hardware, has an isolated kernel, and so on. The hypervisor provides isolation
+    for VMs down to the silicon layer, whereas, by comparison, there is very little
+    isolation between every container on a node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are container technologies that will run a container on their own VM.
+    The container is still just a process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When containers aren’t running, they’re simply a “tarball of tarballs,” where
+    each layer of the filesystem is stored in a file. The image is still stored on
+    the host system, multiple host systems, or wherever the container has been run
+    or pulled previously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are new to the term “tarball,” it is a file created by the `tar` Unix
+    command, which archives and compresses multiple files into a single file. The
+    term “tarball” is a combination of the command used to create the file, tar, which
+    is short for **Tape Archive**, and the ball, which is a bundle of files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conversely, a VM has its own virtual disk that stores the entire OS. While there
+    are some very lightweight VM technologies, there’s often an order of magnitude
+    difference between the size of a VM and that of a container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While some people refer to containers as lightweight VMs, that couldn’t be further
+    from the truth. They aren’t isolated in the same way and require more attention
+    to be paid to the details of how they are run on a node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From this section, you may think that we are implying that containers are not
+    secure. Nothing could be further from the truth. Securing a Kubernetes cluster,
+    and the containers running on it, requires attention to detail and an understanding
+    of how containers differ from VMs. Since so many people do understand VMs, it’s
+    easy to try to compare them to containers, but doing so puts you at a disadvantage,
+    since they are very different technologies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you understand the limitations of a default configuration and the potential
+    dangers that come from it, you can remediate the “issues.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: Container breakouts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'A container breakout is when the process of your container gets access to the
+    underlying node. Once on the node, an attacker has access to all the other pods
+    and any capability that the node has in your environment. A breakout can also
+    be a matter of mounting the local filesystem in your container. An example from
+    [https://securekubernetes.com](https://securekubernetes.com), originally pointed
+    out by Duffie Cooley, Field CTO at Isovalent, uses a container to mount the local
+    filesystem. Running this on a KinD cluster opens both reads and writes to the
+    node’s filesystem:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `run` command in the preceding code started a container that added an option
+    that is key to this example, `hostPID: true`, which allows the container to share
+    the host’s process namespace. You can see a few other options, such as `--mount`
+    and a security context setting that sets `privileged` to `true`. All of the options
+    combined will allow us to write to the host’s filesystem.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that you are in the container, execute the `ls` command to look at the
+    filesystem. Notice how the prompt is `root@r00t:/#`, confirming that you are in
+    the container and not on the host:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To prove that we have mapped the host’s filesystem to our container, create
+    a file called `this_is_from_a_container` and exit the container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, let’s look at the host’s filesystem to see whether the container created
+    the file. Since we are running KinD with a single worker node, we need to use
+    Docker to `exec` into the worker node. If you are using the KinD cluster from
+    the book, the worker node is called `cluster01-worker`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: There it is! In this example, a container was run that mounted the local filesystem.
+    From inside the pod, the `this_is_from_a_container` file was created. After exiting
+    the pod and entering the node container, the file was there. Once an attacker
+    has access to a node’s filesystem, they also have access to the kubelet’s credentials,
+    which can open the entire cluster up.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It’s not hard to envision a string of events that can lead to a Bitcoin miner
+    (or worse) running on a cluster. A phishing attack gets the credentials that a
+    developer uses for their cluster. Even though those credentials only have access
+    to one namespace, a container is created to get the kubelet’s credentials, and
+    from there, containers are launched to stealthily deploy miners across the environment.
+    There are certainly multiple mitigations that could be used to prevent this attack,
+    including the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-factor authentication, which would have kept the phished credentials from
+    being used
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pre-authorizing only certain containers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Gatekeeper policy, which would have prevented this attack by stopping a container
+    from running as `privileged`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A properly secured image
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It’s important to note that none of these mitigations are provided by default
+    in Kubernetes, but that’s one of the main reasons you’re reading this book!
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ve already talked about authentication in previous chapters and the importance
+    of multi-factor authentication. We even used port forwarding to set up a miner
+    through our dashboard! This is another example of why authentication is such an
+    important topic in Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next two approaches listed can be done using Gatekeeper. We covered pre-authorizing
+    containers and registries in *Chapter 11*, *Extending Security Using Open Policy
+    Agent*. This chapter will focus on using Gatekeeper to enforce node-centric policies,
+    such as whether a pod should run as privileged.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, at the core of security is a properly designed image. In the case of
+    physical machines and VMs, this is accomplished by securing the base OS. When
+    you install an OS, you don’t select every possible option during installation.
+    It is considered poor practice to have anything running on a server that is not
+    required for its role or function. This same practice needs to be carried over
+    to the images that will run on your clusters, which should only contain the necessary
+    binaries that are required for your application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Given how important it is to properly secure images on your cluster, the next
+    section explores container design from a security standpoint. While not directly
+    related to Gatekeeper’s policy enforcement, it’s an important starting point for
+    node security. It’s also important to understand how to build containers securely
+    in order to better debug and manage your node security policies. Building a locked-down
+    container makes managing the security of nodes much easier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Properly designing containers
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before exploring how to protect your nodes using Gatekeeper, it’s important
+    to address how containers are designed. Often, the hardest part of using a policy
+    to mitigate attacks on a node is the fact that so many containers are built and
+    run as root. Once a restricted policy is applied, the container won’t start on
+    reload even if it was running fine after the policy was applied. This is problematic
+    on multiple levels. System administrators have learned over the decades of networked
+    computing not to run processes as root, especially services such as web servers
+    that are accessed anonymously over untrusted networks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All networks should be considered “untrusted.” Assuming that all networks are
+    hostile leads to a more secure approach to implementation. It also means that
+    services that need security need to be authenticated. This concept is called zero
+    trust. It has been used and advocated by identity experts for years, but it was
+    popularized in the DevOps and cloud-native worlds by Google’s BeyondCorp whitepaper
+    ([https://cloud.google.com/beyondcorp](https://cloud.google.com/beyondcorp)).
+    The concept of zero trust should apply inside your clusters too!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Bugs in code can lead to access to underlying compute resources, which can then
+    lead to breakouts from a container. Running as root in a privileged container
+    when not needed can lead to a breakout if exploited via a code bug.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Equifax breach in 2017 used a bug in the Apache Struts web application framework
+    to run code on the server, which was then used to infiltrate and extract data.
+    Had this vulnerable web application been running on Kubernetes with a privileged
+    container, the bug could have led to the attackers gaining access to the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When building containers, at a minimum, the following should be observed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Run as a user other than root**: The vast majority of applications, especially
+    microservices, don’t need root. Don’t run as root.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Only write to volumes**: If you don’t write to a container, you don’t need
+    write access. Volumes can be controlled by Kubernetes. If you need to write temporary
+    data, use an `emptyVolume` object instead of writing to the container’s filesystem.
+    This makes it easier to detect something malicious that is trying to make changes
+    to a container at runtime, such as replacing a binary or a file.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Minimize binaries in your container**: This can be tricky. There are those
+    that advocate for “distroless” containers that only contain the binary for the
+    application, statically compiled – no shells, no tools. This can be problematic
+    when trying to debug why an application isn’t running as expected. It’s a delicate
+    balance. In Kubernetes 1.25, ephemeral containers were introduced to make this
+    easier. We’ll cover this later in the section.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Scan containers for known Common Vulnerabilities and Exposures (CVEs), and
+    rebuild often**: One of the benefits of a container is that it can be easily scanned
+    for known CVEs. There are several tools and registries that will do this for you,
+    such as **Grype** from Anchor ([https://github.com/anchore/grype](https://github.com/anchore/grype))
+    or **Trivy** ([https://github.com/aquasecurity/trivy](https://github.com/aquasecurity/trivy))
+    from Aqua Security. Once CVEs have been patched, rebuild. A container that hasn’t
+    been rebuilt in months, or years even, is every bit as dangerous as a server that
+    hasn’t been patched.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let’s delve more into debugging “distroless” images and scanning containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using and Debugging Distroless Images
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The idea of a “distroless” image is not new. Google was one of the first to
+    really popularize their use ([https://github.com/GoogleContainerTools/distroless](https://github.com/GoogleContainerTools/distroless)),
+    and recently, Chainguard has begun releasing and maintaining distroless images
+    built on their *Wolfi* ([https://github.com/wolfi-dev](https://github.com/wolfi-dev))
+    distribution of Linux. The idea is that your base image isn’t an Ubuntu, Red Hat,
+    or other common Linux distribution but is, instead, a minimum set of binaries
+    to run the system. For instance, the Java 17 image only includes OpenJDK. No tools.
+    No utilities. Just the JDK. From a security standpoint, this is great because
+    there are fewer “things” that can be used to compromise your environment. When
+    an attacker doesn’t need a shell to run a command, why make their lives easier?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two main drawbacks to this approach:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Debugging Running Containers**: Without dig or nslookup, how do you know
+    the issue is DNS? We might know it’s always DNS, but you still need to prove it.
+    You may also need to debug network services, connections, etc. Without the common
+    tools needed to debug those services, how can you determine the issue?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Support and Compatibility**: One of the benefits of using a common distro
+    as your base image is that it’s likely that your enterprise already has a support
+    contract with the distro vendor. Google’s Distroless is based on Debian Linux,
+    which has no official vendor support. Wolfi is built on Alpine, which doesn’t
+    have its own support either (although Chainguard does offer commercial support
+    for its images). If your container breaks and you suspect the issue is in your
+    base image, you’re not going to get much help from another distro’s vendor.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The issues with support and compatibility aren’t really technical issues; they
+    are risk management issues that need to be addressed by your team. If you’re using
+    a commercial product, that’s generally something that is covered by your support
+    contract. If you’re talking about home-grown containers, it’s important to understand
+    the risks and potential mitigations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Debugging a distroless container is now much easier than it once was. In version
+    1.25, Kubernetes introduced the concept of ephemeral containers that allow you
+    to attach a container to a running pod. This ephemeral container can include all
+    those debugging utilities that you don’t have in your distroless image. The `kubectl`
+    debug command was added to make it easier to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, in a new cluster, launch the Kubernetes Dashboard, and then try to attach
+    a shell to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last line shows us that there’s no shell in the `kubernetes-dashboard`
+    pod. When we try to `exec` into the pod, it fails because the executable isn’t
+    found. Now, we can attach a debug pod that lets us use our debugging tools:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: We were able to attach our busybox image to the dashboard pod and use our tools!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This certainly helps with debugging, but what if we need to get into the dashboard
+    process? Notice that when I ran the `ps` command, there was no dashboard process.
+    That’s because the containers in a pod all run their own process space with limited
+    shared points (like `volumeMounts`). So while this might help with testing network
+    resources, it isn’t as close to our workload as possible. We can add the `shareProcessNamespace:
+    true` option to our Deployment, but now our containers all share the same process
+    space and lose a level of isolation. You could patch a running Deployment when
+    needed, but now you’re relaunching your pods, which may clear the issue on its
+    own.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Distroless images are minimal images that can lower your security exposure by
+    making it harder for attackers to leverage your pods as an attack vector. Minimizing
+    the images does have trade-offs, and it’s important to keep those trade-offs in
+    mind. While you will get a smaller image that’s harder to compromise, it can make
+    debugging operations harder and may have impacts on your vendor support agreements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we’ll look at how scanning images for known exploits should be incorporated
+    into your build process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scanning Images for Known Exploits
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: How do you know if your image has a vulnerability? There’s a common place to
+    report vulnerabilities in software, called the **Common Vulnerabilities and Exposures**
+    (**CVE**) database from MITRE. This is, in theory, a common place where researchers
+    and users can report vulnerabilities to vendors. In theory, this is a place where
+    a user could go to learn if they have a known vulnerability in the software they’re
+    running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is a vast oversimplification of the issue of looking for vulnerabilities.
+    In the past few years, there’s been an extremely critical view of the quality
+    of CVE data due to the way that the CVE database is managed and maintained. Unfortunately,
+    this is really the only common database there is. With that said, it’s common
+    practice to scan containers and compare the software versions in your containers
+    against what is contained in the CVE database. If you find a vulnerability, this
+    creates an action for the team to remediate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the one hand, quickly patching known exploits is one of the best ways to
+    cut down your security risk. On the other hand, quickly patching exploits that
+    may not need patching can lead to broken systems. It’s a difficult balancing act
+    that requires not only understanding how scanners work but also having automation
+    and testing that gives you confidence in updating your infrastructure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scanning for CVEs is a standard way to report security issues. Application and
+    OS vendors will update CVEs with patches to their code that fix the issues. This
+    information is then used by security scanning tools to take action when a container
+    has a known issue that has been patched.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are several open source scanning options. I like to use Grype from Anchore,
+    but Trivvy from AquaSecurity is another great option. What’s important here is
+    that both of these scanners will pull in your container, compare the installed
+    packages and libraries against the CVE database, and tell you what CVEs there
+    are and if they’ve been patched. For instance, if you were to scan two OpenUnison
+    images, we’d see slightly different results. When scanning [ghcr.io/openunison/openunison-k8s:1.0.37-a207c4](https://ghcr.io/openunison/openunison-k8s:1.0.37-a207c4),
+    there were 43 known vulnerabilities. This image was about six days old, so there
+    were about 15 medium CVEs that had patches. Tonight, when our process runs (which
+    I’ll explain in a moment), a new container will be generated to patch these CVEs.
+    If we run Grype against a container that was built two weeks ago, there will be
+    45 known CVEs, with 2 that were patched in the latest build.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The point of this exercise is that scanners are very useful for container hygiene.
+    At Tremolo Security, we scan our published images every night, and if there’s
+    a new OS-level CVE that’s been patched, we rebuild. This keeps our images up to
+    date.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Container scanning isn’t the only scanning. We also use `snyk.io` to scan our
+    builds and dependencies for known vulnerabilities, bumping them to fixed versions
+    that are available. We’re confident that we can do this because our automated
+    testing includes hundreds of automated tests that will catch issues with these
+    upgrades. Our goal is to have zero patchable CVEs at release time. Unless there’s
+    an absolutely critical vulnerability, like the **Log4J fiasco** from 2021, we
+    generally release four to five releases a year.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As an open source project maintainer, I have to mention what is often seen as
+    a sore spot in the community. The container scanners will tell you that a library
+    is present, but they will not tell you if the library is vulnerable. There’s quite
+    a bit of nuance to what constitutes a vulnerability. Once you’ve found a “hit”
+    in your scanner to a project, please do not immediately open an issue on GitHub.
+    This causes quite a bit of work for project maintainers that is of little value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, you can be too reliant on scanners. Some very talented security gooses
+    (Brad Geesaman, Ian Coldwater, Rory McCune, and Duffie Cooley) talked about faking
+    out scanners at KubeCon EU 2023 in *Malicious Compliance: Reflections on Trusting
+    Container Scanners*: [https://kccnceu2023.sched.com/event/1Hybu/malicious-compliance-reflections-on-trusting-container-scanners-ian-coldwater-independent-duffie-cooley-isovalent-brad-geesaman-ghost-security-rory-mccune-datadog](https://kccnceu2023.sched.com/event/1Hybu/malicious-compliance-reflections-on-trusting-container-scanners-ian-coldwater-independent-duffie-cooley-isovalent-brad-geesaman-ghost-security-rory-mccune-datadog).
+    I highly recommend taking the time to watch this video and the issues it raises
+    on scanner reliance.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you’ve scanned your containers and restricted how the containers run, how
+    do you know they’ll work? It’s important to test in a restrictive environment.
+    At the time of writing, the most restrictive defaults for any Kubernetes distribution
+    on the market belong to Red Hat’s OpenShift. In addition to sane default policies,
+    OpenShift runs pods with a random user ID, unless the pod definition specifies
+    a specific ID.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s a good idea to test your containers on OpenShift, even if it’s not your
+    distribution for production use. If a container runs on OpenShift, it’s likely
+    to work with almost any security policy that a cluster can throw at it. The easiest
+    way to do this is with Red Hat’s CodeReady Containers ([https://developers.redhat.com/products/codeready-containers](https://developers.redhat.com/products/codeready-containers)).
+    This tool can run on your local laptop and launches a minimal OpenShift environment
+    that can be used to test containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While OpenShift has very tight security controls out of the box, it doesn’t
+    use **Pod Security Policies** (**PSPs**), Pod Security Standards, or Gatekeeper.
+    It has its own policy system that pre-dates PSPs, called **Security Context Constraints**
+    (**SCCs**). SCCs are similar to PSPs but don’t use RBAC to associate with pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve explored how to create secure container images, the next step
+    is to make sure our clusters are built, ensuring that images that don’t follow
+    these standards are prevented from running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Enforcing node security with Gatekeeper
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: So far, we’ve seen what can happen when containers are allowed to run on a node
+    without any security policies in place. We’ve also examined what goes into building
+    a secure container, which will make enforcing node security much easier. The next
+    step is to examine how to design and build policies using Gatekeeper to lock down
+    your containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What about Pod Security Policies?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Doesn’t Kubernetes have a built-in mechanism to enforce node security? Yes!
+    In 2018, the Kubernetes project decided that the **Pod Security Policies** (**PSP**)
+    API would never leave beta. The configuration was too confusing, being a hybrid
+    of Linux-focused configuration options and RBAC assignments. It was determined
+    that the fix would likely mean an incompatible final release from the current
+    release. Instead of marking a complex and difficult-to-manage API as generally
+    available, the project made a difficult decision to deprecate and remove the API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the time, it was stated that the PSP API would not be removed until a replacement
+    was ready for release. This changed in 2020 when the Kubernetes project adopted
+    a new policy that no API can stay in beta for more than three releases. This forced
+    the project to re-evaluate how to move forward with replacing PSPs. In April 2021,
+    Tabitha Sable wrote a blog post on the future of PSPs ([https://kubernetes.io/blog/2021/04/06/podsecuritypolicy-deprecation-past-present-and-future/](https://kubernetes.io/blog/2021/04/06/podsecuritypolicy-deprecation-past-present-and-future/)).
+    To cut a long story short, they are officially deprecated as of 1.21 and were
+    removed in 1.25\. Their replacement, called **Pod Security Standards**, became
+    GA in 1.26\. We’ll cover these after we walk through using Gatekeeper to protect
+    your nodes from your pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What are the differences between PSPs, PSA, and Gatekeeper?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before diving into the implementation of node security with Gatekeeper, let’s
+    look at how the legacy PSPs, the new **Pod Security Admission** (**PSA**), and
+    Gatekeeper are different. If you’re familiar with PSPs, this will be a helpful
+    guide for migrating. If you have never worked with PSPs, this can give you a good
+    idea as to where to look when things don’t work as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The one area that all three technologies have in common is that they’re implemented
+    as admission controllers. As we learned in *Chapter 11*, *Extending Security Using
+    Open Policy Agent*, an admission controller is used to provide additional checks
+    beyond what the API server provides natively. In the case of Gatekeeper, PSPs,
+    and PSA, the admission controller makes sure that the pod definition has the correct
+    configuration to run with the least privileges needed. This usually means running
+    as a non-root user, limiting access to the host, and so on. If the required security
+    level isn’t met, the admission controller fails, stopping a pod from running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While all three technologies run as admission controllers, they implement their
+    functionality in very different ways. PSPs are applied by first defining a `PodSecurityPolicy`
+    object, and then defining RBAC `Role` and `RoleBinding` objects to allow a `ServiceAccount`
+    to run with a policy. The PSP admission controller will make a decision based
+    on whether the “user” who created the pod or the `ServiceAccount` that the pod
+    runs on is authorized, based on the RBAC bindings. This leads to difficulties
+    in designing and debugging the policy application. It’s difficult to authorize
+    if a user can submit a pod because users usually don’t create pod objects anymore.
+    They create `Deployments`, `StatefulSets,` or `Jobs`. Then, there are controllers
+    that run with their own `ServiceAccounts`, which then create pods. The PSP admission
+    controller never knows who submitted the original object. In the last chapter,
+    we covered how Gatekeeper binds policies via namespace and label matching; this
+    doesn’t change with node security policies. Later on, we’ll do a deep dive into
+    how to assign policies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: PSA is implemented at the namespace level, not at the individual pod level.
+    It’s assumed that since the namespace is the security boundary for a cluster,
+    then any pods that run in a namespace should share the same security context.
+    This can often work, but there are limitations. For instance, if you need an `init`
+    container that needs to change file permissions on a mount, you could run into
+    issues with PSA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition to assigning policies differently, Gatekeeper, PSPs, and PSA handle
+    overlapping policies differently. PSPs will try to take the *best* policy based
+    on the account and capabilities being requested. This allows you to define a high-level
+    blanket policy that denies all privileges and then create specific policies for
+    individual use cases, such as letting the NGINX `Ingress Controller` run on port
+    `443`. Gatekeeper, conversely, requires all policies to pass. There’s no such
+    thing as a *best* policy; all policies must pass. This means that you can’t apply
+    a blanket policy and then carve out exceptions. You have to explicitly define
+    your policies for each use case. PSA is universal across the namespace, so there
+    are no exceptions at the API level and nothing to vary. You can set up specific
+    exemptions for users, runtime classes, or namespaces, but these are global and
+    static.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another difference between the three approaches is how policies are defined.
+    The PSP specification is a Kubernetes object that is mostly based on Linux’s built-in
+    security model. The object itself has been assembled with new properties as needed,
+    in an inconsistent way. This led to a confusing object that didn’t complement
+    the addition of Windows containers. Conversely, Gatekeeper has a series of policies
+    that have been pre-built and are available from their GitHub repo: [https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/pod-security-policy](https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/pod-security-policy).
+    Instead of having one policy, each policy needs to be applied separately. The
+    PSA defines profiles that are based on common security patterns. There really
+    isn’t much to define.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, the PSP admission controller had some built-in mutations. For instance,
+    if your policy didn’t allow root and your pod didn’t define what user to run as,
+    the PSP admission controller would set a user ID of `1`. Gatekeeper has a mutating
+    capability (which we covered in *Chapter 11*, *Extending Security Using Open Policy
+    Agent*), but that capability needs to be explicitly configured to set defaults.
+    PSA has no mutation capabilities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having examined the differences between PSPs, PSA, and Gatekeeper, let’s next
+    dive into how to authorize node security policies in your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Authorizing node security policies
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the previous section, we discussed the differences between authorizing policies
+    between Gatekeeper, PSPs, and PSA. Now, we’ll look at how to define your authorization
+    model for policies. Before we get ahead of ourselves, we should discuss what we
+    mean by “authorizing policies.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you create a pod, usually through a `Deployment` or `StatefulSet`, you
+    choose what node-level capabilities you want, with settings on your pod inside
+    of the `securityContext` sections. You may request specific capabilities or a
+    host mount. Gatekeeper examines your pod definition and decides, or authorizes,
+    that your pod definition meets the policy’s requirements by matching an applicable
+    `ConstraintTemplate` via its constraint’s `match` section. Gatekeeper’s `match`
+    section lets you match on the namespace, kind of object, and labels on the object.
+    At a minimum, you’ll want to include namespaces and object types. Labels can be
+    more complicated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A large part of deciding whether labels are an appropriate way to authorize
+    a policy is based on who can set the labels and why. In a single-tenant cluster,
+    labels are a great way to create constrained deployments. You can define specific
+    constraints that can be applied directly via a label. For instance, you may have
+    an operator in a namespace that you don’t want to have access to a host mount
+    but a pod that does. Creating a policy with specific labels will let you apply
+    more stringent policies to the operator than the pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The risk with this approach lies in multi-tenant clusters where you, as the
+    cluster owner, cannot limit what labels can be applied to a pod. Kubernetes’ RBAC
+    implementation doesn’t provide any mechanism for authorizing specific labels.
+    You could implement something using Gatekeeper, but that would be 100% custom.
+    Since you can’t stop a namespace owner from labeling a pod, a compromised namespace
+    administrator’s account can be used to launch a privileged pod without there being
+    any checks in place from Gatekeeper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You could, of course, use Gatekeeper to limit labels. The trick is that, similar
+    to issues with PSPs, Gatekeeper won’t know who created the label at the pod level
+    because the pod is generally created by a controller. You could enforce at the
+    Deployment or `StatefulSet` level, but that will mean that other controller types
+    won’t be supported. This is why PSA uses the namespace as the label point. Namespaces
+    are the security boundary for clusters. You could also carve out specific exceptions
+    for `init` containers if needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In *Chapter 11*, *Extending Security Using Open Policy Agent*, we learned how
+    to build policies in Rego and deploy them using Gatekeeper. In this chapter, we’ve
+    discussed the importance of securely building images, the differences between
+    PSPs and Gatekeeper for node security, and finally, how to authorize policies
+    in your clusters. Next, we’ll lock down our testing cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying and debugging node security policies
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Having gone through much of the theory in building node security policies in
+    Gatekeeper, let’s dive into locking down our test cluster. The first step is to
+    start with a clean cluster and deploy Gatekeeper:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we’ll want to deploy our node’s `ConstraintTemplate` objects. The Gatekeeper
+    project builds and maintains a library of templates that replicate the existing
+    `PodSecurityPolicy` object at [https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/pod-security-policy](https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/pod-security-policy).
+    For our cluster, we’re going to deploy all of the policies, except the read-only
+    filesystem `seccomp`, `selinux`, `apparmor`, `flexvolume`, and host volume policies.
+    I chose to not deploy the read-only filesystem because it’s still really common
+    to write to a container’s filesystem, even though the data is ephemeral, and enforcing
+    this would likely cause more harm than good. The `seccomp`, `apparmor`, and `selinux`
+    policies weren’t included because we’re running on a KinD cluster. Finally, we
+    ignored the volumes because it’s not a feature we plan on worrying about. However,
+    it’s a good idea to look at all these policies to see whether they should be applied
+    to your cluster. The `chapter12` folder has a script that will deploy all our
+    templates for us. Run `chapter12/deploy_gatekeeper_psp_policies.sh`. Once that’s
+    done, we have our `ConstraintTemplate` objects deployed, but they’re not being
+    enforced because we haven’t set up any policy implementation objects. Before we
+    do that, we should set up some sane defaults.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Generating security context defaults
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In *Chapter 11*, *Extending Security Using Open Policy Agent*, we discussed
+    the trade-offs between having a mutating webhook generating sane defaults for
+    your cluster versus explicit configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I’m a fan of sane defaults, since they lead to a better developer experience
+    and make it easier to keep things secure. The Gatekeeper project has a set of
+    example mutations for this purpose at [https://github.com/open-policy-agent/gatekeeper-library/tree/master/mutation/pod-security-policy](https://github.com/open-policy-agent/gatekeeper-library/tree/master/mutation/pod-security-policy).
+    For this chapter, I took them and tweaked them a bit. Let’s deploy them and then
+    recreate all our pods so that they have our “sane defaults” in place, before rolling
+    out our constraint implementations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can deploy an NGINX `pod` and see how it now has a default security
+    context:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our NGINX pod now has a `securityContext` that determines what user the container
+    should run as if it’s privileged, and if it needs any special capabilities. If,
+    for some reason in the future, we want containers to run as a different process,
+    instead of changing every manifest, we can now change our mutation configuration.
+    Now that our defaults are in place and applied, the next step is to implement
+    instances of our `ConstraintTemplates` to enforce our policies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Enforcing cluster policies
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'With our mutations deployed, we can now deploy our constraint implementations.
+    Just as with the `ConstraintTemplate` objects, the Gatekeeper project provides
+    example template implementations for each template. I put together a condensed
+    version for this chapter in `chapter12/minimal_gatekeeper_constraints.yaml` that
+    is designed to have a minimum set of privileges across a cluster, ignoring `kube-system`
+    and `calico-system`. Deploy this YAML file and wait a few minutes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Remember from *Chapter 11*, *Extending Security Using Open Policy Agent*, that
+    a key feature of Gatekeeper over generic OPA is its ability to not just act as
+    a validating webhook but also audit existing objects against policies. We’re waiting
+    so that Gatekeeper has a chance to run its audit against our cluster. Audit violations
+    are listed in the status of each implementation of each `ConstraintTemplate`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To make it easier to see how compliant our cluster is, I wrote a small script
+    that will list the number of violations per `ConstraintTemplate`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have several violations. If you don’t have the exact number, that’s OK. The
+    next step is debugging and correcting them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Debugging constraint violations
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'With our constraint implementations in place, we have several violations that
+    need to be remediated. Let’s take a look at the privilege escalation policy violation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Gatekeeper tells us that the `ingress-nginx-controller-744f97c4f-msmkz` pod
+    in the `ingress-nginx` namespace is attempting to elevate its privileges. Looking
+    at its `SecurityContext` reveals the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Nginx is requesting to be able to escalate its privileges and add the `NET_BIND_SERVICE`
+    privilege so that it can run on port `443` without being a root user. Going back
+    to our list of constraint violations, in addition to having a privilege escalation
+    violation, there was also a capabilities violation. Let’s inspect that violation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: It’s the same container violating both constraints. Having determined which
+    pods are out of compliance, we’ll fix their configurations next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Earlier in this chapter, we discussed the difference between PSPs and Gatekeeper,
+    with one of the key differences being that while PSPs attempt to apply the “best”
+    policy, Gatekeeper will evaluate against all applicable constraints. This means
+    that while in PSP you can create a “blanket” policy (often referred to as a “Default
+    Restrictive” policy) and then create more relaxed policies for specific pods,
+    Gatekeeper will not let you do that. In order to keep these violations from stopping
+    Nginx from running the constraint implementations, they must be updated to ignore
+    our Nginx pods. The easiest way to do this is to add `ingress-nginx` to our list
+    of `excludednamespaces`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I did this for all of our constraint implementations in `chapter12/make_cluster_work_policies.yaml`.
+    Deploy using the `apply` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After a few minutes, let’s run our violation check:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only violations left are for our allowed users’ constraints. These violations
+    all come from `gatekeeper-system` because the Gatekeeper pods don’t have users
+    specified in their `SecurityContext`. These pods haven’t received any of our sane
+    defaults because, in the Gatekeeper `Deployment`, the `gatekeeper-system` namespace
+    is ignored. Despite being ignored, it’s still listed as a violation, even though
+    it won’t be enforced.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have eliminated the violations, we’re done, right? Not quite. Even
+    though Nginx isn’t generating any errors, we aren’t making sure it’s running with
+    the least privilege. If someone were to launch a pod in the `ingress-nginx` namespace,
+    it could request privileges and additional capabilities without being blocked
+    by Gatekeeper. We’ll want to make sure that any pod launched in the `ingress-nginx`
+    namespace can’t escalate beyond what it needs. In addition to eliminating the
+    `ingress-nginx` namespace from our cluster-wide policy, we need to create a new
+    constraint implementation that limits which capabilities can be requested by pods
+    in the `ingress-nginx` namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We know that Nginx requires the ability to escalate privileges and to request
+    `NET_BIND_SERVICE` so that we can create a constraint implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a constraint implementation that mirrors the `Deployment`'s required
+    `securityContext` section. We didn’t create a separate constraint implementation
+    for privilege escalation because that `ConstraintTemplate` has no parameters.
+    It’s either enforced or it isn’t. There’s no additional work to be done for that
+    constraint in the `ingress-nginx` namespace once the namespace has been removed
+    from the blanket policy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I repeated this debugging process for the other violations and added them to
+    `chapter12/enforce_node_policies.yaml`. You can deploy them to finish the process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You may be wondering why we are enforcing at the namespace level and not with
+    specific labels to isolate individual pods. We discussed authorization strategies
+    earlier in this chapter, and continuing the themes here, I don’t see additional
+    label-based enforcement as adding much value. Anyone who can create a pod in this
+    namespace can set the labels. Limiting the scope more doesn’t add much in the
+    way of security.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The process for deploying and debugging policies is very detail-oriented. In
+    a single-tenant cluster, this may be a one-time action or a rare action, but in
+    a multi-tenant cluster, the process does not scale. Next, we’ll look at strategies
+    to apply node security in multi-tenant clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling policy deployment in multi-tenant clusters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In the previous examples, we took a “small batch” approach to our node security.
+    We created a single cluster-wide policy and then added exceptions as needed. This
+    approach doesn’t scale in a multi-tenant environment for a few reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `excludedNamespaces` attribute in a constraint’s `match` section is a list
+    and is difficult to patch in an automated way. Lists need to be patched, including
+    the original, so it’s more than a simple “apply this JSON” operation.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You don’t want to make changes to global objects in multi-tenant systems. It’s
+    easier to add new objects and link them to a source of truth. It’s easier to trace
+    why a new constraint implementation was created using labels than to figure out
+    why a global object was changed.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You want to minimize the likelihood of a change on a global object being able
+    to affect other tenants. Adding new objects specifically for each tenant minimizes
+    that risk.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In an ideal world, we’d create a single global policy and then create objects
+    that can be more specific for individual namespaces that need elevated privileges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Diagram, shape  Description automatically generated](img/B21165_12_01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 12.1: Ideal policy design for a multi-tenant cluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The above diagram illustrates what I mean by having a blanket policy. The large,
+    dashed box with rounded corners is a globally restrictive policy that minimizes
+    what a pod is capable of. Then, the smaller, dashed rounded-corner boxes are carveouts
+    for specific exceptions. As an example, the `ingress-nginx` namespace would be
+    created with restrictive rights, and a new policy would be added that is scoped
+    specifically to the `ingress-nginx` namespace, which would grant Nginx the ability
+    to run with the `NET_BIND_SERVICES` capabilities. By adding an exception for a
+    specific need to a cluster-wide restrictive policy, you’re decreasing the likelihood
+    that a new namespace will expose the entire cluster to a vulnerability if a new
+    policy isn’t added. The system is built to fail “closed.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The above scenario is not how Gatekeeper works. Every policy that matches must
+    succeed; there’s no way to have a global policy. In order to effectively manage
+    a multi-tenant environment, we need to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Have policies for system-level namespaces that cluster administrators can own
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create policies for each namespace that can be adjusted as needed
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Ensure that namespaces have policies before pods can be created
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Diagram  Description automatically generated](img/B21165_12_02.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 12.2: Gatekeeper policy design for a multi-tenant cluster'
+  prefs: []
+  type: TYPE_NORMAL
+- en: I visualized these goals in *Figure 12.2*. The policies we already created need
+    to be adjusted to be “system-level” policies. Instead of saying that they need
+    to apply globally and then make exceptions, we apply them specifically to our
+    system-level namespaces. The policies that grant NGINX the ability to bind to
+    port `443` are part of the system-level policies because the ingress is a system-level
+    capability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For individual tenants, goal #2 requires that each tenant gets its own set
+    of constraint implementations. These individual constraint template implementation
+    objects are represented by the rounded-corner dashed boxes circling each tenant.
+    This seems repetitive because it is. You are likely to have very repetitive objects
+    that grant the same capabilities to each namespace. There are multiple strategies
+    you can put in place to make this easier to manage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Define a base restrictive set of constraint template implementations, and add
+    each new namespace to the `namespaces` list of the `match` section. This cuts
+    down on the clutter but makes it harder to automate because of having to deal
+    with patches on lists. It is also harder to track because you can’t add any metadata
+    to a single property like you can an object.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Automate the creation of constraint template implementations when namespaces
+    are created. This is the approach we will take in *Chapter 19*, *Provisioning
+    a Platform*. In that chapter, we will automate the creation of namespaces from
+    a self-service portal. The workflow will provision namespaces, RBAC bindings,
+    pipelines, keys, and so on. It will also provide the constraint templates needed
+    to ensure restricted access.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create a controller to replicate constraint templates based on labels. This
+    is similar to how Fairwinds RBAC Manager ([https://github.com/FairwindsOps/rbac-manager](https://github.com/FairwindsOps/rbac-manager))
+    generates RBAC bindings, using a custom resource definition. I’ve not seen a tool
+    directly for Gatekeeper constraint implementations, but the same principle would
+    work here.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'When it comes to managing this automation, the above three options are not
+    mutually exclusive. At KubeCon EU 2021, I presented a session called “I Can RBAC
+    and So Can You!” ([https://www.youtube.com/watch?v=k6J9_P-gnro](https://www.youtube.com/watch?v=k6J9_P-gnro)),
+    where I demoed using options #2 and #3 together to make “teams” that had multiple
+    namespaces, cutting down on the number of RBAC bindings that needed to be created
+    with each namespace.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we’ll want to ensure that every namespace that isn’t a system-level
+    namespace has constraint implementations created. Even if we’re automating the
+    creation of namespaces, we don’t want a rogue namespace to get created that doesn’t
+    have node security constraints in place. That’s represented by the large, dashed,
+    round-cornered box around all of the tenants. Now that we’ve explored the theory
+    behind building node security policies for a multi-tenant cluster, let’s build
+    our policies out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first step is to clear out our old policies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will get us back to a state where there are no policies. The next step
+    is to create our system-wide policies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Take a look at the policies in `chapter12/multi-tenant/yaml/minimal_gatekeeper_constraints.yaml`,
+    and you’ll see that instead of excluding namespaces in the `match` section, we’re
+    explicitly naming them:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With our system constraint implementations in place, we’ll next want to enforce
+    the fact that all tenant namespaces have node security policies in place before
+    any pods can be created. There are no pre-existing `ConstraintTemplates` to implement
+    this policy, so we will need to build our own. Our Rego for our `ConstraintTemplate`
+    will need to make sure that all of our required `ConstraintTemplate` implementations
+    (in other words, privilege escalation, capabilities, and so on) have at least
+    one instance for a namespace before a pod is created in that namespace. The full
+    code and test cases for the Rego are in `chapter12/multi-tenant/opa`. Here’s a
+    snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first thing to note is that each constraint template check is in its own
+    rule and has its own violation. Putting all of these rules in one `ConstraintTemplate`
+    will result in them all having to pass in order for the entire `ConstraintTemplate`
+    to pass.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, let’s look at `checkForCapabilitiesPolicy`. The rule creates a list of
+    all `K8sPSPCapabilities` that list the namespace from our pod in the `match.namespaces`
+    attribute. If this list is empty, the rule will continue to the violation and
+    the pod will fail to create. To create this template, we first need to sync our
+    constraint templates into Gatekeeper. Then, we create our constraint template
+    and implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With our new policy in place, let’s attempt to create a namespace and launch
+    a pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Our requirement that namespaces have node security policies in place stopped
+    the pod from being created! Let’s fix this by applying restrictive node security
+    policies from `chapter12/multi-tenant/yaml/check-new-pods-psp.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, whenever a new namespace is created on our cluster, node security policies
+    must be in place before we can launch any pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we looked at the theory behind designing node security policies
+    using Gatekeeper, putting that theory into practice for both a single-tenant and
+    a multi-tenant cluster. We also built out sane defaults for our `securityContexts`
+    using Gatekeeper’s built-in mutation capabilities. With this information, you
+    have what you need to begin deploying node security policies to your clusters
+    using Gatekeeper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Pod Security Standards to enforce Node Security
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The Pod Security Standards are the “replacement” for Pod Security Policies.
+    I put the term “replacement” in quotes because the PSA isn’t a feature comparable
+    replacement to PSPs, but it aligns with a new strategy defined in the Pod Security
+    Standards guide ([https://kubernetes.io/docs/concepts/security/pod-security-standards/](https://kubernetes.io/docs/concepts/security/pod-security-standards/)).
+    The basic principle of PSA is that since the namespace is the security boundary
+    in Kubernetes, that is where it should be determined whether pods should run in
+    a privileged or restricted mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At first glance, this makes a great deal of sense. When we talked about multitenancy
+    and RBAC, everything was defined at the namespace level. Much of the difficulties
+    of PSPs came from trying to determine how to authorize a policy, so this eliminates
+    that problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The concern though is that there are scenarios where you need a privileged container,
+    but you don’t want it to be the main container. For instance, if you need a volume
+    to have its permissions changed in an `init` container but you want your main
+    containers to be restricted, you can’t use PSA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If these restrictions aren’t an issue for you, then PSA is turned on by default,
+    and all you need to do is enable it. For instance, to make sure a root container
+    can’t run in a namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since we didn’t set anything to keep our container from running in a privileged
+    way, our pod failed to launch. PSA is simple but effective. If you don’t need
+    the flexibility of a more complex admission controller like Gatekeeper or Kvyrno,
+    it’s a great option!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we began by exploring the importance of protecting nodes, the
+    differences between containers and VMs from a security standpoint, and how easy
+    it is to exploit a cluster when nodes aren’t protected. We also looked at secure
+    container design, implemented and debugged node security policies using Gatekeeper,
+    and finally, used the new Pod Security Admission feature to restrict pod capabilities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Locking down the nodes of your cluster provides one less vector for attackers.
+    Encapsulating a policy makes it easier to explain to your developers how to design
+    their containers and also makes it easier to build secure solutions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, all of our security has been built to prevent workloads from being malicious.
+    What happens when those measures fail? How do you know what’s going on inside
+    of your pods? In the next chapter, we’ll find out!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: True or false – containers are “lightweight VMs.”
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Can a container access resources from its host?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: No, it’s isolated.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If marked as privileged, yes.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Only if explicitly granted by a policy.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Sometimes.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How could an attacker gain access to a cluster through a container?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A bug in the container’s application can lead to a remote code execution, which
+    can be used in a breakout of a vulnerable container, and it is then used to get
+    the kubelet’s credentials.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Compromised credentials with the ability to create a container in one namespace
+    can be used to create a container that mounts the node’s filesystem to get the
+    kubelet’s credentials.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Both of the above.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What mechanism enforces `ConstraintTemplates`?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: An admission controller that inspects all pods upon creation and updating
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The `PodSecurityPolicy` API
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The OPA
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Gatekeeper
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: True or false – containers should generally run as root.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'True'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'False'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: b – false; containers are processes.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: b – a privileged container can be granted access to host resources such as process
+    IDs, the filesystem, and networking.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: c - Both of the above.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: d - Gatekeeper
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: b - False
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

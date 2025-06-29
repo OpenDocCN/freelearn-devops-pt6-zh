@@ -1,0 +1,997 @@
+- en: '*Chapter 11*: Bringing Storage to Kubernetes Using Longhorn'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The previous chapters covered monitoring and logging. This chapter will cover
+    Rancher's distributed block storage for Kubernetes called **Longhorn**, including
+    the pros and cons, and how to architect a storage solution using Longhorn. We
+    will then dive into some standard designs for RKE and RKE2 clusters. Then, we
+    will cover the different ways to install Longhorn and upgrade it. Finally, we
+    will close with some maintenance tasks and troubleshooting steps for common issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''re going to cover the following main topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is persistent storage and why do we need it in Kubernetes?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is Longhorn?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How does Longhorn work?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pros and cons of Longhorn
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rules for architecting a Longhorn solution
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Installing Longhorn
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How do Longhorn upgrades work?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Critical maintenance tasks for keeping Longhorn at 100%
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Troubleshooting common Longhorn issues
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is persistent storage and why do we need it in Kubernetes?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: After creating a Kubernetes cluster, users will start deploying their applications
+    to the cluster, but the questions always come up, *Where is my data?* or *Where
+    do I store my data?* The philosophical answer is, *You shouldn't be storing any
+    data; all containers should be stateless,* but this is the real world. Some applications
+    need to store data that will be persistent; that is, when the Pod is terminated,
+    the data will become available to its replacement pod. For example, let's say
+    you deployed a MySQL database as a pod. You'll most likely want that data to be
+    persistent so that when the node is rebooted or the deployment is updated, you
+    won't lose all your data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This persistent data problem has been a problem since containers were created.
+    Docker's first *fix* to this problem was adding bind mounts from earlier OS-level
+    virtualization software, such as jails in FreeBSD back in 2000\. With bind mounts
+    being an alternative view of a directory tree, a mount creates a view of the storage
+    device as a directory object in the root tree. Instead, a bind mount takes an
+    existing directory tree and replicates it to a different point. With containers,
+    you have a root filesystem that was created to be isolated from the host filesystem.
+    For example, inside a container, you'll see the filesystem looks like normal Linux
+    server with files, such as binaries and libraries, but what you'll notice is that
+    the root filesystem is not the same directory as the host file's root filesystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But, let's say you have a directory on the host, `/mnt/data` for this example,
+    that you want to pass into your container as `/data`. With Docker on Linux, bind
+    mounts are built into the kernel as a feature. So, you would run a command such
+    as `docker run -v /mnt/data:/data Image:Tag` with the critical flag being `-v`,
+    which tells Docker during the container creation process to make the equivalent
+    syscalls as the `mount –bind /mnt/data /var/lib/docker/…/data` command. It is
+    important to note that a bind mount in older *3.x* kernels is indistinguishable.
+    This means that tools such as **df** (short for **disk free**) will see the same
+    device details as the original.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, if you are bind mounting a `/mnt/nfs` from the `nfs.example.com`
+    server then do a bind mount to `/data`; when you run the `df` command inside the
+    container, you'll see that an NFS filesystem from the `nfs.example.com` server
+    is mounted at `/data`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have managed to understand what persistent storage is and
+    why we need it in Kubernetes. Next, we'll take a look at Longhorn, how it works,
+    and how it can fulfill our storage needs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is Longhorn?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Longhorn is a distributed block storage system for Kubernetes clusters. Longhorn
+    is just like Rancher because it is free, open source, and even being developed
+    as an incubating project with the `ReadWriteOnce`, and `ReadWriteMany` volumes.
+    Longhorn offers a backup solution for its volumes and provides cross-cluster disaster
+    recovery of volumes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But, one of the most remarkable things about Longhorn is that it simplifies
+    distributed block storage. Longhorn does this by being built as a microservice
+    application. Traditional big iron storage subsystems are large blocks of storage
+    with a small number of controllers with application data being provisioned from
+    a shared pool of disks. Longhorn flips that process on its head with the idea
+    that every volume has a dedicated storage controller, which turns into its microservice.
+    This is called the **Longhorn Engine**, which will be covered in the *How does
+    Longhorn work?* section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One of the other main reasons people love Longhorn is that it brings storage
+    into Kubernetes. Most other external storage providers, such as NFS or cloud-provided
+    storage, require all this work from storage teams to configure and consume. This
+    brings us to another big selling point of Longhorn: you are not tied to a cloud
+    provider for block storage. For example, in **Amazon Web Services** (**AWS**),
+    you might use Amazon''s **Elastic Block Store** (**EBS**) or their **Elastic File
+    System** (**EFS**) storage provisioner, which connects to AWS''s API, creates
+    EBS volumes for your application, and attaches them to your nodes, which is great
+    until you start hitting **Small Computer System Interface** (**SCSI**) device
+    limits and limitations around moving EBS volumes to different regions. Of course,
+    it''s Amazon, so you need to provide your backup solution. Longhorn addresses
+    all these limitations because it doesn''t care whether you run Longhorn on physical
+    servers in a data center or VMs up in a cloud.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Of course, with Longhorn being a distributed block storage solution, one of
+    its great strengths is that Longhorn replicates data across disks and hosts. With
+    traditional big iron storage subsystems, you would define **Redundant Array of
+    Independent Disks** (**RAID**) groups, map out your **Logical Unit Number** (**LUN**),
+    and make all these decisions ahead of time that you have to lock-in. On the other
+    hand, Longhorn can be presented on each disk as a single filesystem without RAID
+    and just let node-based replication protect your data. At the same time, you can
+    change your mind, re-layout your storage, and just slide data around without your
+    applications knowing or caring.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This leads us to what makes Longhorn's **high availability** (**HA**) different.
+    With traditional big iron storage subsystems, you would have a pair of storage
+    controllers running in active/standby or inactive state, which is great until
+    you have a controller failure or need to take a controller offline for maintenance.
+    You are now without redundancy if the other controller has an issue or can't handle
+    the load. A simple software upgrade can take down your whole environment. As someone
+    who was an enterprise storage administrator for years, storage upgrades were always
+    something you had to schedule out and get all these approvals before you were
+    able to do the upgrade late on a Saturday night when no one else was online. Longhorn
+    puts those days behind us because an upgrade is just a new container image that
+    slowly gets rolled out to the environment. We'll be covering this in more detail
+    in the *How do Longhorn upgrades work?* section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know what Longhorn is, in the next section, we'll be diving into
+    the nuts and bolts of how Longhorn works, including each of the different components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does Longhorn work?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Longhorn can be broken into two layers: the **control plane** and the **data
+    plane**, with Longhorn managers being in the control plane and the engines in
+    the data plane.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The control plane is built on a set of pods called the **Longhorn Manager**.
+    This is a DaemonSet that runs on all nodes in the cluster. Its main job is to
+    handle the cluster's creation and management of volumes. These pods also take
+    the API calls from the Longhorn UI and the volume plugins. Longhorn, of course,
+    follows the same operator model as Rancher, where it uses **CustomResourceDefinitions**
+    (**CRDs**) that the Longhorn Manager deploys. The Longhorn Manager then connects
+    to the Kubernetes API server and watches volume tasks, such as creating new volumes.
+    It is important to remember that Kubernetes doesn't reach out to Longhorn's API
+    but waits for the Longhorn controllers to detect changes in the spec of the CRD
+    objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition to watching the Kubernetes API, the Longhorn Manager handles the
+    orchestration on the Longhorn pods. This includes the Longhorn Engine pods, which
+    run on every node in the cluster. The engine pods bridge the control and data
+    plane with them, handling the creation of replicas and presenting the storage
+    to the pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we follow the creation of a volume, first, a user creates a `node01` in the
+    cluster. Once the engine has been given a volume, it creates a set of replicas,
+    with each replica being assigned to a node and a disk/filesystem on that node.
+    The default is three replicas, but you can choose to set this to any number you
+    like, including only a single replica. It is essential to know that a replica
+    is just a disk image file on the filesystem. Still, when the Longhorn engine creates
+    this file, it uses the Linux system called **fallocate**, which makes an empty
+    file with the size of the volume but doesn't actually allocate the space on the
+    filesystem. This means you can create a 1 TB replica on a node, but besides some
+    metadata, you don't use any space on the node until you start writing the data,
+    at which point you only consume the blocks that you use; that is, if you write
+    500 GB to a 1 TB volume, you will only use 500 GB on the node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You must understand that once a block has been allocated, it is consumed for
+    the life of the volume. If you write a 500 GB file to your volume, delete it.
+    You will still be consuming 500 GB on the filesystem. There is an open feature
+    request to add support for what is called **trimming** or punching holes that
+    would be able to reclaim deleted space. At the time of writing this book, this
+    feature has not been assigned to a release and is still in the planning stage.
+    You can find this feature request at [https://github.com/longhorn/longhorn/issues/836](https://github.com/longhorn/longhorn/issues/836).
+    It is also important to note that Longhorn requires Fallocate on the storage disks,
+    which currently are only provided by the **fourth extended filesystem** (**Ext4**)
+    and **Extents File System** (**XFS**). Other filesystems, such as the **Zettabyte
+    File System** (**ZFS**), are adding fallocate support but are still missing the
+    filemap, which Longhorn needs to detect the holes in the file. If you would like
+    to learn more about this issue, please see the *OpenZFS* GitHub issue at [https://github.com/openzfs/zfs/pull/10408](https://github.com/openzfs/zfs/pull/10408)
+    to learn more about the current status of this feature, as it is still in active
+    development.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Of course, the creation of replicas happens on a total of three nodes by default,
+    with each replica being a full copy of the data. It is important to note that
+    each replica has its own Linux process inside the Longhorn Engine. In addition,
+    no replica is unique because all read and writes can be sent to any replica. This
+    is because Longhorn uses a process where all writes are sent to all replicas,
+    and the write is not acknowledged to the client, in this case, the pod, until
+    all replicas have acknowledged the write. Longhorn assumes the volume is lost
+    and discards the replicas if a replica times out during this writing process,
+    which will trigger a rebuild. This is because Longhorn doesn't have a transaction
+    log, so there is no way for the Longhorn Engine to know what writes are missing
+    for a replica.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is a particular case whereby if the pod is located on the same node as
+    its replica, that replica will be given preference for all read requests. This
+    is done by setting the data locality setting, which will try to keep a local replica
+    on the same node as the pod. It is important to note that Longhorn scheduling,
+    by default, is best effort meaning that if possible, it will colocate replicas
+    on the same node but that is not always possible. This is typically caused by
+    the pod being assigned to a node where there is not enough space, incompatible
+    disk tags, or the node is not assigned the role of the storage node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have all the replicas created for our volume, we need to expose
+    it to the pod to be consumed. This is done by the Longhorn Engine creating an
+    `open-iscsi` package to act as the iSCSI initiator, which then attaches the iSCSI
+    device as a device under `/dev/longhorn/pvc-###`. Longhorn then uses a CSI plugin
+    to take the block device, format it, and mount it on the node at which the kubelet
+    will do a bind mount inside the pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition to block storage, as of Longhorn v1.1.0, which was released in January
+    2021, Longhorn supports exporting **ReadWriteMany** (**RWX**) volumes too. These
+    volumes are built on top of the block storage, with Longhorn creating a share
+    manager pod that mounts the block device and is an NFS server running inside the
+    pod. Then, this pod exports the volumes as an NFS to a cluster. Finally, Longhorn
+    uses its CSI plugin to mount the NFS share and bind mount it into the pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we understand how Longhorn works, we'll cover its pros and cons in
+    the next section, including how it stacks up to other storage providers, which
+    we'll cover later in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pros and cons of Longhorn
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's look at the pros and cons now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Built-in backup solution. Longhorn supports taking snapshots for operational
+    backups and external backups to an S3 or NFS target.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Support for cross-cluster disaster recovery volumes that can be backed up on
+    one cluster and restored into another.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With the release of v1.1.1, Longhorn now supports rebuilding replicas from existing
+    data using system snapshots. You can read more about this feature at [https://github.com/longhorn/longhorn/issues/1304](https://github.com/longhorn/longhorn/issues/1304).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scalability. As Longhorn is a microservices application, it can be scaled from
+    three nodes to tens of thousands of nodes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Support for both RWO and RWX volumes with the same storage class; the only change
+    that needs to be made is to set the access mode for the volume.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Infrastructure/cloud provider agnostic, which means you can deploy Longhorn
+    on physical servers, VMware, AWS, and GCP, all with a standardized storage platform,
+    allowing you to move volumes around as you see fit.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Thin-provisioned by default. With most cloud providers, such as AWS EBS and
+    GCP volumes, you pay for the size of the volume even if you never write a single
+    block of data to it. With Longhorn, you can over-provision your cloud storage
+    and gain some cost savings.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Longhorn scheduling is region/zone aware, meaning you can define fault domains,
+    such as spanning your cluster across the AWS Availability Zones (for example,
+    us-west-2a, us-west-2b, and us-west-2c) with Longhorn replicas volumes so that
+    you could lose a whole Zone in AWS and not lose any data. You can read more about
+    this at https://longhorn.io/docs/1.2.3/volumes-and-nodes/scheduling/#scheduling-policy.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Volumes getting stuck in attaching and detaching status when a new pod is being
+    created or deleted is a very common issue with Longhorn not being sure if the
+    volume is really mounted on the node or not.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Official support for large volumes, as Longhorn has a hardcoded rebuild limit
+    of 24 hours. There is no hardcoded size limit, but generally, 1~2 TB is the upper
+    limit in volume size.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Heavy network usage, because all data needs to be written to all replicas. Suppose
+    you were writing 50 MBps to a Longhorn volume from a pod. You can create up to
+    150 MBps of network traffic between nodes. So, 10 GB network connections between
+    nodes are highly recommended.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Disk latency can cause volumes/replicas to timeout as Longhorn uses remote acknowledgment.
+    Writes for a volume are only as fast as its slowness replica. So, it's highly
+    recommended to use SSD or tier 1 storage for Longhorn.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Nested storage virtualization can be wasteful if you deploy Longhorn on VMware
+    with a shared storage subsystem or vSAN. Longhorn will store three copies of the
+    data on your datastores, so 1 TB becomes 3 TB.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: It is recommended that if your storage subsystem supports data deduplication,
+    you enable it for Longhorn storage nodes to work around this issue.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: At this point, you should understand the pros and cons of Longhorn. We'll use
+    these in the next section to design our Longhorn solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rules for architecting a Longhorn solution
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we'll be covering some standard designs and the pros and cons
+    of each. It is important to note that each environment is unique and will require
+    tuning for the best performance and experience. It's also important to note that
+    all CPU, memory, and storage sizes are recommended starting points and may need
+    to be increased or decreased by your workload and deployment processes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before designing a solution, you should be able to answer the following questions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What level of availability will this cluster and its applications require?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Will this cluster be spanning multiple data centers in a MetroCluster environment?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How much latency will there be between nodes in the cluster?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you need storage, do you need only RWO, or will you need RWX?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Do you have applications that provide their own application data replication/redundancy?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Longhorn has an official performance scalability report published at [https://longhorn.io/blog/performance-scalability-report-aug-2020/](https://longhorn.io/blog/performance-scalability-report-aug-2020/);
+    this report is a little out-of-date but still provides hard numbers to different
+    sizes of the clusters.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Next, we'll be covering the three standard designs (smallest, medium, and large)
+    that you can use as a starting point when designing a Kubernetes cluster with
+    Longhorn.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Smallest
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this design, we'll be deploying the smallest possible configuration of Longhorn
+    but having full **high availability** (**HA**). This cluster is based on the RKE
+    small design that we covered in [*Chapter 4*](B18053_04_Epub.xhtml#_idTextAnchor052),
+    *Creating an RKE and RKE2 Cluster*, which can be found at [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/README.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/README.md).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full HA, so you can lose any node in the cluster and still have full availability
+    to all storage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Simple to manage as all nodes will be storage nodes and support Longhorn equally
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Longhorn filesystem will be required on all three nodes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only *N+1* of availability/redundancy (you only have one spare replica), so
+    when doing maintenance tasks like OS patching, you cannot suffer a failure of
+    a node without loss of service. As you already have taken your spare node offline
+    for maintenance.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Any node maintenance, such as OS patching and reboots, will require a rebuild
+    of all volumes as each node will store one of the third replicas for each volume.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **hardware requirements** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Server(s)**: Three physical/virtual servers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**CPU**: Six cores per server (two will be dedicated to Longhorn).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Memory**: 4~8 GB per server.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Disk**: SSD is recommended.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Network**: 10 GB between nodes is recommended.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For RKE clusters, please see the following design. The basic idea is that this
+    is a three-node cluster with all nodes sharing all roles. Anything smaller than
+    this design will not be highly available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.1 – RKE three-node cluster with all nodes, all roles'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_11_01.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.1 – RKE three-node cluster with all nodes, all roles
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'More information about RKE can be found here: https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke/01_small_clusterFor
+    RKE2 clusters.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In RKE2, the basic idea is the same as an RKE cluster but with the master nodes
+    having the `Worker` role assigned to them too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.2 – RKE2 three-node cluster, with all nodes being masters or workers'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_11_02.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.2 – RKE2 three-node cluster, with all nodes being masters or workers
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'More information about RKE2 can be found here: [https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/01_small_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/01_small_cluster).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Medium with shared nodes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this design, we will be deploying an RKE medium cluster with the master services
+    moved to their owned dedicated nodes, and because of these, we need to use node
+    selectors to force Longhorn to only use worker nodes. We are doing this because
+    we don't want Longhorn to impact the core Kubernetes services. We do this by following
+    the documentation at [https://longhorn.io/docs/1.2.3/advanced-resources/deploy/node-selector/](https://longhorn.io/docs/1.2.3/advanced-resources/deploy/node-selector/)
+    to configure the `nodeSelector` rules for each of the Longhorn components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full HA, so you can lose any node in the cluster and still have full availability
+    to all storage.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The additional load from Longhorn cannot impact the management services for
+    RKE.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Different filesystem configurations between worker and management nodes as only
+    worker nodes will need the Longhorn storage filesystem.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only *N+1* of availability, so during maintenance tasks, you cannot suffer a
+    failure of a node without loss of service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Any node maintenance, such as OS patching and reboots, will require a rebuild
+    of all volumes as each node will store one of the third replicas for each volume
+    at the worker plane.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **hardware requirements** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Node role(s)**: Etcd/Control plane'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Servers(s)**: Three physical/virtual servers'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**CPU**: Eight cores per server'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Memory**: 8~16 GB'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Worker node sizing should be based on your workload and requirements. You should
+    add two cores to each worker node to support Longhorn.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: For RKE clusters, please see the following design. The basic idea is that this
+    cluster has three management nodes with the `ETCD` and `Control-plane` roles assigned
+    to them. For the worker nodes, they will also be Longhorn storage nodes. This
+    design is mainly to break out the management services to their nodes to prevent
+    applications from affecting the management services of the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.3 – RKE three management nodes with worker nodes being Longhorn
+    storage nodes'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_11_03.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.3 – RKE three management nodes with worker nodes being Longhorn storage
+    nodes
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'More information about RKE can be found here: [https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/standard_designs/rke/02_medium_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/standard_designs/rke/02_medium_cluster).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For RKE2 clusters, please see the following design. The basic idea is the same
+    as an RKE cluster but with the master nodes having their own load balancer for
+    backend services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.4 – RKE three master nodes with worker nodes being Longhorn storage
+    nodes'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_11_04.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.4 – RKE three master nodes with worker nodes being Longhorn storage
+    nodes
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'More information about RKE2 can be found here: [https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/02_medium_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/02_medium_cluster).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Large with dedicated nodes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this design, we're expanding on the design for a medium cluster but breaking
+    off Longhorn to its own set of dedicated nodes. We're also increasing the number
+    of Longhorn nodes from three to five allow for *N+2* for the Longhorn volumes.
+    You can take down any Longhorn node for maintenance and still lose an additional
+    node without loss of service or redundancy in Longhorn. We'll be using the node
+    selector rules from the medium design, but with further node taints and tolerations.
+    Details on these steps can be found at [https://longhorn.io/docs/1.2.3/advanced-resources/deploy/taint-toleration/#setting-up-taints-and-tolerations](https://longhorn.io/docs/1.2.3/advanced-resources/deploy/taint-toleration/#setting-up-taints-and-tolerations).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **pros** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full HA, so can lose any two Longhorn nodes in the cluster and still have full
+    availability to all storage.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With dedicated Longhorn nodes, the user application cannot impact Longhorn.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **cons** are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: By using dedicated nodes, you can configure them to be pretty static. For example,
+    you might use auto-scaling groups for your worker plane, but for your Longhorn
+    plane, it is recommended that these nodes be added/removed while making sure all
+    volumes have been rebuilt before proceeding to the next node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additional steps are required to force workloads, such as log collectors and
+    monitors, to handle the node taints needed for Longhorn on the Longhorn nodes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For RKE clusters, you can find an example cluster configuration file at the
+    link listed following this figure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.5 – RKE five ETCD, four Control-plane with Longhorn having dedicated
+    storage nodes'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_11_05.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.5 – RKE five ETCD, four Control-plane with Longhorn having dedicated
+    storage nodes
+  prefs: []
+  type: TYPE_NORMAL
+- en: ([https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke/03_large_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke/03_large_cluster).)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: This configuration is designed to be generic and should be customized to fit
+    your needs and your environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For an RKE2 cluster, you can find a set of example commands at the URL listed
+    following the next figure. It is important to note that because RKE2 master servers
+    are control-plane and ETCD nodes, the design is different from the RKE design.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.6 – RKE2 three master nodes with Longhorn having dedicated storage
+    nodes'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B18053_11_06.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 11.6 – RKE2 three master nodes with Longhorn having dedicated storage
+    nodes
+  prefs: []
+  type: TYPE_NORMAL
+- en: ([https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke2/03_large_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke2/03_large_cluster).)
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, you should do all that you need to create your Longhorn design.
+    We'll use this design to deploy Longhorn in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Longhorn
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'There are three ways of deploying Longhorn on a Kubernetes cluster. First,
+    let''s cover some of the basic requirements, with each node in the cluster needing
+    to meet the following criteria:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A compatible runtime, that is, Docker v1.13 or greater.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The cluster must be running at least Kubernetes v1.18 or greater.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To install Longhorn via the Rancher catalog, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Navigate to the cluster where you will install Longhorn.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Navigate to `Longhorn`, then click the **Install** button.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: At this point, you can use the default settings. If you would like to customize
+    the values, please see [https://longhorn.io/docs/1.2.3/deploy/install/install-with-rancher/](https://longhorn.io/docs/1.2.3/deploy/install/install-with-rancher/).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: It will take 5–10 minutes for Longhorn to fully start.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can access the Longhorn UI by clicking on **Longhorn** in the side menu.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To install Longhorn via kubectl, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Run the `kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.2.3/deploy/longhorn.yaml`
+    command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Wait for the pods to start using the `kubectl get pods -n longhorn-system -w`
+    command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can then access the Longhorn UI following the steps at [https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui](https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui)
+    to create a load balancer or port-forward from your local workstation.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To install Longhorn via Helm, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Add the Helm repository using the `helm repo add longhorn https://charts.longhorn.io`
+    command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Update your Helm charts with the `helm repo update` command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Install Longhorn using the `helm install longhorn longhorn/longhorn --namespace
+    longhorn-system --create-namespace` command.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can find the full list of Helm values at [https://github.com/longhorn/longhorn/blob/master/chart/values.yaml](https://github.com/longhorn/longhorn/blob/master/chart/values.yaml).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once Longhorn has started, you can configure the ingress with authentication
+    using the steps located at [https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui/longhorn-ingress](https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui/longhorn-ingress).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: At this point, you should have a cluster with Longhorn up and ready to be consumed
+    by applications. In the next section, we'll be covering how to upgrade Longhorn.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do Longhorn upgrades work?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Upgrading Longhorn is similar to upgrading most Kubernetes applications, but
+    understand that Longhorn is intentionally designed to not be downgradable. Once
+    you start an upgrade, it must be finished. Because of this, you should review
+    the release notes at [https://github.com/longhorn/longhorn/releases](https://github.com/longhorn/longhorn/releases);
+    you should also test all upgrades in a lower environment before upgrading a production/mission-critical
+    environment. Finally, it's imperative that whatever method you used to install
+    Longhorn (the Rancher catalog, kubectl, or Helm) should be used to perform any
+    future upgrades.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you start the upgrade process, Longhorn will upgrade the manager pods but
+    not the engines. Upgrading engines are handled by the Longhorn Manager and can
+    be done manually by default using the steps located at [https://longhorn.io/docs/1.2.3/deploy/upgrade/upgrade-engine](https://longhorn.io/docs/1.2.3/deploy/upgrade/upgrade-engine),
+    or using the automatic process located at [https://longhorn.io/docs/1.2.3/deploy/upgrade/auto-upgrade-engine](https://longhorn.io/docs/1.2.3/deploy/upgrade/auto-upgrade-engine).
+    With engines upgrades, they can be done offline or live. The volume will be detached
+    from its workload and reattached with an offline upgrade. This usually is the
+    faster option but requires a small amount of downtime. The other option is a live
+    upgrade that doubles the replicas, that is, three replicas become six during the
+    upgrade. So, you will be required to have additional capacity on your storage
+    node, and the upgrade requires rebuilding all of your volumes, which will require
+    extra space and I/O.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Critical maintenance tasks for keeping Longhorn at 100%
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When running Longhorn, you must complete some additional maintenance tasks to
+    keep Longhorn running in a healthy state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, when upgrading/patching storage nodes, you must take the following steps
+    as part of your upgrade. Before starting any OS-level work, the following steps
+    should be taken on each node one at a time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Cordon the node using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Drain the node using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This command will cause Longhorn to rebuild replicas on a new node in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The draining process will wait for the replicas to be reconstructed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, if there is one last healthy replica for a volume on the node, Longhorn
+    will prevent the node from completing the drain operation, to protect the last
+    replica and prevent the disruption of the workload. You can either override the
+    behavior in the setting or evict the replica to other nodes before draining.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, you can perform any node maintenance, including patching and
+    rebooting.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Once all node maintenance is done, you''ll need to uncordon the node using
+    the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Second, Longhorn relies upon the underlying filesystem to detect corruption.
+    You can detect a corrupted replica using the steps located at [https://longhorn.io/docs/1.2.3/advanced-resources/data-recovery/corrupted-replica/](https://longhorn.io/docs/1.2.3/advanced-resources/data-recovery/corrupted-replica/).
+    The process disconnects the volume, takes a checksum of each replica, and compares
+    them. If a single corrupt replica is found, you should remove it via the Longhorn
+    UI and rebuild it. If multiple corrupted replicas are found, you restore the volume
+    from a backup or use the following steps to mount the replicas and review the
+    data manually:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, you''ll need to SSH into the node and become root using the command
+    `sudo su -` then run the following commands listed:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Run the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: At this point, we have covered the steps for keeping Longhorn healthy, but as
+    we all know, no application is perfect, so in the next section, we'll be covering
+    some common issues and how to resolve them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Troubleshooting common Longhorn issues
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With Longhorn, the two most common failures are running a node until the disk
+    is full, and recovering stuck volumes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, a node becomes full because Longhorn uses a shared filesystem such as
+    `root` or `/var` with other applications or pods filling up the space. Note that
+    it''s recommended that Longhorn be on its own filesystem for this reason. To recover
+    from this failure, you''ll want to use the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Disable the scheduling for the full disk.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Expand the current filesystem to bring the used capacity below 80%.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If additional storage is not an option, you'll need to delete replicas until
+    the node is no longer in the error state.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The second most common issue is stuck volumes as a pod cannot start if the
+    Longhorn volume is timing out during the `mount` command. To recover from this
+    issue, you''ll use the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Start by scaling the workload to zero and deleting the pod.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the volume goes into detached status, retry scaling back up.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If the volume is still stuck in attaching, you''ll want to try attaching the
+    volume manually to the host using the maintenance flag via the Longhorn UI:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the volume attaches successfully, try detaching it again and scaling back
+    up.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If the volume won't attach, then there is something broken on the node; usually,
+    rebooting the node resolves it, or you can force the pod to be rescheduled on
+    another node.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: At this point, you should be able to resolve most issues with Longhorn and have
+    the tools to keep your data protected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we learned about Longhorn, including how it works. We then
+    went over the requirements and limitations in the *Architecting* section. We also
+    went over some common cluster designs by size. We then dove into the different
+    ways to install, upgrade, and customize Longhorn.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will cover how to bring security and compliance to your
+    Rancher clusters using OPA Gatekeeper.
+  prefs: []
+  type: TYPE_NORMAL

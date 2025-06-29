@@ -1,0 +1,1376 @@
+- en: '18'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Scaling Your EKS Cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Capacity planning on EKS (and K8s generally) can be hard! If you under- or overestimate
+    your cluster resources, you may not meet your application’s demand or end up paying
+    more than you need. One of the reasons it’s hard is that it can be difficult to
+    know what the expected load will be for your application. With a web application,
+    for example, the load is normally non-deterministic and a successful marketing
+    campaign or an event similar to Amazon Prime Day may see your load triple or quadruple.
+    Some form of cluster/pod scaling strategy is needed to cope with the peaks and
+    troughs of load placed on a modern application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will walk through several common strategies and tools that
+    can be used with Amazon EKS and help you understand how to optimize your EKS cluster
+    for load and cost. Specifically, this chapter covers the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding scaling in EKS
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scaling EC2 ASGs with Cluster Autoscaler
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scaling worker nodes with Karpenter
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scaling applications with Horizontal Pod Autoscaler
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scaling applications with custom metrics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scaling with KEDA
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The reader should have familiarity with YAML, AWS IAM, and EKS architecture.
+    Before getting started with this chapter, please ensure the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You have network connectivity to your EKS cluster API endpoint
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The AWS CLI, Docker, and the `kubectl` binary are installed on your workstation
+    with administrator access
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understanding scaling in EKS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When we consider scaling in any system or cluster, we tend to think in terms
+    of two dimensions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Increasing the size of a system or instance, known as vertical scaling
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Increasing the number of systems or instances, known as horizontal scaling
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The following diagram illustrates these options.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.1 – General scaling strategies](img/Figure_18.01_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.1 – General scaling strategies
+  prefs: []
+  type: TYPE_NORMAL
+- en: The scaling strategy is closely linked with the resilience model, where you
+    have a traditional master/standby or N+1 resilience architecture, such as a relational
+    database. Then, when you increase capacity, you normally need to scale *up* (i.e.,
+    vertically) by increasing the size of your database instances. This is due to
+    the limitations of the system architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In K8s, the resilience model is based on multiple worker nodes hosting multiple
+    pods with an ingress/load balancer providing a consistent entry point. This means
+    that a node failure should have little impact. The scaling strategy is therefore
+    predominantly to scale *out* (horizontally) and while you can do things such as
+    vertically scale pods to cope with increases in demand, we will focus on horizontal
+    scaling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As AWS manages the EKS control plane (scaling and resilience), we will focus
+    mainly on the data plane (worker nodes) and application resources (pods/containers).
+    Let’s begin with a high-level examination of the technology that supports scaling
+    the data plane on EKS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: EKS scaling technology
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'There are three layers of technology involved in supporting EKS scaling:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS technology that supports scaling the data plane, such as EC2 **Autoscaling
+    Groups** (**ASGs**) and the AWS APIs that allow systems to interact these ASGs.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The K8s objects (Kinds) that support scaling and deploying pods, such as Deployments.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The K8s scheduler and controllers that provide the link between the K8s objects
+    (2) and the AWS technology (1) to support horizontal scaling at the pod and cluster
+    levels.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The following diagram illustrates these three layers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.2 – EKS scaling technology](img/Figure_18.02_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.2 – EKS scaling technology
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s look at these layers in detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS technology
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In [*Chapter 8*](B18129_08.xhtml#_idTextAnchor123)*, Managing Worker Nodes on
+    EKS*, we discussed the use of EC2 ASGs for resilience. When you create an ASG,
+    you specify the minimum number of EC2 instances in the group, along with the maximum
+    number and your desired number, and the group will scale within those limits.
+    Calls to the EC2 API will allow the group to scale up and down (within a set of
+    cool-down limits) based on these calls. The entity calling the EC2 ASG API must
+    make the decisions to scale in and out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In [*Chapter 15*](B18129_15.xhtml#_idTextAnchor220)*, Working with AWS Fargate*,
+    we discussed how pods could be created on a Fargate instance using the Fargate
+    profile. In this case, AWS handles the deployment and placement of pods on the
+    Fargate fleet and the Fargate service handles scaling decisions, while the calling
+    entity just requests the deployment of one or more pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: K8s objects
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Throughout the book, we’ve used K8s deployments to deploy and scale our pods.
+    Under the covers, this uses **deployments**, which in turn use **ReplicaSets**
+    to add/remove new pods as needed and also to support deployment strategies such
+    as rolling updates. K8s also supports StatefulSets and DaemonSets for pod deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A **StatefulSet** is a K8s controller that deploys pods, but will guarantee
+    a specific order or deployment and that Pod names are unique, as well as providing
+    storage. A **DaemonSet** is also a controller that ensures that the pod runs on
+    all the nodes of the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both ReplicaSets and StatefulSets create pods with the expectation that the
+    K8s scheduler will be able to deploy them. If the scheduler determines that it
+    doesn’t have enough resources – typically, worker node CPU/RAM or network ports
+    (**NodePort** services) – then the pod stays in the *Pending* state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: K8s scheduler and controller
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'K8s was designed to be extensible and can be extended using controllers. With
+    autoscaling, we can extend EKS using the controllers in the following list, which
+    we will examine in more detail in the following sections:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**K8s Cluster Autoscaler** (**CA**) can scale AWS ASGs based on K8s scheduler
+    requirements'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Karpenter** can scale EC2 instances based on K8s scheduler requirements'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**K8s Horizontal Pod Autoscaler** (**HPA**) can scale deployments based on
+    custom metrics or CPU utilization across EC2 or Fargate instances'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use KEDA to integrate different event sources to trigger scaling actions controlled
+    through HPA
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now that we’ve looked at the three technology layers, let’s deep dive into how
+    we install and configure the different controllers and services to scale our EKS
+    clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling EC2 ASGs with Cluster Autoscaler
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Kubernetes CA is a core part of the K8s ecosystem and is used to scale worker
+    nodes in or out based on two main conditions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If there is a Pod in the Kubernetes cluster in the `Pending` state due to an
+    insufficient resources error
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If there is a worker node in the Kubernetes cluster that is identified as underutilized
+    by Kubernetes CA
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The following diagram illustrates the basic flow of a scale-out operation to
+    support a single pod being placed in the `Pending` state and not being scheduled.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.3 – High-level Cluster AutoScaler flow](img/Figure_18.03_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.3 – High-level Cluster AutoScaler flow
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the preceding diagram, we can see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The CA is actively looking for pods that cannot be scheduled for resource reasons
+    and are in the `Pending` state.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The CA makes calls to the EC2 ASG API to increase the desired capacity, which
+    in turn will add a new node to the ASG. A key aspect to note is that the nodes
+    need tagging with `k8s.io/cluster-autoscaler/` so that the CA can discover them
+    and their instance types.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Once the node has registered with the cluster, the scheduler will schedule the
+    pod on that node.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Once the pod is deployed and assuming there are no issues with the pod itself,
+    the state is changed to `Running`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now we’ve looked at the concepts behind the CA, let’s install it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the CA in your EKS cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'As the CA will interact with the AWS EC2 API, the first thing we need to do
+    is make sure that the subnets used by the autoscaler have been tagged correctly.
+    This should be done automatically if you’re using `k8s.io/cluster-autoscaler/enabled`
+    and `k8s.io/cluster-autoscaler/myipv4cluster`, have been applied to the subnets:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`myipv4cluster` is the name of the cluster in my example, but yours may vary.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we have confirmed that the subnets have the correct tags applied, we can
+    set up the AWS IAM policy to be associated with the K8s service account that the
+    CA pods will use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is a best practice to add a condition to limit the policy to those resources
+    owned by the cluster it is deployed on. In our case, we will use the tags we created/verified
+    in the previous step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following is the autoscaling policy that you are recommended to create:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can create the policy and associate it with an EKS service account using
+    the following commands. Also, take note of the current EKS cluster version:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can now download the [https://raw.githubusercontent.com/kubernetes/autoscaler/master/cluster-autoscaler/cloudprovider/aws/examples/cluster-autoscaler-autodiscover.yaml](https://raw.githubusercontent.com/kubernetes/autoscaler/master/cluster-autoscaler/cloudprovider/aws/examples/cluster-autoscaler-autodiscover.yaml)
+    installation manifest and modify the following lines (line numbers may vary).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Modify the autodiscovery tag (line 165)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'This will configure the autoscaler to use the specific cluster tag we (or `eksctl`)
+    created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Add command switches under the autodiscovery tag line (line 165)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'These switches allow the autoscaler to balance more effectively across availability
+    zones and scale autoscaling node groups to zero:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Modify the container image to align with your K8s server version (line 149)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'This will use the same autoscaler version as the cluster itself. Although newer
+    versions exist, it’s best practice to use the same version as your cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The page at [https://github.com/kubernetes/autoscaler/releases](https://github.com/kubernetes/autoscaler/releases)
+    can be used to look up the required release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we have a modified manifest, we can deploy the autoscaler, patch the service
+    account, and verify it is running using the following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The deployment returns an error as the service account already exists. This
+    will not affect the deployment or running of the autoscaler pod, but does mean
+    that if you delete the manifest, the SA will also be deleted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we have CA installed, let’s test whether it is working.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing Cluster Autoscaler
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: If we look at the ASG created by `eksctl` for the node group created with the
+    cluster, we can see the desired, minimum, and maximum capacities are set to `5`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.4 – eksctl node group ASG capacity](img/Figure_18.04_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.4 – eksctl node group ASG capacity
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we look at the cluster, we can see we have two nodes deployed and registered.
+    Changing the ASG’s maximum capacity has no effect on the current nodes as nothing
+    has yet triggered any rescaling:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we now deploy a manifest with a lot of replicas, we will see the autoscaler
+    scale out the ASG to support the pods. The following manifest will cause more
+    nodes to be provisioned as it requests 150 replicas/pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we deploy this manifest and monitor the nodes and autoscaler using the following
+    command, we can see the pods transition from `Pending` to the `Running` state
+    as the ASG scales:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see the nodes have scaled up to `5` (the maximum set in the ASG configuration)
+    to support the increased number of pods, but some pods will remain `Pending` as
+    there are not enough nodes to support them and the autoscaler won’t violate the
+    ASG capacity limits to create more nodes. If we now delete the manifest using
+    the following commands, we can see the ASG scale back to 2 (desired capacity)
+    after nodes have not been needed for at least 10 minutes (this is the default
+    – you can adjust the scan time for CA, but this will introduce more load onto
+    your cluster, and as we will see later, Karpenter is much more suited for faster
+    scaling):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The original, older nodes were removed and two of the newer nodes remain.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you want to monitor the autoscaler’s actions, you can use the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using ASGs has its advantages but when you want to use lots of different instance
+    types or scale up/down quickly, then Karpenter may provide more flexibility. Let’s
+    look at how we can deploy and use Karpenter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling worker nodes with Karpenter
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Karpenter ([https://karpenter.sh](https://karpenter.sh)) is an open source
+    autoscaling solution built for Kubernetes and is designed to build and remove
+    capacity to cope with fluctuating demand without the need for node or ASGs. The
+    following diagram illustrates the general flow:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.5 – High-level Karpenter flow](img/Figure_18.05_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.5 – High-level Karpenter flow
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the preceding diagram, we can see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Karpenter is actively looking for pods in the `Pending` state that cannot be
+    scheduled due to insufficient resources.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The Karpenter controller will review **resource** **requests**, **node selectors**,
+    **affinities**, and **tolerations** for these pending pods, and provision nodes
+    that meet the requirements of the pods.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Once the node has registered with the cluster, the scheduler will schedule the
+    pod on that node.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Once the pod has been deployed and assuming there are no issues with the pod
+    itself, the state is changed to **Running**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now that we’ve looked at the concepts behind Karpenter, let’s install and test
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Karpenter in your EKS cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We will create the Karpenter controller on the existing managed node group
+    (ASG) but use it to schedule workloads on additional worker nodes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In order for our installation to be successful, we need to first set up a few
+    environment variables. We can do this as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Modify the cluster name to align with your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we need to create the AWS IAM policy that will be associated with the
+    nodes created by Karpenter. This will ensure they have the right EKS, ECR, and
+    SSM permissions. We start with a trust policy that allows the EC2 instances to
+    assume a role, as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We can then create a role, `KarpenterInstanceNodeRole`, which is used by the
+    nodes created by Karpenter and references this trust policy as shown here:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We can then attach the four required managed polices to this role using the
+    following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We now create the instance profile used for the nodes:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Then we assign the role created previously to the instance profile:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now we have the instance profile for the EC2 nodes to use. The next task is
+    to create the AWS IAM policy to be associated with the Karpenter pods. We will
+    go through a similar process as we did for the instance profile. First, we create
+    the trust policy, which allows the cluster’s OIDC endpoint to assume a role. This
+    uses the `OIDC_ENDPOINT` and `AWS_ACCOUNT` environment variables we set up previously:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Then we create the role for the Karpenter controller using the trust policy
+    with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The following command is used to create the policy needed for the controller
+    and again relies on the environment variables we set earlier:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We create the IAM role that will be used by the Karpenter controller using
+    the policy created in the previous step:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We now need to tag the subnets we want Karpenter to use when it adds nodes
+    by adding the `karpenter.sh/discovery=myipv4cluster` tag. We can use the `describe-subnets`
+    command to identify which subnets have been tagged. The following is an example
+    of this usage:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ve used the same subnets as the autoscaler, but you could use different ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also need to tag the security group with the same discovery tag, `karpenter.sh/discovery=myipv4cluster`,
+    so that Karpenter nodes will be able to communicate with the control plan and
+    other nodes. We will use the cluster security group, which can be located in the
+    **Networking** section:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 18.6 – Locating the cluster security group](img/Figure_18.06_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.6 – Locating the cluster security group
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can tag the security group with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we need to edit the `aws-auth` ConfigMap to allow the Karpenter node
+    role to authenticate with the API servers. We need to add a new group with the
+    following configuration to the ConfigMap:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You can use the `$ kubectl edit configmap aws-auth -n kube-system` command to
+    make the changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'All this preparation work now means we can download and customize the Karpenter
+    Helm chart. We will use version *0.27.3*, which is the latest at the time of writing.
+    The following command can be used set the Karpenter version and customize the
+    Helm chart based on the environment variables and IAM policies created in the
+    previous steps, saving it to the `karpenter.yaml` manifest:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: We now need to add some additional configuration to the `karpenter.yaml` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The line numbers may be different for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Modify the affinity rules (line 482)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'This will deploy Karpenter on the existing node group:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We then create the namespace and add the Karpenter custom resources using the
+    following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And finally, we can deploy the Helm chart and verify the deployment using the
+    following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you’ve followed this entire chapter from the start, you will have both CA
+    and Karpenter controllers deployed. You can disable CA by scaling down to zero
+    using the following command: `kubectl scale deploy/cluster-autoscaler -n` `kube-system
+    --replicas=0`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we have Karpenter installed, let’s test whether it is working.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing Karpenter autoscaling
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The first thing we need to do is create a **Provisioner** and its associated
+    **AWSNodeTemplate**. A **Provisioner** creates the rules used by Karpenter to
+    create nodes and defines the pod selection rules. At least one provisioner must
+    exist for Karpenter to work. In our next example, we will allow Karpenter to handle
+    the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating on-demand EC2 instances
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Choosing an instance type of either `c5.large`, `m5.large`, or `m5.xlarge`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Labeling any new nodes with the `type=karpenter` label
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: De-provisioning the node once it is empty of pods for 30 seconds
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Karpenter will also be limited from creating additional nodes once the CPU and
+    memory limits have been reached.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**AWSNodeTemplate** is used to describe elements of the AWS-specific configuration,
+    such as the subnet and security groups. You can manually configure these details,
+    but we will use the discovery tags we created in the previous sections.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following example manifest can be deployed using the `$ kubectl create
+    -f` `provisioner.yaml` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once we have successfully deployed the `type=karpenter` label:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Using the following commands, we can deploy the previous manifest, validate
+    that no replicas exist, and also check that no nodes exist with the `type=karpenter`
+    label:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now if we scale the deployment, we will see pods get created in the `Pending`
+    state as there is no EKS node satisfying `Running` state. The following commands
+    illustrate this flow:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we now delete the deployment , we will see the node is de-provisioned:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The scale-in/out process is much faster than with CA, which is one of the key
+    advantages of Karpenter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have focused on scaling the underlying EKS compute node using CA or Karpenter.
+    Both of these controllers look for pods in the `Pending` state due to resource
+    issues, and up to now we have been creating and scaling pods manually. We will
+    now look at how we can scale pods automatically using HPA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling applications with Horizontal Pod Autoscaler
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: HPA is a component of Kubernetes that allows you to scale pods (through a **Deployment**/**ReplicaSet**)
+    based on metrics rather than manual scaling commands. The metrics are collected
+    by the K8s metrics server, so you will need to have this deployed in your cluster.
+    The following diagram illustrates the general flow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.7 – High-level HPA flow](img/Figure_18.07_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.7 – High-level HPA flow
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the preceding diagram, we can see the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: HPA reads metrics from the metrics server.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: There is a control loop that triggers HPA to read the metrics every 15 seconds.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: HPA assesses these metrics against the desired state of the autoscaling configuration
+    and will scale the deployment if needed.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now we’ve looked at the concepts behind the HPA, let’s configure and test it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing HPA in your EKS cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'As we’ve discussed, HPA is a feature of K8s, so no installation is necessary;
+    however, it does depend on K8s Metrics Server. To check whether Metrics Server
+    is installed and providing data, the following commands can be used:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'if you don’t have Metrics Server installed, you can use the following command
+    to install the latest version:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we have HPA’s prerequisites installed, let’s test whether it is working.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing HPA autoscaling
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To test this, we will just use the K8s example to deploy a standard web server
+    based on the `php-apache` container image. We then add the HPA autoscaling configuration
+    and then use a load generator to generate load and push the metrics higher to
+    trigger HPA to scale out the deployment. The K8s manifest file used is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now deploy this manifest and add the autoscaling configuration to maintain
+    CPU utilization at around 50% across 1-10 pods using the following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we’ve added the autoscaling configuration, we can generate some load.
+    As the CPU utilization of the pods will increase under the load, HPA will modify
+    the deployment, scaling in and out in an effort to maintain the CPU utilization
+    at 50%.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will need several terminal sessions for this exercise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the first terminal session, run the following command to generate the additional
+    load:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the second terminal, we can look at the HPA stats and will see the number
+    of replicas gradually increase as HPA scales the deployment to cope with the increased
+    load.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can see that `TARGETS` (the third column in the following output) is initially
+    higher than the 50% target as the load increases, and then as HPA adds more replicas
+    the values come down, until it reaches under the 50% target with 5 replicas. This
+    means HPA should not add any further replicas:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you now terminate the container running in the first session, you will see
+    HPA scale back the deployment. The output of the `kubectl get hpa php-apache --watch`
+    command is shown next, demonstrating the current load value dropping to 0 and
+    HPA scaling back to 1 replica:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: HPA can query core metrics through the `metrics.k8s.io` K8s API endpoint, and
+    can also query custom metrics using the `external.metrics.k8s.io` or `custom.metrics.k8s.io`
+    API endpoints. With more complex applications, you need to monitor more than just
+    **CPU** and **memory**, so let’s look at how we can use custom metrics to scale
+    our application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Autoscaling applications with custom metrics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In order for you to use custom metrics, the following must be fulfilled:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your application needs to be instrumented to produce metrics.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: These metrics need to be exposed through the `custom.metrics.k8s.io` endpoint.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The application developer or dev team is responsible for point 1, and we will
+    install and use Prometheus and the Prometheus adapter to satisfy point 2\. The
+    following diagram illustrates the high-level flow of this solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.8 – HPA custom metrics high-level flow](img/Figure_18.08_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.8 – HPA custom metrics high-level flow
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s look at the flow in brief.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Prometheus server installed in your cluster will “scrape” custom metrics
+    from your pods.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'HPA will do the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Read metrics from the `custom.metrics.k8s.io` custom endpoint, hosted on the
+    Prometheus adapter.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The Prometheus adapter will pull data from the Prometheus server.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: HPA assesses these metrics against the desired state of the autoscaling configuration.
+    This assessment will reference custom metrics such as the average number of HTTP
+    requests/second, and HPA will scale the deployment if needed.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now we’ve looked at the concepts behind HPA custom metrics, let’s install the
+    prerequisites and test it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the Prometheus components in your EKS cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We will first install a local Prometheus server in the cluster using Helm.
+    The first set of commands shown in the following code are used to get the latest
+    Prometheus server chart:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use AWS Managed Service for Prometheus instead if you so desire.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now install the chart and verify the pods all start using the following
+    commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To verify that Prometheus is working, we can use the port forward command shown
+    next and then use a local browser to navigate to http://localhost:8080:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can then use the metrics explorer (the icon is highlighted in the following
+    screenshot) to get data in table or graph formats. The example in the following
+    screenshot is for the `container_memory_usage_bytes` metric.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.9 – Prometheus server displaying metric data](img/Figure_18.09_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.9 – Prometheus server displaying metric data
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we have a Prometheus server instance installed and working, we can install
+    the **podinfo** application. This is a small microservice often used for testing
+    and exposes a number of metrics and health APIs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`podinfo` requires at least Kubernetes 1.23, so please make sure your cluster
+    is running the correct version. We will also install an HPA configuration that
+    we will replace later on.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using the following command we can deploy the pod, its service, and the HPA
+    configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'if we look at the `deployment.yaml` file in the `podinfo` GitHub repository,
+    we can see the following two annotations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: This means that Prometheus can automatically scrape the `/metrics` endpoint
+    on port `9797`, so if we look in the Prometheus server (using port forwarding)
+    we can see that one of the metrics being collected from the `podinfo` pods is
+    http_requests_total, which we will use as our custom metric. This is illustrated
+    in the following screenshot.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.10 – Reviewing podinfo custom metric data in Prometheus](img/Figure_18.10_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.10 – Reviewing podinfo custom metric data in Prometheus
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we now have a working Prometheus server collecting custom metrics from our
+    application (podinfo deployment), we next have to connect these metrics to the
+    `custom.metrics.k8s.io` endpoint by installing the Prometheus adapter using the
+    following commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The adapter will be installed in the Prometheus namespace and will point to
+    the local Prometheus server and port. The adapter will have the default set of
+    metrics configured to start, which we can see by querying the `custom.metrics.k8s.io`
+    endpoint using the `$ kubectl get --raw` command as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The easiest way to configure our metrics is to replace the default `prometheus-adapter`
+    ConfigMap with the configuration shown next, which only contains the rules for
+    the `http_requests_total`metric exported from the `podinfo` application using
+    the `/``metrics` endpoint:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can now replace the ConfigMap with the configuration shown previously, restart
+    the **Deployment** to re-read the new ConfigMap, and query the metrics through
+    the custom endpoint using the following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now we have the `podinfo` metrics being exposed through the custom metric endpoint,
+    we can replace the HPA configuration with one that uses the custom metrics rather
+    than the standard CPU one it was deployed with. To do this, we use the following
+    configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can use the following commands to replace the HPA configuration and validate
+    it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we have HPA’s prerequisites installed, let’s test whether it is working.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing HPA autoscaling with custom metrics
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To test this, we will just use a simple image with `curl` installed and call
+    the `podinfo` API repeatedly, increasing the request count.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will need several terminal sessions for this exercise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the first terminal session, run the following command to generate load:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the second terminal session, we can look at the HPA stats and see the number
+    of replicas gradually increase as HPA scales the deployment to cope with the increased
+    load.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The third column in the following output, `TARGETS`, is initially low but gradually
+    increases as more requests are responded to. Once the threshold has been exceeded,
+    then more replicas are added:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `m` character shown in the output represents milli-units, which means 0.1
+    req/sec.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you exit the loop and container in the first terminal session, HPA will gradually
+    scale down back to a single replica. While this solution works, it is not designed
+    for large production environments. In the final section of this chapter, we will
+    look at using **Kubernetes Event-Driven Autoscaling** (**KEDA**) for pod autoscaling,
+    which supports large environments and can also use events or metrics from external
+    sources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling with Kubernetes Event-Driven Autoscaling
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'KEDA is an open source framework that allows you to scale K8s workloads based
+    on metrics or events. We do this by deploying the KEDA operator, which manages
+    all the required components, broadly consisting of the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An agent, responsible for scaling the deployment up or down depending on events.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A metrics server that exposes metrics from applications or external sources.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A **ScaledObject** custom resource that maintains the mapping between the external
+    source or metric and the K8s deployment, as well as the scaling rules. This effectively
+    creates a corresponding HPA *Kind*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Internal and external event sources that are used to trigger a KEDA action.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The following diagram illustrates the main KEDA components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 18.11 – Main KEDA components](img/Figure_18.11_B18129.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18.11 – Main KEDA components
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we’ve looked at the concepts behind the KEDA custom metrics, let’s install
+    and test it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the KEDA components in your EKS cluster
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We will use the existing Prometheus and podinfo deployments we created in the
+    previous exercise, but I do suggest first removing the Prometheus adapter using
+    the following command so there are no conflcts to scheduling:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now we can deploy the KEDA operator using the following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we are using K8s version 1.23, we need to install a 2.9 release. At the time
+    of writing, 2.9.4 is the latest of these. You can use the `helm search repo kedacore
+    -l` command to get the latest chart versions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We now need to deploy `ScaledObject` to tell KEDA what to monitor (metric name),
+    what the external source is (Prometheus), what to scale (the podinfo deployment),
+    and what the threshold is (10). Please note that in the example configuration
+    shown here, we have set `minReplicaCount` to `2`, but the default is `0`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can use the following commands to deploy and verify this configuration.
+    Looking at the HPA configuration, we can see two configurations – the one managed
+    by KEDA, `keda-hpa-prometheus-scaledobject`, and the one deployed with the original
+    HPA-based scheduling:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we have KEDA installed and an `ACTIVE` scaling configuration deployed, so
+    let’s test that it is working.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing KEDA autoscaling
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To test this, we will just use a simple image with curl installed and will call
+    the podinfo API repeatedly, increasing the request count.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will need several terminal sessions for this exercise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the first terminal session, run the following command to generate load:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the second terminal session, you can look at the HPA stats and see the number
+    of replicas gradually increase as HPA scales the deployment to cope with the increased
+    load.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third column in the following output, `TARGETS`, is initially low and increases
+    as more requests are responded to. Once the threshold has been exceeded then more
+    replicas are added. You will notice that the number of replicas fluctuates, which
+    is because, unlike native HPA, KEDA dynamically adjusts the replica count to meet
+    the incoming demand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we had left `minReplicaCount` at `0`, we would have seen greater fluctuation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This highlights a key consideration for using KEDA: if you need to cope with
+    fluctuating, non-deterministic demand, then KEDA is an ideal choice.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following commands will show HPA scaling in and out the pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you exit the loop and container in the first terminal session, KEDA will
+    quickly scale back down to the value set in `minReplicaCount`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have looked at different ways to scale sour clusters and
+    their workloads. We’ll now revisit the key learning points from this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we looked at the different ways to scale EKS compute nodes
+    (EC2) to increase resilience and/or performance. We reviewed the different scaling
+    dimensions for our clusters and then set up node group/ASG scaling using the standard
+    K8s CA. We then discussed how CA can take some time to operate and is restricted
+    to ASGs, and how Karpenter can be used to scale much more quickly without the
+    need for node groups, which means you can configure lots of different instance
+    types. We deployed Karpenter and then showed how it can be used to scale EC2-based
+    worker nodes up and down more quickly than CA using different instance types to
+    the existing node groups.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once we reviewed how to scale worker nodes, we discussed how we can use HPA
+    to scale pods across our worker nodes. We first looked at basic HPA functionality,
+    which uses K8s Metrics Server to monitor pod CPU and memory statistics to add
+    or remove pods from a deployment as required. We then considered that complex
+    applications usually need to scale based on different, specific metrics and examined
+    how we could deploy a local Prometheus server and the Prometheus adapter to take
+    custom application metrics and expose them through the K8s custom metrics endpoint
+    and scale our deployment based on these custom metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we reviewed how we can use KEDA to employ custom metrics or external
+    data sources to cope with fluctuating demand and scale pods up and down very quickly
+    based on these events.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will look at how we can develop on EKS, covering AWS
+    tools such as Cloud9 and CI/CD tools such as Argo CD.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'EKS observability tools:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[https://docs.aws.amazon.com/eks/latest/userguide/eks-observe.html](https://docs.aws.amazon.com/eks/latest/userguide/eks-observe.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Getting to know podinfo:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[https://github.com/stefanprodan/podinfo](https://github.com/stefanprodan/podinfo)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using Managed Service for Prometheus with a Prometheus adapter:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[https://aws.amazon.com/blogs/mt/automated-scaling-of-applications-running-on-eks-using-custom-metric-collected-by-amazon-prometheus-using-prometheus-adapter/](https://aws.amazon.com/blogs/mt/automated-scaling-of-applications-running-on-eks-using-custom-metric-collected-by-amazon-prometheus-using-prometheus-adapter/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Getting to know KEDA:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[https://keda.sh/docs/2.10/concepts/](https://keda.sh/docs/2.10/concepts/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Which KEDA version supports which K8s versions?:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[https://keda.sh/docs/2.10/operate/cluster/](https://keda.sh/docs/2.10/operate/cluster/)'
+  prefs: []
+  type: TYPE_NORMAL

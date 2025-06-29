@@ -1,0 +1,929 @@
+- en: '10'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Optimizing GPU Resources for GenAI Applications in Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter will cover strategies to maximize **graphics processing unit**
+    (**GPU**) ([https://aws.amazon.com/what-is/gpu/](https://aws.amazon.com/what-is/gpu/))
+    efficiency in K8s when deploying GenAI applications as GPU instances are very
+    expensive and often underutilized. We will also cover GPU resource management,
+    scheduling best practices, and partitioning options such as **Multi-Instance GPU**
+    (**MIG**) ([https://www.nvidia.com/en-us/technologies/multi-instance-gpu/](https://www.nvidia.com/en-us/technologies/multi-instance-gpu/)),
+    **Multi-Process Service** (**MPS**) ([https://docs.nvidia.com/deploy/mps/index.html](https://docs.nvidia.com/deploy/mps/index.html)),
+    and **GPU time-slicing** ([https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html)).
+    Finally, we’ll discuss monitoring GPU performance, balancing workloads across
+    nodes, and auto-scaling GPU resources to handle dynamic GenAI workloads effectively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we’re going to cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPUs and custom accelerators
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Allocating GPU resources in K8s
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understanding GPU utilization
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Techniques for partitioning and sharing GPUs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scaling and optimization considerations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will be using the following tools, some of which require
+    you to set up an account and create an access token:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Hugging** **Face**: [https://huggingface.co/join](https://huggingface.co/join).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The **Llama-3.2-1B** model, which can be accessed via Hugging Face: [https://huggingface.co/meta-llama/Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An **Amazon EKS cluster**, as illustrated in [*Chapter 3*](B31108_03.xhtml#_idTextAnchor039).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**AWS Service Quotas** to run family EC2 instances. You can request a quota
+    increase in the **AWS** **console** ([https://docs.aws.amazon.com/servicequotas/latest/userguide/request-quota-increase.html](https://docs.aws.amazon.com/servicequotas/latest/userguide/request-quota-increase.html)).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: GPUs and custom accelerators
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Deploying GenAI workloads in K8s requires selecting the right hardware based
+    on the computational requirements of the workload, such as training, inference,
+    or microservices implementation. Compute options include CPUs, GPUs, or custom
+    accelerators such as **Inferentia** ([https://aws.amazon.com/ai/machine-learning/inferentia/](https://aws.amazon.com/ai/machine-learning/inferentia/))
+    and **Trainium** ([https://aws.amazon.com/ai/machine-learning/trainium/](https://aws.amazon.com/ai/machine-learning/trainium/)),
+    as well as accelerators from AWS or **tensor processing units** (**TPUs**) ([https://cloud.google.com/tpu](https://cloud.google.com/tpu))
+    from Google Cloud.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CPUs are usually the *default compute resource* in K8s and are suitable for
+    lightweight GenAI tasks, including small-scale inference, data preprocessing,
+    exposing APIs, and implementing classical ML algorithms such as **XGBoost** for
+    decision trees ([https://xgboost.readthedocs.io/en/stable/](https://xgboost.readthedocs.io/en/stable/)).
+    However, they are less efficient for tasks that require high parallelism and a
+    very large number of matrix multiplications, such as training foundational models.
+    K8s lets you define both CPU requests and limits, ensuring a fair and efficient
+    allocation of resources among all workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPUs excel at **massively parallel processing** (**MPP**) because they feature
+    thousands of cores and very high memory bandwidth, allowing them to handle the
+    matrix multiplications and linear algebra computations that are central to deep
+    learning far more efficiently than CPUs. However, GPUs are not recognized natively
+    by K8s. Thanks to its extensible architecture, device vendors can develop **device
+    plugins** ([https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/](https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/))
+    that expose GPU resources to the K8s control plane. These plugins are typically
+    deployed as **DaemonSets** ([https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/))
+    in the cluster, enabling the K8s scheduler to identify, allocate, and manage GPUs
+    for containerized workloads properly. One of the most popular device plugins is
+    the **NVIDIA device plugin for Kubernetes** ([https://github.com/NVIDIA/k8s-device-plugin](https://github.com/NVIDIA/k8s-device-plugin)),
+    which exposes NVIDIA GPUs attached to each K8s worker node and continuously tracks
+    their health.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As an alternative to GPUs, many companies are investing in creating *purpose-built
+    accelerators* tailored for AI/ML workloads. Examples include **AWS Inferentia**
+    and **Trainium**, **Google TPUs**, **field-programmable gate arrays** (**FPGAs**)
+    ([https://www.arm.com/glossary/fpga](https://www.arm.com/glossary/fpga)), and
+    various **application-specific integrated circuits** (**ASICs**) ([https://www.arm.com/glossary/asic](https://www.arm.com/glossary/asic)),
+    each designed to excel at core operations such as matrix multiplication, utilizing
+    transformer-based models, delivering higher performance, and ensuring lower energy
+    consumption. Similar to GPUs, these accelerators integrate with K8s through *custom
+    device plugins* provided by hardware vendors. These plugins discover, allocate,
+    and monitor the specialized hardware resources attached to K8s worker nodes, enabling
+    seamless scheduling and management alongside other compute resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Custom accelerators are particularly effective for large-scale training or low-latency
+    inference. For example, **AWS Trainium** ([https://aws.amazon.com/ai/machine-learning/trainium/](https://aws.amazon.com/ai/machine-learning/trainium/))
+    is a family of AI chips developed by AWS to enhance GenAI training by delivering
+    high performance while reducing costs. The first-generation Trainium chips powered
+    **Amazon EC2 Trn1 instances** ([https://aws.amazon.com/ec2/instance-types/trn1/](https://aws.amazon.com/ec2/instance-types/trn1/))
+    and offer up to 50% lower training costs compared to comparable EC2 instances.
+    The Trainium2 chips, featured in **Amazon EC2 Trn2 instances** and **Trn2 UltraServers**
+    ([https://aws.amazon.com/ec2/instance-types/trn2/](https://aws.amazon.com/ec2/instance-types/trn2/)),
+    are the most powerful EC2 instances for training and inferencing of GenAI models
+    with hundreds of billions to trillions of parameters. They provide up to four
+    times the performance of their predecessors and 30% to 40% better price performance
+    than EC2 P5e and P5en family instances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Custom accelerators often rely on specialized hardware architectures and instruction
+    sets that differ from general-purpose CPUs or GPUs. Because of this, AI/ML frameworks
+    such as **TensorFlow** and **PyTorch** cannot natively translate high-level operations
+    into low-level instructions that accelerators understand. The **Neuron SDK** ([https://aws.amazon.com/ai/machine-learning/neuron/](https://aws.amazon.com/ai/machine-learning/neuron/))
+    is a software development kit designed by AWS to run and optimize AI/ML workloads
+    efficiently on AWS’s custom AI accelerators, such as AWS Trainium and Inferentia.
+    It includes a compiler, runtime, training and inference libraries, and profiling
+    tools. Neuron supports customers throughout their end-to-end ML development life
+    cycle, including building and deploying deep learning and AI models. The Neuron
+    SDK provides seamless integration with popular ML frameworks such as **PyTorch**
+    ([https://pytorch.org/](https://pytorch.org/)), **TensorFlow** ([https://www.tensorflow.org/](https://www.tensorflow.org/)),
+    and **JAX** ([https://jax.readthedocs.io/](https://jax.readthedocs.io/)) while
+    supporting over 100,000 models, including those from Hugging Face. Customers,
+    such as *Databricks*, have reported significant performance improvements and cost
+    savings of up to 30% when using Trainium-powered instances ([https://aws.amazon.com/ai/machine-learning/trainium/customers/](https://aws.amazon.com/ai/machine-learning/trainium/customers/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choosing between CPUs, GPUs, and accelerators requires balancing performance
+    needs, workload intensity, and budget constraints to optimize resource utilization
+    for GenAI workloads. With this overview of custom accelerators, let’s dive deeper
+    into allocating GPU resources to GenAI applications in K8s.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Allocating GPU resources in K8s
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To use GPU and custom accelerator resources in K8s, you must use the corresponding
+    device plugins. For instance, the **NVIDIA device plugin for Kubernetes** makes
+    NVIDIA GPUs recognizable and schedulable by the K8s cluster, while the **Neuron
+    device plugin** does the same for AWS Trainium and Inferentia accelerators. This
+    mechanism ensures that any custom accelerator is discovered, allocated, and managed
+    properly within the K8s cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Apart from installing the device plugin, you should also ensure that the respective
+    GPU/accelerator drivers are present on the underlying operating system. AWS offers
+    accelerated AMIs for NVIDIA and the Trainium and Inferentia accelerators, all
+    of which you can use to launch K8s worker nodes. These AMIs include NVIDIA, Neuron
+    drivers, **nvidia-container-toolkit** ([https://github.com/NVIDIA/nvidia-container-toolkit](https://github.com/NVIDIA/nvidia-container-toolkit)),
+    and others on top of the standard EKS-optimized AMI. Please refer to the AWS documentation
+    at [https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami.html#gpu-ami](https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami.html#gpu-ami)
+    for more information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A high-level architecture of the K8s device plugin framework is depicted in
+    *Figure 10**.1*. Let’s look at what steps are involved in this process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: K8s device plugins are deployed as **DaemonSets**, ensuring that all (or some)
+    nodes run a copy of the plugin Pod. Typically, these plugins are scheduled on
+    worker nodes with specific labels (GPU, custom accelerator) to optimize resource
+    utilization.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Upon initialization, the device plugin performs various vendor-specific initialization
+    tasks and ensures devices are in a ready state.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The plugin registers itself with the kubelet and declares the custom resources
+    it manages – for example, `nvidia.com/gpu` for NVIDIA GPUs and `aws.amazon.com/neuroncore`
+    for AWS Trainium/Inferentia devices.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'After successful registration, the plugin provides the kubelet with the list
+    of managed devices. The kubelet then performs a node status update to advertise
+    these resources to the K8s API server. This can be verified by running the following
+    command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: When a Pod is scheduled on the worker node, the kubelet notifies the device
+    plugin of the container’s requirement (the number of GPUs) so that it can perform
+    the necessary preparation tasks to allocate the requested resources.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The device plugin continuously monitors the health of the devices it manages
+    and updates the kubelet accordingly to ensure optimal resource availability.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 10.1 – K8s device plugin architecture](img/B31108_10_1.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.1 – K8s device plugin architecture
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our walkthrough in [*Chapter 5*](B31108_05.xhtml#_idTextAnchor062), we installed
+    the NVIDIA device plugin using the `eks-data-addons` Terraform module, as shown
+    here:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'It used the Terraform Helm provider to deploy the **NVIDIA device plugin Helm
+    chart** ([https://github.com/NVIDIA/k8s-device-plugin?tab=readme-ov-file#deployment-via-helm](https://github.com/NVIDIA/k8s-device-plugin?tab=readme-ov-file#deployment-via-helm))
+    in the EKS cluster. You can verify which Helm release and DeamonSet are being
+    used by running the following commands:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The next step is to launch GPU worker nodes and register them with the cluster.
+    This was covered in the [*Chapter 5*](B31108_05.xhtml#_idTextAnchor062) walkthrough,
+    where we created a new EKS-managed node group called `eks-gpu-mng` using the G6
+    family of EC2 instances. Additionally, K8s taints were applied to these nodes
+    to ensure that only Pods requiring GPU resources were scheduled on them:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'GPU worker nodes can also be labeled so that advanced scheduling can be implemented
+    – for example, we can use `hardware-type=gpu` to identify GPU-enabled nodes. This
+    makes it possible to target specific nodes when scheduling workloads that require
+    GPUs. We can do this by using the `kubectl` command or running the necessary Terraform
+    code:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We can also label the K8s worker nodes using Terraform, as shown in the following
+    code snippet:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The next step is to allocate GPU resources for containerized workloads, such
+    as GenAI training and inference workloads. To request GPUs, you need to specify
+    resource requests and limits in your K8s deployment and Pod specifications. The
+    following code snippet demonstrates how to do the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Assign tolerations to the K8s Pod that match the node taints
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Schedule the K8s Pods specifically on nodes labeled with `hardware-type: gpu`'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Request one GPU resource using the `nvidia.com/gpu` attribute:'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  type: TYPE_PRE
+- en: When requesting GPU resources in K8s, you must always define them in the *limits*
+    section of the specification, either alone or with matching request values; specifying
+    only *requests* without *limits* is not allowed. Similarly, when using AWS Trainium/Inferentia
+    accelerators, you can use the `aws.amazon.com/neuroncore` attribute to request
+    the resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we started by looking at the K8s device plugin architecture
+    and the steps involved in creating the worker nodes in an EKS cluster. We also
+    looked at K8s scheduling techniques such as taints, tolerations, and node selectors,
+    all of which we can use to schedule the GPU Pods to their respective nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding GPU utilization
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: GPUs constitute a major cost of running GenAI workloads, so utilizing them effectively
+    is paramount in achieving optimal performance and cost-efficiency. Without proper
+    monitoring, underutilized GPUs can result in compute inefficiencies and increased
+    operational expenses, while overutilized GPUs risk request throttling and potential
+    application failures. In this section, we will explore solutions for monitoring
+    GPU utilization while focusing on exporting metrics and leveraging them to implement
+    efficient autoscaling strategies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: NVIDIA Data Center GPU Manager (DCGM)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**DCGM** ([https://developer.nvidia.com/dcgm](https://developer.nvidia.com/dcgm))
+    is a lightweight library and agent designed to simplify the management of NVIDIA
+    GPUs, enabling users, developers, and system administrators to monitor and manage
+    GPUs across clusters or data centers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: DCGM provides functionality such as GPU health diagnostics, behavior monitoring,
+    configuration management, telemetry collection, and policy automation. It operates
+    both as a *standalone service* through the NVIDIA host engine and as an *embedded
+    component* within third-party management tools. Its key features include GPU health
+    diagnostics, job-level telemetry, group-centric resource management for multiple
+    GPUs or hosts, and automated management policies to enhance reliability and simplify
+    administration tasks. DCGM can integrate seamlessly with K8s tools such as the
+    NVIDIA GPU Operator, allowing for telemetry collection and health checks in containerized
+    environments. With support for exporting metrics to systems such as Prometheus,
+    DCGM also facilitates real-time visualization and analysis of GPU data in tools
+    such as Grafana.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DCGM can be implemented in K8s clusters in the following ways:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`gpu-operator` ([https://github.com/NVIDIA/gpu-operator](https://github.com/NVIDIA/gpu-operator))
+    leverages the **operator pattern** ([https://kubernetes.io/docs/concepts/extend-kubernetes/operator/](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/))
+    within K8s to automate the process of managing all NVIDIA software components
+    required for provisioning GPUs. These components include NVIDIA drivers (to enable
+    CUDA), the K8s device plugin for GPUs, NVIDIA Container Runtime, automatic node
+    labeling, DCGM-based monitoring, and more. This approach is ideal for environments
+    where you want a fully automated solution for managing NVIDIA GPU resources, including
+    installation, updates, and configuration.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**DCGM-Exporter** ([https://github.com/NVIDIA/dcgm-exporter](https://github.com/NVIDIA/dcgm-exporter)):
+    Built on top of the NVIDIA DCGM framework, DCGM-Exporter collects and exposes
+    a wide range of GPU performance and health metrics, such as utilization, memory
+    usage, temperature, and power consumption, in a Prometheus-compatible format.
+    This facilitates seamless integration with popular monitoring and visualization
+    tools such as Prometheus and Grafana. DCGM-Exporter is well-suited for scenarios
+    where the necessary GPU components are already installed, and you need to enable
+    GPU monitoring without additional overhead.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Please refer to the NVIDIA documentation at [https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/amazon-eks.html](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/amazon-eks.html)
+    for detailed guidance on selecting the right approach based on your operational
+    needs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far in our walkthrough, we have already installed the necessary components,
+    such as the NVIDIA device plugin and relevant drivers. Therefore, we will use
+    the second approach (DCGM-Exporter) to monitor the GPU’s health and utilization
+    metrics. For the first approach, you can refer to the NVIDIA documentation at
+    [https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/getting-started.html#operator-install-guide](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/getting-started.html#operator-install-guide)
+    for detailed setup instructions. To proceed, we will install DCGM-Exporter using
+    the Helm provider in Terraform. Begin by downloading the `aiml-addons.tf` file
+    from [https://github.com/PacktPublishing/Kubernetes-for-Generative-AI-Solutions/blob/main/ch10/aiml-addons.tf](https://github.com/PacktPublishing/Kubernetes-for-Generative-AI-Solutions/blob/main/ch10/aiml-addons.tf).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `dcgm-exporter` Helm chart will be deployed in the `dcgm-exporter` namespace
+    from the [https://nvidia.github.io/dcgm-exporter/](https://nvidia.github.io/dcgm-exporter/)
+    Helm repository, as shown in the following code snippet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Execute the following commands to deploy the `dcgm-exporter` Helm chart in
+    the EKS cluster and verify its installation using the following `kubectl` command.
+    The output should confirm that `dcgm-exporter` has been deployed as a *DaemonSet*
+    and its Pods are *Running*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that DCGM-Exporter is functional, you can access the GPU’s health and utilization
+    metrics by connecting to the DCGM-Exporter service. Execute the following commands
+    to connect to the service locally and use a `curl` command to query the `/metrics`
+    endpoint to view the GPU metrics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: In [*Chapter 12*](B31108_12.xhtml#_idTextAnchor160), we will deploy and configure
+    a Prometheus agent that will scrape these GPU metrics and visualize them using
+    Grafana dashboards. Once the metrics are available in Prometheus, we can install
+    the **Prometheus adapter** ([https://github.com/kubernetes-sigs/prometheus-adapter](https://github.com/kubernetes-sigs/prometheus-adapter))
+    to create *autoscaling policies*, allowing GPU workloads to scale dynamically
+    for optimal resource utilization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPU utilization challenges
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In K8s, allocating a GPU to a Pod reserves that GPU exclusively for the Pod’s
+    entire life cycle, even if the Pod is not actively using it. K8s does not support
+    sharing GPUs among multiple Pods or assigning partial GPUs (< 1) per Pod by default.
+    This design ensures isolation and avoids conflicts as most GPUs are not inherently
+    designed to handle concurrent workloads without specialized software.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, exclusive GPU allocation can lead to underutilization if a Pod does
+    not fully utilize its assigned GPU. This challenge is especially pronounced in
+    GenAI scenarios, where the following factors often come into play:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Varying model sizes (large versus small LLMs)**: While **state-of-the-art**
+    (**SOTA**) LLMs may require an entire GPU or even multiple GPUs, there is a growing
+    demand for smaller or distilled versions of these models. Depending on their size,
+    these smaller LLMs may require a fraction of the GPU’s memory and compute capacity.
+    With K8s’s default “whole GPU” allocation, even a smaller model that needs only
+    part of a GPU will be allocated an entire device, leading to over-provisioning.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Dynamic workload patterns**: GenAI workloads such as fine-tuning or training
+    LLMs or running inference for complex diffusion-based models can create bursty
+    GPU usage patterns. During training/fine-tuning/inference, GPU usage can spike
+    to up to 100% for compute-intensive operations (matrix multiplications, backpropagation,
+    etc.,) but will drop significantly in between epochs or data loading/processing
+    steps. Because K8s does not support fractional GPU resource allocation by default,
+    these *peaks and valleys* can lead to inefficient GPU utilization.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Scheduling complexity and fragmentation**: K8s’s default scheduler lacks
+    the intelligence of advanced GPU-sharing strategies. Even with techniques such
+    as node affinity, taints, and tolerations, there is no out-of-the-box method to
+    dynamically reassign underutilized GPUs to another Pod. Consequently, smaller
+    LLMs might monopolize an entire GPU, even if they need a fraction of its capacity.
+    As more Pods are deployed, multiple GPUs become partially utilized but fully reserved,
+    causing fragmented GPU resources across the cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We can implement a few approaches to address these utilization challenges,
+    such as NVIDIA’s **MIG**, **MPS**, and **GPU time-slicing** options. In a case
+    study on delivering video content using GPU-sharing techniques, up to a 95% improvement
+    in price performance was achieved. For more detailed benchmarking data regarding
+    this, please refer to the following AWS blog: [https://aws.amazon.com/blogs/containers/delivering-video-content-with-fractional-gpus-in-containers-on-amazon-eks/](https://aws.amazon.com/blogs/containers/delivering-video-content-with-fractional-gpus-in-containers-on-amazon-eks/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we explored why monitoring GPU health and metrics is crucial
+    and deployed the NVIDIA DCGM-Exporter add-on in our K8s cluster to track GPU performance
+    and health metrics in real time. We also looked at the challenges of GPU utilization
+    and the factors contributing to inefficiency in the GenAI space. Next, we will
+    dive into GPU partitioning techniques that we can use to address these issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Techniques for partitioning and sharing GPUs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: GPU partitioning and sharing techniques are often vendor-specific, meaning they
+    may not be available for every accelerator out there. In this section, we will
+    explore some of the most common approaches provided by NVIDIA for its GPUs, such
+    as MIG, MPS, and time-slicing, and discuss how they can help improve GPU utilization
+    for GenAI workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: NVIDIA MIG
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**MIG** ([https://docs.nvidia.com/datacenter/tesla/mig-user-guide/index.html](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/index.html))
+    is a feature that was introduced in NVIDIA’s **Ampere** and later architectures
+    (A100, H100, etc.) that allows a single physical GPU to be partitioned into multiple
+    independent GPU instances. Each MIG instance has its own dedicated memory, compute
+    cores, and other GPU resources, providing strict isolation between workloads.
+    MIG minimizes interference among instances and ensures predictable performance,
+    ultimately enabling more efficient and flexible use of GPU capacity.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The process of implementing MIG involves defining GPU instances that bundle
+    a portion of the GPU’s memory and compute capacity. For example, on an NVIDIA
+    A100 GPU with 40 GB of memory, you can configure up to seven instances each with
+    5 GB of dedicated memory and a corresponding share of compute resources; this
+    can be seen in *Figure 10**.2*. In this example, we can have multiple workloads,
+    such as Jupyter notebooks, ML jobs, and more, that can run on separate GPU partitions,
+    allowing for efficient utilization of the GPU instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.2 – Multi-instance GPU in an A100 NVIDIA GPU](img/B31108_10_2.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.2 – Multi-instance GPU in an A100 NVIDIA GPU
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'These instances are specified by **MIG profiles** ([https://docs.nvidia.com/datacenter/tesla/mig-user-guide/index.html#supported-mig-profiles](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/index.html#supported-mig-profiles)),
+    which outline the size and shape of each instance – for example, a *1g.5gb* profile
+    allocates 5 GB of memory and a proportional share of GPU cores. These instances
+    function as isolated GPU instances, each with guaranteed performance and minimal
+    interference from others. The following table shows the MIG profiles for the latest
+    NVIDIA H200 GPUs from the NVIDIA MIG user guide ([https://docs.nvidia.com/datacenter/tesla/pdf/NVIDIA_MIG_User_Guide.pdf](https://docs.nvidia.com/datacenter/tesla/pdf/NVIDIA_MIG_User_Guide.pdf)):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **MIG Profile** | **GPU Slices** | **GPU** **Memory (GB)** | **Number** **of
+    Instances** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 1g.18gb | 1 | 18 | 7 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 1g.18gb+me | 1 | 18 | 1 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 1g.35gb | 1 | 35 | 4 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 2g.35gb | 2 | 35 | 3 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 3g.70gb | 3 | 70 | 2 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 4g.70gb | 4 | 70 | 1 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 7g.141gb | 7 | 141 | 1 |'
+  prefs: []
+  type: TYPE_TB
+- en: Table 10.1 – GPU instance profiles for a NVIDIA H200 GPU
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this table, *GPU Slices* represent the fraction of the GPU allocated to the
+    MIG profile, *GPU Memory (GB)* represents the amount of memory allocated to that
+    MIG instance in GB, and *Number of Instances* is the instance count that can be
+    created for the given profile.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In K8s, you can use the **NVIDIA GPU Operator** to simplify the MIG setup that
+    deploys MIG Manager to manage the MIG configuration and other essential configurations
+    on the GPU nodes. Please refer to the NVIDIA documentation at [https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-operator-mig.html](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-operator-mig.html)
+    for step-by-step instructions on setting up MIG on K8s clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'K8s identifies the individual MIG instances with a unique **GPU instance ID**
+    and **compute instance ID**. These instances are exposed to K8s as extended resources
+    (e.g., *nvidia.com/mig-1g.18gb*). The device plugin labels the node with the available
+    MIG profiles and their quantities, enabling the K8s scheduler to match Pod resource
+    requests to the appropriate MIG instance. For example, the following code snippet
+    shows a K8s Pod requesting that *nvidia.com/mig-1g.18gb* be scheduled to a node
+    that has an available instance of that specific configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we’ve learned how individual MIG instances are identified and allocated
+    within K8s, let’s explore the different ways these partitions can be configured.
+    Primarily, there are two strategies: *single* and *mixed*.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the **single MIG strategy** ([https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-operator-mig.html#example-single-mig-strategy](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-operator-mig.html#example-single-mig-strategy)),
+    all GPU slices on a node are of the same size. For example, on a p5.48xlarge EC2
+    instance that features eight H100 GPUs, each with 80 GB of memory, you could create
+    56 slices of 1g.10gb, 24 slices of 2g.20gb, 16 slices of 3g.40gb, or even eight
+    slices of 4g.40gb or 7g.80gb. This uniform approach is especially useful if multiple
+    teams have similar GPU requirements. In such cases, you can allocate the same
+    sized slice to each team, ensuring fair access and maximizing the utilization
+    of the p5.48xlarge instance for workloads such as fine-tuning and inference, where
+    the need for GPU capacity is consistent across tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In contrast, the **mixed MIG strategy** ([https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-operator-mig.html#example-mixed-mig-strategy](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-operator-mig.html#example-mixed-mig-strategy))
+    offers greater flexibility by allowing GPU slices of varying sizes to be created
+    within each GPU on a node. For example, on a p5.24xlarge EC2 instance, which is
+    equipped with eight NVIDIA H100 GPUs, you can combine different MIG slice configurations,
+    such as 16 slices of 1g.10gb + 8 slices of 2g.20gb + 8 slices of 3g.40gb. This
+    heterogeneous allocation is particularly beneficial for clusters that handle a
+    wide range of workloads with diverse GPU requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Consider an AI startup with three specialized workloads: an image recognition
+    app, a natural language processing app, and a video analytics app. Using the mixed
+    strategy, the startup can customize GPU allocations to match each app’s needs.
+    For instance, the image recognition application might be assigned two 1g.10gb
+    slices, the natural language processing application might utilize one 2g.20gb
+    slice, and the video analytics application might benefit from one 3g.40gb slice,
+    all operating concurrently on the same H100 GPU. This approach ensures that each
+    application receives the appropriate level of GPU resources without overprovisioning,
+    thereby maximizing the overall utilization and efficiency of the GPU resources.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: NVIDIA MPS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**MPS** ([https://docs.nvidia.com/deploy/mps/index.html](https://docs.nvidia.com/deploy/mps/index.html))
+    is a software feature that was designed to optimize GPU resource sharing across
+    multiple processes. It enables multiple processes to submit work concurrently,
+    reducing GPU idle time and improving resource utilization. As depicted in *Figure
+    10**.3*, each process retains its own isolated GPU memory space, while compute
+    resources are shared dynamically, allowing for low-latency scheduling and better
+    performance for workloads that might not fully utilize GPU resources individually:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.3 – NVIDIA MPS](img/B31108_10_3.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.3 – NVIDIA MPS
+  prefs: []
+  type: TYPE_NORMAL
+- en: In MPS, different processes running concurrently share GPU global memory, which
+    introduces challenges that require careful consideration. *Synchronization overhead*
+    can arise as processes or threads must be carefully managed to avoid race conditions
+    or inconsistent states when accessing shared memory simultaneously. Additionally,
+    resource contention may occur when multiple processes or threads compete for the
+    same memory space, potentially creating performance bottlenecks. Balancing the
+    use of shared global memory with private allocations adds complexity to programming,
+    requiring careful planning and a deep understanding of CUDA ([https://developer.nvidia.com/about-cuda](https://developer.nvidia.com/about-cuda))
+    memory management to ensure both efficiency and correctness.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The memory isolation issue with MPS has been partially addressed, initially
+    by the **Volta architecture** ([https://docs.nvidia.com/deploy/mps/index.html#volta-mps](https://docs.nvidia.com/deploy/mps/index.html#volta-mps)).
+    Volta GPUs introduced individual GPU address spaces for each client, ensuring
+    that memory allocations by one process are not directly accessible to others,
+    a significant improvement in memory isolation. Additionally, clients can submit
+    work directly to the GPU without using a shared context, reducing contention and
+    enabling finer resource allocation. Execution resource provisioning also ensures
+    better control over GPU compute resources, preventing any single client from monopolizing
+    them. However, limitations remain, with global memory bandwidth still being shared
+    among all processes, potentially leading to performance degradation if one process
+    overuses it. Additionally, MPS lacks fault isolation, meaning critical errors
+    in one process can still disrupt others. While these improvements make MPS in
+    Volta and newer GPUs more suitable for multi-process workloads with less stringent
+    isolation requirements, NVIDA’s MIG remains the recommended solution when complete
+    fault isolation is needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The NVIDIA device plugin for K8s does not currently support MPS partitioning,
+    and it is tracked under this GitHub issue #443 ([https://github.com/NVIDIA/k8s-device-plugin/issues/443](https://github.com/NVIDIA/k8s-device-plugin/issues/443)).
+    However, there is a forked version of the plugin at [https://github.com/nebuly-ai/k8s-device-plugin](https://github.com/nebuly-ai/k8s-device-plugin)
+    that enables MPS support in K8s clusters. Refer to the following post by *Medium*
+    for step-by-step instructions: [https://medium.com/data-science/how-to-increase-gpu-utilization-in-kubernetes-with-nvidia-mps-e680d20c3181](https://medium.com/data-science/how-to-increase-gpu-utilization-in-kubernetes-with-nvidia-mps-e680d20c3181).
+    Once MPS is enabled using this forked NVIDIA device plugin, multiple K8s Pods
+    can share a single GPU. MPS dynamically manages compute resource allocation while
+    maintaining memory isolation between Pods. This functionality enables fractional
+    GPU requests in Pod resource definitions, allowing K8s to schedule multiple Pods
+    on the same GPU efficiently.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPU time-slicing
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'For NVIDIA GPUs, **time-slicing** ([https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html))
+    is another technique that allows multiple processes or applications to share GPU
+    resources dynamically by dividing execution time into slices, enabling sequential
+    access to the GPU. *Figure 10**.4* illustrates how the GPU alternates between
+    different processes over time, enabling them to share resources while each process
+    typically retains its respective memory allocation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 10.4 – GPU time-slicing](img/B31108_10_4.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.4 – GPU time-slicing
+  prefs: []
+  type: TYPE_NORMAL
+- en: Time-slicing supports workloads that would otherwise require exclusive access
+    to GPUs, providing shared access but without the memory or fault isolation capability
+    of NVIDIA’s MIG feature. The time-slicing feature is especially beneficial for
+    older GPUs that do not support the MIG feature. It can also complement MIG by
+    enabling multiple processes to share the resources of a single MIG partition.
+    However, time-slicing may introduce latency as processes have to wait for their
+    turn. This creates context-switching overhead, which involves saving and restoring
+    the state of each process before switching to the next process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Time-slicing is well suited for general-purpose, multi-process GPU usage and
+    works effectively in virtualization, multi-tenant systems, and mixed workloads.
+    However, for scenarios requiring strict resource isolation or high responsiveness,
+    MIG might be a more appropriate solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a high-level comparison of the GPU sharing techniques mentioned so
+    far – that is, MIG, MPS, and time-slicing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Feature** | **MIG** | **MPS** | **Time-Slicing** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Resource** **isolation** | Strong (hardware-level) | None or limited for
+    Volta+ GPUs | None |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Performance** | Predictable | Improved GPU utilization with added latency
+    | Dependent on workload characteristics |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Scalability** | Limited by supported partition count | High | High |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Overhead** | Minimal | Low | Higher with context switching |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Use vase** | Multi-tenant, inference | HPC, multi-process workloads | Non-critical
+    tasks |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Compatibility** | Ampere+ GPUs | All CUDA-capable GPUs | All CUDA-capable
+    GPUs |'
+  prefs: []
+  type: TYPE_TB
+- en: Table 10.2 – Comparison of NVIDIA GPU sharing techniques
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The NVIDIA time-slicing feature in K8s enables GPU oversubscription, allowing
+    multiple workloads to share a single GPU dynamically by interleaving their execution.
+    This is achieved through the NVIDIA GPU Operator and enhanced configuration options
+    in the NVIDIA device plugin for K8s. To enable the time-slicing feature in our
+    EKS cluster setup, we need to create a `time-slicing-config`. In the following
+    example, we are creating 10 replicas (virtual “time-sliced” GPUs) so that each
+    K8s Pod requesting one `nvidia.com/gpu` resource will be allocated to one of these
+    virtual GPUs and time-sliced on the underlying physical GPU:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: $ kubectl apply -f nvidia-ts.yaml
+  prefs: []
+  type: TYPE_NORMAL
+- en: configmap/time-slicing-config created
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: module "eks_data_addons" {
+  prefs: []
+  type: TYPE_NORMAL
+- en: source = "aws-ia/eks-data-addons/aws"
+  prefs: []
+  type: TYPE_NORMAL
+- en: '...'
+  prefs: []
+  type: TYPE_NORMAL
+- en: enable_nvidia_device_plugin = true
+  prefs: []
+  type: TYPE_NORMAL
+- en: nvidia_device_plugin_helm_config = {
+  prefs: []
+  type: TYPE_NORMAL
+- en: name    = "nvidia-device-plugin"
+  prefs: []
+  type: TYPE_NORMAL
+- en: values = [
+  prefs: []
+  type: TYPE_NORMAL
+- en: '...'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'config:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'name: time-slicing-config'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '...'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: $ terraform apply -auto-approve
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: $ kubectl get nodes -o custom-columns=NAME:.metadata.name,INSTANCE:.metadata.labels."node\.kubernetes\.io/instance-type",GPUs:.status.allocatable."nvidia\.com/gpu"
+  prefs: []
+  type: TYPE_NORMAL
+- en: NAME                                        INSTANCE     GPUs
+  prefs: []
+  type: TYPE_NORMAL
+- en: ip-10-0-40-57.us-west-2.compute.internal    g6.2xlarge   10
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: $ kubectl apply -f llama32-deploy.yaml
+  prefs: []
+  type: TYPE_NORMAL
+- en: deployment/my-llama32-deployment created
+  prefs: []
+  type: TYPE_NORMAL
+- en: $ kubectl get pods -o wide
+  prefs: []
+  type: TYPE_NORMAL
+- en: <Displays 5 pods running on same node>
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'apiVersion: autoscaling/v2'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'kind: HorizontalPodAutoscaler'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'metadata:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'name: genai-training-hpa'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'spec:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'scaleTargetRef:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'apiVersion: apps/v1'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'kind: Deployment'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'name: genai-training'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'minReplicas: 1'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'maxReplicas: 10'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'metrics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '- type: Object'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'metricName: DCGM_FI_DEV_GPU_UTIL'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'targetAverageValue: 80'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Part 3: Operating GenAI Workloads on K8s'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This section addresses the day-to-day operations of GenAI applications in production
+    K8s environments, covering critical aspects from automated pipelines to resilience
+    strategies. This section explores GenAIOps practices, comprehensive observability
+    implementations using industry-standard tools, and strategies for high availability
+    and disaster recovery. It also highlights the transformative impact of GenAI coding
+    assistants on automating and managing K8s clusters, concluding with recommendations
+    for further reading.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This part has the following chapters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[*Chapter 11*](B31108_11.xhtml#_idTextAnchor145), *GenAIOps: Data Management
+    and GenAI Automation Pipeline*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[*Chapter 12*](B31108_12.xhtml#_idTextAnchor160), *Observability – Getting
+    Visibility into GenAI on K8s*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[*Chapter 13*](B31108_13.xhtml#_idTextAnchor176), *High Availability and Disaster
+    Recovery for GenAI Applications*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[*Chapter 14*](B31108_14.xhtml#_idTextAnchor183), *Wrapping-up**: GenAI Coding
+    Assistants and Further Reading*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

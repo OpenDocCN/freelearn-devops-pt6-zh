@@ -1,0 +1,501 @@
+- en: '11'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Building Applications and Pushing Them to Amazon ECR
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A Kubernetes Pod consists of at least one container. These containers are stored
+    in a public or private repository and pulled by a worker node when it receives
+    a Pod specification and needs to deploy a container. This chapter looks at how
+    you can use AWS **Elastic Container Registry** (**ECR**) to securely store container
+    images using multiple repositories and allow EKS to use them when it deploys Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Specifically, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introducing Amazon ECR
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Understanding repository authentication
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building and pushing a container image to ECR
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using advanced ECR features
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using an ECR image in your EKS cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The reader should have a familiarity with YAML, basic networking, and EKS architecture.
+    Before getting started with this chapter, please ensure the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You have network connectivity to your EKS cluster API endpoint
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The AWS CLI, Docker, and kubectl binary are installed on your workstation
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You have a basic understanding of Docker and Dockerfiles
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Introducing Amazon ECR
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In [*Chapter 1*](B18129_01.xhtml#_idTextAnchor014), we talked about the general
+    structure of a container and how it uses a union filesystem to create a layered
+    image. This image format has become the **Open Container Initiative** (**OCI**)
+    image specification, and various open source build tools such as Podman or BuildKit
+    support this format.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you build an image using the `docker build` command, an image is created
+    locally, which is fine for the local machine, but when you need to use that image
+    in EKS or another Kubernetes distribution/service, you need to push it to a repository
+    that can be accessed by other systems that make up your EKS cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you browse Docker Hub at [https://hub.docker.com/](https://hub.docker.com/)
+    and log in, you can see multiple container images for Postgres, Redis, Python,
+    and so on. Each image is tagged with a version tag such as 13.8 as well as potentially
+    the latest tag, which will often (but not always) denote the latest version of
+    a container image. Docker Hub is a public repository, which means it can be accessed
+    from the internet. These are considered public repositories and can be accessed
+    by anyone with a Docker Hub ID.
+  prefs: []
+  type: TYPE_NORMAL
+- en: ECR hosts multiple repositories that in turn host multiple versions of a container
+    image (as well as other OCI-compliant artifacts) in the same way Docker Hub does,
+    but access is controlled through IAM and repository controls that you control
+    and are often used to host containers that contain private code or configurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The easiest way to understand ECR is to create a repository. The next example
+    shows a simple Terraform configuration that will create a private repository called
+    `myapp` in the current AWS account/region:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Two key attributes in the ECR configuration are `image_tag_mutability` (which
+    allows an image with an existing tag to upload, replacing the existing one) and
+    `scan_on_push`, which will scan the image for basic vulnerabilities after it is
+    uploaded (pushed).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Terraform code will output the newly created repository URL (for example,
+    `1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp`), which we will use later to
+    push a local image to ECR.
+  prefs: []
+  type: TYPE_NORMAL
+- en: ECR is charged based on the size of the images that are stored in the registry
+    as well as any data transfer costs for data leaving AWS. For example, assuming
+    you are storing a total of 60 GB of software images, you will be charged for storage
+    at $0.10 per GB equaling a total of $6/month, but charged nothing for data transfer
+    in. Any EKS cluster within the same region pulling the images will not be charged
+    for data transfer out. So, the total cost will equal $6/month.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In reality, your costs will probably be lower as there is a Free Tier discount
+    in the first year for private repositories and some free storage and transfer-out
+    limits as well. Please refer to [https://aws.amazon.com/ecr/pricing/](https://aws.amazon.com/ecr/pricing/)
+    for more information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s look at how ECR provides secure access to the repositories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding repository authentication
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we discussed, ECR repositories can be private or public, and the security
+    credentials you use to access these repositories will vary depending on the type
+    of repository you create.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accessing ECR private repositories
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Access to private repositories is controlled through AWS IAM and repository
+    permissions. If you are using the native AWS API, then you can use the standard
+    Signature Version 4 signing process used by API clients such as the AWS CLI or
+    the Python `boto3` library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will use Docker commands to interact with the ECR repository,
+    so we need to convert the AWS access and secret keys into something Docker will
+    understand. This is done with the `aws ecr get-login-password` command and passing
+    the output into the `docker login` command. An example is shown next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that credentials are valid for 12 hours, after which time the `docker
+    login` command needs to be rerun.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This now means Docker commands such as `docker pull` or `docker push` will have
+    an authentication token that will allow them to interact with the ECR. In order
+    to use the `aws ecr get-login-password` command, the user account being used must
+    have the appropriate IAM permissions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following IAM policy is the default one used by EKS worker nodes to both
+    access and pull images, as well as retrieve an authorization token (`GetAuthorizationToken`
+    is the underlying API call the `get-login-password` command calls):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As well as the IAM permissions, every registry has the ability to apply individual
+    policies. Typically, an IAM role such as the one shown previously is used to give
+    broad access to the ECR service, and repository policies are used to restrict
+    access to specific repositories. For example, the following Terraform resource
+    adds a policy that would allow account `22334455` to push images to our repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are also registry-wide permissions you can apply that are used to scope
+    access to the replication and pull through cache features, which will be discussed
+    later in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, note that `aws_ecr_repository.myapp.name` references the repository created
+    previously and would need to be changed if you structure your Terraform repository
+    or code differently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One final note—there is no real difference between private and public ECR repositories
+    as they are managed and costed in the same way. The key difference is public repositories
+    allow anonymous users to pull images from them and are visible on the Amazon ECR
+    Public Gallery. This means anyone can pull images and, as repositories have a
+    cost element based on data transfer, *anonymous users pulling your images will
+    contribute to your* *overall bill*!
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will use private ECR repositories only for EKS, so please refer to [https://docs.aws.amazon.com/AmazonECR/latest/public/what-is-ecr.html](https://docs.aws.amazon.com/AmazonECR/latest/public/what-is-ecr.html)
+    if you want further information on public repositories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we understand how to authenticate with a private repository, let’s see how
+    we build and push an image to our ECR repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building and pushing a container image to ECR
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If we consider a simple API using Python and FastAPI, shown next, we need to
+    first package that up into a Docker image locally. We can then test if it is working
+    locally before we push it to ECR. I’ve chosen Python and FastAPI as they are very
+    simple to get up and running, but you can create the container using any language
+    or framework.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Python code in the `main.py` file is shown next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will also need a `requirements.txt` file, which will have the following
+    entries:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will use a simple Dockerfile (shown next) that creates an image using a
+    non-root user, installs the necessary libraries through `pip` (in this case, FastAPI
+    and Uvicorn), and then runs the server using the Docker `CMD` key:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can then build and run the container using the following Docker commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You now be able to curl `http://127.0.0.1:8080` to get a reply or `http://127.0.0.1:8080/docs`
+    to get the API definition. Now that we have a working application, we can use
+    the following commands to log in, tag, and push the image to our ECR repository
+    we created in the previous section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we now go into the AWS console, we will be able to view the image in our
+    repository. As we enabled `scan_on_push`, we will also get a view of any vulnerabilities
+    that the basic scanning has detected. This scanning uses the open source Clair
+    project to perform the scan:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.1 – Initial image details in ECR](img/B18129_11_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.1 – Initial image details in ECR
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we click on the **details** link in the bottom-right corner, we get a more
+    detailed view of the issues, complete with a link to the **Common Vulnerabilities
+    and Exposures** (**CVE**) number. An example is shown next that references the
+    two critical issues identified in my image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.2 – Initial image scan output](img/B18129_11_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.2 – Initial image scan output
+  prefs: []
+  type: TYPE_NORMAL
+- en: In most companies I have worked with, all the **CRITICAL** issues need to be
+    removed, as a minimum, before the image can be considered *safe*. This might be
+    the developers’, DevOps’, or platform engineers’ responsibility, but in reality,
+    it’s everyone’s responsibility to make the image as secure as possible. Image
+    remediation can be a time-consuming practice, but there are some simple things
+    you can do!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By simply changing the base image from `python:3.9` to `python:3.10-slim-bullseye`
+    in the Dockerfile and tagging it as version 0.0.2, I have removed all the critical
+    vulnerabilities, reduced the overall vulnerability count, *and* reduced the size
+    of the image to nearly a quarter, which will really improve download time and
+    save costs. This is shown next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.3 – Improved container security posture and size](img/B18129_11_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.3 – Improved container security posture and size
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we have our image uploaded into ECR, the **CRITICAL** vulnerabilities have
+    been remediated, and the size has been optimized. Next, let’s look at some more
+    advanced features of ECR before we demonstrate using that image in EKS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using advanced ECR features
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'ECR has two advanced features that are useful when you are managing a large
+    EKS environment: **pull through cache**, which allows a private repository to
+    cache public images, and **cross-region replication**, where you replicate images
+    to another region for use. Let’s explore both options.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pull-through-cache explained
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Pull-through-cache allows a private repository to cache images from either the
+    public ECR repositories or from Quay (please note that Docker Hub is not currently
+    supported). We will use the public ECR repositories in this example, and this
+    allows us to offer public images without giving public internet access to our
+    worker nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s configure a rule in ECR using the following Terraform code; please note
+    it’s done at the registry level, not at the repository level:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once this is deployed, we can log in and use the `ecr-public` prefix to pull
+    images. The following example pulls the latest Alpine image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A corresponding private repository has now been created (see the following
+    screenshot), with the pull-through cache enabled:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.4 – Pull-through-cache-enabled repository](img/B18129_11_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.4 – Pull-through-cache-enabled repository
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we understand how we work with repositories in a single region, let’s look
+    at how we can work across different AWS regions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cross-region replication
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: You may want to deploy your application in multiple regions for **disaster recovery**
+    (**DR**) reasons or for global reach. You can use cross-region replication to
+    copy one, many, or all images from one region to another, or to multiple regions.
+    You can do this in the same account or across different accounts, but bear in
+    mind you need to set up a cross-account role if you want to replicate from one
+    account to another.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Looking at the Terraform configuration shown next, we can see it consists of
+    two parts. The first is a `destination` rule that states which region and account
+    will be the target for the replication. Please note you can have multiple destination
+    rules. The second part is optional and specifies a `filter` rule to select the
+    repositories to replicate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the example shown next, we will use the `myapp` prefix. If this is not used,
+    all images are replicated:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: As only repository content pushed to a repository after replication is configured
+    is replicated, we now need to push a new tag in order to see the image replicated
+    to `eu-west-1`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you follow the commands shown in the *Building and pushing a container image
+    to ECR* section, you can create a new image for the `myapp` repository and push
+    it to ECR.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You will see it replicated to the region. If you use the AWS console and go
+    to the relevant `repo/tag`, you can see the replication status. In the example
+    shown next, `myapp:0.0.3` has been successfully replicated to `eu-west-1`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 11.5 – Replication status for new image tag](img/B18129_11_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.5 – Replication status for new image tag
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we have explored the features and capabilities of ECR. Let’s look
+    at the final section and see how we use ECR images in EKS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using an ECR image in your EKS cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: EKS worker nodes can pull images from ECR as they should have the `AmazonEC2ContainerRegistryReadOnly`
+    managed role applied to the worker nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, the only thing that needs to be done is to specify the full `<aws_account_id>.dkr.ecr.aws_region.amazonaws.com/<image-name>:<tag>`
+    ECR path in your Kubernetes manifest or Helm chart.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Building on [*Chapter 4*](B18129_04.xhtml#_idTextAnchor067), *Running Your
+    First Application on EKS*, we create a deployment that uses our `myapp` container
+    and a `NodePort` service that exposes that service outside the cluster. The only
+    real difference is in the Pod spec, we reference the fully qualified image name.
+    This is illustrated next. The first section defines the Kubernetes Deployment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we define the services:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As this is a `NodePort` service, we can get the IP address of the host the
+    Pod is running on by running the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can then curl `http://<hostIP>:32410`, and we will see the FastAPI response
+    message.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please make sure the correct routing and security group rules are set up to
+    allow your client to connect to the worker node IP address on port `32410`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we have looked at how you can host your private images and
+    deploy them into EKS with minimal changes to your manifests. We’ll now revisit
+    the key learning points from this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we explored how we can use ECR to store, cache, and replicate
+    container images. Using ECR comes at a cost, which is made up of the total size
+    of all images in your repository and egress costs, but by using the scan-on-push
+    capability of ECR we can identify and resolve critical dependencies as well as
+    optimize the size of the image, supporting a better security posture and more
+    cost-effective images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are also more advanced features of ECR that allow us to support a DR strategy
+    or deploy applications across multiple regions using cross-region replication
+    as well as caching public images from the ECR public repositories or Quay. Finally,
+    we looked at how you can configure IAM and repository policies to control access
+    to the images inside and pull those images into EKS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will look at how you can use the AWS storage driver
+    to provide stateful storage to Pods as a source of your applications and Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'How the AWS Signature V4 signing process works: [https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html](https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Using the ECR Public Gallery: [https://docs.aws.amazon.com/AmazonECR/latest/public/public-gallery.html](https://docs.aws.amazon.com/AmazonECR/latest/public/public-gallery.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Using Clair to scan your containers: [https://github.com/quay/clair](https://github.com/quay/clair)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

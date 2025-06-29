@@ -1,0 +1,1040 @@
+- en: '*Chapter 7*: Managing Storage and Stateful Applications'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapters, we learned how to provision and prepare our Kubernetes
+    clusters for production workloads. It is part of the critical production readiness
+    requirement to configure and fine-tune day zero tasks, including networking, security,
+    monitoring, logging, observability, and scaling, before we bring our applications
+    and data to Kubernetes. Kubernetes was originally designed for mainly stateless
+    applications in order to keep containers portable. Therefore, data management
+    and running stateful applications are still among the top challenges in the cloud
+    native space. There are a number of ways and a variety of solutions to address
+    storage needs. New solutions emerge in the Kubernetes and cloud-native ecosystem
+    every day; therefore, we will start with popular in-production solutions and also
+    learn the approach and criteria to look for when evaluating future solutions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will learn the technical challenges associated with stateful
+    applications on Kubernetes. We will follow the cloud-native approach completely
+    to fine-tune Kubernetes clusters for persistent storage. We will learn the different
+    storage solutions and their shortcomings, and how to use and configure them with
+    our Kubernetes cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following main topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the challenges with stateful applications
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Tuning Kubernetes storage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Choosing a persistent storage solution
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying stateful applications
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You should have the following tools installed from the previous chapters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS CLI V2
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: AWS IAM Authenticator
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`kubectl`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We will also need to install the following tools:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Helm
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: CSI driver
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You need to have an up and running Kubernetes cluster as per the instructions
+    in [*Chapter 3*](B16192_03_Final_PG_ePub.xhtml#_idTextAnchor073), *Provisioning
+    Kubernetes Clusters Using AWS and Terraform*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code for this chapter is located at [https://github.com/PacktPublishing/Kubernetes-Infrastructure-Best-Practices/tree/master/Chapter07](https://github.com/PacktPublishing/Kubernetes-Infrastructure-Best-Practices/tree/master/Chapter07).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check out the following link to see the Code in Action video:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://bit.ly/3jemcot](https://bit.ly/3jemcot)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the required tools
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we will install the tools that we will use to provision applications
+    using Helm charts and provide dynamically provisioned volumes to the stateful
+    applications in your Kubernetes infrastructure during this chapter and the upcoming
+    ones. As a cloud and Kubernetes learner, you may be familiar with these tools
+    from before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Helm
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Helm is a package manager for Kubernetes. Helm is also a great way to find and
+    deploy vendor and community published applications on Kubernetes. We will use
+    Helm to deploy applications on our Kubernetes cluster. If you do not have Helm
+    installed in your cluster, you can follow these instructions to do that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Execute the following commands to install Helm 3 in your Kubernetes cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we will install the CSI drivers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing CSI drivers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**Container Storage Interface** (**CSI**) is the standardized APIs to extend
+    Kubernetes with third-party storage provider solutions. CSI drivers are vendor
+    specific and, of course, you only need an AWS EBS CSI driver if you are running
+    on AWS infrastructure, including EC2 or EKS-based clusters. To install the latest
+    AWS EBS CSI drivers, refer to the Amazon EKS official documentation at [https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.htm](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.htm).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are running on a self-managed Kubernetes solution, bare metal/on-premises,
+    or virtualized environment, you may need to use another vendor's CSI driver or
+    **Container Attached Storage** (**CAS**) solutions. To install other CSI vendor
+    drivers, you can refer the links to specific driver instructions on the official
+    CSI documentation at [https://kubernetes-csi.github.io/docs/drivers.html](https://kubernetes-csi.github.io/docs/drivers.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have installed the prerequisites required in the chapter to deploy
+    Helm Charts and consume AWS EBS volumes using the CSI driver, let's go over the
+    implementation principles we will be following, making storage provider decisions
+    with a view to solving our stateful application challenges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementation principles
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In [*Chapter 1*](B16192_01_Final_PG_ePub.xhtml#_idTextAnchor014), *Introduction
+    to Kubernetes Infrastructure and Production-Readiness*, we learned about the infrastructure
+    design principles that we will follow during the book. I would like to start this
+    chapter by highlighting the notable principles that influenced the cloud-native
+    data management suggestions and the technical decisions in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Simplication**: In this chapter, we will retain our commitment to the simplification
+    principle. Unless you are operating in a multi-cloud environment, it is not necessary
+    to introduce new tools and complicate operations. On public clouds, we will use
+    the native storage data management technology stack provided, and which is supported
+    by your managed service vendor. Many stateful applications today are designed
+    to fail and provide built-in, high-availability functionality. We will identify
+    different types of stateful applications and learn how to simply data paths and
+    fine-tune for performance. We will also learn the additional design principles
+    to achieve higher availability across availability zones, as well as unifying
+    data management in on-premises and hybrid cloud environments.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Cloud agnostic**: Data has gravity. When running stateless applications,
+    cloud vendor lock-in may not be as important since container images can be brought
+    up almost instantly on any infrastructure, but when dealing with stateful workloads,
+    it is easy to get into this situation. We will use cloud-native solutions to abstract
+    storage layers and eliminate dependencies. The solutions we will implement will
+    work exactly the same way on any cloud provider, managed Kubernetes service, and
+    even on a self-managed on-premise environment.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Design for availability**: CSI is great, but, at the same time, it is nothing
+    more than standardized APIs. Your data still needs to be stored on a highly available
+    media somewhere. It is important to consider the blast radius of your storage
+    solution. It doesn''t make sense to store your loosely coupled applications in
+    a single scale-out storage solution, or on a legacy storage appliance. Doing so
+    would create scale bottlenecks and will slow you down along the way. We will learn
+    the benefits of cloud-native storage solutions. We will also learn how to use
+    snapshots, clones, and backups for increased service availability and quick service
+    recovery.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Automation**: You can''t automate your CI/CD pipelines unless everything
+    can be dynamically provisioned. We will learn about Kubernetes storage primitives
+    and the use of dynamic provisioners.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In this section, we have covered the implementation principles we will be following
+    when making storage provider decisions. Let's now take a look at some of the common
+    stateful application challenges we will need to address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the challenges with stateful applications
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Kubernetes was initially built for stateless applications in order to keep containers
+    portable. Even when we run stateful applications, the applications themselves
+    are actually very often stateless containers where the state is stored separately
+    and mounted from a resource called **Persistent Volume** (**PV**). We will learn
+    the different resource types used to maintain state and also keep some form of
+    flexibility later in the *Understanding storage primitives in Kubernetes* section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I would like to highlight the six notable stateful application challenges that
+    we will try to address in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Deployment challenges**: Especially when running a mission-critical service
+    in production, finding the ideal deployment method of a certain stateful application
+    can be challenging to start with. Should we use a YAML file we found in a blog
+    article, open source repository examples, Helm charts, or an operator? Your choice
+    will have an impact on future scalability, manageability, upgrades, and service
+    recoverability. We will learn the best practices to follow for deploying a stateful
+    application later in this chapter in the *Deploying stateful applications* section.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Persistency challenges**: Storing the actual persistent data that makes the
+    application stateful needs to be carefully picked. You should never store the
+    state inside the application container itself since the container images and pods
+    can be restarted and updated, which would result in losing the data. Similarly,
+    if you are running your cluster across multiple availability zones on top of EBS
+    volumes when a node is restarted, your application may come up in a node located
+    on a separate availability zone with no access to previous EBS volumes. In that
+    case, you should consider a container-attached storage solution with across **availability
+    zone** (**AZ**) replication functionality.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: On the other hand, if your application is a distributed database with built-in
+    high availability, adding an additional layer of high availability from a storage
+    provider would have a negative impact on capacity, cost, and performance. Persistency
+    decisions need to carefully consider an application's requirements.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '**Scalability challenges**: One of the main reasons behind the popularity of
+    the Kubernetes orchestration platform is the flexibility of scaling up services.
+    Kubernetes platforms allow you to start on a single worker node and dynamically
+    scale up to thousands of nodes according to demand and increasing loads. Not every
+    storage solution is designed for scale. We will learn the best practices to follow
+    and the differences between the storage options to consider when deploying a scalable
+    stateful application later in this chapter in the *Choosing a persistent storage
+    solution* section.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Mobility challenges**: Data mobility means being able to get data where and
+    when you need it. Especially in an infrastructure where hybrid or multi-cloud
+    are requirements, your choice of storage provider becomes a key factor. This requirement
+    is also aligned with the cloud-agnostic design principles that we introduced in
+    [*Chapter 1*](B16192_01_Final_PG_ePub.xhtml#_idTextAnchor014), *Introduction to
+    Kubernetes Infrastructure and Production-Readiness*. If needed, your stateful
+    applications should be able to migrate to different zones and even different storage
+    and cloud vendors.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Life cycle manageability challenges**: The real challenge starts after you
+    deploy your stateful applications. Day two operations need to be planned in advance
+    before you go to production with your services. This sometimes creates a dependency
+    and requirement on your deployment method as well. You need to pick the deployment
+    method that will support rollover upgrades, monitoring, observability, and troubleshooting.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Disaster recovery (DR) and backup challenges**: You need to plan for service
+    availability in case of application and or infrastructure failures. Your data
+    needs to be backed up on a regular basis. Some applications may require application-consistent
+    backups, and some might be good with just crash-consistent backups. CSI-operated
+    snapshots and copying that data to object storage needs to be scheduled. Taking
+    a backup is one side of the problem, but being able to recover from your backup
+    in a timely fashion is another challenge. When there is a service outage, end
+    user service impact is measured using mainly two data points; the **Recovery Time
+    Objective** (**RTO**) and the **Recovery Point Objective** (**RPO**). RTO measures
+    the time required to bring a service back, while RPO measures the backup frequency.
+    Data created by your application may grow quickly when you go to production with
+    your services. Recovering a large amount of data from S3-like object storage will
+    take time. In that case, stream backup solutions need to be considered. This requirement
+    is also aligned with the *design for availability* design principles that I introduced
+    in [*Chapter 1*](B16192_01_Final_PG_ePub.xhtml#_idTextAnchor014), *Introduction
+    to Kubernetes Infrastructure and Production-Readiness*. If needed, your application
+    needs to be able to switch to its DR copy as quickly as possible with minimal
+    downtime.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These six core challenges contribute to the architectural design decisions we
+    need to make in order to run stateful applications in production. We will consider
+    these challenges later in this chapter when we evaluate our storage options and
+    make a relevant technical decision based on it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tuning Kubernetes storage
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: At some point, we have all experienced and been frustrated by storage performance
+    and the technical limitations of it. In this chapter, we will learn the fundamentals
+    of Kubernetes storage, including storage primitives, creating static **persistent
+    volumes** (**PVs**), and using storage classes to provision dynamic PVs to simplify
+    management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding containerized stateful applications requires us to get into the
+    cloud-native mindset. Although referred to as stateful, data used by pods is either
+    accessed remotely or orchestrated and stored in Kubernetes as separate resources.
+    Therefore, some flexibility is maintained to schedule applications across worker
+    nodes and update when needed without losing the data. Before we get into the tuning,
+    let's understand some of the basic storage primitives in Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding storage primitives in Kubernetes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The beauty of Kubernetes is that every part of it is abstracted as an object
+    that can be managed and configured declaratively with YAML or JSON through the
+    `kube-api` server. This makes Kubernetes configuration easier to manage as code.
+    Storage is also handled as abstracted objects. To be able to understand the reasoning
+    behind the best practices, I highly recommend that you learn the separation of
+    the storage object. In this section, we will learn the following core storage
+    primitives to request persistent storage from Kubernetes and orchestrate the provisioning
+    through storage providers associated with it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Volume
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Persistent Volume** (**PV**)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Persistent Volume Claim** (**PVC**)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Storage Class** (**SC**)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's discuss each of these in the following sections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Volumes
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Kubernetes volumes are basically just a directory accessible to the applications
+    running in containers in a pod. How this directory is created and protected, and
+    where it is stored really depends on the type of volume used, which makes this
+    a critical decision when running stateful applications in production. Kubernetes
+    supports many types of volumes. For a detailed list of support volume types, refer
+    to the official Kubernetes documentation at [https://kubernetes.io/docs/concepts/storage/volumes/](https://kubernetes.io/docs/concepts/storage/volumes/).
+    Some of the volume types are ephemeral, in other words, their lifespan is limited
+    to its pod. Therefore, they should only be used for stateless applications where
+    the persistency of data is not necessary across restarts. In the context of stateful
+    applications, our focus is PV types, including remote PVs and local PVs. Let's
+    now learn about the use of PV objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: PVs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: PVs are volumes that can retain the data during pod restarts or other resource
+    failures. PVs can be created either statically in advance or dynamically when
+    requested by the user application. I will explain the use of static or dynamic
+    PV objects with a practical example while we deploy a Percona server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find the complete source code at [https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/pv-percona.yaml](https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/pv-percona.yaml).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s start with a static volume to understand its limitations, in other words,
+    the value and logic behind the dynamic provisioning:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create an AWS Elastic Block Store volume with a size of 100 GB using the volume
+    type `gp2`. Make sure that the EBS volume is in the same availability zone as
+    your Kubernetes worker nodes:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Repeat the previous step to create one volume per worker node available in
+    your cluster. If you have three nodes available, then create a total of three
+    volumes. Execute the following command to get the list of `InstanceId` strings
+    for the nodes:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Execute the following command to attach each volume you have created to one
+    worker node in your cluster at a time using the AWS CLI. Replace `WORKER_NODE_ID`
+    and `VOLUME_ID` from the output of step 1:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a Kubernetes PV named `percona-pv1` with a size of `5Gi` in the following
+    path – `stateful/percona/pv-percona.yaml`. Make sure to replace `volumeID` with
+    a valid volume ID of your EBS volume:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Execute the following `kubectl` command to create a static PV in the cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now you have created a PV that can bind to your stateful application. As you
+    can see, if you have a dynamically scaling environment, creating volumes manually
+    in advance will not provide a scalable option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: PV claims
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A **PV claim** (**PVC**) is a request for storage. PVC requests can be fulfilled
+    either by static or dynamic PVs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find the complete source code at [https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/pvc-percona.yaml](https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/pvc-percona.yaml).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here, we will create a PVC manifest to request the static PV we created earlier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a PVC named `percona-pv1` with a size of `5Gi` in the following path
+    – `stateful/percona/pvc-percona.yaml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'In the following part of the template, we will set `storageClassName` to blank.
+    Otherwise, the default storage class will be used and a PV is created dynamically
+    using the default storage provisioner. This time, we are specifically requesting
+    a PV with no storage class specified, so it can only be bound to our existing
+    PV:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Execute the following `kubectl` command to create a PVC object in the cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Important note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: You can find the complete source code at [https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/deployment-percona.yaml](https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/deployment-percona.yaml).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'In the following code snippet, you create the `percona` deployment that will
+    use the PVC to request the PV we created earlier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a Kubernetes secret to keep the Percona root password by executing the
+    following command. This will be used in the deployment later. You can read more
+    about the detailed usage of Kubernetes secrets at [https://kubernetes.io/docs/concepts/configuration/secret/](https://kubernetes.io/docs/concepts/configuration/secret/):'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create the template for the `percona` deployment in the following path – `stateful/percona/deployment-percona.yaml`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'In the following part of the template, we will define the `volumeMounts` using
+    the name `percona-volume`, with the `mountPath` parameter configured as the path
+    `/var/lib/mysql`, where your PV will be mounted inside the container:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Finally, in the following part of the template, we will define where your request
+    will be directed. In our case, as defined before in the case of `claimName`, this
+    should be `percona-pvc`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Execute the following `kubectl` command to create `percona` deployment in the
+    cluster:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now you have created a stateful application deployment with a binding to a static
+    PV. Although it can be useful to know how to clone an existing volume and mount
+    it to a new pod, this is not a scalable solution. Therefore, we will now learn
+    about the dynamic provisioning of PVs using `StorageClass`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Storage class
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The `StorageClass` object allows dynamic provisioning requests through a PVC.
+    You can maintain multiple classes that map to different availability and QoS levels
+    using internal or external third-party provisioners. The `StorageClass` concept
+    is similar to tiers or profiles in traditional storage solutions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find the complete source code at [https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/deployment-percona.yaml](https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/deployment-percona.yaml).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s review a `StorageClass` template used for provisioning EBS volumes on
+    AWS:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the following part of the template, we set `StorageClass` as the default
+    storage class. It is highly recommended good practice to set a default storage
+    class, so PVCs missing the `storageClassName` field are automatically assigned
+    to your default class:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the following part of the template, we set the EBS volume type to `gp2`,
+    with AWS EBS volumes of `io1`, `gp2`, `sc1`, or `st1`. You can read about the
+    differences in the official AWS documentation at [https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html).
+    We also set `fsType` to `ext4`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the following part of the template, we set the `provisioner` type to `kubernetes.io/aws-ebs`.
+    This field can be internal or an external provisioner. In our following template,
+    it is set to Kubernetes'' internal `aws-ebs` provisioner, `kubernetes.io/aws-ebs`.
+    We will review the available storage options later in this chapter in the *Choosing
+    a persistent storage solution* section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`reclaimPolicy` can be set to `Delete`, `Recycle`, or `Retain` and it defines
+    the action when a corresponding PVC is deleted. When `Retain` is selected, after
+    the PVC is removed, the PV is moved to the `Released` state. Hence, `Retain` is
+    the suggested option to avoid accidents.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `allowVolumeExpansion` field is used if you need to request a larger size
+    PVC later and you want the same volume to be resized instead of getting a new
+    volume. You can only expand a PVC if its storage class has the `allowVolumeExpansion`
+    parameter set to `true`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS EBS volume expansions can take time and one modification is allowed every
+    6 hours.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`volumeBindingMode` can be set to `Immediate` or `WaitForFirstConsumer`. This
+    parameter stipulates when the volume binding should occur.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To learn about the remainder of the `StorageClass` parameters, please check
+    the official Kubernetes documentation here: [https://kubernetes.io/docs/concepts/storage/storage-classes/](https://kubernetes.io/docs/concepts/storage/storage-classes/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important note
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find the complete source code at [https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/deployment-percona-sc.yaml](https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter07/stateful/percona/deployment-percona-sc.yaml).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we will modify the `pvc-percona.yaml` and `deployment-percona.yaml` manifest
+    files. We will adjust the `percona` deployment to use a storage class to dynamically
+    request a PV through a PVC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Edit the template for the `percona-pvc` PVC in this path, `stateful/percona/pvc-percona.yaml`,
+    using your preferred text editor. Adjust the name and `storageClassName` fields
+    as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Edit the template for the `percona` deployment in this path, `stateful/percona/deployment-percona.yaml`,
+    using your preferred text editor. Adjust the last line, `claimName`, as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Execute the following `kubectl` commands to create a `percona` deployment in
+    the cluster using a dynamically provisioned PV:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now you have created a stateful application deployment with a binding to a dynamically
+    provisioned PV using `StorageClass`. This step completely eliminated the need
+    for manual EBS volume creation. Therefore, we will use this method later in this
+    chapter when creating new stateful applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choosing a persistent storage solution
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Two of the biggest stateful application challenges in Kubernetes are storage
+    orchestration and data management. There are an infinite number of solutions out
+    there. First, we will explain the main storage attributes and topologies we need
+    to consider when evaluating storage alternatives. Let''s review the topologies
+    used by the most common storage systems:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Centralized**: Traditional, or also referred to as monolithic, storage systems
+    are most often tightly coupled with a proprietary hardware and internal communication
+    protocols. They are usually associated with scale-up models since it is difficult
+    to scale-out tightly coupled components of the storage nodes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Distributed**: Distributed storage systems are more likely to be a software-defined
+    solution and they may be architected to favor availability, consistency, durability,
+    performance, or scalability. Usually, distributed systems scale out better than
+    others to support many storage server nodes in parallel.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Hyperconverged**: Hyperconverged storage solutions are designed to take advantage
+    of the same network and compute resources where the applications run. They are
+    largely designed to run as software and are orchestrated by the same platform
+    used to manage applications, VMs, or containers, such as a hypervisor or container
+    orchestrators.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Sharded**: Sharded storage solutions partition the data into datasets and
+    store them across multiple nodes. Sharded storage solutions can be complex to
+    manage and rebalance and performance is limited to the performance of a single
+    node where the dataset is located.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The category of storage solutions available for the cloud-native application
+    is known as cloud-native storage by the **Cloud Native Computing Foundation**
+    (**CNCF**). Currently, there are 17 open source and 32 proprietary solutions,
+    hence a total of 49 solutions, listed in the category.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For the most up-to-date list of solutions, you can refer to the official CNCF
+    cloud-native interactive landscape documentation at [https://landscape.cncf.io/](https://landscape.cncf.io/):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.1 – CNCF cloud-native landscape with cloud-native storage providers'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16192_07_001.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.1 – CNCF cloud-native landscape with cloud-native storage providers
+  prefs: []
+  type: TYPE_NORMAL
+- en: When the challenges mentioned in the *Understanding the challenges with stateful
+    applications* section are considered for the simplicity of the deployment and
+    life cycle management of block storage, **Container Attached Storage** (**CAS**)
+    and **Cloud Storage** are preferred over the centralized topology. To satisfy
+    persistence across different infrastructure and data mobility requirements, **CAS**
+    and **Distributed** solutions should be preferred over the solutions on the right.
+    When we talk about Kubernetes-grade scalability, again **Cloud Storage** and **CAS**
+    solutions offer significant advantages over the centralized topology. Overall,
+    **CAS** and **Cloud Storage** providers satisfy all the architectural concerns.
+    That said, on many occasions, we will have to utilize your company's existing
+    investment. Cloud storage is only available on the cloud vendor provided infrastructure,
+    and if you are running on-premises/private clouds, you may need to utilize your
+    existing hardware solutions. In that case, you can still leverage **CAS** solutions
+    to unify data management, add the advantages of cloud-native storage, including
+    data mobility and scalability, and simplify the life cycle management of PVs on
+    top of your investment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you have learned the storage topologies used by the most common storage
+    solutions, let's focus on how we can use a CAS solution to deploy a stateful application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying stateful applications
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Kubernetes provides a number of controller APIs to manage the deployment of
+    pods within a Kubernetes cluster. Initially designed for stateless applications,
+    these controllers are used to group pods based on need. In this section, we will
+    briefly learn the differences between the following Kubernetes objects – pods,
+    ReplicaSets, deployments, and StatefulSets. In the event of a node failure, individual
+    Pods will not be rescheduled on other nodes. Therefore, they should be avoided
+    when running stateful workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Deployments** are used when managing pods, and **ReplicaSets** when we need
+    to roll out changes to replica Pods. Both ReplicaSets and Deployments are used
+    when provisioning stateless applications. To learn about Deployments, please check
+    the official Kubernetes documentation here: [https://kubernetes.io/docs/concepts/workloads/controllers/deployment/](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**StatefulSets** are another controller that reached a **General Availability**
+    (**GA**) milestone with the release of Kubernetes 1.9\. The real adoption of stateful
+    applications started following the introduction of the StatefulSets object. With
+    StatefulSets, every pod replica has its own state, in other words, its own volume,
+    and therefore retains its state and identity across restarts. When deploying stateful
+    applications, and when we need storage to be stateful, we will use StatefulSets.
+    The following diagram shows the components of an application deployed using StatefulSets:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 7.2 – Kubernetes StatefulSet deployment diagram'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16192_07_002.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.2 – Kubernetes StatefulSet deployment diagram
+  prefs: []
+  type: TYPE_NORMAL
+- en: StatefulSets require a headless service for handling the network identity of
+    the related pods. When a StatefulSet requests volumes to be created, it uses the
+    StorageClass to call the PV provisioner. Earlier in this chapter, you learned
+    to use StorageClass to dynamically provision PVs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we deploy a stateful application, we will learn how to install one of
+    the popular open source storage provisioner options, OpenEBS, which we mentioned
+    in the *Choosing a persistent storage solution* section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing OpenEBS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: OpenEBS is an open source CNCF project for Kubernetes designed to enable stateful
+    applications to easily access dynamic local PVs, or replicated and highly available
+    PVs. OpenEBS is an example of the new category of cloud-native storage solutions
+    known as CAS. CAS solutions are easy to maintain, are portable, can run on any
+    platform, are scalable, and fulfil the infrastructure design principles that I
+    introduced in [*Chapter 1*](B16192_01_Final_PG_ePub.xhtml#_idTextAnchor014), *Introduction
+    to Kubernetes Infrastructure and Production-Readiness*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To learn more about its prerequisites and the detailed usage of OpenEBS, please
+    refer to the following link: [https://docs.openebs.io/](https://docs.openebs.io/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let''s install OpenEBS on your Kubernetes cluster and prepare your cluster
+    to provide dynamically provisioned PVs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a namespace called `openebs`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Add the OpenEBS Helm chart repository to your local repository list:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Update the Helm chart repositories:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Install `openebs` from its Helm repository:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Verify successful installation by executing the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The output of the preceding command should look as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 7.3 – List of the OpenEBS pods running following successful installation'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '](img/B16192_07_003.jpg)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Figure 7.3 – List of the OpenEBS pods running following successful installation
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you can use OpenEBS for dynamically creating PVs, you can either create
+    a new SC or use one of the default storage classes provided by OpenEBS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: OpenEBS provides various types of block storage options, including storage engines
+    called `Jiva`, `cStor`, and `Mayastor`, for persistent workloads that require
+    highly available volumes during node failures and `Dynamic Local PV` (device,
+    host path, ZFS) alternatives for distributed applications, such as Cassandra,
+    Elastic, Kafka, or MinIO.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Execute the following command to get the list of default storage classes in
+    your cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will notice the new storage classes, `openebs-device`, `openebs-hostpath`,
+    `openebs-jiva-default`, and `openebs-snapshot-promoter`, added to your list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is an example of a YAML manifest to create a PVC using the default `openebs-jiva-default`
+    storage class:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now you have learned who to create a PV for with your stateful applications
+    using an open source CAS alternative – OpenEBS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From now on, if running on an AWS infrastructure, you can continue to consume
+    your existing EBS volumes using the `gp2` storage class or the `ebs-sc` storage
+    class created earlier using `Amazon_EBS_CSI_Driver`, or take advantage of OpenEBS
+    to abstract data management. OpenEBS, in the same way as CAS solutions, helps
+    to reduce many of the challenges we described in the *Understanding the challenges
+    with stateful applications* section earlier in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have learned how to use storage provisioners to dynamically provision
+    a PV, let's use it, along with a stateful application, to simplify the life cycle
+    of data management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying a stateful application on OpenEBS volumes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: OpenEBS provides a flexible data plane with a few storage engines options that
+    are optimized for different application and performance expectations. You can
+    read about the differences between storage engines on the official OpenEBS documentation
+    site at [https://docs.openebs.io/docs/next/casengines.html](https://docs.openebs.io/docs/next/casengines.html).
+    Here, we will dive into one of the defaults, the low-footprint storage engine
+    option, `Jiva`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, we will modify the `pvc-percona.yaml` and `deployment-percona.yaml` manifest
+    files. We will adjust the `percona` deployment to use a StorageClass to dynamically
+    request a PV through a PVC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a `StorageClass` named `openebs-jiva-3r` with a `ReplicaCount` of `3`
+    in the following path – `stateful/percona/sc-openebs-jiva.yaml`. This will create
+    three copies of the volume and make it highly available in the event of node failure:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Execute the following `kubectl` command to create the StorageClass:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Edit the template for the `percona-pvc` PVC in this path, `stateful/percona/pvc-percona.yaml`,
+    using your preferred text editor. Adjust the name and `storageClassName` fields
+    as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Edit the template for the `percona` deployment in this path, `stateful/percona/deployment-percona.yaml`,
+    using your preferred text editor. Adjust the last line, `claimName`, as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Execute the following `kubectl` commands to create the `percona` deployment
+    in the cluster using a dynamically provisioned PV:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now you have created a stateful application deployment backed by dynamically
+    created OpenEBS PVs. This step helped us to abstract data management on cloud
+    and bare-metal or VM-based Kubernetes clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we learned the stateful application challenges and best practices
+    to consider when choosing the best storage management solutions, both open source
+    and commercial, and finally, the stateful application considerations when deploying
+    them in production using Kubernetes' StatefulSet and deployment objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We deployed the AWS EBS CSI driver and OpenEBS. We also created a highly available
+    replicated storage using OpenEBS and deployed our application on OpenEBS volumes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We gained a solid understanding of Kubernetes storage in this chapter, but you
+    should perform a detailed evaluation of your cluster storage requirements and
+    take further action to deploy any extra tools and configurations that may be required,
+    including your storage provider's CSI driver.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will learn in detail about seamless and reliable applications.
+    We will also get to grips with containerization best practices to easily scale
+    our applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You can refer to the following links for more information on the topics covered
+    in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Kubernetes – A Complete DevOps Cookbook* ([*Chapter 5*](B16192_05_Final_PG_ePub.xhtml#_idTextAnchor118),
+    *Preparing for Stateful Workloads*): [https://www.packtpub.com/product/kubernetes-a-complete-devops-cookbook/9781838828042](https://www.packtpub.com/product/kubernetes-a-complete-devops-cookbook/9781838828042).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Kubernetes Container Storage Interface (CSI) Documentation*:[https://kubernetes-csi.github.io/docs/introduction.html](https://kubernetes-csi.github.io/docs/introduction.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*QuickStart Guide to OpenEBS*: [https://docs.openebs.io/docs/next/quickstart.html](https://docs.openebs.io/docs/next/quickstart.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

@@ -1,0 +1,1347 @@
+- en: Working with Networking, Load Balancers, and Ingress
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we will discuss Kubernetes' approach to cluster networking
+    and how it differs from other approaches. We will describe key requirements for
+    Kubernetes networking solutions and explore why these are essential for simplifying
+    cluster operations. We will investigate DNS in the Kubernetes cluster, dig into
+    the **Container Network Interface** (**CNI**) and plugin ecosystems, and will
+    take a deeper dive into services and how the Kubernetes proxy works on each node.
+    Finishing up, we will look at a brief overview of some higher level isolation
+    features for multitenancy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes networking
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Advanced services concepts
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Service discovery
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: DNS, CNI, and ingress
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Namespace limits and quotas
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You'll need a running Kubernetes cluster like the one we created in the previous
+    chapters. You'll also need access to deploy the cluster through the `kubectl`
+    command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The GitHub repository for this chapter can be found at [https://github.com/PacktPublishing/Getting-Started-with-Kubernetes-third-edition/tree/master/Code-files/Chapter03](https://github.com/PacktPublishing/Getting-Started-with-Kubernetes-third-edition/tree/master/Code-files/Chapter03).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Container networking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Networking is a vital concern for production-level operations. At a service
+    level, we need a reliable way for our application components to find and communicate
+    with each other. Introducing containers and clustering into the mix makes things
+    more complex as we now have multiple networking namespaces to bear in mind. Communication
+    and discovery now becomes a feat that must navigate container IP space, host networking,
+    and sometimes even multiple data center network topologies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes benefits here from getting its ancestry from the clustering tools
+    used by Google for the past decade. Networking is one area where Google has outpaced
+    the competition with one of the largest networks on the planet. Earlier, Google
+    built its own hardware switches and **Software-defined Networking** (**SDN**)
+    to give them more control, redundancy, and efficiency in their day-to-day network
+    operations. Many of the lessons learned from running and networking two billion
+    containers per week have been distilled into Kubernetes, and informed how K8s
+    networking is done.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Docker approach
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In order to understand the motivation behind the K8s networking model, let's
+    review Docker's approach to container networking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker default networks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The following are some of Docker''s default networks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Bridge network**: In a nonswarm scenario, Docker will use the bridge network
+    driver (called `bridge`) to allow standalone containers to speak to each other.
+    You can think of the bridge as a link layer device that forwards network traffic
+    between segments. If containers are connected to the same bridge network, they
+    can communicate; if they''re not connected, they can''t. The bridged network is
+    the default choice unless otherwise specified. In this mode, the container has
+    its own networking namespace and is then bridged via virtual interfaces to the
+    host (or node, in the case of K8s) network. In the bridged network, two containers
+    can use the same IP range because they are completely isolated. Therefore, service
+    communication requires some additional port mapping through the host side of network
+    interfaces.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Host based**: Docker also offers host-based networking for standalone containers,
+    which creates a virtual bridge called `docker0` that allocates private IP address
+    space for the containers using that bridge. Each container gets a virtual Ethernet
+    (`veth`) device that you can see in the container as `eth0`. Performance is greatly
+    benefited since it removes a level of network virtualization; however, you lose
+    the security of having an isolated network namespace. Additionally, port usage
+    must be managed more carefully since all containers share an IP.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There's also a none network, which creates a container with no external interface.
+    Only a `loopback` device is shown if you inspect the network interfaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In all of these scenarios, we are still on a single machine, and outside of 
+    host mode, the container IP space is not available outside that machine. Connecting
+    containers across two machines requires NAT and port mapping for communication.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker user-defined networks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In order to address the cross-machine communication issue and allow greater
+    flexibility, Docker also supports user-defined networks via network plugins. These
+    networks exist independent of the containers themselves. In this way, containers
+    can join the same existing networks. Through the new plugin architecture, various
+    drivers can be provided for different network use cases such as the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Swarm**: In a clustered situation with Swarm, the default behavior is an
+    overlay network, which allows you to connect multiple Docker daemons running on
+    multiple machines. In order to coordinate across multiple hosts, all containers
+    and daemons must all agree on the available networks and their topologies. Overlay
+    networking introduces a significant amount of complexity with dynamic port mapping
+    that Kubernetes avoids.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can read more about overlay networks here: [https://docs.docker.com/network/overlay/](https://docs.docker.com/network/overlay/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Macvlan**: Docker also provides macvlan addressing, which is most similar
+    to the networking model that Kubernetes provides, as it assigns each Docker container
+    a MAC address that makes it appear as a physical device on your network. Macvlan
+    offers a more efficient network virtualization and isolation as it bypasses the
+    Linux bridge. It is important to note that as of this book''s publishing, Macvlan
+    isn''t supported in most cloud providers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As a result of these options, Docker must manage complex port allocation on
+    a per-machine basis for each host IP, and that information must be maintained
+    and propagated to all other machines in the cluster. Docker users a gossip protocol
+    to manage the forwarding and proxying of ports to other containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Kubernetes approach
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Kubernetes'' approach to networking differs from the Docker''s, so let''s see
+    how. We can learn about Kubernetes while considering four major topics in cluster
+    scheduling and orchestration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Decoupling container-to-container communication by providing pods, not containers,
+    with an IP address space
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pod-to-pod communication and service as the dominant communication paradigm
+    within the Kubernetes networking model
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pod-to-service and external-to-service communications, which are provided by
+    the `services` object
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These considerations are a meaningful simplification for the Kubernetes networking
+    model, as there's no dynamic port mapping to track. Again, IP addressing is scoped
+    at the pod level, which means that networking in Kubernetes requires that each
+    pod has its own IP address. This means that all containers in a given pod share
+    that IP address, and are considered to be in the same network namespace. We'll
+    explore how to manage this shared IP resource when we discuss internal and external
+    services later in this chapter. Kubernetes facilitates the pod-to-pod communication
+    by not allowing the use of **network address translation** (**NAT**) for container-to-container
+    or container-to-node (minion) traffic. Furthermore, the internal container IP
+    address must match the IP address that is used to communicate with it. This underlines
+    the Kubernetes assumption that all pods are able to communicate with all other
+    pods regardless of the host they've landed on, and that communication then informs
+    routing within pods to a local IP address space that is provided to containers.
+    All containers within a given host can communicate with each other on their reserved
+    ports via localhost. This unNATed, flat IP space simplifies networking changes
+    when you begin scaling to thousands of pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These rules keep much of the complexity out of our networking stack and ease
+    the design of the applications. Furthermore, they eliminate the need to redesign
+    network communication in legacy applications that are migrated from existing infrastructure.
+    In greenfield applications, they allow for a greater scale in handling hundreds,
+    or even thousands of services and application communications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Astute readers may have also noticed that this creates a model that's backwards
+    compatible with VMs and physical hosts that have a similar IP architecture as
+    pods, with a single address per VM or physical host. This means you don't have
+    to change your approach to service discovery, loadbalancing, application configuration,
+    and port management, and can port over your application management workflows when
+    working with Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: K8s achieves this pod-wide IP magic using a pod container placeholder. Remember
+    that the pause container that we saw in [Chapter 1](https://cdp.packtpub.com/getting_started_with_kubernetes__third_edition/wp-admin/post.php?post=26&action=edit#post_70),
+    *Introduction to Kubernetes*, in the *Services running on the master* section,
+    is often referred to as a pod infrastructure container, and it has the important
+    job of reserving the network resources for our application containers that will
+    be started later on. Essentially, the pause container holds the networking namespace
+    and IP address for the entire pod, and can be used by all the containers running
+    within. The pause container joins first and holds the namespace while the subsequent
+    containers in the pod join it when they start up using Docker's `--net=container:%ID%`
+    function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you'd like to look over the code in the pause container, it's right here: **[https://github.com/kubernetes/kubernetes/blob/master/build/pause/pause.c](https://github.com/kubernetes/kubernetes/blob/master/build/pause/pause.c)**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes can achieve the preceding feature set using either CNI plugins for
+    production workloads or kubenet networking for simplified cluster communication.
+    Kubernetes can also be used when your cluster is going to rely on logical partioning
+    provided by a cloud service provider's security groups or **network access control
+    lists** (**NACLs**). Let's dig into the specific networking options now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Networking options
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There are two approaches to the networking model that we have suggested. First,
+    you can use one of the CNI plugins that exist in the ecosystem. This involves
+    solutions that work with native networking layers of AWS, GCP, and Azure. There
+    are also overlay-friendly plugins, which we'll cover in the next section. CNI
+    is meant to be a common plugin architecture for containers. It's currently supported
+    by several orchestration tools such as Kubernetes, Mesos, and CloudFoundry.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Network plugins are considered in alpha and therefore their capabilities, content,
+    and configuration will change rapidly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you're looking for a simpler alternative for testing and using smaller clusters,
+    you can use the kubenet plugin, which uses `bridge` and `host-local` CNI plugs
+    with a straightforward implementation of `cbr0`. This plugin is only available
+    on Linux, and doesn't provide any advanced features. As it's often used with the
+    supplementation of a cloud provider's networking stance, it does not handle policies
+    or cross-node networking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Just as with CPU, memory, and storage, Kubernetes takes advantage of network
+    namespaces, each with their own iptables rules, interfaces, and route tables.
+     Kubernetes uses iptables and NAT to manage multiple logical addresses that sit
+    behind a single physical address, though you have the option to provide your cluster
+    with multiple physical interfaces (NICs). Most people will find themselves generating
+    multiple logical interfaces and using technologies such as multiplexing, virtual
+    bridges, and hardware switching using SR-IOV in order to create multiple devices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find out more information at **[https://github.com/containernetworking/cni](https://github.com/containernetworking/cni)**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Always refer to the Kubernetes documentation for the latest and full list of
+    supported networking options.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Networking comparisons
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To get a better understanding of networking in containers, it can be instructive
+    to look at the popular choices for container networking. The following approaches do
+    not make an exhaustive list, but should give a taste of the options available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Weave
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '**Weave** provides an overlay network for Docker containers. It can be used
+    as a plugin with the new Docker network plugin interface, and it is also compatible
+    with Kubernetes through a CNI plugin. Like many overlay networks, many criticize
+    the performance impact of the encapsulation overhead. Note that they have recently
+    added a preview release with **Virtual Extensible LAN** (**VXLAN**) encapsulation
+    support, which greatly improves performance. For more information, visit [http://blog.weave.works/2015/06/12/weave-fast-datapath/](http://blog.weave.works/2015/06/12/weave-fast-datapath/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[ ](http://blog.weave.works/2015/06/12/weave-fast-datapath/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Flannel
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '**Flannel** comes from CoreOS and is an etcd-backed overlay. Flannel gives
+    a full subnet to each host/node, enabling a similar pattern to the Kubernetes
+    practice of a routable IP per pod or group of containers. Flannel includes an
+    in-kernel VXLAN encapsulation mode for better performance and has an experimental
+    multi-network mode similar to the overlay Docker plugin. For more information,
+    visit [https://github.com/coreos/flannel](https://github.com/coreos/flannel).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Project Calico
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '**Project Calico** is a layer 3-based networking model that uses the built-in
+    routing functions of the Linux kernel. Routes are propagated to virtual routers
+    on each host via **Border Gateway Protocol** (**BGP**). Calico can be used for
+    anything from small-scale deploys to large internet-scale installations. Because
+    it works at a lower level on the network stack, there is no need for additional
+    NAT, tunneling, or overlays. It can interact directly with the underlying network
+    infrastructure. Additionally, it has a support for network-level ACLs to provide
+    additional isolation and security. For more information, visit [http://www.projectcalico.org/](http://www.projectcalico.org/).
+    [](http://www.projectcalico.org/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Canal
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '**Canal** merges both Calico for the network policy and Flannel for the overlay
+    into one solution. It supports both Calico and Flannel type overlays and uses
+    the Calico policy enforcement logic. Users can choose from overlay and non-overlay
+    options with this setup as it combines the features of the preceding two projects.
+    For more information, visit [https://github.com/tigera/canal](https://github.com/tigera/canal).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kube-router
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Kube-router option is a purpose-built networking solution that aims to provide
+    high performance that's easy to use. It's based on the Linux LVS/IPVS kernel load
+    balancing technologies as proxy. It also uses kernel-based networking and uses
+    iptables as a network policy enforcer. Since it doesn't use an overlay technology,
+    it's potentially a high-performance option for the future. For more information,
+    visit the following URL: [https://github.com/cloudnativelabs/kube-router](https://github.com/cloudnativelabs/kube-router).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Balanced design
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It's important to point out the balance that Kubernetes is trying to achieve
+    by placing the IP at the pod level. Using unique IP addresses at the host level
+    is problematic as the number of containers grows. Ports must be used to expose
+    services on specific containers and allow external communication. In addition
+    to this, the complexity of running multiple services that may or may not know
+    about each other (and their custom ports) and managing the port space becomes
+    a big issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, assigning an IP address to each container can be overkill. In cases
+    of sizable scale, overlay networks and NATs are needed in order to address each
+    container. Overlay networks add latency, and IP addresses would be taken up by
+    backend services as well since they need to communicate with their frontend counterparts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, we really see an advantage in the abstractions that Kubernetes provides
+    at the application and service level. If I have a web server and a database, we
+    can keep them on the same pod and use a single IP address. The web server and
+    database can use the local interface and standard ports to communicate, and no
+    custom setup is required. Furthermore, services on the backend are not needlessly
+    exposed to other application stacks running elsewhere in the cluster (but possibly
+    on the same host). Since the pod sees the same IP address that the applications
+    running within it see, service discovery does not require any additional translation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you need the flexibility of an overlay network, you can still use an overlay
+    at the pod level. Weave, Flannel, and Project Calico can be used with Kubernetes
+    as well as a plethora of other plugins and overlays that are available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is also very helpful in the context of scheduling the workloads. It is
+    key to have a simple and standard structure for the scheduler to match constraints
+    and understand where space exists on the cluster's network at any given time.
+    This is a dynamic environment with a variety of applications and tasks running,
+    so any additional complexity here will have rippling effects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are also implications for service discovery. New services coming online
+    must determine and register an IP address on which the rest of the world, or at
+    least a cluster, can reach them. If NAT is used, the services will need an additional
+    mechanism to learn their externally facing IP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Advanced services
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's explore the IP strategy as it relates to services and communication between
+    containers. If you recall, in the *Services* section of Chapter 2, *Pods, Services,
+    Replication Controllers, and Labels*, you learned that Kubernetes is using `kube-proxy`
+    to determine the proper pod IP address and port serving each request. Behind the
+    scenes, `kube-proxy` is actually using virtual IPs and iptables to make all this
+    magic work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`kube-proxy` now has two modes—*userspace* and *iptables*. As of now, 1.2 iptables
+    is the default mode. In both modes, `kube-proxy` is running on every host. Its
+    first duty is to monitor the API from the Kubernetes master. Any updates to services
+    will trigger an update to iptables from `kube-proxy`. For example, when a new
+    service is created, a virtual IP address is chosen and a rule in iptables is set,
+    which will direct its traffic to `kube-proxy` via a random port. Thus, we now
+    have a way to capture service-destined traffic on this node. Since `kube-proxy`
+    is running on all nodes, we have cluster-wide resolution for the service **VIP**
+    (short for **virtual IP**). Additionally, DNS records can point to this VIP as
+    well.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the userspace mode,we have a hook created in iptables, but the proxying of
+    traffic is still handled by `kube-proxy`. The iptables rule is only sending traffic
+    to the service entry in `kube-proxy` at this point. Once `kube-proxy` receives
+    the traffic for a particular service, it must then forward it to a pod in the
+    service's pool of candidates. It does this using a random port that was selected
+    during service creation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Refer to the following diagram for an overview of the flow:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/7e34dd71-9107-4e88-9d3d-947eced58681.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Kube-proxy communication
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is also possible to always forward traffic from the same client IP to the
+    same backend pod/container using the `sessionAffinity` element in your service
+    definition.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the iptables mode, the pods are coded directly in the iptable rules. This
+    removes the dependency on `kube-proxy` for actually proxying the traffic. The
+    request will go straight to iptables and then on to the pod. This is faster and
+    removes a possible point of failure. Readiness probe, as we discussed in the *Health
+    Check *section of Chapter 2, *Pods, Services, Replication Controllers, and Labels*, is your
+    friend here as this mode also loses the ability to retry pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: External services
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In the previous chapter, we saw a few service examples. For testing and demonstration
+    purposes, we wanted all the services to be externally accessible. This was configured
+    by the `type: LoadBalancer` element in our service definition. The `LoadBalancer`
+    type creates an external load balancer on the cloud provider. We should note that
+    support for external load balancers varies by provider, as does the implementation.
+    In our case, we are using GCE, so integration is pretty smooth. The only additional
+    setup needed is to open firewall rules for the external service ports.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s dig a little deeper and do a `describe` command on one of the services
+    from the *More on labels* section in Chapter 2, *Pods, Services, Replication Controllers,
+    and Labels*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following screenshot is the result of the preceding command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/4e9a1c4f-8a04-4ef7-b7cc-41ea5396e833.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Service description
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the output of the preceding screenshot, you'll note several key elements.
+    Our `Namespace:` is set to `default`, the `Type:` is `LoadBalancer`, and we have
+    the external IP listed under `LoadBalancer Ingress:`. Furthermore, we can see
+    `Endpoints:`, which shows us the IPs of the pods that are available to answer
+    service requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Service discovery
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As we discussed earlier, the Kubernetes master keeps track of all service definitions
+    and updates. Discovery can occur in one of three ways. The first two methods use
+    Linux environment variables. There is support for the Docker link style of environment
+    variables, but Kubernetes also has its own naming convention. Here is an example
+    of what our `node-js` service example might look like using K8s environment variables
+    (note that IPs will vary):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Another option for discovery is through DNS. While environment variables can
+    be useful when DNS is not available, it has drawbacks. The system only creates
+    variables at creation time, so services that come online later will not be discovered
+    or will require some additional tooling to update all the system environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Internal services
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s explore the other types of services that we can deploy. First, by default,
+    services are only internally facing. You can specify a type of `clusterIP` to
+    achieve this, but, if no type is defined, `clusterIP` is the assumed type. Let''s
+    take a look at an example, `nodejs-service-internal.yaml`; note the lack of the
+    `type` element:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Use this listing to create the service definition file. You''ll need a healthy
+    version of the `node-js` RC (Listing `nodejs-health-controller-2.yaml`). As you
+    can see, the selector matches on the pods named `node-js` that our RC launched
+    in the previous chapter. We will create the service and then list the currently
+    running services with a filter as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following screenshot is the result of the preceding command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2ad58904-bda0-4cc4-955b-6d32a05d3ceb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Internal service listing
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As you can see, we have a new service, but only one IP. Furthermore, the IP
+    address is not externally accessible. We won''t be able to test the service from
+    a web browser this time. However, we can use the handy `kubectl exec` command
+    and attempt to connect from one of the other pods. You will need `node-js-pod`
+    (`nodejs-pod.yaml`) running. Then, you can execute the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: This allows us to run a `docker exec` command as if we had a shell in the `node-js-pod`
+    container. It then hits the internal service URL, which forwards to any pods with
+    the `node-js` label.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If all is well, you should get the raw HTML output back. You have successfully
+    created an internal-only service. This can be useful for backend services that
+    you want to make available to other containers running in your cluster, but not
+    open to the world at large.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Custom load balancing
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'A third type of service that K8s allows is the `NodePort` type. This type allows
+    us to expose a service through the host or node (minion) on a specific port. In
+    this way, we can use the IP address of any node (minion) and access our service
+    on the assigned node port. Kubernetes will assign a node port by default in the
+    range of `3000`-`32767`, but you can also specify your own custom port. In the
+    example in the following listing `nodejs-service-nodeport.yaml`, we choose port
+    `30001`, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once again, create this YAML definition file and create your service, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output should have a message like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/eb464d3d-f14e-4e0f-b00f-99768befc422.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: New GCP firewall rule
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note message about opening firewall ports. Similar to the external load balancer
+    type, `NodePort` is exposing your service externally using ports on the nodes.
+    This could be useful if, for example, you want to use your own load balancer in
+    front of the nodes. Let's make sure that we open those ports on GCP before we
+    test our new service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From the GCE VM instance console, click on the details for any of your nodes
+    (minions). Then, click on the network, which is usually the default unless otherwise
+    specified during creation. In Firewall rules, we can add a rule by clicking on Add
+    firewall rule.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create a rule like the one shown in the following screenshot (`tcp:30001` on
+    the `0.0.0.0/0` IP range):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/18e6ed21-7667-42db-bf30-180f96d3a256.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Create a new firewall rule page
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now test our new service by opening a browser and using an IP address
+    of any node (minion) in your cluster. The format to test the new service is as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, the latest version has added an `ExternalName` type, which maps a `CNAME`
+    to the service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cross-node proxy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Remember that `kube-proxy` is running on all the nodes, so even if the pod
+    is not running there, the traffic will be given a proxy to the appropriate host.
+    Refer to the *Cross-node traffic* screenshot for a visual on how the traffic flows.
+    A user makes a request to an external IP or URL. The request is serviced by **Node** in
+    this case. However, the pod does not happen to run on this node. This is not a
+    problem because the pod IP addresses are routable. So, `kube-proxy` or **iptables**
+    simply passes traffic onto the pod IP for this service. The network routing then
+    completes on **Node 2**, where the requested application lives:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/d6f8a439-78ca-4975-91c2-0ea105849507.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Cross-node traffic
+  prefs: []
+  type: TYPE_NORMAL
+- en: Custom ports
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Services also allow you to map your traffic to different ports; then, the containers
+    and pods expose themselves. We will create a service that exposes port `90` and
+    forwards traffic to port `80` on the pods. We will call the `node-js-90` pod to
+    reflect the custom port number. Create the following two definition files, `nodejs-customPort-controller.yaml`
+    and `nodejs-customPort-service.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you are using the free trial for Google Cloud Platform, you may have issues
+    with the `LoadBalancer` type services. This type creates multiple external IP
+    addresses, but trial accounts are limited to only one static address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You'll note that in the service definition, we have a `targetPort` element.
+    This element tells the service the port to use for pods/containers in the pool.
+    As we saw in previous examples, if you do not specify `targetPort`, it assumes
+    that it's the same port as the service. This port is still used as the service
+    port, but, in this case, we are going to expose the service on port `90` while
+    the containers serve content on port `80`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create this RC and service and open the appropriate firewall rules, as we did
+    in the last example. It may take a moment for the external load balancer IP to
+    propagate to the `get service` command. Once it does, you should be able to open
+    and see our familiar web application in a browser using the following format:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Multiple ports
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Another custom port use case is that of multiple ports. Many applications expose
+    multiple ports, such as HTTP on port `80` and port `8888` for web servers. The
+    following example shows our app responding on both ports. Once again, we''ll also
+    need to add a firewall rule for this port, as we did for the list `nodejs-service-nodeport.yaml`
+    previously. Save the listing as `nodejs-multi-controller.yaml` and `nodejs-multi-service.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The application and container itself must be listening on both ports for this
+    to work. In this example, port `8888` is used to represent a fake admin interface. If,
+    for example, you want to listen on port `443`, you would need a proper SSL socket
+    listening on the server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ingress
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We previously discussed how Kubernetes uses the service abstract as a means
+    to proxy traffic to a backing pod that's distributed throughout our cluster. While
+    this is helpful in both scaling and pod recovery, there are more advanced routing
+    scenarios that are not addressed by this design.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To that end, Kubernetes has added an ingress resource, which allows for custom
+    proxying and load balancing to a back service. Think of it as an extra layer or
+    hop in the routing path before traffic hits our service. Just as an application
+    has a service and backing pods, the ingress resource needs both an Ingress entry
+    point and an ingress controller that perform the custom logic. The entry point
+    defines the routes and the controller actually handles the routing. This is helpful
+    for picking up traffic that would normally be dropped by an edge router or forwarded
+    elsewhere outside of the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ingress itself can be configured to offer externally addressable URLs for internal
+    services, to terminate SSL, offer name-based virtual hosting as you'd see in a
+    traditional web server, or load balance traffic. Ingress on its own cannot service
+    requests, but requires an additional ingress controller to fulfill the capabilities
+    outlined in the object. You'll see nginx and other load balancing or proxying
+    technology involved as part of the controller framework.  In the following examples,
+    we'll be using GCE, but you'll need to deploy a controller yourself in order to
+    take advantage of this feature. A popular option at the moment is the nginx-based
+    ingress-nginx controller.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can check it out here: **[https://github.com/kubernetes/ingress-gce/blob/master/BETA_LIMITATIONS.md#glbc-beta-limitations](https://github.com/kubernetes/ingress-gce/blob/master/BETA_LIMITATIONS.md#glbc-beta-limitations).**
+  prefs: []
+  type: TYPE_NORMAL
+- en: An ingress controller is deployed as a pod which runs a daemon. This pod watches
+    the Kubernetes apiserver/ingresses endpoint for changes to the ingress resource.
+    For our examples, we will use the default GCE backend.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Types of ingress
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'There are a couple different types of ingress, such as the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Single service ingress**: This strategy exposes a single service via creating
+    an ingress with a default backend that has no rules. You can alternatively use
+    `Service.Type=LoadBalancer` or `Service.Type=NodePort`, or a port proxy to accomplish
+    something similar.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Fanout**: Given that od IP addressing is only available internally to the
+    Kubernetes network, you''ll need to use a simple fanout strategy in order to accommodate
+    edge traffic and provide ingress to the correct endpoints in your cluster. This
+    will resemble a load balancer in practice.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Name-based hosting:** This approach is similar to **service name indication**
+    (**SNI**), which allows a web server to present multiple HTTPS websites with different
+    certificates on the same TCP port and IP address.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Kubernetes uses host headers to route requests with this approach. The following
+    example snippet `ingress-example.yaml` shows what name-based virtual hosting would
+    look like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you may recall, in Chapter 1, *Introduction to Kubernetes*, we saw that
+    a GCE cluster comes with a default back which provides Layer 7 load balancing
+    capability. We can see this controller running if we look at the `kube-system`
+    namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We should see an RC listed with the `l7-default-backend-v1.0` name, as shown
+    here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/87c3ec22-3e4d-4a90-94e6-964c53daab36.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: GCE Layer 7 Ingress controller
+  prefs: []
+  type: TYPE_NORMAL
+- en: This provides the ingress controller piece that actually routes the traffic
+    defined in our ingress entry points. Let's create some resources for an Ingress.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we will create a few new replication controllers with the `httpwhalesay`
+    image. This is a remix of the original whalesay that was displayed in a browser.
+    The following listing, `whale-rcs.yaml`, shows the YAML. Note the three dashes
+    that let us combine several resources into one YAML file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that we are creating pods with the same container, but different startup
+    parameters. Take note of these parameters for later. We will also create `Service` endpoints
+    for each of these RCs as shown in the `whale-svcs.yaml` listing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Again, create these with the `kubectl create -f` command, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We should see messages about the successful creation of the RCs and Services.
+    Next, we need to define the Ingress entry point. We will use `http://a.whale.hey`
+    and `http://b.whale.hey` as our demo entry points as shown in the following listing
+    `whale-ingress.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Again, use `kubectl create -f` to create this ingress. Once this is successfully
+    created, we will need to wait a few moments for GCE to give the ingress a static
+    IP address. Use the following command to watch the Ingress resource:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the Ingress has an IP, we should see an entry in `ADDRESS`, like the one
+    shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/60b081cd-ed9c-4c6f-8be9-99915cf54209.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Ingress description
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since this is not a registered domain name, we will need to specify the resolution
+    in the `curl` command, like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This should display the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/c71c4741-37d4-4913-890d-6443b1617002.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Whalesay A
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can also try the second URL. Doing this, we will get our second RC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](img/dd5c0e9f-50f9-4809-ac95-33ddd5e5ca4a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Whalesay B
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that the images are almost the same, except that the words from each whale
+    reflect the startup parameters from each RC we started earlier. Thus, our two
+    Ingress points are directing traffic to different backends.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this example, we used the default GCE backend for an Ingress controller.
+    Kubernetes allows us to build our own, and nginx actually has a few versions available
+    as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Migrations, multicluster, and more
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we've already seen so far, Kubernetes offers a high level of flexibility
+    and customization to create a service abstraction around your containers running
+    in the cluster. However, there may be times where you want to point to something
+    outside your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An example of this would be working with legacy systems or even applications
+    running on another cluster. In the case of the former, this is a perfectly good
+    strategy in order to migrate to Kubernetes and containers in general. We can begin
+    by managing the service endpoints in Kubernetes while stitching the stack together
+    using the K8s orchestration concepts. Additionally, we can even start bringing
+    over pieces of the stack, as the frontend, one at a time as the organization refactors
+    applications for microservices and/or containerization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To allow access to non pod-based applications, the services construct allows
+    you to use endpoints that are outside the cluster. Kubernetes is actually creating
+    an endpoint resource every time you create a service that uses selectors. The
+    `endpoints` object keeps track of the pod IPs in the load balancing pool. You
+    can see this by running the `get endpoints` command, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You should see something similar to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll note the entry for all the services we currently have running on our
+    cluster. For most services, the endpoints are just the IP of each pod running
+    in an RC. As I mentioned previously, Kubernetes does this automatically based
+    on the selector. As we scale the replicas in a controller with matching labels,
+    Kubernetes will update the endpoints automatically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we want to create a service for something that is not a pod and therefore
+    has no labels to select, we can easily do this with both a service definition `nodejs-custom-service.yaml`
+    and endpoint definition `nodejs-custom-endpoint.yaml`, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding example, you'll need to replace `<X.X.X.X>` with a real IP
+    address, where the new service can point to. In my case, I used the public load
+    balancer IP from the `node-js-multi` service we created earlier in listing `ingress-example.yaml`.
+    Go ahead and create these resources now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we now run a `get endpoints` command, we will see this IP address at port
+    `80`, which is associated with the `custom-service` endpoint. Furthermore, if
+    we look at the service details, we will see the IP listed in the `Endpoints` section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can test out this new service by opening the `custom-service` external IP
+    from a browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Custom addressing
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Another option to customize services is with the `clusterIP` element. In our
+    examples so far, we''ve not specified an IP address, which means that it chooses
+    the internal address of the service for us. However, we can add this element and
+    choose the IP address in advance with something like `clusterip: 10.0.125.105`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There may be times when you don't want to load balance and would rather have
+    DNS with *A* records for each pod. For example, software that needs to replicate
+    data evenly to all nodes may rely on *A* records to distribute data. In this case,
+    we can use an example like the following one and set `clusterip` to `None`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Kubernetes will not assign an IP address and instead only assign *A* records
+    in DNS for each of the pods. If you are using DNS, the service should be available
+    at `node-js-none` or `node-js-none.default.cluster.local` from within the cluster.
+    For this, we  will use the following listing `nodejs-headless-service.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Test it out after you create this service with the trusty `exec` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: DNS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: DNS solves the issues seen with environment variables by allowing us to reference
+    the services by their name. As services restart, scale out, or appear anew, the
+    DNS entries will be updating and ensuring that the service name always points
+    to the latest infrastructure. DNS is set up by default in most of the supported
+    providers. You can add DNS support for your cluster via a cluster add on ([https://kubernetes.io/docs/concepts/cluster-administration/addons/](https://kubernetes.io/docs/concepts/cluster-administration/addons/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If DNS is supported by your provider, but is not set up, you can configure
+    the following variables in your default provider config when you create your Kubernetes
+    cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`ENABLE_CLUSTER_DNS="${KUBE_ENABLE_CLUSTER_DNS:-true}"` `DNS_SERVER_IP="10.0.0.10"`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`DNS_DOMAIN="cluster.local"`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`DNS_REPLICAS=1`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With DNS active, services can be accessed in one of two forms—either the service
+    name itself, `<service-name>`, or a fully qualified name that includes the namespace,
+    `<service-name>.<namespace-name>.cluster.local`. In our examples, it would look
+    similar to `node-js-90` or `node-js-90.default.cluster.local`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The DNS server create DNS records based on new services that are created through
+    the API. Pods in shared DNS namespaces will be able to see each other, and can
+    use DNS SRV records to record ports as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes DNS is comprised of a DNS pod and Service on the cluster which communicates
+    directly with kubelets and containers in order to translate DNS names to IP. Services
+    with clusterIPs are given `my-service.my-namespace.svc.cluster.local` addresses.
+    If the service does not have a clusterIP (otherwise called headless)  it gets
+    the same address format, but this resolves in a round-robin fashion to a number
+    of IPs that point to the pods of a service. There a number of DNS policies that
+    can also be set.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One of the Kubernetes incubator projects, [CoreDNS](https://github.com/coredns/coredns) can
+    also be used for service discovery. This replaces the native `kube-dns` DNS services
+    and requires Kubernetes v1.9 or later. You''ll need to leverage `kubeadm` during
+    the initialization process in order to try CoreDNS out. You can install this on
+    your cluster with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you'd like more information on an example use case of CoreDNS, check out
+    this blog post: [https://coredns.io/2017/05/08/custom-dns-entries-for-kubernetes/](https://coredns.io/2017/05/08/custom-dns-entries-for-kubernetes/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multitenancy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Kubernetes also has an additional construct for isolation at the cluster level.
+    In most cases, you can run Kubernetes and never worry about namespaces; everything
+    will run in the default namespace if not specified. However, in cases where you
+    run multitenancy communities or want broad-scale segregation and isolation of
+    the cluster resources, namespaces can be used to this end. True, end-to-end multitenancy
+    is not yet feature complete in Kubernetes, but you can get very close using RBAC,
+    container permissions, ingress rules, and clear network policing. If you're interested
+    in enterprise-strength multitenancy right now, Red Hat's **Openshift Origin**
+    (**OO**) would be a good place to learn.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can check out OO at [https://github.com/openshift/origin](https://github.com/openshift/origin).
+  prefs: []
+  type: TYPE_NORMAL
+- en: To start, Kubernetes has two namespaces—`default` and `kube-system`. The `kube-system` namespace
+    is used for all the system-level containers we saw in Chapter 1, *Introduction
+    to* *Kubernetes*, in the *Services running on the minions* section. UI, logging,
+    DNS, and so on are all run in `kube-system`. Everything else the user creates
+    runs in the default namespace. However, our resource definition files can optionally
+    specify a custom namespace. For the sake of experimenting, let's take a look at
+    how to build a new namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we''ll need to create a namespace definition file `test-ns.yaml` like
+    the one in the following lines of code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can go ahead and create this file with our handy `create` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can create resources that use the `test` namespace. The following listing, `ns-pod.yaml`, is
+    an example of a pod using this new namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: While the pod can still access services in other namespaces, it will need to
+    use the long DNS form of `<service-name>.<namespace-name>.cluster.local`. For
+    example, if you were to run a command from inside the container in listing `ns-pod.yaml`,
+    you could use `node-js.default.cluster.local` to access the Node.js example from
+    Chapter 2, *Pods, Services, Replication Controllers, and Labels*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a note about resource utilization. At some point in this book, you
+    may run out of space on your cluster to create new Kubernetes resources. The timing
+    will vary based on cluster size, but it''s good to keep this in mind and do some
+    cleanup from time to time. Use the following commands to remove old examples:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '` $ kubectl delete pod <pod name> $ kubectl delete svc <service name> $ kubectl
+    delete rc <replication controller name> $ kubectl delete rs <replicaset name>`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Limits
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s inspect our new namespace a bit more. Run the `describe` command as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following screenshot is the result of the preceding command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/4093ce78-8d53-416d-8f83-9d6d37f823d8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The describe namespace
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes allows you to both limit the resources used by individual pods or
+    containers and the resources used by the overall namespace using quotas. You'll
+    note that there are no resource limits or quotas currently set on the `test` namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Suppose we want to limit the footprint of this new namespace; we can set quotas
+    as shown in the following listing `quota.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: In reality, namespaces would be for larger application communities and would
+    probably never have quotas this low. I am using this for ease of illustration
+    of the capability in this example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here, we will create a quota of `3` pods, `1` RC, and `1` service for the test
+    namespace. As you have probably guessed, this is executed once again by our trusty
+    `create` command, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we have that in place, let''s use `describe` on the namespace, as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following screenshot is the result of the preceding command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/4403fdc8-505c-4214-b705-245a121ad810.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The describe namespace after the quota is set
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You''ll note that we now have some values listed in the quota section, and
+    that the limits section is still blank. We also have a `Used` column, which lets
+    us know how close to the limits we are at the moment. Let''s try to spin up a
+    few pods using the following definition `busybox-ns.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll note that we are creating four replicas of this basic pod. After using
+    `create` to build this RC, run the `describe` command on the `test` namespace
+    once more. You'll notice that the `Used` values for pods and RCs are at their
+    max. However, we asked for four replicas and can only see three pods in use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see what''s happening with our RC. You might attempt to do that with
+    the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: However, if you try, you'll be discouraged by being met with a `not found` message
+    from the server. This is because we created this RC in a new namespace and `kubectl`
+    assumes the default namespace if not specified. This means that we need to specify
+    `--namepsace=test` with every command when we wish to access resources in the
+    `test` namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can also set the current namespace by working with the context settings.
+    First, we need to find our current context, which is found with the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`**$ kubectl config view | grep current-context**`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we can take that context and set the namespace variable like in the following
+    code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`**$ kubectl config set-context <Current Context> --namespace=test**`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, you can run the `kubectl` command without the need to specify the namespace.
+    Just remember to switch back when you want to look at the resources running in
+    your default namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the command with the namespace specified as shown in the following command.
+    If you''ve set your current namespace as demonstrated in the tip box, you can
+    leave off the `--namespace` argument:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following screenshot is the result of the preceding command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/01840943-81ce-496e-a8ea-a2f068d573fd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Namespace quotas
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see in the preceding image, the first three pods were successfully
+    created, but our final one fails with a `Limited to 3 pods` error.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is an easy way to set limits for resources partitioned out at a community
+    scale. It's worth noting that you can also set quotas for CPU, memory, persistent
+    volumes, and secrets. Additionally, limits work in a similar way to quota, but
+    they set the limit for each pod or container within the namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A note on resource usage
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As most of the examples in this book utilize GCP or AWS, it can be costly to
+    keep everything running. It's also easy to run out of resources using the default
+    cluster size, especially if you keep every example running. Therefore, you may
+    want to delete older pods, replication controllers, replica sets, and services
+    periodically. You can also destroy the cluster and recreate it using Chapter 1,
+    *Introduction to Kubernetes*, as a way to lower your cloud provider bill.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we took a deeper look into networking and services in Kubernetes.
+    You should now understand how networking communications are designed in K8s and
+    feel comfortable accessing your services internally and externally. We saw how
+    `kube-proxy` balances traffic both locally and across the cluster. Additionally,
+    we explored the new Ingress resources that allow us finer control of incoming
+    traffic. We also looked briefly at how DNS and service discovery is achieved in
+    Kubernetes. We finished off with a quick look at namespaces and isolation for
+    multitenancy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Give two way in which the Docker networking approach is different than the Kubernetes
+    networking approach.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What does NAT stand for?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What are the two major classes of Kubernetes networking models?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Name at least two of the third-party overlay networking options available to
+    Kubernetes.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: At what level (or alternatively, to what object) does Kubernetes assign IP addresses?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What are the available modes for `kube-proxy`?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What are the three types of services allowed by Kubernetes?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What elements are used to define container and service ports?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Name two or more types of ingress available to Kubernetes.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can you provide multitenancy for your Kubernetes cluster?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Read more about CoreDNS's entry in the CNCF: [https://coredns.io/2018/03/12/coredns-1.1.0-release/](https://coredns.io/2018/03/12/coredns-1.1.0-release/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: More details on the current crop of Kubernetes network provider scan be found
+    at [https://kubernetes.io/docs/concepts/cluster-administration/networking/#how-to-achieve-this](https://kubernetes.io/docs/concepts/cluster-administration/networking/#how-to-achieve-this).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can compare nginx's implementation of an ingress controller ([https://github.com/nginxinc/kubernetes-ingress](https://github.com/nginxinc/kubernetes-ingress))
+    and the Kubernetes community approach ([https://github.com/kubernetes/ingress-nginx](https://github.com/kubernetes/ingress-nginx))
+    and their differences ([https://github.com/nginxinc/kubernetes-ingress/blob/master/docs/nginx-ingress-controllers.md](https://github.com/nginxinc/kubernetes-ingress/blob/master/docs/nginx-ingress-controllers.md)).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can read up about Google Compute Engine's layer 7 load balancer, GLBC at [https://github.com/kubernetes/ingress-gce/](https://github.com/kubernetes/ingress-gce/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
