@@ -1,0 +1,262 @@
+<html><head></head><body>
+		<div id="_idContainer019">
+			<h1 id="_idParaDest-40"><em class="italic"><a id="_idTextAnchor039"/>Chapter 3</em>: Creating a Single Node Rancher</h1>
+			<p>This chapter will cover the process of installing Rancher as a single Docker container. This is an excellent option for proof of concept, development, or testing purposes. This chapter will cover the requirements and limitations of a single-node Rancher and the core architecture rules needed to create a proper enterprise solution. Finally, it will cover migrating to a <strong class="bold">High Availability</strong> (<strong class="bold">HA</strong>) cluster.</p>
+			<p>In this chapter, we’re going to cover the following main topics:</p>
+			<ul>
+				<li>What is a single-node Rancher installation?</li>
+				<li>Requirements and limitations</li>
+				<li>Rules for architecting a solution</li>
+				<li>Installation steps</li>
+				<li>Migration to an HA setup</li>
+			</ul>
+			<h1 id="_idParaDest-41"><a id="_idTextAnchor040"/>What is a single-node Rancher installation?</h1>
+			<p>Rancher can be <a id="_idIndexMarker205"/>installed by running a single Docker container. This process goes back to the roots of Rancher v1.6 when the Rancher server was a Java-based application that ran as a Docker container using an external MySQL database or in single node mode using a MySQL server running inside the Rancher server <a id="_idIndexMarker206"/>container. With the move to Rancher v2.x, everything in Rancher moved to use the Kube-apiserver and <strong class="bold">Custom Resource Definitions (CRDs)</strong>). Because of this, Rancher needs a Kubernetes cluster to work <a id="_idIndexMarker207"/>correctly. In the earlier Rancher v2.x releases, this <a id="_idIndexMarker208"/>was done by embedding the Kubernetes services <a id="_idIndexMarker209"/>such as <strong class="bold">etcd</strong>, <strong class="bold">Kube-apiserver</strong>, <strong class="bold">kube-scheduler</strong>, <strong class="bold">kube-controller-manager</strong>, <strong class="bold">kubelet</strong>, and <strong class="bold">kube-proxy</strong> into the Rancher <a id="_idIndexMarker210"/>server code. When Rancher <a id="_idIndexMarker211"/>first tries to detect, the environment variable <strong class="source-inline">KUBECONFIG</strong> is set. Kubernetes <a id="_idIndexMarker212"/>sets this variable by default in all pods, so if it’s missing, then Rancher knows that it must be running in single-node mode. At which point, the Rancher server process will start checking whether there are SSL certificates for the Kubernetes components if they are missing or expired. Rancher will handle creating them. Next, Rancher will start etcd in a cluster of one and start Kube-apiserver and the required controllers. The big note here is this cluster is <a id="_idIndexMarker213"/>very stripped down. For example, this cluster does not have CoreDNS, ingress-controller, or even a <strong class="bold">Container Network Interface</strong> (<strong class="bold">CNI</strong>) such as Canal, simply because Rancher doesn’t need them because this setup was not a <strong class="source-inline">true</strong> cluster and was any kind of standard configuration. Several problems <a id="_idIndexMarker214"/>came up with the earlier versions. For example, before Rancher v2.3.x, there was no way to rotate the certificates inside the Rancher server container, and initially, Rancher would create certificates with an expiration of 1 year. This meant that after a year, your Rancher server would crash and wouldn’t start up because none of the Kubernetes components work with expired certificates, this being a safety measure in the Go library to not allow any HTTPS connection to an endpoint without a validated certificate. And, of course, an expired certificate is not a validated certificate. In Rancher v2.3.x, a process was added to Rancher to look for expired or expiring certificates and rotate them. This was done by spinning up a unique K3s cluster inside a Docker container and deploying the Rancher server as a pod.</p>
+			<h1 id="_idParaDest-42"><a id="_idTextAnchor041"/>Requirements and limitations</h1>
+			<p>The following <a id="_idIndexMarker215"/>items are <strong class="bold">requirements</strong> for a single-node Rancher:</p>
+			<ul>
+				<li>A Linux host running Docker 18.06.3, 18.09.x, 19.03.x, 20.10.x</li>
+				<li>Minimum of two cores but four cores is highly recommended</li>
+				<li>8 GB of RAM</li>
+				<li>10 GB of SSD storage with a latency under 10ms</li>
+				<li>Inbound TCP ports <strong class="source-inline">80</strong> and <strong class="source-inline">443</strong> between the end users and the managed clusters</li>
+			</ul>
+			<p>The following items are not required but are <strong class="bold">highly recommended</strong>:</p>
+			<ul>
+				<li>A DNS record such as <strong class="source-inline">rancher.example.com</strong> in place of using the server hostname</li>
+				<li>A certificate signed by a recognized Certificate Authority (CA), such as DigiCert and GoDaddy</li>
+				<li>An HTTP or TCP load balancer placed in front of the Rancher server</li>
+				<li>Server backups, which can be a file or snapshot-level backups</li>
+				<li>A dedicated filesystem/disk for the Docker filesystem <strong class="source-inline">/var/lib/docker</strong></li>
+				<li>A dedicated filesystem/disk for the Rancher persistent data <strong class="source-inline">/var/lib/rancher</strong></li>
+				<li>The Linux host should be a <strong class="bold">virtual machine</strong> (<strong class="bold">VM</strong>) where the hypervisor or cloud provider will be providing redundancy in the event of hardware failure.</li>
+			</ul>
+			<p>The following <a id="_idIndexMarker216"/>items are the known <strong class="bold">limitations</strong> of a single-node Rancher:</p>
+			<ul>
+				<li>A single-node Rancher is recommended only for development and testing purposes. Do not use it in production.</li>
+				<li>Only the Rancher server should be installed on this host. This server should not be hosting any other applications.</li>
+				<li>A single-node Rancher is not designed for <strong class="bold">HA.</strong></li>
+				<li>Migrating from a single node to HA is not officially supported and is not guaranteed to work.</li>
+				<li>The single-node Rancher feature will be removed at some point and will no longer be available.</li>
+				<li>Rancher v2.5.x and higher requires the privileged option, so you cannot run Docker in rootless mode.</li>
+				<li>A single-node Rancher can be installed on a desktop/laptop, but there are issues when the IP address of the host changes along with requiring DNS records to be created.</li>
+			</ul>
+			<h1 id="_idParaDest-43"><a id="_idTextAnchor042"/>Rules for architecting a solution</h1>
+			<p>The <strong class="bold">pros</strong> are <a id="_idIndexMarker217"/>as follows:</p>
+			<ul>
+				<li>A single-node Rancher is very simple to set up as you just need to deploy a single container.</li>
+				<li>It’s very fast to spin up. A single-node Rancher only takes a few minutes to start compared with RKE, which can take 10-15 minutes to start.</li>
+				<li>It has low resource utilization, compared to RancherD and a complete RKE cluster. A single-node Rancher uses a lot less CPU, memory, and storage.</li>
+				<li>There is no need for a load balancer or DNS if you want just the server hostname or IP address.</li>
+				<li>A single-node Rancher can be run on a laptop. (Note: Rancher Desktop is a better product for this solution.)</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are <a id="_idIndexMarker218"/>as follows:</p>
+			<ul>
+				<li>A single-node Rancher is not designed for production.</li>
+				<li>Rancher official and community support is very limited.</li>
+				<li>There are limited troubleshooting options as the K3s settings are baked into the code and cannot be changed without building a new release.</li>
+				<li>The long-term future of single-node Rancher is uncertain and will be removed in a future release.</li>
+				<li>There’s no scalability or redundancy if the host goes offline. Rancher is down.</li>
+				<li>By default, a single-node Rancher stores its data inside the container, and if that container is lost, the data will be lost.</li>
+				<li>There’s no built-in backup solution; RKE, RKE2, K3s, and RancherD can back up to local disk or S3.</li>
+			</ul>
+			<p>The <strong class="bold">architecture rules</strong> are <a id="_idIndexMarker219"/>as follows:</p>
+			<ul>
+				<li>You should plan for migrating from a single-node Rancher to HA.</li>
+				<li>Rancher requires an SSL certificate and will not work without a certificate.</li>
+				<li>Using publicly signed certificates can make scripts and tools easier as the Rancher URL will be trusted by default.</li>
+				<li>All clusters/nodes <a id="_idIndexMarker220"/>that Rancher will be managing need to connect to the Rancher URL over SSL.</li>
+				<li>Rancher does support air-gapped environments, but it will require additional steps to provide proxied access to the internet, or you will need to offer Docker images and catalogs via internally hosted services.</li>
+			</ul>
+			<h1 id="_idParaDest-44"><a id="_idTextAnchor043"/>Installation steps</h1>
+			<p>We are <a id="_idIndexMarker221"/>going to assume the following:</p>
+			<ul>
+				<li>That you already have a Linux VM that has been created and patched (in this example, we’ll be using a VMware VM running Ubuntu 20.04).</li>
+				<li>That the Linux VM has internet access and doesn’t require an HTTP proxy for access. Note, if you do not have internet access, please see the air-gap steps located at <a href="https://rancher.com/docs/rancher/v2.5/en/installation/other-installation-methods/air-gap/">https://rancher.com/docs/rancher/v2.5/en/installation/other-installation-methods/air-gap/</a>.</li>
+				<li>That you have SSH and root access to the Linux VM.</li>
+				<li>That you are installing Docker using a default configuration and storage location.</li>
+				<li>That the filesystems <strong class="source-inline">/var/lib/docker</strong> and <strong class="source-inline">/var/lib/rancher</strong> have already been created and mounted.</li>
+				<li>That you have already created a DNS record for Rancher. In this example, we’ll be using <strong class="source-inline">rancher.support.tools</strong> and an associated SSL certificate signed by a recognized CA.</li>
+			</ul>
+			<h2 id="_idParaDest-45"><a id="_idTextAnchor044"/>Installing Docker</h2>
+			<p>In this <a id="_idIndexMarker222"/>section, we’ll be installing and configuring Docker:</p>
+			<ol>
+				<li>SSH into the Linux VM and become root using the <strong class="source-inline">sudo su -</strong> command.</li>
+				<li>Run the <strong class="source-inline">curl https://releases.rancher.com/install-docker/20.10.sh | bash</strong> command to install Docker.</li>
+				<li>Set Docker to start at system boot by running <strong class="source-inline">systemctl enable docker</strong>.</li>
+				<li>Verify Docker is running by running <strong class="source-inline">docker info</strong>. The output should look like the following:</li>
+			</ol>
+			<div>
+				<div id="_idContainer010" class="IMG---Figure">
+					<img src="image/B18053_03_01.jpg" alt="Figure 3.1 – Docker information output &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.1 – Docker information output </p>
+			<p>Text output: <a href="https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/install_steps/01_installing_docker/example_output.txt">https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/install_steps/01_installing_docker/example_output.txt</a></p>
+			<ol>
+				<li value="5">Configure log rotation – we’ll want to enable log rotation of the Docker logs. Create/edit the <strong class="source-inline">/etc/docker/daemon.json</strong> file to have the following content:</li>
+			</ol>
+			<div>
+				<div id="_idContainer011" class="IMG---Figure">
+					<img src="image/B18053_03_02.jpg" alt="Figure 3.2 – Enabling log rotation of the Docker logs &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.2 – Enabling log rotation of the Docker logs </p>
+			<p>Test version: <a href="https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/install_steps/02_configure-log-rotation/daemon.json">https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/install_steps/02_configure-log-rotation/daemon.json</a></p>
+			<ol>
+				<li value="6">Restart <a id="_idIndexMarker223"/>Docker to apply the change using the <strong class="source-inline">systemctl restart docker</strong> command.</li>
+			</ol>
+			<h2 id="_idParaDest-46"><a id="_idTextAnchor045"/>Prepping the SSL certificates</h2>
+			<p>In this <a id="_idIndexMarker224"/>section, we’ll be preparing the SSL certificate and key for use by the Rancher server. These files will be called <strong class="source-inline">tls.crt</strong> and <strong class="source-inline">tls.key</strong>. The steps are as follows:</p>
+			<ol>
+				<li value="1">To create <strong class="source-inline">tls.crt</strong>, we’ll need a full certificate chain. This includes the root and intermediate certificates. Most public root authorities publish these certificates on their website.</li>
+				<li>We’ll want <a id="_idIndexMarker225"/>all certificates files to be in the <strong class="bold">Privacy Enhanced Mail</strong> (<strong class="bold">PEM</strong>) format. Note that sometimes this is called <strong class="bold">Base64</strong>. If your certificate is in a different format, you should go to <a href="https://knowledge.digicert.com/solution/SO26449.html">https://knowledge.digicert.com/solution/SO26449.html</a> for more details about converting between formats.</li>
+				<li>Once all files are in the PEM format, we’ll want to create a file with the content of each certificate in the following order. Note that some certificates might have multiple intermediate certificates. If you have questions, please work with your CA. Also, if you are using an internal CA, you might not have an intermediate certificate. You might just have the root and server certificate.</li>
+			</ol>
+			<div>
+				<div id="_idContainer012" class="IMG---Figure">
+					<img src="image/B18053_03_03.jpg" alt="Figure 3.3 – Creating a file to store the certificates &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.3 – Creating a file to store the certificates </p>
+			<p>Text example: <a href="https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/install_steps/03_prepping_ssl_certs/example_certs/tls.pem">https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/install_steps/03_prepping_ssl_certs/example_certs/tls.pem</a></p>
+			<ol>
+				<li value="4">For <a id="_idIndexMarker226"/>the private key, we’ll want to make sure it does not have a passphrase. We do this by reviewing the top of the file; see the following examples for details.</li>
+			</ol>
+			<p>These are examples of keys that have a passphrase:</p>
+			<div>
+				<div id="_idContainer013" class="IMG---Figure">
+					<img src="image/B18053_03_04.jpg" alt="Figure 3.4 – Example 1 of a passphrase&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.4 – Example 1 of a passphrase</p>
+			<div>
+				<div id="_idContainer014" class="IMG---Figure">
+					<img src="image/B18053_03_05.jpg" alt="Figure 3.5 – Example 2 of a passphrase&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.5 – Example 2 of a passphrase</p>
+			<p>This is an example of a key that does not have a passphrase:</p>
+			<div>
+				<div id="_idContainer015" class="IMG---Figure">
+					<img src="image/B18053_03_06.jpg" alt="Figure 3.6 – Example of a key without a passphrase&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.6 – Example of a key without a passphrase</p>
+			<ol>
+				<li value="5">If <a id="_idIndexMarker227"/>your key has a passphrase, you’ll need to remove it using the <strong class="source-inline">openssl rsa -in original.key -out tls.key</strong> command and enter your passphrase during the prompt.</li>
+				<li>Once this process is done, you should have two files, <strong class="source-inline">tls.crt</strong> and <strong class="source-inline">tls.key</strong>.</li>
+				<li>You’ll want to create the <strong class="source-inline">/etc/rancher/ssl/</strong> directory using the <strong class="source-inline">mkdir -p /etc/rancher/ssl/</strong> command and place both files in this directory. Note that these files should be owned by root.</li>
+			</ol>
+			<h2 id="_idParaDest-47"><a id="_idTextAnchor046"/>Starting the Rancher server</h2>
+			<p>In this <a id="_idIndexMarker228"/>section, we’ll create the <strong class="source-inline">docker run</strong> command and start the Rancher server.</p>
+			<p>The following is an example command:</p>
+			<div>
+				<div id="_idContainer016" class="IMG---Figure">
+					<img src="image/B18053_03_07.jpg" alt="Figure 3.7 – Example of docker run command &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.7 – Example of docker run command </p>
+			<p>Text version: <a href="https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/install_steps/04_rancher_run_command/example01.txt">https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/install_steps/04_rancher_run_command/example01.txt</a></p>
+			<p>We’ll <a id="_idIndexMarker229"/>now break down this command:</p>
+			<ol>
+				<li value="1"><strong class="source-inline">docker run -d</strong> will create a new container and start it in detached mode.</li>
+				<li><strong class="source-inline">--name rancher_server</strong> will set the name of the container to be <strong class="source-inline">rancher_server</strong>. This is makes future commands easier because, without it, Docker will generate a random name.</li>
+				<li><strong class="source-inline">--restart=unless-stopped</strong> will tell Docker to make sure this container stays running unless you manually stop it.</li>
+				<li><strong class="source-inline">-p 80:80</strong> will map port <strong class="source-inline">80</strong> (HTTP) on the host to port <strong class="source-inline">80</strong> inside the container.</li>
+				<li><strong class="source-inline">-p 443:443</strong> will map port <strong class="source-inline">443</strong> (HTTPS) on the host to port <strong class="source-inline">443</strong> inside the container. Note that if you are doing SSL offloading at the load balancer, this is not needed.</li>
+				<li>The <strong class="source-inline">v /etc/rancher/ssl/tls.crt:/etc/rancher/ssl/cert.pem</strong> and <strong class="source-inline">-v /etc/rancher/ssl/tls.key:/etc/rancher/ssl/key.pem</strong> flags will pass the certificate files we created earlier into the Rancher server.</li>
+				<li>The <strong class="source-inline">-v /var/lib/rancher:/var/lib/rancher</strong> flag will bind the data directory for Rancher to the host filesystem.</li>
+				<li><strong class="source-inline">--privileged</strong> will give the Rancher server container root capabilities on the host. This is needed because we’ll be running K3s inside the container, which will have additional containers.</li>
+				<li><strong class="source-inline">rancher/rancher:v2.5.8</strong> will set the Rancher image, which will set the Rancher server version.</li>
+				<li><strong class="source-inline">--no-cacerts</strong> will disable the certificate generation process in the Rancher server as we will be bringing our own.</li>
+				<li>Finally, once we start the Rancher server, we’ll need to wait a few minutes for Rancher to start fully.</li>
+				<li>You can watch the server start by running the <strong class="source-inline">docker logs -f rancher_server</strong> command.</li>
+				<li>You’ll then <a id="_idIndexMarker230"/>need to open your Rancher URL in a browser. Note that if you are planning to use a CNAME or load balancer, you should be using that URL instead of using the IP/hostname of the host.</li>
+				<li>To get the admin password, you’ll need to run the <strong class="source-inline">docker logs rancher_server 2&gt;&amp;1 | grep “Bootstrap Password:”</strong> command:</li>
+			</ol>
+			<div>
+				<div id="_idContainer017" class="IMG---Figure">
+					<img src="image/B18053_03_08.jpg" alt="Figure 3.8 – Snippet of step 14&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.8 – Snippet of step 14</p>
+			<ol>
+				<li value="15">Once you have logged into Rancher, you’ll want to set the password and URL:</li>
+			</ol>
+			<div>
+				<div id="_idContainer018" class="IMG---Figure">
+					<img src="image/B18053_03_09.jpg" alt="Figure 3.9 – Rancher login page&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.9 – Rancher login page</p>
+			<p>It is <a id="_idIndexMarker231"/>important you set the URL to something you would like to keep, as changing the URL is difficult and time-consuming. For the password, this will be the password for the local admin, which is a root-level account that has full access to Rancher. This should be a secure password.</p>
+			<h1 id="_idParaDest-48"><a id="_idTextAnchor047"/>Migration to an HA setup</h1>
+			<p>To migrate <a id="_idIndexMarker232"/>from a single-node Rancher <a id="_idIndexMarker233"/>to an HA installation, we’ll need the following:</p>
+			<ul>
+				<li>You should be running the latest version of Rancher and RKE.</li>
+				<li>You already have three new Linux VMs (in this example, we’ll be using a VMware VM running Ubuntu 20.04). Note that at the end of this process, the original VM can be reclaimed.</li>
+				<li>We will assume that the Linux VMs have internet access and don’t require an HTTP proxy for access. Note that if you do not have internet access, please see the air-gap steps located at <a href="https://rancher.com/docs/rancher/v2.5/en/installation/other-installation-methods/air-gap/">https://rancher.com/docs/rancher/v2.5/en/installation/other-installation-methods/air-gap/</a>.</li>
+				<li>SSH and root access to the Linux VMs.</li>
+				<li>Docker installed on the three new VMs.</li>
+				<li>A DNS <a id="_idIndexMarker234"/>record for Rancher that is not a server hostname/IP address.</li>
+				<li>You will <a id="_idIndexMarker235"/>need a maintenance window of 30-60 minutes. During this window, Rancher and its API will be down. This may mean that CICD pipelines will not work, and application teams may not manage their applications. Note, this does not impact downstream applications. The only impact is around management.</li>
+				<li>We’ll assume the single-node Rancher server container is called <strong class="source-inline">rancher_server</strong> during the following steps. If the name is different, please update the commands listed in the following steps.</li>
+				<li>This section will assume you know what RKE is and how to use it. Note that we will cover RKE in much more detail in the next chapter.</li>
+			</ul>
+			<h2 id="_idParaDest-49"><a id="_idTextAnchor048"/>Backing up the current Rancher server</h2>
+			<p>During this <a id="_idIndexMarker236"/>section, we’ll take a backup of the current Rancher single node server, including the Kubernetes certificates, <strong class="source-inline">etcd</strong>, and the SSL certs for the Rancher URL. The steps are as follows:</p>
+			<ol>
+				<li value="1">SSH into the current Rancher server node.</li>
+				<li>Become root using the <strong class="source-inline">sudo su –</strong> command.</li>
+				<li>Stop the current Rancher server using the <strong class="source-inline">docker stop rancher_server</strong> command.</li>
+				<li>Create a volume from the current server using the <strong class="source-inline">docker create --volumes-from rancher_server --name rancher-data-&lt;DATE&gt; rancher/rancher:&lt;RANCHER_CONTAINER_TAG&gt;</strong> command. Please replace the date and tag placeholder values.</li>
+				<li>Create a <strong class="source-inline">tar.gz</strong> file backup using the <strong class="source-inline">docker run  --volumes-from rancher-data-&lt;DATE&gt; -v $PWD:/backup:z busybox tar pzcvf /backup/rancher-data-backup-&lt;RANCHER_VERSION&gt;-&lt;DATE&gt;.tar.gz /var/lib/rancher</strong> command. Please replace the date and tag placeholder values.</li>
+				<li>Verify <a id="_idIndexMarker237"/>the backup file has been created using the <strong class="source-inline">ls -lh</strong> command. The backup file will be created in the current directory.</li>
+				<li>Restart the Rancher server backup using the <strong class="source-inline">docker start rancher_server</strong> command.</li>
+				<li>Open a shell into the Rancher server container using the <strong class="source-inline">docker exec -it rancher_server /bin/bash</strong> command.</li>
+				<li>Backup the current certificated using the <strong class="source-inline">tar -zcvf pki.bundle.tar.gz /etc/kubernetes/ssl</strong> command.</li>
+				<li>Leave the shell using the <strong class="source-inline">exit</strong> command.</li>
+				<li>Copy the backup file out of the Rancher server using the <strong class="source-inline">docker cp rancher_server:/var/lib/rancher/pki.bundle.tar.gz</strong> command.</li>
+				<li>Create a temporary container using the <strong class="source-inline">docker run --net=container:rancher_server -it -v $(pwd):/cwd --name etcd-utility rancher/rke-tools:v0.1.20</strong> command.</li>
+				<li>Set up certificates for <strong class="source-inline">etcd</strong> using the <strong class="source-inline">mkdir ssl; cd ssl; cp /cwd/pki.bundle.tar.gz .; tar -zxvf pki.bundle.tar.gz --strip-components 3</strong> commands.</li>
+				<li>Take an <strong class="source-inline">etcd</strong> backup using the <strong class="source-inline">cd /; ETCDCTL_API=3 etcdctl snapshot save --cacert=/ssl/kube-ca.pem --cert=/ssl/kube-etcd-127-0-0-1.pem --key=/ssl/kube-etcd-127-0-0-1-key.pem single-node-etcd-snapshot</strong> command.</li>
+				<li>Exit the <a id="_idIndexMarker238"/>shell using the <strong class="source-inline">exit</strong> command.</li>
+				<li>Copy the <strong class="source-inline">etcd</strong> backup out of the temporary container using the <strong class="source-inline">docker cp etcd-utility:/single-node-etcd-snapshot</strong> command.</li>
+				<li>Stop the current Rancher server using the <strong class="source-inline">docker stop rancher_server</strong> command.</li>
+				<li>Copy the <strong class="source-inline">pki.bundle.tar.gz</strong> and <strong class="source-inline">single-node-etcd-snapshot</strong> files to whatever server/workstation you will be using to run the <strong class="source-inline">rke</strong> commands from. Some people will use the first node in the cluster for this task.</li>
+			</ol>
+			<h2 id="_idParaDest-50"><a id="_idTextAnchor049"/>Starting cutover to new cluster</h2>
+			<p>At this <a id="_idIndexMarker239"/>point, we’re going to start restoring the backup into the new cluster and migrate over the Rancher URL:</p>
+			<ol>
+				<li value="1">You should update the DNS or your load balancer to redirect traffic from the old single-node Rancher server to the new cluster. Note, the DNS might take some time to propagate fully, so we’ll want to do that now.</li>
+				<li>We do want to modify the <strong class="source-inline">cluster.yaml</strong> file only to include the first node. We’re going to assume that the hostname is <strong class="source-inline">node01</strong> for the rest of the steps. You can use the example located at <a href="https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/migrating_from_single_to_ha/cluster.yml">https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/migrating_from_single_to_ha/cluster.yml</a>.</li>
+				<li>SCP over the <strong class="source-inline">single-node-etcd-snapshot</strong> and <strong class="source-inline">pki.bundle.tar.gz</strong> files to <strong class="source-inline">node01</strong>.</li>
+				<li>SSH into the node01 host and become root using the <strong class="source-inline">sudo su -</strong> command.</li>
+				<li>Create the directory snapshot directory using the <strong class="source-inline">mkdir -p /opt/rke/etcd-snapshots</strong> command.</li>
+				<li>Move the two backup files into the <strong class="source-inline">/opt/rke/etcd-snapshots</strong> directory. These files should be owned by root.</li>
+				<li>You can now leave the SSH terminal on <strong class="source-inline">node01</strong>.</li>
+				<li>Start <a id="_idIndexMarker240"/>the restore using the <strong class="source-inline">rke etcd snapshot-restore --name single-node-etcd-snapshot --config cluster.yaml</strong> command.</li>
+			</ol>
+			<p>This process might take 5-10 minutes to complete. Example command output is located at <a href="https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/migrating_from_single_to_ha/restore_command_output.txt">https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch03/migrating_from_single_to_ha/restore_command_output.txt</a>.</p>
+			<ol>
+				<li value="9">At this point, you can start the cluster using the <strong class="source-inline">rke up --config cluster.yaml</strong> command.</li>
+				<li>If you run into any errors, try running the <strong class="source-inline">rke up</strong> command a second time.</li>
+				<li>Once it completes successfully, you can edit the <strong class="source-inline">cluster.yaml</strong> file to include <strong class="source-inline">node02</strong> and <strong class="source-inline">node03</strong>.</li>
+				<li>Run <strong class="source-inline">rke up</strong> again to add the additional nodes.</li>
+				<li>At this point, you can log in to Rancher and verify everything is accessible and healthy. Note that it might take a few minutes for downstream clusters to reconnect and become <em class="italic">active</em> in the UI.</li>
+				<li>It is important to note that any cluster-level changes such as creating a new cluster, editing an existing cluster, or deleting a cluster should be avoided until you are sure that you will not be rolling back to the old server.</li>
+			</ol>
+			<h2 id="_idParaDest-51"><a id="_idTextAnchor050"/>Cleaning up/rolling back</h2>
+			<p>In the <a id="_idIndexMarker241"/>event of an unsuccessful migration, use the following steps:</p>
+			<ol>
+				<li value="1">Change the DNS record for the Rancher URL back to the original server.</li>
+				<li>Start the Rancher single node container using the <strong class="source-inline">docker start rancher_server</strong> command.</li>
+				<li>It is important to note that it is currently not possible to migrate changes made in HA back to a single node. So, in the event of a rollback, all changes since shutting the single Rancher node will be lost.</li>
+				<li>After a few days of <em class="italic">burn-in</em>, you can delete the old VM or clean up the old server using the script at <a href="https://raw.githubusercontent.com/rancherlabs/support-tools/master/extended-rancher-2-cleanup/extended-cleanup-rancher2.sh">https://raw.githubusercontent.com/rancherlabs/support-tools/master/extended-rancher-2-cleanup/extended-cleanup-rancher2.sh</a>.</li>
+			</ol>
+			<h1 id="_idParaDest-52"><a id="_idTextAnchor051"/>Summary</h1>
+			<p>In this chapter, we learned about how a single-node Rancher works and its pros and cons. We then went over the steps and commands needed to install Rancher in single node mode. We finally went into detail about migrating to an HA setup, including backing up the current data and restoring it.</p>
+			<p>In the next chapter, we will cover RKE and RKE2, including where they came from, how they work, and how to design a solution using them.</p>
+		</div>
+	</body></html>

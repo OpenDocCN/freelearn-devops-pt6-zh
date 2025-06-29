@@ -1,0 +1,770 @@
+<html><head></head><body><div id="sbo-rt-content"><div id="_idContainer021">
+			<h1 id="_idParaDest-47"><em class="italic"><a id="_idTextAnchor073"/>Chapter 3</em>: Provisioning Kubernetes Clusters Using AWS and Terraform</h1>
+			<p>In the previous chapter, we learned about Kubernetes clusters and infrastructure design and how to create a deployment architecture to fulfill best practices and standards. There are multiple alternatives when it comes to designing and building your Kubernetes platform. Choosing the solution that works for your use case and satisfies goals in terms of production readiness is not an easy task. There are still challenges and limitations for Kubernetes, the underlying technologies, and the surrounding ecosystem.</p>
+			<p>In this chapter, we will go through the detailed implementation of the infrastructure design. Basically, we will learn how to create the Kubernetes infrastructure declaratively with Terraform. While provisioning the infrastructure, we will learn about implementation best practices, such as the encapsulation of infrastructure components into reusable modules, separating Kubernetes clusters per environment without adding an operational overhead and complexity. In addition, you will practice rolling out your first Kubernetes cluster and group of clusters with simple Terraform commands.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Implementation principles and best practices</li>
+				<li>Cluster deployment and rollout strategy</li>
+				<li>Preparing Terraform</li>
+				<li>Creating the network infrastructure</li>
+				<li>Creating the cluster infrastructure</li>
+				<li>Cleaning up and destroying infrastructure resources</li>
+			</ul>
+			<h1 id="_idParaDest-48"><a id="_idTextAnchor074"/>Technical requirements</h1>
+			<p>We will need the Terraform tool installed for this chapter as a prerequisite.</p>
+			<p>In addition to this tool, you will need to have an AWS account and user credentials ready to use. Please ensure the authentication of the AWS CLI with your AWS credentials. You can refer to the AWS documentation for further instructions at <a href="https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html">https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html</a>.</p>
+			<p>The code for this chapter is located at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter03">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter03</a>.</p>
+			<p>Check out the following link to see the Code in Action video:</p>
+			<p><a href="https://bit.ly/39Ocoyq">https://bit.ly/39Ocoyq</a></p>
+			<h2 id="_idParaDest-49"><a id="_idTextAnchor075"/>Installing Terraform</h2>
+			<p>Terraform binary is a command-line utility that is used to develop <strong class="bold">Infrastructure as Code</strong> (<strong class="bold">IaC</strong>), plan, and execute<a id="_idIndexMarker147"/> it to create resources, and manage infrastructure providers such as AWS, Azure, GCP, Fastly, OKTA, and more.</p>
+			<p>You can follow the instructions in the official documentation to download the latest version of Terraform<a id="_idIndexMarker148"/> at <a href="https://www.terraform.io/downloads.html">https://www.terraform.io/downloads.html</a>.</p>
+			<p>After installing Terraform, you are ready to implement the hands-on exercises in the coming sections.</p>
+			<h1 id="_idParaDest-50"><a id="_idTextAnchor076"/>Implementation principles and best practices</h1>
+			<p>In <a href="B16192_01_Final_PG_ePub.xhtml#_idTextAnchor014"><em class="italic">Chapter 1</em></a>, <em class="italic">Introduction to Kubernetes Infrastructure and Production-Readiness</em>, you learned about the 12 infrastructure design principles that we will follow during the book. I would like to start this chapter by highlighting the principles that drove us to this implementation of the cluster infrastructure. The following are the<a id="_idIndexMarker149"/> three principles that influenced the implementation decisions in this chapter:</p>
+			<ol>
+				<li><strong class="bold">Infrastructure as code</strong>: In this chapter, you will write every piece of infrastructure code declaratively. You will achieve this by using Terraform.</li>
+				<li><strong class="bold">Go managed</strong>: There are two fundamental ways in which to create a Kubernetes cluster – either to build and operate Kubernetes control plane and workers on your own (on-prem or on cloud), or to use one of the <em class="italic">managed</em> Kubernetes <a id="_idIndexMarker150"/>services in the cloud, such as <strong class="bold">Google Kubernetes Engine</strong> (<strong class="bold">GKE</strong>), <strong class="bold">Azure Kubernetes Service</strong> (<strong class="bold">AKS</strong>), and AWS <strong class="bold">Elastic Kubernetes Service</strong> (<strong class="bold">EKS</strong>). In this book, I will use EKS as <a id="_idIndexMarker151"/>this fulfills <a id="_idIndexMarker152"/>the <em class="italic">managed services</em> principle.</li>
+				<li><strong class="bold">Standardization</strong>: We applied this principle when we selected Terraform as our provisioning and IaC tool. Terraform is not the easiest way to bootstrap a Kubernetes cluster, and there<a id="_idIndexMarker153"/> are other tools that could be faster to use and easier to learn. However, we needed to standardize our infrastructure toolset around as few tools as possible. Therefore, Terraform makes sense because in most use cases, your production environment is not Kubernetes on its own. There are databases, caching services, content delivery, load balancers, and so on. These types of infrastructure components are easier to create and manage by Terraform.</li>
+			</ol>
+			<h1 id="_idParaDest-51"><a id="_idTextAnchor077"/>Cluster deployment and rollout strategy</h1>
+			<p>In the previous chapter, we <a id="_idIndexMarker154"/>explored different infrastructure design alternatives, limitations, and corner cases. We made the architecture decisions that fulfill the infrastructure design<a id="_idIndexMarker155"/> principles for the production-grade Kubernetes clusters. And finally, we came up with a full deployment architecture for our Kubernetes infrastructure, which we will build and use over this book. Certainly, while we proceed from one chapter to the next, we will keep enhancing our infrastructure design and implementation, adding more features, and making it better.</p>
+			<p>In terms of implementation, we should address how we will roll out the clusters and deploy them. Specifically, we are looking for extendibility, simplicity, and operational efficiency. We will follow these principles during the implementation in the next sections:</p>
+			<ol>
+				<li value="1"><strong class="bold">Developing generic infrastructure modules</strong>: By encapsulating every infrastructure resource in a reusable code module, this will enable us to automate cluster provisioning with minimum to zero code changes. It also promotes code reusability practices essential for simplifying the IaC and increases operational efficiency.</li>
+				<li><strong class="bold">Supporting single and multiple clusters</strong>: In real life, Kubernetes deployment teams require multiple clusters to serve the whole company or a specific product. In this chapter, we will follow a strategy that will enable us to create a group of clusters with the same infrastructure code and configuration. Also, we will create multiple groups of clusters with different configurations. This will help us to serve and automate the provisioning and operation of multiple production and non-production clusters. This implementation is scalable as we can provision many clusters (up to the limit of the underlying IaaS provider) without the need to scale your infrastructure teams.</li>
+				<li><strong class="bold">Separating production and non-production environments with minimal changes</strong>: One of the recommended practices is to have two separate AWS accounts for production and non-production environments, and our implementation also supports this model with minimum code changes and administration work.</li>
+				<li><strong class="bold">Automating infrastructure deployment</strong>: Every single piece of infrastructure is managed by Terraform, and with<a id="_idIndexMarker156"/> a limited number of commands, we can provision the entire Kubernetes cluster. We can build automated pipelines for infrastructure deployment and testing with traditional CI/CD such as Jenkins.</li>
+			</ol>
+			<p>In fact, cluster<a id="_idIndexMarker157"/> deployment is not a one-time task. It is a continuous process that affects the cluster's quality, stability, operations, and, moreover, the products and services on top of it. So, we are keen to establish a solid infrastructure deployment strategy, which we will follow during implementation in this chapter and also keep improving throughout the book.</p>
+			<h1 id="_idParaDest-52"><a id="_idTextAnchor078"/>Preparing Terraform</h1>
+			<p>Before creating the<a id="_idIndexMarker158"/> Terraform configuration and code for the Kubernetes cluster, you need to create a new source code repository for the infrastructure and then create the Terraform directory structure. In addition to that, you will learn how to configure and use Terraform's shared state, which is an essential best practice for managing IaC in production environments.</p>
+			<h2 id="_idParaDest-53"><a id="_idTextAnchor079"/>Terraform directory structure</h2>
+			<p>The Terraform<a id="_idIndexMarker159"/> directory is where all the Terraform source code lives in your source code repository. I recommend creating a separate source code repository. This repository should contain all the infrastructure code and configuration. The following is the directory structure of the Terraform source code that we will develop in the forthcoming sections:</p>
+			<div>
+				<div id="_idContainer010" class="IMG---Figure">
+					<img src="Images/B16192_03_001.jpg" alt="Figure 3.1 – Terraform directory structure&#13;&#10;" width="563" height="424"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.1 – Terraform directory structure</p>
+			<h2 id="_idParaDest-54"><a id="_idTextAnchor080"/>Persisting the Terraform state</h2>
+			<p>Terraform stores the <a id="_idIndexMarker160"/>state of the infrastructure resources under its management to be able to map it to the existing resources in the real world. By default, the state is stored to local files. However, this is not recommended for production-scale infrastructure where preserving consistent state and also sharing it among distributed team members are essential.</p>
+			<p>As a recommended Terraform best practice, you should configure Terraform to keep the state remote and locked:</p>
+			<ul>
+				<li><strong class="bold">Remote</strong>: As you already use AWS as an infrastructure provider, you can utilize an S3 bucket to remotely store Terraform state files.</li>
+				<li><strong class="bold">Locked</strong>: You can achieve Terraform state lock by using a DynamoDB table. Then, the Terraform state<a id="_idIndexMarker161"/> will get locked for the current user until this user finishes up, at which point other users can acquire the lock.</li>
+			</ul>
+			<h2 id="_idParaDest-55"><a id="_idTextAnchor081"/>Creating Terraform state configuration</h2>
+			<p>Apply the following<a id="_idIndexMarker162"/> steps to create the Terraform directory structure and the directory for the shared state configuration:</p>
+			<ol>
+				<li value="1">Create a root directory named <strong class="source-inline">terraform</strong>. This is the root directory for all Terraform source code.</li>
+				<li>Create a subdirectory named <strong class="source-inline">shared-state</strong>. This is the directory that will contain Terraform source code to provision both the S3 bucket and the DynamoDB table. Both of them are used to store the shared state.</li>
+			</ol>
+			<p>In the following steps, you will create the shared state Terraform code under the <strong class="source-inline">shared-state</strong> directory with the following structure:</p>
+			<div>
+				<div id="_idContainer011" class="IMG---Figure">
+					<img src="Images/B16192_03_002.jpg" alt="Figure 3.2 – Shared state directory structure&#13;&#10;" width="442" height="229"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.2 – Shared state directory structure</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">You can find the complete source code of the shared state Terraform configuration at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter03/terraform/shared-state">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter03/terraform/shared-state</a>.</p>
+			<p>Now, let's create the Terraform files under the <strong class="source-inline">shared-state</strong> directory:</p>
+			<ol>
+				<li value="1">Terraform can create and manage infrastructure resources from both cloud and on-prem, and it can achieve this by communicating with the external infrastructure using a provider that is a kind of software plugin that translates Terraform commands into the APIs that the infrastructure provider can understand and execute.</li>
+				<li>In the <strong class="source-inline">config.tf</strong> file, you <a id="_idIndexMarker163"/>define the provider's configuration that you will use in this chapter. For each provider, you need to define its name and the version you intend to use. To learn more about defining a "required provider version," visit https://www.terraform.io/docs/configuration/terraform.html#specifying-required-provider-versions<p>It is important to define the version explicitly, especially when Terraform is used by multiple users or automation tools. This is to avoid the upgrades to newer versions that could break the Terraform state:</p><p class="source-code">terraform {</p><p class="source-code">  required_version = "~&gt; 0.14.5"</p><p class="source-code">}</p><p>This code block defines the AWS provider configuration. You only need to specify both the AWS region and the provider's version:</p><p class="source-code">provider "aws" {</p><p class="source-code">  region = var.aws_region</p><p class="source-code">  version = "~&gt; 3.27.0"</p><p class="source-code">}</p></li>
+				<li>In the <strong class="source-inline">terraform.tfvars</strong> file, you define the environment variables that Terraform needs to use during provisioning of the infrastructure resources. Using Terraform <strong class="source-inline">tfvars</strong> files is a good practice to pass environment variables to Terraform. This enables you to keep all of the configuration, including the environment variables, versioned in your source control as your source of truth:<p class="source-code">aws_region            = "us-east-1"</p><p class="source-code">clusters_name_prefix = "packtclusters"</p><p>We use <strong class="source-inline">us-east-1</strong> as the default AWS region, but you can use any other region as long as you maintain it for the other exercises.</p><p>The second environment variable is the <em class="italic">clusters name prefix</em>, which you will use for your clusters to identify them as a group of clusters. This name prefix could represent your company's name or the product name. However, you are free to use any appropriate naming convention.</p></li>
+				<li>In the <strong class="source-inline">variables.tf</strong> file, you define the input variables that Terraform code will use. There are two input <a id="_idIndexMarker164"/>variables that you will need for the exercises in this chapter. The first is the AWS region, and the second is the clusters name prefix. Both of them will get their values from the previous <strong class="source-inline">terraform.tfvars</strong> file:<p class="source-code">variable "aws_region" {</p><p class="source-code">  type = string</p><p class="source-code">}</p><p class="source-code">variable "clusters_name_prefix" {</p><p class="source-code">  type = string</p><p class="source-code">}</p></li>
+				<li>In the <strong class="source-inline">tf-state-s3.tf</strong> file, you define two S3 bucket resources. The first bucket stores the state for the VPC and network resources, while the second bucket stores the state for the Kubernetes cluster resources, such as EKS and workers groups.<p>The following code snippet uses the Terraform resource called <strong class="source-inline">aws_s3_bucket</strong>, which is a built-in resource in the Terraform AWS provider that can be used to create AWS S3 buckets and set its configuration parameters.</p><p>We will use this S3 bucket to persist the Terraform state. And, as you will notice in the following code, this S3 bucket has private access to keep it secure from the public. It also has deletion prevention enabled to protect it from unplanned deletion:</p><p class="source-code">resource "aws_s3_bucket" "clusters_tf_state_s3_bucket" {</p><p class="source-code">  bucket = "${var.clusters_name_prefix}-terraform-state"</p><p class="source-code">  acl    = "private"</p><p class="source-code">  versioning {</p><p class="source-code">    enabled = true</p><p class="source-code">  }</p><p class="source-code">  lifecycle {</p><p class="source-code">    prevent_destroy = true</p><p class="source-code">  }</p><p class="source-code">  tags = {</p><p class="source-code">    Name      = "${var.clusters_name_prefix} S3 Remote Terraform State Store"</p><p class="source-code">    ManagedBy = "terraform"</p><p class="source-code">  }</p><p class="source-code">}</p><p>The second part of the <a id="_idIndexMarker165"/>code is similar to the previous one, but it is used to create the S3 bucket for the networking infrastructure <a id="_idIndexMarker166"/>or the <strong class="bold">virtual private cloud</strong> (<strong class="bold">VPC</strong>) resources state:</p><p class="source-code">resource "aws_s3_bucket" "clusters_vpc_tf_state_s3_bucket" {</p><p class="source-code">  bucket = "${var.clusters_name_prefix}-vpc-terraform-state"</p><p class="source-code">  acl    = "private"</p><p class="source-code">  versioning {</p><p class="source-code">    enabled = true</p><p class="source-code">  }</p><p class="source-code">  lifecycle {</p><p class="source-code">    prevent_destroy = true</p><p class="source-code">  }</p><p class="source-code">  tags = {</p><p class="source-code">    Name      = "${var.clusters_name_prefix} VPC S3 Remote Terraform State Store"</p><p class="source-code">    ManagedBy = "terraform"</p><p class="source-code">  }</p><p class="source-code">}</p><p>Splitting the infrastructure state into two files, as we did in the previous code, is debatable. However, we tend to use a balanced approach as we will not use a separate state for a resource unless it has an independent life cycle from the Kubernetes cluster. This separation facilitates change management of the resources and decouples the critical resources from one another.</p></li>
+				<li>In the <strong class="source-inline">tf-state-dynamodb.tf</strong> file, you create two DynamoDB tables, the first for VPC resource<a id="_idIndexMarker167"/> state locking, and the second for Kubernetes cluster resources.<p>The following code snippet uses the Terraform resource called <strong class="source-inline">aws_dynamodb_table</strong>, which is a built-in resource in the Terraform AWS provider that is used to create an AWS DynamoDB table and set its configuration parameters.</p><p>This code creates a DynamoDB table to hold the lock for the shared Terraform state for the Kubernetes cluster resources. This lock will protect parallel runs against the same state file or the same resources, and this prevents users from applying changes to infrastructure at the same time. This could be very dangerous, right?</p><p class="source-code">resource "aws_dynamodb_table" "clusters_dynamodb_tf_state_lock" {</p><p class="source-code">  name           = "${var.clusters_name_prefix}-terraform-state-lock-dynamodb"</p><p class="source-code">  hash_key       = "LockID"</p><p class="source-code">  read_capacity  = 20</p><p class="source-code">  write_capacity = 20</p><p class="source-code">  attribute {</p><p class="source-code">    name = "LockID"</p><p class="source-code">    type = "S"</p><p class="source-code">  }</p><p class="source-code">}</p><p>The second <a id="_idIndexMarker168"/>part of the <strong class="source-inline">tf-state-dynamodb.tf</strong> file creates a DynamoDB table to hold the locks for the shared Terraform state for the VPC resources:</p><p class="source-code">resource "aws_dynamodb_table" "clusters_vpc_dynamodb_tf_state_lock" {</p><p class="source-code">  name           = "${var.clusters_name_prefix}-vpc-terraform-state-lock-dynamodb"</p><p class="source-code">  hash_key       = "LockID"</p><p class="source-code">  read_capacity = 20</p><p class="source-code">  write_capacity = 20</p><p class="source-code">  attribute {</p><p class="source-code">    name = "LockID"</p><p class="source-code">    type = "S"</p><p class="source-code">  }</p><p class="source-code">}</p></li>
+			</ol>
+			<p>When you apply the<a id="_idIndexMarker169"/> previous Terraform code file, it will create two DynamoDB tables. In the coming sections, we will learn how to configure terraform to use them. Then, Terraform will be able to create locks for its shared state files.</p>
+			<h2 id="_idParaDest-56"><a id="_idTextAnchor082"/>Provisioning the Terraform state</h2>
+			<p>After creating the previous<a id="_idIndexMarker170"/> Terraform code files for the shared state resources. You have to perform the following instructions to provision the resources in your AWS account:</p>
+			<ol>
+				<li value="1">Initialize the Terraform state:<p class="source-code"><strong class="bold">$ cd Chapter03/terraform/shared-state</strong></p><p class="source-code"><strong class="bold">$ terraform init</strong></p><p class="source-code"><strong class="bold">Initializing modules...</strong></p><p class="source-code"><strong class="bold">Initializing the backend...</strong></p><p class="source-code"><strong class="bold">Initializing provider plugins...</strong></p><p class="source-code"><strong class="bold">- Checking for available provider plugins...</strong></p><p class="source-code"><strong class="bold">- Downloading plugin for provider "aws" (hashicorp/aws) 3.27.0...</strong></p><p class="source-code"><strong class="bold">Terraform has been successfully initialized!</strong></p><p class="source-code"><strong class="bold">You may now begin working with Terraform. Try running "terraform plan" to see</strong></p><p class="source-code"><strong class="bold">any changes that are required for your infrastructure. All Terraform commands</strong></p><p class="source-code"><strong class="bold">should now work.</strong></p><p class="source-code"><strong class="bold">If you ever set or change modules or backend configuration for Terraform,</strong></p><p class="source-code"><strong class="bold">rerun this command to reinitialize your working directory. If you forget, other</strong></p><p class="source-code"><strong class="bold">commands will detect it and remind you to do so if necessary.</strong></p></li>
+				<li>Run the <strong class="source-inline">terraform plan</strong> command <a id="_idIndexMarker171"/>to validate the planned changes before applying them:<p class="source-code"><strong class="bold">$ terraform plan</strong></p></li>
+				<li>You will get the following output after the <strong class="source-inline">terraform plan</strong> command completes successfully. There are four resources to add – two S3 buckets and two DynamoDB tables:<div id="_idContainer012" class="IMG---Figure"><img src="Images/B16192_03_003.jpg" alt="Figure 3.3 – Terraform plan command output&#13;&#10;" width="948" height="227"/></div><p class="figure-caption">Figure 3.3 – Terraform plan command output</p></li>
+				<li>Execute the <strong class="source-inline">terraform apply</strong> command. Enter <strong class="source-inline">yes</strong> when you get a prompt to approve execution:<p class="source-code"><strong class="bold">$ terraform apply</strong></p></li>
+				<li>You will get the following output after the <strong class="source-inline">terraform apply</strong> command completes successfully. By then, Terraform has successfully created four AWS resources:</li>
+			</ol>
+			<div>
+				<div id="_idContainer013" class="IMG---Figure">
+					<img src="Images/B16192_03_004.jpg" alt="Figure 3.4 – Terraform apply command output&#13;&#10;" width="1262" height="375"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.4 – Terraform apply command output</p>
+			<p>Now you have completed <a id="_idIndexMarker172"/>provisioning of the AWS resources to persist and manage the Terraform shared state. In the next section, you will learn how to provision the VPC and the other network resources to run your first Kubernetes cluster.</p>
+			<h2 id="_idParaDest-57"><a id="_idTextAnchor083"/>Utilizing Terraform workspaces</h2>
+			<p>In the previous section, you <a id="_idIndexMarker173"/>learned that Terraform configuration has a backend that defines how operations are executed and where the infrastructure state is persisted, such as in S3 buckets. Terraform uses workspaces to organize and isolate multiple states under a single backend.</p>
+			<p>This concept becomes useful when the user wants to run multiple instances of the same infrastructure without creating multiple backends and state files. Let's assume that you want to use Terraform to provision a Kubernetes cluster, ClusterA, and you want to use the same configuration to provision a second cluster, ClusterB. In this case, workspaces provide an out-of-the-box and scalable solution, as you will be able to use a single backend for all of your clusters (<em class="italic">N</em> clusters), but you provision each cluster in its workspace with its own state file.</p>
+			<p>If you have a Terraform configuration with a backend named <strong class="source-inline">k8s_s3_backend</strong>, and you want to provision <em class="italic">N</em> Kubernetes clusters using the same Terraform base code, then you can do the following:</p>
+			<p class="source-code">$ terraform workspace new cluster1</p>
+			<p class="source-code">Created and switched to workspace "cluster1"!</p>
+			<p class="source-code">You're now on a new, empty workspace. Workspaces isolate their state,</p>
+			<p class="source-code">so if you run "terraform plan" Terraform will not see any existing state</p>
+			<p class="source-code">for this configuration.</p>
+			<p class="source-code">$ terraform apply </p>
+			<p class="source-code">&lt;apply outputs&gt;</p>
+			<p>Then, repeat the<a id="_idIndexMarker174"/> same process for every <em class="italic">N</em> cluster:</p>
+			<p class="source-code">$ terraform workspace new clusterN</p>
+			<p class="source-code">Created and switched to workspace "clusterN"!</p>
+			<p class="source-code">You're now on a new, empty workspace. Workspaces isolate their state,</p>
+			<p class="source-code">so if you run "terraform plan" Terraform will not see any existing state</p>
+			<p class="source-code">for this configuration.</p>
+			<p class="source-code">$ terraform apply </p>
+			<p class="source-code">&lt;apply outputs&gt;</p>
+			<h1 id="_idParaDest-58"><a id="_idTextAnchor084"/>Creating the network infrastructure</h1>
+			<p>In <a href="B16192_02_Final_PG_ePub.xhtml#_idTextAnchor051"><em class="italic">Chapter 2</em></a>, <em class="italic">Architecting Production-Grade Kubernetes Infrastructure</em>, you learned in<a id="_idIndexMarker175"/> detail about the infrastructure architecture design recommendations and the technical decisions that you should take in relation to the production readiness state for your Kubernetes clusters. In this section, you will use Terraform to provision the network layer of your Kubernetes production infrastructure.</p>
+			<p>These are the AWS network resources that you will provision with the Terraform code in this section:</p>
+			<ul>
+				<li>AWS VPC</li>
+				<li>Private subnets</li>
+				<li>Public subnets</li>
+				<li>Route tables</li>
+				<li>Internet and NAT gateways</li>
+			</ul>
+			<p>Encapsulating AWS resources into <a id="_idIndexMarker176"/>reusable code modules is a recommended IaC practice. In the next subsection, you will create a VPC Terraform module that includes the previous AWS resources. You can then reuse this module with no code changes to provision VPCs for as many Kubernetes clusters as you need.</p>
+			<h2 id="_idParaDest-59"><a id="_idTextAnchor085"/>Developing the VPC Terraform module</h2>
+			<p>Under the <strong class="source-inline">terraform</strong> root<a id="_idIndexMarker177"/> directory, create a directory and name it <strong class="source-inline">modules</strong>. Then, create a subdirectory and name it <strong class="source-inline">eks-vpc</strong>. This subdirectory will contain the following Terraform code files:</p>
+			<ul>
+				<li><strong class="source-inline">variables.tf</strong></li>
+				<li><strong class="source-inline">main.tf</strong></li>
+				<li><strong class="source-inline">outputs.tf</strong></li>
+			</ul>
+			<h3>Input variables</h3>
+			<p>These are the<a id="_idIndexMarker178"/> input variables that are accepted by this module. The module's user should provide the values for each of these variables:</p>
+			<ul>
+				<li><strong class="bold">VPC CIDR block</strong>: The value of the VPC CIDR, such as <strong class="source-inline">10.40.0.0/17</strong>.</li>
+				<li><strong class="bold">Private subnet prefixes</strong>: The values of private subnet prefixes. This could be <strong class="source-inline">1</strong> or another prefix such as <strong class="source-inline">10.40.64.0/20</strong>.</li>
+				<li><strong class="bold">Public subnet prefixes</strong>: The values of public subnet prefixes. This could be <strong class="source-inline">1</strong> or another prefix such as <strong class="source-inline">10.40.0.0/20</strong>.</li>
+				<li><strong class="bold">Cluster name prefix</strong>: The value of the cluster name prefix that is used in naming the VPC resources.</li>
+				<li><strong class="bold">Common tags</strong>: Any AWS tags <a id="_idIndexMarker179"/>that you want to assign to the VPC resources to help identify and classify them later.</li>
+			</ul>
+			<p>The <strong class="source-inline">variables.tf</strong> file is defined as follows:</p>
+			<p class="source-code">variable "eks_vpc_block" {</p>
+			<p class="source-code">  type = string</p>
+			<p class="source-code">}</p>
+			<p class="source-code">variable "eks_private_subnets_prefix_list" {</p>
+			<p class="source-code">  type = list(string)</p>
+			<p class="source-code">}</p>
+			<p class="source-code">variable "eks_public_subnets_prefix_list" {</p>
+			<p class="source-code">  type = list(string)</p>
+			<p class="source-code">}</p>
+			<p class="source-code">variable "clusters_name_prefix" {</p>
+			<p class="source-code">  type = string</p>
+			<p class="source-code">}</p>
+			<p class="source-code">variable "common_tags" {</p>
+			<p class="source-code">  type = map(string)</p>
+			<p class="source-code">}</p>
+			<p>The previous code snippet defines five Terraform variable blocks and all of the type strings. In the <em class="italic">Creating the cluster VPC</em> section, you will use this VPC module and learn how to pass the values for each of these variables.</p>
+			<h3>Module main resources</h3>
+			<p>The <strong class="source-inline">main.tf</strong> file defines<a id="_idIndexMarker180"/> the network resources that are required to create Kubernetes AWS network components, including the public and private subnets, internet and NAT gateways, and routing tables.</p>
+			<p>The following code snippet uses the Terraform resource called <strong class="source-inline">aws_vpc</strong>, which is a built-in resource in the Terraform AWS provider that can be used to create AWS VPC and set its configuration parameters.</p>
+			<p>In the following code block, you define the VPC resource, and a data resource that is used to retrieve the value of the AWS availability zones that you use in the <strong class="source-inline">main.tf</strong> file:</p>
+			<p class="source-code">resource "aws_vpc" "eks_vpc" {</p>
+			<p class="source-code">  cidr_block           = var.eks_vpc_block</p>
+			<p class="source-code">  enable_dns_hostnames = true</p>
+			<p class="source-code">  tags = merge(</p>
+			<p class="source-code">    var.common_tags,</p>
+			<p class="source-code">    {</p>
+			<p class="source-code">      Name = "${var.clusters_name_prefix}-vpc"</p>
+			<p class="source-code">    },</p>
+			<p class="source-code">  )</p>
+			<p class="source-code">  lifecycle {</p>
+			<p class="source-code">    ignore_changes = [</p>
+			<p class="source-code">      tags</p>
+			<p class="source-code">    ]</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">}</p>
+			<p class="source-code">data "aws_availability_zones" "availability_zones" {</p>
+			<p class="source-code">}</p>
+			<p>The following code snippet uses the Terraform resource called <strong class="source-inline">aws_subnet</strong>, which is a built-in resource in the Terraform AWS provider that can be used to create AWS subnets and set their configuration parameters.</p>
+			<p>This code uses the<a id="_idIndexMarker181"/> Terraform built-in <strong class="source-inline">count</strong> construct to create one or more subnets according to the number of private subnet prefixes:</p>
+			<p class="source-code">resource "aws_subnet" "eks_private_subnets" {</p>
+			<p class="source-code">  count             = length(var.eks_private_subnets_prefix_list)</p>
+			<p class="source-code">  cidr_block        = element(var.eks_private_subnets_prefix_list, count.index)</p>
+			<p class="source-code">  vpc_id            = aws_vpc.eks_vpc.id</p>
+			<p class="source-code">  availability_zone = data.aws_availability_zones.availability_zones.names[count.index]</p>
+			<p class="source-code">  tags = merge(</p>
+			<p class="source-code">    var.common_tags,</p>
+			<p class="source-code">    {</p>
+			<p class="source-code">      Name = "eks-private-${var.clusters_name_prefix}-${data.aws_availability_zones.availability_zones.names[count.index]}"</p>
+			<p class="source-code">    },</p>
+			<p class="source-code">  )</p>
+			<p class="source-code">  lifecycle {</p>
+			<p class="source-code">    ignore_changes = [</p>
+			<p class="source-code">      tags</p>
+			<p class="source-code">    ]</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">}</p>
+			<p>In the remaining part of the <strong class="source-inline">main.tf</strong> file, you define an <strong class="source-inline">aws_subnet</strong> resource, which is similar to the private subnet resource, but designed for public subnets. Also, you create complementary VPC network resources that handle the routing, connect the subnets together and<a id="_idIndexMarker182"/> with the internet, such as NAT and internet gateways, routing tables, and NAT IPs. You can find the complete source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-vpc/main.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-vpc/main.tf</a>.</p>
+			<h3>Output values</h3>
+			<p>The <strong class="source-inline">outputs.tf</strong> file defines<a id="_idIndexMarker183"/> the output values from the <strong class="source-inline">VPC</strong> module. Terraform will need these values to use them as inputs to the Kubernetes cluster module when you provision it. There are four outputs from the <strong class="source-inline">VPC</strong> module: the VPC ID; the private subnet IDs; the public subnet IDs; and the NAT IPs.</p>
+			<p>The <strong class="source-inline">outputs.tf</strong> file is defined as follows:</p>
+			<p class="source-code">output "eks_cluster_vpc_id" {</p>
+			<p class="source-code">  value = aws_vpc.eks_vpc.id</p>
+			<p class="source-code">}</p>
+			<p class="source-code">output "eks_private_subnet_ids" {</p>
+			<p class="source-code">  value = aws_subnet.eks_private_subnets.*.id</p>
+			<p class="source-code">}</p>
+			<p class="source-code">output "eks_public_subnet_ids" {</p>
+			<p class="source-code">  value = aws_subnet.eks_public_subnets.*.id</p>
+			<p class="source-code">}</p>
+			<p class="source-code">output "eks_nat_ips" {</p>
+			<p class="source-code">  value = aws_eip.eks_nat_ips.*.public_ip</p>
+			<p class="source-code">}</p>
+			<p>The preceding code snippet defines five Terraform output blocks. In the <em class="italic">Provisioning the cluster</em> section, you will use these outputs as inputs to the Kubernetes terraform modules.</p>
+			<h2 id="_idParaDest-60"><a id="_idTextAnchor086"/>Developing the cluster VPC</h2>
+			<p>Under the <strong class="source-inline">terraform</strong> root directory, create<a id="_idIndexMarker184"/> a directory and name it <strong class="source-inline">packtclusters-vpc</strong>. This directory will contain the following Terraform code files:</p>
+			<ul>
+				<li><strong class="source-inline">config.tf</strong></li>
+				<li><strong class="source-inline">terraform.tfvars</strong></li>
+				<li><strong class="source-inline">variables.tf</strong></li>
+				<li><strong class="source-inline">main.tf</strong></li>
+				<li><strong class="source-inline">outputs.tf</strong></li>
+			</ul>
+			<p>The previous list of Terraform files comprises your Kubernetes cluster VPC. You will learn about each code and configuration file in the following subsections.</p>
+			<h3>Configuration</h3>
+			<p><strong class="source-inline">config.tf</strong> has the <a id="_idIndexMarker185"/>Terraform shared state configuration and the AWS provider definition:</p>
+			<p class="source-code">terraform {</p>
+			<p class="source-code">  backend "s3" {</p>
+			<p class="source-code">    bucket         = "packtclusters-vpc-terraform-state"</p>
+			<p class="source-code">    key            = "packtclusters-vpc.tfstate"</p>
+			<p class="source-code">    region         = "us-east-1"</p>
+			<p class="source-code">    dynamodb_table = "packtclusters-vpc-terraform-state-lock-dynamodb"</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">  required_version = "~&gt; 0.14.5"</p>
+			<p class="source-code">  required_providers {</p>
+			<p class="source-code">    aws = "~&gt; 3.27"</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">}</p>
+			<p class="source-code">provider "aws" {</p>
+			<p class="source-code">  region  = var.aws_region</p>
+			<p class="source-code">  version = "~&gt; 3.27"</p>
+			<p class="source-code">}</p>
+			<p>The preceding code <a id="_idIndexMarker186"/>block tells Terraform which S3 bucket to use to persist the state, and specifies Terraform and AWS provider versions.</p>
+			<h3>Environment variables</h3>
+			<p>The <strong class="source-inline">terraform.tfvars</strong> file defines<a id="_idIndexMarker187"/> the values of the input variables. These values are required by the VPC module to set the values of these inputs: the AWS region; the VPC IP CIDR; the private subnet prefix list; and the public subnet prefix list.</p>
+			<p>The <strong class="source-inline">terraform.tfvars</strong> file is defined as follows:</p>
+			<p class="source-code">aws_region           = "us-east-1"</p>
+			<p class="source-code">clusters_name_prefix = "packtclusters"</p>
+			<p class="source-code">vpc_block            = "10.40.0.0/17"</p>
+			<p class="source-code">public_subnets_prefix_list = [</p>
+			<p class="source-code">  "10.40.0.0/20",</p>
+			<p class="source-code">  "10.40.16.0/20",</p>
+			<p class="source-code">  "10.40.32.0/20",</p>
+			<p class="source-code">]</p>
+			<p class="source-code">private_subnets_prefix_list = [</p>
+			<p class="source-code">  "10.40.64.0/20",</p>
+			<p class="source-code">  "10.40.80.0/20",</p>
+			<p class="source-code">  "10.40.96.0/20",</p>
+			<p class="source-code">]</p>
+			<p>For the preceding code, you<a id="_idIndexMarker188"/> can choose a different CIDR block for the VPC IPs range and different subnet prefixes according to your network topology and applications needs.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">You should make sure that the VPC CIDR is not used by any other VPCs within your own AWS VPC so as to avoid IPs collisions. You should make sure the VPC CIDR has a sufficient number of IPs that exceeds the maximum forecasted number of pods in your Kubernetes cluster.</p>
+			<h3>Input variables</h3>
+			<p>The <strong class="source-inline">variables.tf</strong> file defines <a id="_idIndexMarker189"/>the five input variables that Terraform will use during creation of the VPC module resources. It is very similar to the previous <strong class="source-inline">variables.tf </strong>files. You can view its full source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/packtclusters-vpc/variables.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/packtclusters-vpc/variables.tf</a>.</p>
+			<h3>The cluster VPC</h3>
+			<p>The <strong class="source-inline">main.tf</strong> file has two <a id="_idIndexMarker190"/>code blocks: the <strong class="source-inline">vpc</strong> module block, which creates an instance of the <strong class="source-inline">eks-vpc</strong> module, and the <strong class="source-inline">locals</strong> code block, which defines <strong class="source-inline">common_tags</strong> to be assigned to VPC resources.</p>
+			<p>The <strong class="source-inline">main.tf</strong> file is defined as follows:</p>
+			<p class="source-code">locals {</p>
+			<p class="source-code">  common_tags = {</p>
+			<p class="source-code">    ManagedBy = "terraform"</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">}</p>
+			<p class="source-code">module "vpc" {</p>
+			<p class="source-code">  source                          = "../modules/eks-vpc"</p>
+			<p class="source-code">  clusters_name_prefix            = var.clusters_name_prefix</p>
+			<p class="source-code">  eks_vpc_block                   = var.vpc_block</p>
+			<p class="source-code">  eks_public_subnets_prefix_list  = var.public_subnets_prefix_list</p>
+			<p class="source-code">  eks_private_subnets_prefix_list = var.private_subnets_prefix_list</p>
+			<p class="source-code">  common_tags                     = local.common_tags</p>
+			<p class="source-code">}</p>
+			<p>Thanks to Terraform<a id="_idIndexMarker191"/> modules, this makes the previous code clean and simple, as it hides the complexity of creating the AWS VPC. In the next subsection, you will create the Terraform outputs that you will use while creating the cluster VPC.</p>
+			<h3>Output values</h3>
+			<p>The <strong class="source-inline">outputs.tf</strong> file <a id="_idIndexMarker192"/>defines the output values that you need to get after creating the cluster VPC. These outputs are the VPC ID, the private subnet IDs, and the public subnet IDs.</p>
+			<p>The <strong class="source-inline">outputs.tf</strong> file is defined as follows:</p>
+			<p class="source-code">output "vpc_id" {</p>
+			<p class="source-code">  value = module.vpc.eks_cluster_vpc_id</p>
+			<p class="source-code">}</p>
+			<p class="source-code">output "private_subnet_ids" {</p>
+			<p class="source-code">  value = module.vpc.eks_private_subnet_ids</p>
+			<p class="source-code">}</p>
+			<p class="source-code">output "public_subnet_ids" {</p>
+			<p class="source-code">  value = module.vpc.eks_public_subnet_ids</p>
+			<p class="source-code">}</p>
+			<p>The outputs from the previous code block are used as the inputs to the Kubernetes cluster Terraform <a id="_idIndexMarker193"/>modules in the next section.</p>
+			<h2 id="_idParaDest-61"><a id="_idTextAnchor087"/>Provisioning the cluster VPC</h2>
+			<p>Once you have completed<a id="_idIndexMarker194"/> development of the VPC Terraform files in the previous sections, you can now provision the VPC resources and create them in your AWS account:</p>
+			<ol>
+				<li value="1">Initialize the Terraform state:<p class="source-code"><strong class="bold">$ cd Chapter03/terraform/packtclusters-vpc</strong></p><p class="source-code"><strong class="bold">$ terraform init</strong></p><p class="source-code"><strong class="bold">Initializing modules...</strong></p><p class="source-code"><strong class="bold">- vpc in ../../modules/eks-vpc</strong></p><p class="source-code"><strong class="bold">Initializing the backend...</strong></p><p class="source-code"><strong class="bold">Initializing provider plugins...</strong></p><p class="source-code"><strong class="bold">- Checking for available provider plugins...</strong></p><p class="source-code"><strong class="bold">- Downloading plugin for provider "aws" (hashicorp/aws) 3.27.0...</strong></p><p class="source-code"><strong class="bold">Terraform has been successfully initialized!</strong></p><p class="source-code"><strong class="bold">You may now begin working with Terraform. Try running "terraform plan" to see</strong></p><p class="source-code"><strong class="bold">any changes that are required for your infrastructure. All Terraform commands</strong></p><p class="source-code"><strong class="bold">should now work.</strong></p><p class="source-code"><strong class="bold">If you ever set or change modules or backend configuration for Terraform,</strong></p><p class="source-code"><strong class="bold">rerun this command to reinitialize your working directory. If you forget, other</strong></p><p class="source-code"><strong class="bold">commands will detect it and remind you to do so if necessary.</strong></p></li>
+				<li>Execute the <strong class="source-inline">terraform plan</strong> command to review the planned changes before applying them:<p class="source-code"><strong class="bold">$ cd Chapter03/terraform/packtclusters-vpc</strong></p><p class="source-code"><strong class="bold">$ terraform plan</strong></p><p>The following is the<a id="_idIndexMarker195"/> expected final output after executing the <strong class="source-inline">terraform plan</strong> command. There are 28 resources in the Terraform plan, and when you execute the <strong class="source-inline">terraform apply</strong> command, these 28 resources will be created in your AWS account:</p><div id="_idContainer014" class="IMG---Figure"><img src="Images/B16192_03_005.jpg" alt="Figure 3.5 – The terraform plan command output&#13;&#10;" width="1066" height="262"/></div><p class="figure-caption">Figure 3.5 – The terraform plan command output</p></li>
+				<li>Execute the <strong class="source-inline">terraform apply</strong> command. Enter <strong class="source-inline">yes</strong> when you get a prompt to approve the execution:<p class="source-code"><strong class="bold">$ cd Chapter03/terraform/packtclusters-vpc</strong></p><p class="source-code"><strong class="bold">$ terraform apply</strong></p></li>
+				<li>You will get the following output once the <strong class="source-inline">terraform apply</strong> command completes successfully, and by then, Terraform has successfully created 28 network resources:</li>
+			</ol>
+			<div>
+				<div id="_idContainer015" class="IMG---Figure">
+					<img src="Images/B16192_03_006.jpg" alt="Figure 3.6 – The terraform apply command output&#13;&#10;" width="662" height="403"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.6 – The terraform apply command output</p>
+			<p>By completing this section, you should <a id="_idIndexMarker196"/>have your Kubernetes cluster VPC and its network components successfully created in your AWS account. It is now ready to provision the cluster above it, as you will learn in the next section.</p>
+			<h1 id="_idParaDest-62"><a id="_idTextAnchor088"/>Creating the cluster infrastructure</h1>
+			<p>In this section, you will develop<a id="_idIndexMarker197"/> the following Terraform modules:</p>
+			<ul>
+				<li>An EKS module</li>
+				<li>A Kubernetes worker module</li>
+				<li>A Kubernetes cluster module that wraps both the EKS control plan and the workers</li>
+			</ul>
+			<p>After that, you will use these modules to Terraform your first cluster, <strong class="source-inline">Packt cluster</strong>, and then provision it in your AWS account.</p>
+			<h2 id="_idParaDest-63"><a id="_idTextAnchor089"/>Developing the EKS Terraform module</h2>
+			<p>Under the <strong class="source-inline">terraform/modules</strong> directory, create a subdirectory with the name <strong class="source-inline">eks-cp</strong>. This directory<a id="_idIndexMarker198"/> will contain the following Terraform source code files for the EKS control plane module:</p>
+			<ul>
+				<li><strong class="source-inline">variables.tf</strong></li>
+				<li><strong class="source-inline">main.tf</strong></li>
+				<li><strong class="source-inline">security-groups.tf</strong></li>
+				<li><strong class="source-inline">iam.tf</strong></li>
+				<li><strong class="source-inline">outputs.tf</strong></li>
+			</ul>
+			<p>The previous list of files <a id="_idIndexMarker199"/>together comprises the EKS Terraform module. You will learn about each of these code and configuration files in the following subsections.</p>
+			<h3>Input variables</h3>
+			<p>The <strong class="source-inline">variables.tf</strong> file <a id="_idIndexMarker200"/>defines the input variables that are accepted in the EKS module. The module user should provide the values for each of these variables:</p>
+			<ul>
+				<li>Full cluster name</li>
+				<li>Cluster Kubernetes version</li>
+				<li>VPC ID</li>
+				<li>Private subnet IDs</li>
+				<li>Public subnet IDs</li>
+				<li>Common tags</li>
+			</ul>
+			<p>This file is similar to the <strong class="source-inline">variables.tf</strong> file you created in the VPC module. You can view its full source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-cp/variables.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-cp/variables.tf</a>.</p>
+			<h3>Module main resources</h3>
+			<p>The <strong class="source-inline">main.tf</strong> file defines<a id="_idIndexMarker201"/> the EKS resources that are required to configure and create it. These include the cluster name, version, and cluster IAM role ARN.</p>
+			<p>The following code snippet uses the Terraform resource called <strong class="source-inline">aws_eks_cluster</strong>, which is a built-in resource in the Terraform AWS provider that can be used to create an AWS EKS cluster and set its configuration parameters.</p>
+			<p>The <strong class="source-inline">main.tf</strong> file is defined as follows:</p>
+			<p class="source-code">resource "aws_eks_cluster" "eks_cluster" {</p>
+			<p class="source-code">  name     = var.cluster_full_name</p>
+			<p class="source-code">  version  = var.cluster_version</p>
+			<p class="source-code">  role_arn = aws_iam_role.eks_cluster_role.arn</p>
+			<p class="source-code">  vpc_config {</p>
+			<p class="source-code">    security_group_ids = [aws_security_group.eks_cluster_sg.id]</p>
+			<p class="source-code">    subnet_ids         = concat(var.private_subnets, var.public_subnets)</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">  depends_on = [</p>
+			<p class="source-code">    aws_iam_role_policy_attachment.eks_clusterrole_policy_attachment,</p>
+			<p class="source-code">    aws_iam_role_policy_attachment.eks_servicerole_policy_attachment,</p>
+			<p class="source-code">  ]</p>
+			<p class="source-code">}</p>
+			<p>In the previous code, you will notice that the EKS resource references the values of the EKS IAM role and the EKS security group. Both of these are created in the EKS module, but in two separate Terraform files for <a id="_idIndexMarker202"/>better code clarity and organization. You will learn about creating EKS security groups and IAM roles in the following subsections.</p>
+			<h3>Security groups</h3>
+			<p>The following code snippet uses the<a id="_idIndexMarker203"/> Terraform resource called <strong class="source-inline">aws_security_group</strong>, which is a built-in resource in the Terraform AWS provider that can be used to create an AWS security group and set its configuration parameters.</p>
+			<p>The following <strong class="source-inline">security-groups.tf</strong> file defines a single security group for the EKS control plane:</p>
+			<p class="source-code">resource "aws_security_group" "eks_cluster_sg" {</p>
+			<p class="source-code">  name        = "${var.cluster_full_name}-cluster"</p>
+			<p class="source-code">  description = "EKS cluster Security group"</p>
+			<p class="source-code">  vpc_id      = var.vpc_id</p>
+			<p class="source-code">  tags = merge(</p>
+			<p class="source-code">    var.common_tags,</p>
+			<p class="source-code">    {</p>
+			<p class="source-code">      Name                                             = "${var.cluster_full_name}-cluster-sg"</p>
+			<p class="source-code">      "kubernetes.io/cluster/${var.cluster_full_name}" = "owned"</p>
+			<p class="source-code">    },</p>
+			<p class="source-code">  )</p>
+			<p class="source-code">}</p>
+			<p>If you notice, the previous security group does not have ingress/egress rules. These rules will be defined in the cluster workers module. </p>
+			<h3>IAM roles and policies</h3>
+			<p>The <strong class="source-inline">iam.tf</strong> file uses the Terraform resource called <strong class="source-inline">aws_iam_role</strong>, which is a built-in resource in the<a id="_idIndexMarker204"/> Terraform AWS provider that can be used to<a id="_idIndexMarker205"/> create an AWS IAM role and set its configuration parameters.</p>
+			<p>There are specific policies that the EKS cluster must acquire in order to operate properly:</p>
+			<ul>
+				<li><strong class="source-inline">AmazonEKSClusterPolicy</strong></li>
+				<li><strong class="source-inline">AmazonEKSServicePolicy</strong></li>
+			</ul>
+			<p>These policies must be attached to the EKS cluster IAM role that we will create in the next code snippet. To learn more about these policies, you can check the EKS official documentation at <a href="https://docs.aws.amazon.com/eks/latest/userguide/service_IAM_role.html">https://docs.aws.amazon.com/eks/latest/userguide/service_IAM_role.html</a>.</p>
+			<p>The following <strong class="source-inline">iam.tf</strong> file defines an IAM role and associates two policies with this role:</p>
+			<p class="source-code">resource "aws_iam_role" "eks_cluster_role" {</p>
+			<p class="source-code">  name = "${var.cluster_full_name}-cluster-role"</p>
+			<p class="source-code">  assume_role_policy = &lt;&lt;POLICY</p>
+			<p class="source-code">{</p>
+			<p class="source-code">  "Version": "2012-10-17",</p>
+			<p class="source-code">  "Statement": [</p>
+			<p class="source-code">    {</p>
+			<p class="source-code">      "Effect": "Allow",</p>
+			<p class="source-code">      "Principal": {</p>
+			<p class="source-code">        "Service": "eks.amazonaws.com"</p>
+			<p class="source-code">      },</p>
+			<p class="source-code">      "Action": "sts:AssumeRole"</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">  ]</p>
+			<p class="source-code">}</p>
+			<p class="source-code">POLICY</p>
+			<p class="source-code">  tags = var.common_tags</p>
+			<p class="source-code">}</p>
+			<p>The two <a id="_idIndexMarker206"/>IAM policies in question are <strong class="source-inline">AmazonEKSClusterPolicy</strong> and <strong class="source-inline">AmazonEKSServicePolicy</strong>. Both of them are AWS-predefined IAM policies:</p>
+			<p class="source-code">data "aws_iam_policy" "AmazonEKSClusterPolicy" {</p>
+			<p class="source-code">  arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"</p>
+			<p class="source-code">}</p>
+			<p class="source-code">data "aws_iam_policy" "AmazonEKSServicePolicy" {</p>
+			<p class="source-code">  arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"</p>
+			<p class="source-code">}</p>
+			<p class="source-code">resource "aws_iam_role_policy_attachment" "eks_clusterrole_policy_attachment" {</p>
+			<p class="source-code">  policy_arn = data.aws_iam_policy.AmazonEKSClusterPolicy.arn</p>
+			<p class="source-code">  role       = aws_iam_role.eks_cluster_role.name</p>
+			<p class="source-code">  depends_on = [data.aws_iam_policy.AmazonEKSClusterPolicy]</p>
+			<p class="source-code">}</p>
+			<p class="source-code">resource "aws_iam_role_policy_attachment" "eks_servicerole_policy_attachment" {</p>
+			<p class="source-code">  policy_arn = data.aws_iam_policy.AmazonEKSServicePolicy.arn</p>
+			<p class="source-code">  role       = aws_iam_role.eks_cluster_role.name</p>
+			<p class="source-code">  depends_on = [data.aws_iam_policy.AmazonEKSServicePolicy]</p>
+			<p class="source-code">}</p>
+			<p>You need to attach the <a id="_idIndexMarker207"/>IAM role defined in the previous code to the EKS cluster to enable it to operate within the AWS environment. In the next and final subsection, you will define the EKS module outputs.</p>
+			<h3>Output values</h3>
+			<p>The <strong class="source-inline">outputs.tf</strong> file defines<a id="_idIndexMarker208"/> the output values from the EKS module. There are three outputs: the security group ID; the cluster <strong class="bold">certificate authority</strong> (<strong class="bold">CA</strong>); and the cluster API server endpoint.</p>
+			<p>The <strong class="source-inline">outputs.tf</strong> file is defined as follows:</p>
+			<p class="source-code">output "security_group" {</p>
+			<p class="source-code">  value = aws_security_group.eks_cluster_sg.id</p>
+			<p class="source-code">}</p>
+			<p class="source-code">output "kubeconfig" {</p>
+			<p class="source-code">  value = local.kubeconfig</p>
+			<p class="source-code">}</p>
+			<p class="source-code">output "ca" {</p>
+			<p class="source-code">  value = aws_eks_cluster.eks_cluster.certificate_authority[0].data</p>
+			<p class="source-code">}</p>
+			<p class="source-code">output "endpoint" {</p>
+			<p class="source-code">  value = aws_eks_cluster.eks_cluster.endpoint</p>
+			<p class="source-code">}</p>
+			<p>In this section, you learned to develop a Terraform module for the EKS. You will use it with other modules to compose your cluster infrastructure. In the next section, you will learn to develop a Terraform module for the cluster workers.</p>
+			<h2 id="_idParaDest-64"><a id="_idTextAnchor090"/>Developing the workers' Terraform module</h2>
+			<p>Under the <strong class="source-inline">terraform/modules</strong> directory, create a subdirectory and name it <strong class="source-inline">eks-workers</strong>. This<a id="_idIndexMarker209"/> directory will contain the following Terraform code files:</p>
+			<ul>
+				<li><strong class="source-inline">variables.tf</strong></li>
+				<li><strong class="source-inline">main.tf</strong></li>
+				<li><strong class="source-inline">security-groups.tf</strong></li>
+				<li><strong class="source-inline">iam.tf</strong></li>
+				<li><strong class="source-inline">user-data.tf</strong></li>
+				<li><strong class="source-inline">authconfig.tf</strong></li>
+				<li><strong class="source-inline">outputs.tf</strong><p class="callout-heading">Important note</p><p class="callout">AWS recently introduced the managed EKS node group, which is an EKS service to manage workers on your behalf. This is a new service and it lacks important features, such as the ability to provide custom user data, which is essential when it comes to optimizing workers' performance and <strong class="source-inline">kubelet</strong> arguments. This is the reason why the preference is to keep using the self-managed workers until AWS implements this feature.</p></li>
+			</ul>
+			<h3>Input variables</h3>
+			<p>The <strong class="source-inline">variables.tf</strong> file defines<a id="_idIndexMarker210"/> the input variables that are required by this module. There are multiple inputs for the workers' module, such as the worker AMI ID, EC2 instance type, user data, and instance storage size.</p>
+			<p>The <strong class="source-inline">variables.tf</strong> file is defined as follows:</p>
+			<p class="source-code">variable "workers_ami_id" {</p>
+			<p class="source-code">  type = string</p>
+			<p class="source-code">}</p>
+			<p class="source-code">variable "workers_instance_type" {</p>
+			<p class="source-code">  type = string</p>
+			<p class="source-code">}</p>
+			<p class="source-code">variable "workers_storage_size" {</p>
+			<p class="source-code">  type = string</p>
+			<p class="source-code">}</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">AWS periodically releases optimized AMIs for EKS workers. To choose one of them, please check the EKS documentation at <a href="https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami.html">https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami.html</a>.</p>
+			<p class="callout">You still can build your own AMI for EKS workers, and you can make use of the EKS AMI open source project at <a href="https://github.com/awslabs/amazon-eks-ami">https://github.com/awslabs/amazon-eks-ami</a>.</p>
+			<p>Please view the remainder of the variables and the full source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-workers/variables.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-workers/variables.tf</a>.</p>
+			<h3>Module main resources</h3>
+			<p>The <strong class="source-inline">main.tf</strong> file defines<a id="_idIndexMarker211"/> the workers' resources and their properties. This module contains two AWS resources:</p>
+			<ul>
+				<li>Autoscaling group</li>
+				<li>Launch template</li>
+			</ul>
+			<p>The autoscaling group uses the launch template to add worker instances according to the launch specs.</p>
+			<p>The following code snippet uses the Terraform resource called <strong class="source-inline">aws_autoscaling_group</strong>, which is a built-in resource in the Terraform AWS provider that can be used to create an AWS autoscaling group and set its configuration parameters.</p>
+			<p>The <strong class="source-inline">main.tf</strong> file is defined as follows:</p>
+			<p class="source-code">resource "aws_autoscaling_group" "workers" {</p>
+			<p class="source-code">  name                = "${var.cluster_full_name}-workers-asg-${var.workers_instance_type}"</p>
+			<p class="source-code">  max_size            = var.workers_number_max</p>
+			<p class="source-code">  min_size            = var.workers_number_min</p>
+			<p class="source-code">  vpc_zone_identifier = var.private_subnet_ids</p>
+			<p class="source-code">  launch_template {</p>
+			<p class="source-code">    id      = aws_launch_template.workers.id</p>
+			<p class="source-code">    version = "$Latest"</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">}</p>
+			<p>Please view<a id="_idIndexMarker212"/> the rest of the <strong class="source-inline">main.tf</strong> source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-workers/main.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-workers/main.tf</a>.</p>
+			<h3>Security groups</h3>
+			<p>The <strong class="source-inline">security-groups.tf</strong> file defines<a id="_idIndexMarker213"/> the workers' security group and the ingress/egress rules that control the flow of traffic between workers, and between the control plane and the workers.</p>
+			<p>Please refer to <a href="B16192_02_Final_PG_ePub.xhtml#_idTextAnchor051"><em class="italic">Chapter 2</em></a>, <em class="italic">Architecting Production-Grade Kubernetes Infrastructure</em>, for more details about the security group ingress/egress rules and the permitted ports.</p>
+			<p>The <strong class="source-inline">security-groups.tf</strong> file is defined as follows:</p>
+			<p class="source-code">resource "aws_security_group" "workers" {</p>
+			<p class="source-code">  name        = "${var.cluster_full_name}-workers"</p>
+			<p class="source-code">  description = "Security group for all nodes in the ${var.cluster_full_name} cluster"</p>
+			<p class="source-code">  vpc_id      = var.vpc_id</p>
+			<p class="source-code">  egress {</p>
+			<p class="source-code">    from_port   = 0</p>
+			<p class="source-code">    to_port     = 0</p>
+			<p class="source-code">    protocol    = "-1"</p>
+			<p class="source-code">    cidr_blocks = ["0.0.0.0/0"]</p>
+			<p class="source-code">  }</p>
+			<p class="source-code">}</p>
+			<p>You can view <a id="_idIndexMarker214"/>the full source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-workers/security-groups.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-workers/security-groups.tf</a>.</p>
+			<h3>IAM role and policies</h3>
+			<p>The following <strong class="source-inline">iam.tf</strong> file <a id="_idIndexMarker215"/>defines an IAM role and associates two <a id="_idIndexMarker216"/>policies with this role:</p>
+			<p class="source-code">resource "aws_iam_role" "workers" {</p>
+			<p class="source-code">  name               = "${var.cluster_full_name}-workers"</p>
+			<p class="source-code">  assume_role_policy = &lt;&lt;POLICY</p>
+			<p class="source-code">{</p>
+			<p class="source-code">  "Version": "2012-10-17",</p>
+			<p class="source-code">  "Statement": [</p>
+			<p class="source-code">    {</p>
+			<p class="source-code">      "Effect": "Allow",</p>
+			<p class="source-code">      "Principal": {</p>
+			<p class="source-code">        "Service": "ec2.amazonaws.com"</p>
+			<p class="source-code">      },</p>
+			<p class="source-code">      "Action": "sts:AssumeRole"</p>
+			<p class="source-code">    }</p>
+			<p class="source-code">  ]</p>
+			<p class="source-code">}</p>
+			<p class="source-code">POLICY</p>
+			<p class="source-code">}</p>
+			<p>The <a id="_idIndexMarker217"/>IAM policies are <strong class="source-inline">AmazonEKSWorkerNodePolicy</strong>, <strong class="source-inline">AmazonEKS_CNI_Policy</strong>, <strong class="source-inline">AmazonEC2ContainerRegistryReadOnly</strong>, and <strong class="source-inline">CloudWatchAgentServerPolicy</strong>. All of them<a id="_idIndexMarker218"/> are standard predefined IAM policies:</p>
+			<p class="source-code">resource "aws_iam_role_policy_attachment" "AmazonEKSWorkerNodePolicy" {</p>
+			<p class="source-code">  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"</p>
+			<p class="source-code">  role       = aws_iam_role.workers.name</p>
+			<p class="source-code">}</p>
+			<p class="source-code">resource "aws_iam_role_policy_attachment" "AmazonEKS_CNI_Policy" {</p>
+			<p class="source-code">  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"</p>
+			<p class="source-code">  role       = aws_iam_role.workers.name</p>
+			<p class="source-code">}</p>
+			<p class="source-code">resource "aws_iam_role_policy_attachment" "AmazonEC2ContainerRegistryReadOnly" {</p>
+			<p class="source-code">  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"</p>
+			<p class="source-code">  role       = aws_iam_role.workers.name</p>
+			<p class="source-code">}</p>
+			<p class="source-code">resource "aws_iam_role_policy_attachment" "CloudWatchAgentServerPolicy" {</p>
+			<p class="source-code">  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"</p>
+			<p class="source-code">  role       = aws_iam_role.workers.name</p>
+			<p class="source-code">}</p>
+			<p class="source-code">resource "aws_iam_instance_profile" "workers" {</p>
+			<p class="source-code">  name = "${var.cluster_full_name}-workers"</p>
+			<p class="source-code">  role = aws_iam_role.workers.name</p>
+			<p class="source-code">}</p>
+			<p>You need to <a id="_idIndexMarker219"/>attach the IAM role defined in the previous code to the workers in order to enable <a id="_idIndexMarker220"/>them to operate within the AWS environment.</p>
+			<h3>User data</h3>
+			<p>The <strong class="source-inline">user-data.tf</strong> file defines<a id="_idIndexMarker221"/> the user data script that is executed while the worker instance is booting up.</p>
+			<p>The following code snippet uses a special Terraform code block called <strong class="source-inline">locals</strong>, which is used to define a set of key/value configurations. In our solution, we use it to construct the worker user data script.</p>
+			<p>The <strong class="source-inline">user-data.tf</strong> file is defined as follows:</p>
+			<p class="source-code">locals {</p>
+			<p class="source-code">  kubelet_extra_args = &lt;&lt;ARGS</p>
+			<p class="source-code">--v=3 \</p>
+			<p class="source-code">ARGS</p>
+			<p class="source-code">  userdata = &lt;&lt;USERDATA</p>
+			<p class="source-code">#!/bin/bash</p>
+			<p class="source-code">set -o xtrace</p>
+			<p class="source-code">/etc/eks/bootstrap.sh --b64-cluster-ca "${var.cluster_ca}" --apiserver-endpoint "${var.cluster_endpoint}" \</p>
+			<p class="source-code">USERDATA</p>
+			<p class="source-code">  workers_userdata = "${local.userdata} --kubelet-extra-args \"${local.kubelet_extra_args}\"  \"${var.cluster_full_name}\""</p>
+			<p class="source-code">}</p>
+			<p>Later in the book, we<a id="_idIndexMarker222"/> will update the previous code to bootstrap <strong class="source-inline">kubelet</strong> with optimized arguments for worker performance tuning.</p>
+			<h3>Worker authentication</h3>
+			<p>Kubernetes <a id="_idIndexMarker223"/>requires workers to be authenticated in order to be able to join the cluster and communicate with <strong class="source-inline">kube-api-server</strong>. EKS provides its own solution to perform this type of authentication, as it requires the cluster admin to create a ConfigMap that contains the workers' IAM role ARN and map it to the Kubernetes system node group. By doing that, workers can join the cluster.</p>
+			<p>To automate this, the <strong class="source-inline">authconfig.tf</strong> file defines the content of the <strong class="source-inline">authconfig</strong> YAML file, which you will use to register and authenticate the workers with the EKS control plane.</p>
+			<p>It is worth mentioning that <strong class="source-inline">authconfig</strong> can be applied separately to the cluster using <strong class="source-inline">kubectl</strong>. However, I recommend that you apply it using Terraform to register the nodes immediately after EKS is provisioned, and then you can apply it again later as part of Kubernetes configuration management, and add more users and groups to <strong class="source-inline">authconfig</strong>.</p>
+			<p>The <strong class="source-inline">authconfig.tf</strong> file is defined as follows:</p>
+			<p class="source-code">locals {</p>
+			<p class="source-code">  authconfig = &lt;&lt;AUTHCONFIG</p>
+			<p class="source-code">apiVersion: v1</p>
+			<p class="source-code">kind: ConfigMap</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  name: aws-auth</p>
+			<p class="source-code">  namespace: kube-system</p>
+			<p class="source-code">data:</p>
+			<p class="source-code">  mapRoles: |</p>
+			<p class="source-code">    - rolearn: "${aws_iam_role.workers.arn}"</p>
+			<p class="source-code">      username: system:node:{{EC2PrivateDNSName}}</p>
+			<p class="source-code">      groups:</p>
+			<p class="source-code">        - system:bootstrappers</p>
+			<p class="source-code">        - system:nodes</p>
+			<p class="source-code">AUTHCONFIG</p>
+			<p class="source-code">}</p>
+			<p>In <a href="B16192_04_Final_PG_ePub.xhtml#_idTextAnchor100"><em class="italic">Chapter 4</em></a>, <em class="italic">Managing Cluster Configuration with Ansible</em>, we will <a id="_idIndexMarker224"/>learn how to extend <strong class="source-inline">aws-auth</strong> to authenticate other users with the cluster.</p>
+			<h3>Output values</h3>
+			<p>The <strong class="source-inline">outputs.tf</strong> file <a id="_idIndexMarker225"/>defines the output values from the <strong class="source-inline">Workers</strong> module, such as the worker's instance profile ARN, the IAM role ARN, and other outputs. Please view the full source code of <strong class="source-inline">outputs.tf</strong> at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-workers/outputs.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/eks-workers/outputs.tf</a>.</p>
+			<p>In this section, you learned to develop a Terraform module for the cluster workers. You will use this with other modules to compose your cluster infrastructure. In the next section, you will learn to develop a Terraform module that wraps both EKS and workers in a single module that represents the whole Kubernetes cluster.</p>
+			<h2 id="_idParaDest-65"><a id="_idTextAnchor091"/>Developing the Kubernetes cluster Terraform module</h2>
+			<p>Under <a id="_idIndexMarker226"/>the <strong class="source-inline">terraform/modules</strong> directory, create a subdirectory and name it <strong class="source-inline">cluster</strong>. This directory will contain the following Terraform code files:</p>
+			<ul>
+				<li><strong class="source-inline">config.tf</strong></li>
+				<li><strong class="source-inline">terraform.tfvars</strong></li>
+				<li><strong class="source-inline">variables.tf</strong></li>
+				<li><strong class="source-inline">main.tf</strong></li>
+				<li><strong class="source-inline">outputs.tf</strong></li>
+			</ul>
+			<p>This <strong class="source-inline">cluster</strong> module is a wrapper above both the EKS module and the workers' module. You will notice that the inputs and outputs to/from this module are a combination of both EKS and worker modules.</p>
+			<h3>Input variables</h3>
+			<p>The <strong class="source-inline">variables.tf</strong> file <a id="_idIndexMarker227"/>defines the input variables that are needed by this module. These inputs are a combination of both EKS and worker modules. Please view the source code with a full list of variables at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/cluster/variables.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/cluster/variables.tf</a>.</p>
+			<h3>EKS control plane</h3>
+			<p>The <strong class="source-inline">eks-cp.tf</strong> file defines <a id="_idIndexMarker228"/>an instance of the EKS module. It is defined as follows:</p>
+			<p class="source-code">module "eks" {</p>
+			<p class="source-code">  source            = "../eks-cp"</p>
+			<p class="source-code">  vpc_id            = var.vpc_id</p>
+			<p class="source-code">  private_subnets   = var.private_subnets</p>
+			<p class="source-code">  public_subnets    = var.public_subnets</p>
+			<p class="source-code">  cluster_full_name = var.cluster_full_name</p>
+			<p class="source-code">  cluster_version   = var.cluster_version</p>
+			<p class="source-code">  common_tags       = var.common_tags</p>
+			<p class="source-code">}</p>
+			<p>The previous code block creates the EKS control plane by creating an instance from the EKS module and passing to it the required inputs. </p>
+			<h3>EKS workers</h3>
+			<p>The <strong class="source-inline">workers.tf</strong> file<a id="_idIndexMarker229"/> defines an instance of the <strong class="source-inline">workers</strong> module:</p>
+			<p class="source-code">module "workers" {</p>
+			<p class="source-code">  source                 = "../eks-workers"</p>
+			<p class="source-code">  vpc_id                 = var.vpc_id</p>
+			<p class="source-code">  private_subnet_ids     = var.private_subnets</p>
+			<p class="source-code">  cluster_full_name      = var.cluster_full_name</p>
+			<p class="source-code">  cluster_endpoint       = module.eks.endpoint</p>
+			<p class="source-code">  cluster_ca             = module.eks.ca</p>
+			<p class="source-code">  cluster_security_group = module.eks.security_group</p>
+			<p class="source-code">  workers_ami_id         = var.workers_ami_id</p>
+			<p class="source-code">  workers_instance_type  = var.workers_instance_type</p>
+			<p class="source-code">  workers_number_max     = var.workers_number_max</p>
+			<p class="source-code">  workers_number_min     = var.workers_number_min</p>
+			<p class="source-code">  workers_storage_size   = var.workers_storage_size</p>
+			<p class="source-code">  common_tags            = var.common_tags</p>
+			<p class="source-code">}</p>
+			<p>The previous code block<a id="_idIndexMarker230"/> creates the cluster workers by creating an instance from the <strong class="source-inline">workers</strong> module and passing it to the required inputs. Both of the previous code files comprise the full Kubernetes cluster.</p>
+			<h3>Output values</h3>
+			<p>The <strong class="source-inline">outputs.tf</strong> file contains the output values<a id="_idIndexMarker231"/> from the <strong class="source-inline">cluster</strong> module, such as the cluster's full name, the cluster endpoint, <strong class="source-inline">authconfig</strong>, and others. Please view the complete source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/cluster/outputs.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/modules/cluster/outputs.tf</a>.</p>
+			<p>In this section, you learned to develop a Terraform module that wraps both EKS and workers in a single module that is used to provision the whole Kubernetes cluster. In the next section, you will use the previous modules to develop your first cluster – the Packt cluster.</p>
+			<h2 id="_idParaDest-66"><a id="_idTextAnchor092"/>Putting all modules together</h2>
+			<p>Now it is time to <a id="_idIndexMarker232"/>bring all the modules together by creating your first cluster group, <strong class="source-inline">packtclusters</strong>, and a first cluster, <strong class="source-inline">prod1</strong>.</p>
+			<p>Under the root <strong class="source-inline">terraform</strong> directory, create a subdirectory and name it <strong class="source-inline">packtclusters</strong>. Then, under this, create the following Terraform code files:</p>
+			<ul>
+				<li><strong class="source-inline">config.tf</strong></li>
+				<li><strong class="source-inline">terraform.tfvars</strong></li>
+				<li><strong class="source-inline">variables.tf</strong></li>
+				<li><strong class="source-inline">main.tf</strong></li>
+				<li><strong class="source-inline">outputs.tf</strong></li>
+			</ul>
+			<p>In the following subsections, you will create the code files in the previous list and learn all the details about them.</p>
+			<h3>Configuration</h3>
+			<p>The <strong class="source-inline">config.tf</strong> file contains<a id="_idIndexMarker233"/> the Terraform shared state configuration and the AWS provider definition. This file is similar to the <strong class="source-inline">config.tf</strong> file you created in the <em class="italic">Developing the cluster VPC</em> section. Please view the complete source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/packtclusters/config.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/packtclusters/config.tf</a>.</p>
+			<h3>Environment variables</h3>
+			<p>The <strong class="source-inline">terraform.tfvars</strong> file defines <a id="_idIndexMarker234"/>the input values that are passed to the <strong class="source-inline">cluster</strong> module. Some of these values are outputs from the VPC module. To retrieve these outputs, you have to execute the following command:</p>
+			<p class="source-code">$ cd Chapter03/terraform/packtclusters-vpc</p>
+			<p class="source-code">$ terraform output</p>
+			<p>Then, copy the following output values:</p>
+			<ul>
+				<li>VPC ID</li>
+				<li>Private subnet IDs</li>
+				<li>Public subnet IDs</li>
+			</ul>
+			<p>Then, paste these values into the <strong class="source-inline">terraform.tfvars</strong> file into their corresponding placeholders.</p>
+			<p>The <strong class="source-inline">terraform.tfvars</strong> file is defined as follows:</p>
+			<p class="source-code">aws_region = "us-east-1"</p>
+			<p class="source-code">private_subnet_ids = [</p>
+			<p class="source-code">  "subnet-xxxxxxxx",</p>
+			<p class="source-code">  "subnet-xxxxxxxx",</p>
+			<p class="source-code">  "subnet-xxxxxxxx",</p>
+			<p class="source-code">]</p>
+			<p class="source-code">public_subnet_ids = [</p>
+			<p class="source-code">  "subnet-xxxxxxxx",</p>
+			<p class="source-code">  "subnet-xxxxxxxx",</p>
+			<p class="source-code">  "subnet-xxxxxxxx",</p>
+			<p class="source-code">] </p>
+			<p class="source-code">vpc_id                = "vpc-xxxxxxxxxx"</p>
+			<p class="source-code">clusters_name_prefix  = "packtclusters"</p>
+			<p class="source-code">cluster_version       = "1.16"</p>
+			<p class="source-code">workers_instance_type = "t3.medium"</p>
+			<p class="source-code">workers_number_min    = 1</p>
+			<p class="source-code">workers_number_max    = 3</p>
+			<p class="source-code">workers_storage_size  = 10</p>
+			<p>Some of the preceding values can be tuned according to your infrastructure requirements, specifically, the instance type and the worker instance count min/max limits. </p>
+			<p>For educational purposes, you <a id="_idIndexMarker235"/>can use the existing values in the previous code block. However, when you decide to move your cluster to production, please refer to the workers' sizing section in <a href="B16192_02_Final_PG_ePub.xhtml#_idTextAnchor051"><em class="italic">Chapter 2</em></a>, <em class="italic">Architecting Production-Grade Kubernetes Infrastructure</em>.</p>
+			<h3>Input variables</h3>
+			<p>The <strong class="source-inline">variables.tf</strong> file defines<a id="_idIndexMarker236"/> inputs that Terraform will use while creating the <strong class="source-inline">packtclusters-prod1</strong> cluster. You can view the complete source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/packtclusters/variables.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/packtclusters/variables.tf</a>.</p>
+			<h3>The cluster main resources</h3>
+			<p>The <strong class="source-inline">main.tf</strong> file defines<a id="_idIndexMarker237"/> the cluster module. It takes the input variables required to configure EKS and the workers. </p>
+			<p>The <strong class="source-inline">main.tf</strong> file is defined as follows:</p>
+			<p class="source-code">module "packtcluster" {</p>
+			<p class="source-code">  source                = "../modules/cluster"</p>
+			<p class="source-code">  vpc_id                = var.vpc_id</p>
+			<p class="source-code">  public_subnets        = var.public_subnet_ids</p>
+			<p class="source-code">  private_subnets       = var.private_subnet_ids</p>
+			<p class="source-code">  cluster_full_name     = "${var.clusters_name_prefix}-${terraform.workspace}"</p>
+			<p class="source-code">  cluster_version       = var.cluster_version</p>
+			<p class="source-code">  workers_instance_type = var.workers_instance_type</p>
+			<p class="source-code">  workers_ami_id        = data.aws_ssm_parameter.workers_ami_id.value</p>
+			<p class="source-code">  workers_number_min    = var.workers_number_min</p>
+			<p class="source-code">  workers_number_max    = var.workers_number_max</p>
+			<p class="source-code">  workers_storage_size  = var.workers_storage_size</p>
+			<p class="source-code">  common_tags           = local.common_tags</p>
+			<p class="source-code">  aws_region            = var.aws_region</p>
+			<p class="source-code">}</p>
+			<p>In the previous code block, the <strong class="source-inline">cluster_full_name</strong> input is constructed by concatenating <strong class="source-inline">cluster_name_prefix</strong>, which is <strong class="source-inline">packtclusters</strong>, and the Terraform workspace name, <strong class="source-inline">prod1</strong>. And this is how you can create multiple clusters under one cluster group such as <strong class="source-inline">packtclusters</strong>. All you need is to create a new Terraform workspace and execute your <strong class="source-inline">terraform plan</strong>.</p>
+			<h3>Output values</h3>
+			<p>The <strong class="source-inline">outputs.tf</strong> file defines <a id="_idIndexMarker238"/>the outputs from <strong class="source-inline">packtclusters</strong>, primarily <strong class="source-inline">authconfig</strong>, which is used to authenticate the workers with the control plane. You can view the complete source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/packtclusters/outputs.tf">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter03/terraform/packtclusters/outputs.tf</a>.</p>
+			<p>By completing this section, you have a complete Terraform code base that is capable of creating full Kubernetes clusters. In the next section, you will learn the Terraform commands to use this code base to provision your first production cluster.</p>
+			<h2 id="_idParaDest-67"><a id="_idTextAnchor093"/>Provisioning the cluster infrastructure</h2>
+			<p>After you have completed <a id="_idIndexMarker239"/>developing the cluster Terraform modules in the previous sections, you can now provision your first Kubernetes cluster and create it in your AWS account:</p>
+			<ol>
+				<li value="1">Initialize the Terraform state:<p class="source-code"><strong class="bold">$ cd Chapter03/terraform/packtclusters</strong></p><p class="source-code"><strong class="bold">$ terraform init</strong></p></li>
+				<li>Create a new Terraform workspace for the first cluster and name it <strong class="source-inline">prod1</strong>:<p class="source-code"><strong class="bold">$ terraform workspace new prod1</strong></p></li>
+				<li>Execute the <strong class="source-inline">terraform plan</strong> command to review the planned changes before applying them:<p class="source-code"><strong class="bold">$ terraform plan</strong></p></li>
+				<li>This is the <strong class="source-inline">terraform plan</strong> command output that you should get:<div id="_idContainer016" class="IMG---Figure"><img src="Images/B16192_03_007.jpg" alt="Figure 3.7 – Terraform plan command output&#13;&#10;" width="804" height="205"/></div><p class="figure-caption">Figure 3.7 – Terraform plan command output</p></li>
+				<li>Execute the <strong class="source-inline">terraform apply</strong> command. Enter <strong class="source-inline">yes</strong> when you get a prompt to approve the plan execution:<p class="source-code"><strong class="bold">$ terraform apply</strong></p></li>
+				<li>You will get the following output after the <strong class="source-inline">terraform apply</strong> command completes successfully. This <a id="_idIndexMarker240"/>means that Terraform has successfully created 22 resources:<div id="_idContainer017" class="IMG---Figure"><img src="Images/B16192_03_008.jpg" alt="Figure 3.8 – Terraform apply command output&#13;&#10;" width="836" height="539"/></div><p class="figure-caption">Figure 3.8 – Terraform apply command output</p></li>
+				<li>Retrieve the cluster <strong class="source-inline">kubeconfig</strong> file:<p class="source-code"><strong class="bold">$ aws eks --region $(terraform output aws_region) update-kubeconfig --name $(terraform output cluster_full_name)</strong></p><p class="source-code"><strong class="bold">Added new context arn:aws:eks:us-east-1:698782116220:cluster/packtclusters-prod1 to ~/.kube/config</strong></p></li>
+				<li>Apply <strong class="source-inline">authconfig</strong> to authenticate the workers' nodes with the EKS control plane:<p class="source-code"><strong class="bold">$ terraform output authconfig | kubectl -n kube-system create -f –</strong></p><p class="source-code"><strong class="bold">configmap/aws-auth created</strong></p></li>
+				<li>Ensure that the<a id="_idIndexMarker241"/> cluster worker nodes are up and in the ready state:<p class="source-code"><strong class="bold">$ kubectl get nodes</strong></p><p class="source-code"><strong class="bold">NAME			   STATUS	ROLES	 AGE	 VERSION</strong></p><p class="source-code"><strong class="bold">ip-10-40-98-176.ec2.internal	Ready	&lt;none&gt;	 90s	v1.15.10-eks-bac369</strong></p></li>
+			</ol>
+			<p>After completing the previous instructions, you have a Kubernetes cluster up and running, but it is still not ready to deploy production workloads. In the next chapters, you will deploy more services to the cluster, and optimize their configurations to make it capable of running your production workloads.</p>
+			<h1 id="_idParaDest-68"><a id="_idTextAnchor094"/>Cleaning up and destroying infrastructure resources</h1>
+			<p>After completing the<a id="_idIndexMarker242"/> hands-on exercises in this chapter, you can follow the<a id="_idIndexMarker243"/> instructions in this section to destroy the Kubernetes cluster and its AWS resources.</p>
+			<p>You will destroy the resources in reverse order from their creation. First, you will destroy the Kubernetes cluster resources, then the VPC resources, and finally the shared state resources.</p>
+			<h2 id="_idParaDest-69"><a id="_idTextAnchor095"/>Destroying the cluster resources</h2>
+			<p>Follow these<a id="_idIndexMarker244"/> Terraform commands to destroy all of the <strong class="source-inline">packtclusters</strong> resources that you created in the previous sections of this chapter:</p>
+			<ol>
+				<li value="1">Initialize the Terraform state:<p class="source-code"><strong class="bold">$ cd Chapter03/terraform/packtclusters</strong></p><p class="source-code"><strong class="bold">$ terraform init</strong></p></li>
+				<li>Execute the <strong class="source-inline">terraform destroy</strong> command. Enter <strong class="source-inline">yes</strong> when you get a prompt to approve the destruction:<p class="source-code"><strong class="bold">$ terraform destroy</strong></p></li>
+				<li>You will get the following output once the <strong class="source-inline">terraform destroy</strong> command completes successfully. This means that Terraform has successfully destroyed the 22 resources in the cluster:</li>
+			</ol>
+			<div>
+				<div id="_idContainer018" class="IMG---Figure">
+					<img src="Images/B16192_03_009.jpg" alt="Figure 3.9 – The terraform destroy command output&#13;&#10;" width="844" height="88"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.9 – The terraform destroy command output</p>
+			<p>Having observed the previous instructions, <strong class="source-inline">packtclusters-prod1</strong> is completely destroyed. In the next subsection, you will destroy the VPC resources.</p>
+			<h2 id="_idParaDest-70"><a id="_idTextAnchor096"/>Destroying the VPC resources</h2>
+			<p>Follow these <a id="_idIndexMarker245"/>Terraform commands to destroy all of the <strong class="source-inline">packtclusters-vpc</strong> resources that you created in the previous sections of this chapter:</p>
+			<ol>
+				<li value="1">Initialize the Terraform state:<p class="source-code"><strong class="bold">$ cd Chapter03/terraform/packtclusters-vpc</strong></p><p class="source-code"><strong class="bold">$ terraform init</strong></p></li>
+				<li>Execute the <strong class="source-inline">terraform destroy</strong> command. Enter <strong class="source-inline">yes</strong> when you get a prompt to approve the destruction:<p class="source-code"><strong class="bold">$ terraform destroy</strong></p></li>
+				<li>You will get the<a id="_idIndexMarker246"/> following output after the <strong class="source-inline">terraform destroy</strong> command completes successfully. This means that Terraform has successfully destroyed 28 network resources:</li>
+			</ol>
+			<div>
+				<div id="_idContainer019" class="IMG---Figure">
+					<img src="Images/B16192_03_010.jpg" alt="Figure 3.10 – The terraform destroy command output&#13;&#10;" width="925" height="83"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.10 – The terraform destroy command output</p>
+			<p>Having observed the previous instructions, <strong class="source-inline">packtclusters-vpc</strong> is completely destroyed. In the next subsection, you will destroy the shared state resources.</p>
+			<h2 id="_idParaDest-71"><a id="_idTextAnchor097"/>Destroying the shared state resources</h2>
+			<p>Usually, you do<a id="_idIndexMarker247"/> not have to delete the shared state files. However, for educational purposes, you can follow these instructions to destroy these resources.</p>
+			<ol>
+				<li value="1">As the shared state S3 buckets have destroy prevention and versioning enabled, you should empty and then destroy Terraform shared state S3 buckets first:<p class="source-code"><strong class="bold">$ aws s3 rm s3://packtclusters-terraform-state --recursive</strong></p><p class="source-code"><strong class="bold">$ aws s3 rm s3://packtclusters-vpc-terraform-state --recursive</strong></p><p class="source-code"><strong class="bold">$ aws s3 rb s3://packtclusters-terraform-state --force</strong></p><p class="source-code"><strong class="bold">$ aws s3 rb s3://packtclusters-vpc-terraform-state --force</strong></p></li>
+				<li>Initialize the Terraform state to destroy the shared state DynamoDB tables:<p class="source-code"><strong class="bold">$ cd Chapter03/terraform/shared-state</strong></p><p class="source-code"><strong class="bold">$ terraform init</strong></p></li>
+				<li>Execute the <strong class="source-inline">terraform destroy</strong> command. Enter <strong class="source-inline">yes</strong> when you get a prompt to approve the destruction:<p class="source-code"><strong class="bold">$ terraform destroy</strong></p></li>
+				<li>You will get the following<a id="_idIndexMarker248"/> output after the <strong class="source-inline">terraform destroy</strong> command completes successfully. By then, Terraform has successfully destroyed both of the DynamoDB tables:</li>
+			</ol>
+			<div>
+				<div id="_idContainer020" class="IMG---Figure">
+					<img src="Images/B16192_03_011.jpg" alt="Figure 3.11 – The terraform destroy command output&#13;&#10;" width="1118" height="315"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.11 – The terraform destroy command output</p>
+			<p>By now, you have successfully finished destroying your Kubernetes cluster and all of its AWS resources in your AWS account.</p>
+			<p>I recommend practicing these instructions and repeating them to provision and destroy the cluster, and to create multiple clusters by adding new Terraform workspaces, such as prod2 and prod3.</p>
+			<h1 id="_idParaDest-72"><a id="_idTextAnchor098"/>Summary</h1>
+			<p>In this chapter, you have learned to develop the infrastructure code for Kubernetes clusters using Terraform and AWS. You went through practical steps to implement this code. We started by creating the network components, followed by the cluster's components, using AWS VPC, EKS, autoscaling groups, and other AWS services.</p>
+			<p>This chapter introduced you to Terraform practical development and its usage in relation to production infrastructure provisioning. It showed you how to follow the best practices of the declarative IaC, and also the best practices of decomposing your IaC into modules and combining them to create Kubernetes clusters.</p>
+			<p>All of this establishes a foundation for the forthcoming chapters, where we will build on the knowledge introduced here to take the Kubernetes cluster to the next level of its production-readiness journey.</p>
+			<p>In the next chapter, you will learn in detail about Kubernetes cluster configuration management. You will develop a dynamic templating solution that you can apply to the cluster-level configurations, and you will learn how to make your solution scalable to many clusters without introducing operational overheads and complexity.</p>
+			<h1 id="_idParaDest-73"><a id="_idTextAnchor099"/>Further reading</h1>
+			<p>For more information on the topics covered in this chapter, you can refer to the following books:</p>
+			<ul>
+				<li><em class="italic">Getting Started with Terraform – Second Edition</em>: <a href="https://www.packtpub.com/networking-and-servers/getting-started-terraform-second-edition">https://www.packtpub.com/networking-and-servers/getting-started-terraform-second-edition</a></li>
+				<li><em class="italic">Hands-On Infrastructure Automation with Terraform on AWS</em>: <a href="https://www.packtpub.com/big-data-and-business-intelligence/hands-infrastructure-automation-terraform-aws-video">https://www.packtpub.com/big-data-and-business-intelligence/hands-infrastructure-automation-terraform-aws-video</a></li>
+			</ul>
+		</div>
+	</div></body></html>

@@ -1,0 +1,403 @@
+<html><head></head><body>
+		<div id="_idContainer117">
+			<h1 id="_idParaDest-202" class="chapter-number"><a id="_idTextAnchor205"/>14</h1>
+			<h1 id="_idParaDest-203"><a id="_idTextAnchor206"/>Setting Load Balancing for Applications on EKS</h1>
+			<p>In <a href="B18129_04.xhtml#_idTextAnchor067"><span class="No-Break"><em class="italic">Chapter 4</em></span></a>, we looked at how you can use a NodePort, Ingress, and/or AWS <strong class="bold">Load Balancer </strong>(<strong class="bold">LB</strong>) to expose a simple application. In this chapter, we will dive into more detail on how to scale <a id="_idIndexMarker667"/>and provide greater resilience in your application <a id="_idIndexMarker668"/>using <strong class="bold">AWS Elastic Load </strong><span class="No-Break"><strong class="bold">Balancers</strong></span><span class="No-Break"> (</span><span class="No-Break"><strong class="bold">ELBs</strong></span><span class="No-Break">).</span></p>
+			<p>In most modern web or cloud-native applications, you want to ensure that the application is available to its client (resilient) and copes as the Kubernetes scheduler scales your application by replacing, removing, and adding Pods when necessary. Placing an LB in front of your application allows these Kubernetes actions to be hidden from the client, which has a consistent endpoint to access the application regardless of the location or number of Pods. Hence, specifically, we will cover the following topics in <span class="No-Break">this chapter:</span></p>
+			<ul>
+				<li>What LBs are available in AWS, and how to choose the right one for <span class="No-Break">your needs</span></li>
+				<li>How EKS can create and use <span class="No-Break">AWS LBs</span></li>
+			</ul>
+			<h1 id="_idParaDest-204"><a id="_idTextAnchor207"/>Technical requirements</h1>
+			<p>You should be familiar with YAML, AWS <strong class="bold">Identity and Access Management</strong> (<strong class="bold">IAM</strong>), and <strong class="bold">Elastic Kubernetes Service</strong> (<strong class="bold">EKS</strong>) architecture. Before getting started with this chapter, please ensure that you have the following <span class="No-Break">in place:</span></p>
+			<ul>
+				<li>Network connectivity to your EKS cluster <span class="No-Break">API endpoint</span></li>
+				<li>The AWS <strong class="bold">command-line interface</strong> (<strong class="bold">CLI</strong>), Docker, and the <strong class="source-inline">kubectl</strong> binary are installed on <span class="No-Break">your workstation</span></li>
+				<li>A basic understanding of <span class="No-Break">AWS networking</span></li>
+			</ul>
+			<h1 id="_idParaDest-205"><a id="_idTextAnchor208"/>Choosing the right load balancer for your needs</h1>
+			<p>One of the key characteristics of a modern, cloud-based application is to be able to scale horizontally (adding more instances to meet demand or recover from failure). In <a href="B18129_04.xhtml#_idTextAnchor067"><span class="No-Break"><em class="italic">Chapter 4</em></span></a>, we <a id="_idIndexMarker669"/>looked at how you can use deployments <a id="_idIndexMarker670"/>to create and manage multiple Pods, but you <a id="_idIndexMarker671"/>also need to distribute user traffic over those Pods. This is what an LB does, and we will work with two main types in EKS: the <strong class="bold">Application Load Balancer</strong> (<strong class="bold">ALB</strong>) and the <strong class="bold">Network Load Balancer</strong> (<strong class="bold">NLB</strong>), which are both types of ELB. In the next two sections, we will consider two key concepts that can be applied to <span class="No-Break">any LB.</span></p>
+			<h2 id="_idParaDest-206"><a id="_idTextAnchor209"/>Concept 1 – understanding Layer 4 and Layer 7 load balancer networking</h2>
+			<p>When we talk about layers in a networking context, we are talking about the <strong class="bold">Open Systems Interconnection</strong> (<strong class="bold">OSI</strong>) model, which was developed in the 1980s to simplify interconnection <a id="_idIndexMarker672"/>between different networks. The OSI <a id="_idIndexMarker673"/>model describes a seven-layer model in <a id="_idIndexMarker674"/>which the top layer, Layer 7 (application), describes the interface that applications use. Layer 4 (transport) describes how <a id="_idIndexMarker675"/>lower-level protocols, such as <strong class="bold">User Datagram Protocol</strong> (<strong class="bold">UDP</strong>)/<strong class="bold">Transmission Control Protocol</strong> (<strong class="bold">TCP</strong>), should behave. A complete <a id="_idIndexMarker676"/>description of the OSI model is out of the scope of this book, but it’s worth noting that Layer 3 (networks) can be used to describe <a id="_idIndexMarker677"/>the underlying networks, which in 99% of cases will be either IPv4 or IPv6 (unless you are describing a <strong class="bold">wide area </strong><span class="No-Break"><strong class="bold">network</strong></span><span class="No-Break"> (</span><span class="No-Break"><strong class="bold">WAN</strong></span><span class="No-Break">)).</span></p>
+			<p>LBs that operate at Layer 7 have an understanding of the application protocols, such as HTTP/HTTPS, and will inspect and distribute traffic using HTTP paths/URLs and can perform actions such as redirection and health checks. It’s worth noting that as HTTPS is encrypted, the LB must act as a proxy (see <em class="italic">Concept 2 – understanding proxy and DSR modes</em>) and, in most cases, will terminate traffic from the client before forwarding it to a (<span class="No-Break">backend) service.</span></p>
+			<p>LBs that operate at Layer 3/4 have no understanding of higher-layer protocols, such as HTTP/HTTPS, and work <a id="_idIndexMarker678"/>at a lower level. That means they can support web applications and other traffic, such as <strong class="bold">Secure Shell Protocol</strong> (<strong class="bold">SSH</strong>) or <strong class="bold">Simple Mail Transfer Protocol</strong> (<strong class="bold">SMTP</strong>). As these LBs operate at a lower level, they <a id="_idIndexMarker679"/>can’t inspect HTTP headers, so how they inspect <a id="_idIndexMarker680"/>and distribute network traffic is much simpler, and they <a id="_idIndexMarker681"/>tend to be faster. It also means they <a id="_idIndexMarker682"/>can operate as <a id="_idIndexMarker683"/>both a <strong class="bold">proxy</strong> and in <strong class="bold">Direct Server Return</strong> (<span class="No-Break"><strong class="bold">DSR</strong></span><span class="No-Break">) mode.</span></p>
+			<p>The following diagram illustrates the two types of LBs. Both LBs see the client traffic (denoted by the <strong class="source-inline">1.1.1.1</strong> IP address in the diagram) and can do <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>Serve web traffic to the Layer 7 LB and understand the HTTP verbs (<strong class="source-inline">POST</strong> in the diagram) and the path or URL (<strong class="source-inline">/users/user</strong> in <span class="No-Break">the diagram)</span></li>
+				<li>Distribute traffic <a id="_idIndexMarker684"/>on them, whereas the Layer 4 LB will simply see the type of traffic (in the case of HTTP/HTTPS TCP) and the port (<strong class="source-inline">8080</strong> in <span class="No-Break">the diagram)</span></li>
+			</ul>
+			<div>
+				<div id="_idContainer106" class="IMG---Figure">
+					<img src="image/B18129_14_01.jpg" alt="Figure 14.1 – L7 versus L4 LB"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.1 – L7 versus L4 LB</p>
+			<p>Now that we know the differences between the network layers, let’s review the differences between proxy and <span class="No-Break"><strong class="bold">DSR</strong></span><span class="No-Break"> modes.</span></p>
+			<h2 id="_idParaDest-207"><a id="_idTextAnchor210"/>Concept 2 – understanding proxy and DSR modes</h2>
+			<p>To inspect the HTTPS <a id="_idIndexMarker685"/>traffic (which is encrypted), the LB needs <a id="_idIndexMarker686"/>to terminate it, so this normally means it holds the encryption certificate. This model is known as a <strong class="bold">reverse proxy mode</strong>, as the LB will proxy the request to the <a id="_idIndexMarker687"/>backend server(s) on behalf of the client. This can be seen in the following diagram, where the source IP address of the client is replaced by the LB, which means that the request and the response traffic go through <span class="No-Break">the LB:</span></p>
+			<div>
+				<div id="_idContainer107" class="IMG---Figure">
+					<img src="image/B18129_14_02.jpg" alt="Figure 14.2 – Comparison of proxy and DSR modes"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.2 – Comparison of proxy and DSR modes</p>
+			<p>In DSR, the <a id="_idIndexMarker688"/>return/response traffic goes directly to the client. This means <a id="_idIndexMarker689"/>that the LB handles fewer requests and can theatrically scale more with less latency being introduced into the request/response traffic. It also means that the backend (web service) needs to know the client’s IP address and be able to route back to it. The following table describes each of the steps in the <span class="No-Break">previous diagram:</span></p>
+			<table id="table001-6" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+					<col/>
+				</colgroup>
+				<thead>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style"/>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Proxy Request–Response</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">DSR Request–Response</strong></span></p>
+						</td>
+					</tr>
+				</thead>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>1</p>
+						</td>
+						<td class="No-Table-Style" colspan="2">
+							<p>A <strong class="bold">Domain Name System</strong> (<strong class="bold">DNS</strong>) request for the service IP address resolves to the IP address of the LB, and traffic is sent to the LB IP address from the <span class="No-Break">client’s IP.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>2</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>HTTP/HTTPS traffic is inspected, and based on the protocol type/URL/port, the traffic is sent to a set of registered backend servers (targets) typically based on their health/load or on a round-robin basis. The client IP address is normally added to the <strong class="bold">X-Forwarded-For</strong> header so that the backend server can identify where the request has come from, but this <span class="No-Break">is optional.</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>UDP/TCP traffic is inspected, and based on the protocol type/port, the traffic is sent to a set of registered backend servers (targets) typically on a round-robin basis using a Layer 2 address such as a <strong class="bold">media access control</strong> (<strong class="bold">MAC</strong>) address. The client IP address may be preserved in the IP packet or added as <strong class="source-inline">X-header</strong>, so the backend knows how to return the traffic, but the approach will vary depending on how the LB <span class="No-Break">is implemented.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>3</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request is handled by the backend, and the <strong class="source-inline">X-Forwarded-for</strong> header may be used to validate the request. The response is sent back to <span class="No-Break">the LB.</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The request is handled by the backend. The response is sent back to the client using either the preserved source IP address of <strong class="source-inline">X-header</strong> or by mimicking the <span class="No-Break">LB IP.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>4</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The LB returns the response to <span class="No-Break">the client.</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>This step is not needed for a DR router as the response is returned to the client in the <span class="No-Break">previous step.</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 14.1 – Request/response steps</p>
+			<p>Now we have looked at how a generic balancer works, let’s look at the options available <span class="No-Break">in AWS.</span></p>
+			<h2 id="_idParaDest-208"><a id="_idTextAnchor211"/>Which load balancers are available in AWS?</h2>
+			<p>There are a number <a id="_idIndexMarker690"/>of different types of LBs available in AWS, but we <a id="_idIndexMarker691"/>will focus on the two types of ELBs commonly used with EKS: the ALB and the NLB. An ELB can be either external or internal, but not both. External means that it is accessible from the internet, and internal means it can only be accessed from the <strong class="bold">virtual private cloud</strong> (<strong class="bold">VPC</strong>) or internal addresses that <a id="_idIndexMarker692"/>have a route to the VPC hosting the ELB. The following diagram illustrates both ELB options available <span class="No-Break">in AWS:</span></p>
+			<div>
+				<div id="_idContainer108" class="IMG---Figure">
+					<img src="image/B18129_14_03.jpg" alt="Figure 14.3 – AWS ELB"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.3 – AWS ELB</p>
+			<p>Both LBs are configured using three <span class="No-Break">key concepts:</span></p>
+			<ul>
+				<li>You create an instance of an NLB or ALB and connect it to <span class="No-Break">a VPC.</span></li>
+				<li>You configure a listener, defining the protocol and either a port (NLB) or a URL path (ALB) that the LB will accept <span class="No-Break">traffic on.</span></li>
+				<li>You configure a target group, which defines the targets for the traffic sent to it from the LB listener. It also defines the health checks needed to ensure that the targets are healthy and can respond <span class="No-Break">to traffic.</span></li>
+			</ul>
+			<p>The ALB works as <a id="_idIndexMarker693"/>an Layer 7 proxy, so it can handle HTTP/HTTPS and <a id="_idIndexMarker694"/>HTTPv2. So if your application uses RESTful or gRPC-based APIs, an ALB will be able to support the traffic. The ALB can send traffic to targets based on <em class="italic">registered</em> IP addresses (both VPC addresses and on-premises, in the RFC 1918 address range, as long as there is a VPC route), EC2 instances, and Lambda functions. The ALB attaches to the VPC’s availability zones and scales to meet traffic demands. So AWS provides a DNS <strong class="bold">Canonical Name</strong> (<strong class="bold">CNAME</strong>) record as its reference, as it may have multiple <a id="_idIndexMarker695"/>network interfaces in a VPC, and the IP addresses associated with the ALB can change. An ALB has an associated security group, meaning you can control access to either its public or <span class="No-Break">private interfaces.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Support for gRPC is limited, so while the ALB can forward gRPC traffic, it can’t make traffic distribution decisions in the same way it can with <span class="No-Break">RESTful APIs.</span></p>
+			<p>The NLB lives in the AWS <strong class="bold">software-defined networking</strong> (<strong class="bold">SDN</strong>) fabric and so it works quite differently from <a id="_idIndexMarker696"/>the ALB. The NLB works as an Layer-4 LB, supporting both a proxy and DSR mode, depending on the type of backend servers and protocols configured. The following are examples <span class="No-Break">of these:</span></p>
+			<ul>
+				<li>If the backend services are specified by the EC2 instance ID they reside on, the client IP is preserved and visible to your <span class="No-Break">backend service.</span></li>
+				<li>If the backend’s services are specified by IP address, then we see <span class="No-Break">the following:</span><ul><li>If the target group protocol is TCP/<strong class="bold">Transport Layer Security</strong> (<strong class="bold">TLS</strong>), client IP preservation <a id="_idIndexMarker697"/>is disabled, and the backend service sees the LB as the source of the traffic (the client IP address can be accessed through the proxy <span class="No-Break">protocol headers)</span></li><li>If the target group protocol is UDP/TCP_UDP, the client IP is preserved and is visible to your <span class="No-Break">backend service</span></li></ul></li>
+			</ul>
+			<p>Even if the backend sees the client IP address, as the NLB is an SDN construct, return traffic is sent back <a id="_idIndexMarker698"/>through the NLB without any additional <a id="_idIndexMarker699"/>configuration. This means that the client only sees the NLB addresses, and you don’t have asymmetrical routing where the response goes to one IP and the response comes back <span class="No-Break">from another.</span></p>
+			<p>This <em class="italic">return traffic magic</em> is not explained by AWS but ensures that any traffic that is in the VPC will be routed back to the NLB even if the client IP address is the source IP; outside the VPC, you may get different, <span class="No-Break">asymmetrical routing.</span></p>
+			<p>The NLB can send traffic to targets based on <em class="italic">registered</em> IP addresses (both VPC addresses and on-premises in the RFC 1918 address range, as long as there is a VPC route), EC2 instances, and ALBs. The NLB attaches to VPCs through fixed <strong class="bold">Elastic Network Interfaces</strong> (<strong class="bold">ENIs</strong>), so AWS provides these IP addresses (public or private), so once allocated, the IP addresses <a id="_idIndexMarker700"/>remain the same and don’t change. The NLB has <em class="italic">no</em> associated <a id="_idIndexMarker701"/>security group, so external <a id="_idIndexMarker702"/>NLBs are <em class="italic">open</em> to the internet. As you can see, while there are similarities between these two ELBs, there are also differences. In the next section, let’s look at how you can choose which one <span class="No-Break">to use.</span></p>
+			<h2 id="_idParaDest-209"><a id="_idTextAnchor212"/>Choosing the right ELB</h2>
+			<p>Imagine the scenario where you want to expose a simple microservice running on EKS to the outside <a id="_idIndexMarker703"/>world in a scalable and resilient manner. Which ELB would you choose? Of course, we would assume that both ELB types are available in your desired Region! Here are some questions you might want to ask to help you make <span class="No-Break">your decision:</span></p>
+			<ul>
+				<li>What type of interface are you exposing? If it’s not based on HTTP/HTTPS or HTTPv2, you will need to use <span class="No-Break">an NLB.</span></li>
+				<li>Do you want to offload encryption? If so, in most cases, you will want to use SSL/TLS, and in a lot of cases, you will offload the encryption/decryption process to the ELB. Both NLBs and ALBs support this, but if you want your Pod to do the encryption/decryption (end-to-end encryption), you will need an NLB, as it can pass the traffic through to <span class="No-Break">the Pods.</span></li>
+				<li>Do you need <a id="_idIndexMarker704"/>advanced web security? Only an ALB integrates <a id="_idIndexMarker705"/>with AWS <strong class="bold">Web Application Firewall</strong> (<strong class="bold">WAF</strong>) and <strong class="bold">AWS Shield</strong>, which acts as a <strong class="bold">distributed denial-of-service </strong>(<strong class="bold">DDoS</strong>) protection <a id="_idIndexMarker706"/>service. NLB can be protected if you have Shield Advanced but doesn’t integrate with WAF and, as we mentioned, has no security group associated <span class="No-Break">with it.</span></li>
+				<li>Do you need static IP addresses for whitelisting? NLBs provides static IP addresses, whereas an ALB uses a DNS name, which can return different IP addresses. It is possible to put an NLB <em class="italic">in front</em> of an ALB to provide static IP addresses, but you are adding another network hop and <span class="No-Break">increasing latency.</span></li>
+				<li>Do you need low latency, or can you cope with large traffic bursts? As the NLB is an SDN construct, it is very low-latency and scales much faster than <span class="No-Break">an ALB.</span></li>
+				<li>Do I want to use a Kubernetes Ingress or Service in the deployment? Similar to an NLB, a Kubernetes service, for example, a <strong class="bold">NodePort</strong>, is a simple construct that distributes traffic <a id="_idIndexMarker707"/>over a set of Pods. An Ingress, on the other hand, allows much more control over routing, using different paths to distribute the load over your Pods and is analogous to an ALB. So if you want to have different Pods handling updates for users and groups, you can use path-based routing to point the user actions to one Pod and the group actions to another Pod. If you need a single Pod to <a id="_idIndexMarker708"/>handle all actions and expose a single port, you need <span class="No-Break">an NLB/Service.</span></li>
+			</ul>
+			<p>There are, of course, other areas you might consider, but these are the main ones I found useful when <a id="_idIndexMarker709"/>considering which ELB to use. In the next section, let’s look at how we can use the <strong class="bold">AWS Load Balancer Controller</strong> (<strong class="bold">ALBC</strong>) to create and <span class="No-Break">use ELBs.</span></p>
+			<h1 id="_idParaDest-210"><a id="_idTextAnchor213"/>Using EKS to create and use AWS LBs</h1>
+			<p>We can use the ALBC, which is an open source <a id="_idIndexMarker710"/>project, <a id="_idIndexMarker711"/>to create either an ALB/NLB or use existing ones in our AWS account. Let’s start with installing the controller and configuring the right privileges to access the <span class="No-Break">AWS APIs.</span></p>
+			<h2 id="_idParaDest-211"><a id="_idTextAnchor214"/>Installing the ALBC in your cluster</h2>
+			<p>The following <a id="_idIndexMarker712"/>steps should be <a id="_idIndexMarker713"/>followed in order to successfully install <span class="No-Break">the ALBC:</span></p>
+			<ol>
+				<li>The first thing you need to do is make sure your VPC is set up correctly so that, if you want to create an internal or external ELB, it is deployed into the right subnets. You do this by tagging your public subnets with <strong class="source-inline">kubernetes.io/role/elb</strong> and your private subnets with <strong class="source-inline">kubernetes.io/role/internal-elb</strong> and setting <strong class="source-inline">Value</strong> to <strong class="source-inline">1</strong>. The following commands show you how you can tag and verify a <span class="No-Break">public subnet:</span><pre class="source-code">
+<strong class="bold">$ aws ec2 create-tags --resources "subnetid-12" --tags Key=kubernetes.io/role/elb,Value=1</strong>
+<strong class="bold">$ aws ec2 describe-subnets  --subnet-ids subnetid-12 --query 'Subnets[].Tags[]'</strong>
+<strong class="bold">[{</strong>
+<strong class="bold">        "Value": "myipv4cluster",</strong>
+<strong class="bold">        "Key": "eksctl.cluster.k8s.io/v1alpha1/cluster-name"</strong>
+<strong class="bold">    },</strong>
+<strong class="bold">    ………</strong>
+<strong class="bold">    {</strong>
+<strong class="bold">        "Value": "1",</strong>
+<strong class="bold">        "Key": "kubernetes.io/role/elb"</strong>
+<strong class="bold">]</strong></pre></li>
+				<li>Now you have tagged all your subnets, we can deploy the controller to your cluster. We will use <strong class="source-inline">eksctl</strong> and Helm. The next thing we need to do is create a role and service account for the controller to use (we will use v2.4.5, but this <span class="No-Break">may change):</span><pre class="source-code">
+<strong class="bold">$ curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.4.5/docs/install/iam_policy.json</strong>
+<strong class="bold">$ aws iam create-policy --policy-name AWSLoadBalancerControllerIAMPolicy --policy-document file://iam-policy.json</strong>
+<strong class="bold">{ "Policy": {"PolicyName": "AWSLoadBalancerControllerIAMPolicy",</strong>
+<strong class="bold">"Arn": "arn:aws:iam::112233:policy/AWSLoadBalancerControllerIAMPolicy",</strong>
+<strong class="bold">        ……….}}</strong></pre></li>
+				<li>Now we <a id="_idIndexMarker714"/>have the policy, we <a id="_idIndexMarker715"/>can create the service account using the <strong class="source-inline">Arn</strong> that was provided in the <span class="No-Break">previous command:</span><pre class="source-code">
+<strong class="bold">$ eksctl create iamserviceaccount   --cluster myipv4cluster   --namespace kube-system   --name aws-load-balancer-controller   --attach-policy-arn arn:aws:iam::112233:policy/AWSLoadBalancerControllerIAMPolicy   --override-existing-serviceaccounts   --approve</strong>
+<strong class="bold">………</strong>
+<strong class="bold">2022-12-12 18:46:51 [i]  created serviceaccount "kube-system/aws-load-balancer-controller"</strong></pre></li>
+				<li>Now we have the service account created, we can deploy the controller and use the Kubernetes service account we just created. To do this, we use the following Helm commands with the service account created in the <span class="No-Break">previous steps:</span><pre class="source-code">
+<strong class="bold">$ helm repo add eks https://aws.github.io/eks-charts</strong>
+<strong class="bold">$ helm repo update</strong>
+<strong class="bold">Hang tight while we grab the latest from your chart repositories...</strong>
+<strong class="bold">...Successfully got an update from the "eks" chart repository</strong>
+<strong class="bold">….</strong>
+<strong class="bold">Update Complete.</strong>
+<strong class="bold">$ helm install aws-load-balancer-controller eks/aws-load-balancer-controller -n kube-system \</strong>
+<strong class="bold">  --set clusterName=myipv4cluster \</strong>
+<strong class="bold">  --set serviceAccount.create=false \</strong>
+<strong class="bold">  --set serviceAccount.name=aws-load-balancer-controller \</strong>
+<strong class="bold">  --set image.repository=602401143452.dkr.ecr.eu-central-1.amazonaws.com/amazon/aws-load-balancer-controller \</strong>
+<strong class="bold">  --set region=eu-central-1 \</strong>
+<strong class="bold">  --set vpcId=vpc-6575786587</strong></pre></li>
+				<li>Next, we <a id="_idIndexMarker716"/>verify the deployment <a id="_idIndexMarker717"/>and version using the <span class="No-Break">following commands:</span><pre class="source-code">
+<strong class="bold">$ kubectl get deployment -n kube-system aws-load-balancer-controller</strong>
+<strong class="bold">NAME      READY   UP-TO-DATE   AVAILABLE   AGE</strong>
+<strong class="bold">aws-load-balancer-controller   2/2 2     2           37s</strong>
+<strong class="bold">$ kubectl describe deployment  -n kube-system  aws-load-balancer-controller | grep Image</strong>
+<strong class="bold">Image: 602401143452.dkr.ecr.eu-central-1.amazonaws.com/amazon/aws-load-balancer-controller:v2.4.5</strong></pre></li>
+			</ol>
+			<p>Now we <a id="_idIndexMarker718"/>have the controller <a id="_idIndexMarker719"/>deployed, let’s look at how we can <span class="No-Break">use it.</span></p>
+			<h2 id="_idParaDest-212"><a id="_idTextAnchor215"/>Using an ALB with your application</h2>
+			<p>In this section, we <a id="_idIndexMarker720"/>will work <a id="_idIndexMarker721"/>through the official sample located at <a href="https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.4.7/docs/examples/2048/2048_full.yaml">https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.4.7/docs/examples/2048/2048_full.yaml</a>. To use an ALB with your application, please follow <span class="No-Break">these steps:</span></p>
+			<ol>
+				<li>The first thing we will do is create the namespace for the application components using the following section of the <span class="No-Break">YAML file:</span><pre class="source-code">
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: game-2048
+  labels:
+    name: game-2048</pre></li>
+				<li>Next, we will create a deployment of three (Pods) replicas using the official Docker image (note that your worker nodes must have internet access to pull the image) and expose port <strong class="source-inline">80</strong> on each of the Pods in the deployment using the following <span class="No-Break">code snippet:</span><pre class="source-code">
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: game-2048
+  name: deployment-2048
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app-2048
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: app-2048
+    spec:
+      containers:
+      - image: <strong class="bold">public.ecr.aws/l6m2t8p7/docker-2048:latest</strong>
+        imagePullPolicy: Always
+        name: app-2048
+        ports:
+        - containerPort: 80</pre></li>
+				<li>Finally, we <a id="_idIndexMarker722"/>create a <strong class="source-inline">NodePort</strong> service <a id="_idIndexMarker723"/>to expose the Pod outside of the EKS cluster with the following <span class="No-Break">code snippet:</span><pre class="source-code">
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: game-2048
+  name: service-2048
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: app-2048</pre></li>
+				<li>So far, we haven’t done anything different to many of the services we have deployed throughout the book. The key difference is in the following snippet, where the Ingress uses the <strong class="source-inline">alb.ingress</strong> annotations to define the type of ALB to <a id="_idIndexMarker724"/>create, in this case, an <a id="_idIndexMarker725"/>external ALB with a target group based on IP addresses. If you remember, the ALB is a Layer 7 proxy, so we also have to define what path and port to register. In this case, we are <span class="No-Break">defining </span><a href="http://loadbalancername:80/"><span class="No-Break">http://loadbalancername:80/</span></a><span class="No-Break">:</span><pre class="source-code">
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: game-2048
+  name: ingress-2048
+  annotations:
+    <strong class="bold">alb.ingress.kubernetes.io/scheme: internet-facing</strong>
+<strong class="bold">    alb.ingress.kubernetes.io/target-type: ip</strong>
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+        - <strong class="bold">path: /</strong>
+          pathType: Prefix
+          backend:
+            service:
+              <strong class="bold">name: service-2048</strong>
+              port:
+                <strong class="bold">number: 80</strong></pre></li>
+				<li>The controller (ALBC) will see the annotations in the manifest and make calls to the AWS API to create an external ALB listening on port <strong class="source-inline">80</strong> and a target group with the <a id="_idIndexMarker726"/>Pod’s IP addresses <a id="_idIndexMarker727"/>defined as targets, which are registered with the service we created as part of <span class="No-Break">the manifest.</span></li>
+				<li>If we look at the deployed Pods using the following <strong class="source-inline">kubectl</strong> command, we can see the VPC IP addresses that have been assigned (the output has <span class="No-Break">been truncated):</span><pre class="source-code">
+<strong class="bold">$ kubectl get po -o wide -n game-204</strong>
+<strong class="bold">NAME  READY   STATUS    RESTARTS   AGE   IP</strong>
+<strong class="bold">deployment-2048-7ff458c9f-fwx6h   1/1     Running   0      26m   192.168.9.154    ….</strong>
+<strong class="bold">deployment-2048-7ff458c9f-k5ns5   1/1     Running   0     26m   192.168.42.16    ….</strong>
+<strong class="bold">deployment-2048-7ff458c9f-v6mqw   1/1     Running   0          26m   192.168.87.245   …</strong></pre></li>
+				<li>Now, if we go to the <strong class="bold">EC2</strong> | <strong class="bold">Load Balancers</strong> section of the AWS Console, you will see <a id="_idIndexMarker728"/>the ALB created for the game application and the <strong class="bold">DNS name</strong> value associated with it (remember that IP addresses can change, so you need to always use the provided DNS name). An example is shown in the <span class="No-Break">following screenshot:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer109" class="IMG---Figure">
+					<img src="image/B18129_14_04.jpg" alt="Figure 14.4 – Game app ALB"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.4 – Game app ALB</p>
+			<ol>
+				<li value="8">If we look <a id="_idIndexMarker729"/>at the associated <strong class="bold">Target groups</strong>, we can see the spec configuration <a id="_idIndexMarker730"/>on the Kubernetes manifest: an <strong class="bold">IP</strong> target group listening on HTTP port <strong class="source-inline">80</strong>. An example is shown in the <span class="No-Break">following screenshot:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer110" class="IMG---Figure">
+					<img src="image/B18129_14_05.jpg" alt="Figure 14.5 – Game app ALB target group"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.5 – Game app ALB target group</p>
+			<ol>
+				<li value="9">If we open up the target group and look at <strong class="bold">Registered targets</strong>, we will see the IP addresses of the targets, and these should correspond to the Pod IP addresses that we listed previously using the <strong class="source-inline">kubectl</strong> command. An example is shown in the <span class="No-Break">following screenshot:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer111" class="IMG---Figure">
+					<img src="image/B18129_14_06.jpg" alt="Figure 14.6 – ﻿Registered targets﻿ for the game app"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.6 – Registered targets for the game app</p>
+			<p>You can see that the targets are all shown with a <strong class="bold">healthy</strong> value in the <strong class="bold">Health status</strong> column. This is because, as part of the ALB creation, <strong class="bold">Health checks</strong> are created <a id="_idIndexMarker731"/>as part of the <a id="_idIndexMarker732"/>configuration (this is required). In the example shown in the following screenshot, the ALB will poll the path (<strong class="bold">/</strong>) using port <strong class="source-inline">80</strong> every <strong class="bold">15 seconds</strong> to make sure each Pod is able to <span class="No-Break">receive traffic:</span></p>
+			<div>
+				<div id="_idContainer112" class="IMG---Figure">
+					<img src="image/B18129_14_07.jpg" alt="Figure 14.7 – ﻿Health checks﻿ for the game app"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.7 – Health checks for the game app</p>
+			<ol>
+				<li value="10">If you now browse to the ALB DNS name, you will be presented with the game screen and can play the game, which involves moving blocks around <span class="No-Break">the screen:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer113" class="IMG---Figure">
+					<img src="image/B18129_14_08.jpg" alt="Figure 14.8 – The game app service"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.8 – The game app service</p>
+			<p>Let’s now look <a id="_idIndexMarker733"/>at how we can modify the <a id="_idIndexMarker734"/>previous Kubernetes configuration to use an <span class="No-Break">NLB instead.</span></p>
+			<h2 id="_idParaDest-213"><a id="_idTextAnchor216"/>Using an NLB with your application</h2>
+			<p>We can <a id="_idIndexMarker735"/>reuse the <strong class="source-inline">namespace</strong> and <strong class="source-inline">Deployment</strong> specifications <a id="_idIndexMarker736"/>from the previous examples in the <em class="italic">Using an ALB with your </em><span class="No-Break"><em class="italic">application</em></span><span class="No-Break"> section:</span></p>
+			<ol>
+				<li>As the NLB is an L4 LB, we don’t need the Ingress object, but we do need to modify the <strong class="source-inline">Service</strong> definition. The first difference is that the annotations we use define the same thing as the ALB annotations, that is, the type of NLB and target group. As this is a service, we then define the ports rather than the paths. In the example <a id="_idIndexMarker737"/>shown in the following <a id="_idIndexMarker738"/>code block, an external NLB will be created with an IP target group and expose port <strong class="source-inline">80</strong>, which maps to the backend <span class="No-Break">port </span><span class="No-Break"><strong class="source-inline">80</strong></span><span class="No-Break">:</span><pre class="source-code">
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nlb-service
+  namespace: game-2048
+  annotations:
+    <strong class="bold">service.beta.kubernetes.io/aws-load-balancer-type: external</strong>
+<strong class="bold">    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip</strong>
+<strong class="bold">    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing</strong>
+spec:
+  ports:
+    - <strong class="bold">port: 80</strong>
+<strong class="bold">      targetPort: 80</strong>
+      protocol: TCP
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: app-2048</pre></li>
+				<li>As before, the controller (ALBC) will see the annotations and make calls to the AWS API to create an external NLB listening on port <strong class="source-inline">80</strong> and a target group with the Pods' IP addresses defined by the <span class="No-Break"><strong class="source-inline">selector</strong></span><span class="No-Break"> statement.</span></li>
+				<li>If we look at <strong class="bold">EC2</strong> | <strong class="bold">Load balancers</strong> on the AWS Console, you will see another LB for the game application, but in this case, it’s an NLB. An example is shown in the <span class="No-Break">following screenshot:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer114" class="IMG---Figure">
+					<img src="image/B18129_14_09.jpg" alt="Figure 14.9 – The game app NLB"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.9 – The game app NLB</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">While you can see the DNS name in the previous example, the NLB IP addresses are static, unlike the ALB, which can change if AWS scales <span class="No-Break">the service.</span></p>
+			<ol>
+				<li value="4">If we review <strong class="bold">Target groups</strong> associated with the NLB and <strong class="bold">Registered targets</strong>, as <a id="_idIndexMarker739"/>shown in the following <a id="_idIndexMarker740"/>screenshot, we can see the same Pod IP addresses are associated with the NLB and in a <span class="No-Break"><strong class="bold">healthy</strong></span><span class="No-Break"> state:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer115" class="IMG---Figure">
+					<img src="image/B18129_14_10.jpg" alt="Figure 14.10 – The game app NLB registered targets"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.10 – The game app NLB registered targets</p>
+			<ol>
+				<li value="5">Again, a health check has been automatically created, but as this is a Layer 4 LB, the health check is port-based. In the example shown in the following screenshot, a <strong class="bold">TCP</strong> protocol port <strong class="source-inline">80</strong> check is used to make sure each Pod is able to <span class="No-Break">receive traffic:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer116" class="IMG---Figure">
+					<img src="image/B18129_14_11.jpg" alt="Figure 14.11 – The game app NLB health check"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.11 – The game app NLB health check</p>
+			<ol>
+				<li value="6">If you <a id="_idIndexMarker741"/>browse to the DNS name of <a id="_idIndexMarker742"/>the NLB, you will see the same game screen as with the ALB (<span class="No-Break"><em class="italic">Figure 14</em></span><span class="No-Break"><em class="italic">.8</em></span><span class="No-Break">).</span></li>
+			</ol>
+			<h2 id="_idParaDest-214"><a id="_idTextAnchor217"/>Reusing an existing LB</h2>
+			<p>In some cases, you might want to reuse an existing ELB. This will save you costs and also simplify your <a id="_idIndexMarker743"/>configuration. You can do this by using the <strong class="source-inline">TargetGroupBinding</strong> custom resource. This resource allows you to associate a service <a id="_idIndexMarker744"/>with an existing <strong class="bold">TargetGroup</strong> and <span class="No-Break">by NLB.</span></p>
+			<p>Let’s assume we have created an NLB and an associated IP-based target group but without registering any IP addresses. The following code snippet shows how we can use <strong class="source-inline">TargetGroupBinding</strong>, which allows the ALBC to register Pods associated with a Kubernetes Service with an existing NLB or ALB. The key is to specify the given <strong class="source-inline">ARN</strong> of <strong class="source-inline">TargetGroup</strong> in <span class="No-Break">the definition:</span></p>
+			<pre class="source-code">
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: existing-nlb
+  namespace: game-2048
+spec:
+  serviceRef:
+    name: nlb-service
+    port: 80
+  <strong class="bold">targetGroupARN: arn:aws:elasticloadbalancing:eu-central-1:112233:targetgroup/existing-target-group/234</strong></pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">The NLB is outside of the security group associated with the worker nodes where the Pods are running. So you will need to allow TCP:<strong class="source-inline">80</strong> from the NLB ENIs to the worker nodes’ security groups as the ALBC will not do this for you when you use <strong class="source-inline">TargetGroupBinding</strong>. The service referenced by <strong class="source-inline">serviceRef</strong> can be configured, as <strong class="source-inline">type: ClusterIP</strong> rather than <strong class="source-inline">LoadBalancer</strong> <span class="No-Break">or </span><span class="No-Break"><strong class="source-inline">NodePort</strong></span><span class="No-Break">.</span></p>
+			<p>In this section, we have <a id="_idIndexMarker745"/>looked at how general LBs work, what options are available in AWS, and how to configure and use the ALBC on EKS. We’ll now revisit the key learning points from <span class="No-Break">this chapter.</span></p>
+			<h1 id="_idParaDest-215"><a id="_idTextAnchor218"/>Summary</h1>
+			<p>In this chapter, we explored how LBs help applications scale and provide resilience. They tend to fall into two categories, either Layer 7 or Layer 4 LBs. Layer 7 LBs, which normally work on HTTP, understand protocol-specific attributes such as paths or headers, whereas L4 LBs work at the port level and <span class="No-Break">are protocol-agnostic.</span></p>
+			<p>We also reviewed the differences between the proxy and DSR modes; a proxy LB always sits between the client and the backend system, whereas in DSR mode, the backend can return traffic directly to the client (albeit by faking the source address to be that of <span class="No-Break">the LB).</span></p>
+			<p>We reviewed the different types of ELBs typically used with EKS, namely the ALB and NLB, and how they differ. We then learned how to install the ALBC on an EKS cluster and then how you can use annotations and custom configuration to create either an NLB or ALB and register Pods with them so you can access the service based on the path (ALB) or <span class="No-Break">ports (NLB).</span></p>
+			<p>Finally, we quickly reviewed how you can use <strong class="source-inline">TargetGroupBinding</strong> to register Pods with an existing NLB (or ALB). You should now be able to talk about the different options available to you in AWS and configure deployments and services in EKS to take advantage of an ALB <span class="No-Break">or NLB.</span></p>
+			<p>In the next chapter, we will look at how you can use AWS Fargate to provide enhanced security, support small workloads, or simply not manage or pay for <span class="No-Break">EC2 instances.</span></p>
+			<h1 id="_idParaDest-216"><a id="_idTextAnchor219"/>Further reading</h1>
+			<ul>
+				<li>Understanding the OSI network <span class="No-Break">model: </span><a href="https://www.imperva.com/learn/application-security/osi-model/"><span class="No-Break">https://www.imperva.com/learn/application-security/osi-model/</span></a></li>
+				<li>Understanding how HTTPS <span class="No-Break">works: </span><a href="https://www.cloudflare.com/learning/ssl/what-is-https/"><span class="No-Break">https://www.cloudflare.com/learning/ssl/what-is-https/</span></a></li>
+				<li>Understanding how <strong class="source-inline">X-Forwarded-For</strong> <span class="No-Break">works: </span><a href="https://en.wikipedia.org/wiki/X-Forwarded-For"><span class="No-Break">https://en.wikipedia.org/wiki/X-Forwarded-For</span></a></li>
+				<li>Understanding ALB support for <span class="No-Break">gRPC: </span><span class="No-Break">https://aws.amazon.com/blogs/aws/new-application-load-balancer-support-for-end-to-end-http-2-and-grpc/</span></li>
+				<li>Understanding NLB client IP address <span class="No-Break">preservation: </span><span class="No-Break">https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html#client-ip-preservation</span></li>
+				<li>Understanding NLB proxy <span class="No-Break">protocol: </span><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html#proxy-protocol"><span class="No-Break">https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html#proxy-protocol</span></a></li>
+				<li>Understanding AWS advanced web security <span class="No-Break">features: </span><a href="https://docs.aws.amazon.com/waf/latest/developerguide/what-is-aws-waf.html"><span class="No-Break">https://docs.aws.amazon.com/waf/latest/developerguide/what-is-aws-waf.html</span></a></li>
+				<li>Downloading the <span class="No-Break">ALBC: </span><a href="https://github.com/kubernetes-sigs/aws-load-balancer-controller"><span class="No-Break">https://github.com/kubernetes-sigs/aws-load-balancer-controller</span></a></li>
+				<li>How to create an <span class="No-Break">NLB: </span><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/network/create-network-load-balancer.html"><span class="No-Break">https://docs.aws.amazon.com/elasticloadbalancing/latest/network/create-network-load-balancer.html</span></a></li>
+			</ul>
+		</div>
+	</body></html>

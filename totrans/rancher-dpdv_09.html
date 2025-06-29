@@ -1,0 +1,251 @@
+<html><head></head><body>
+		<div id="_idContainer053">
+			<h1 id="_idParaDest-96"><em class="italic"><a id="_idTextAnchor095"/>Chapter 6</em>: Creating an RKE Cluster Using Rancher</h1>
+			<p>One of the first things you'll do after installing Rancher is to start building downstream clusters. There are three main types of clusters in Rancher: Rancher-managed <strong class="bold">Rancher Kubernetes Engine</strong> (<strong class="bold">RKE</strong>) clusters, Rancher-managed hosted clusters, and imported clusters. </p>
+			<p>In this chapter, we'll be covering how to deploy a downstream cluster to use existing servers running Docker. We'll see how Rancher uses a set of agents to provide access to these servers for Rancher to create an RKE cluster. Then, we'll cover the requirements and limitations of this type of cluster. We will then cover the rules for designing a Rancher-managed RKE cluster, at which point, we'll go through the process of registering nodes in Rancher. Finally, we'll cover the maintenance tasks needed for the ongoing cluster management.</p>
+			<p>In this chapter, we're going to cover the following main topics:</p>
+			<ul>
+				<li>What is a Rancher-managed cluster?</li>
+				<li>Requirements and limitations</li>
+				<li>Rules for architecting a solution</li>
+				<li>Preparing for nodes to join Rancher</li>
+				<li>Prepping the infrastructure provider</li>
+				<li>Steps for creating an RKE cluster using Rancher</li>
+				<li>Deploying a cluster using node pools</li>
+				<li>Ongoing maintenance tasks</li>
+			</ul>
+			<h1 id="_idParaDest-97"><a id="_idTextAnchor096"/>What is a Rancher-managed cluster?</h1>
+			<p>Rancher can manage a cluster on behalf of end users. This can be done by using existing nodes or <a id="_idIndexMarker434"/>Rancher-created nodes. It is important to note that, at the time of writing, Rancher v2.6 has RKE2 support as a technical preview feature. But we will be talking about Rancher-managed clusters using RKE in this chapter.</p>
+			<h2 id="_idParaDest-98"><a id="_idTextAnchor097"/>Where do Rancher-managed clusters come from?</h2>
+			<p>Since the beginning, Rancher has always used the technique of defining a cluster inside Rancher <a id="_idIndexMarker435"/>and then using the Rancher agents to provide access to the downstream nodes for cluster creation. In Rancher v1.6, this was used to deploy the <strong class="source-inline">Cattle</strong> clusters, and with Rancher v2.x, this same idea was advanced to deploy RKE clusters. </p>
+			<h2 id="_idParaDest-99"><a id="_idTextAnchor098"/>How does Rancher manage nodes? </h2>
+			<p>In some <a id="_idIndexMarker436"/>environments, you don't want to manage <a id="_idIndexMarker437"/>the <strong class="bold">Virtual Machines</strong> (<strong class="bold">VMs</strong>). To solve this, Rancher <a id="_idIndexMarker438"/>has what are called <strong class="bold">node drivers</strong>. These drivers allow Rancher to launch and manage the VMs that Rancher will use to create the cluster. A node driver that Rancher uses is called the Rancher machine, which is based on Docker Machine. The main idea is that Docker Machine has several different <strong class="bold">Software Development Kits</strong> (<strong class="bold">SDKs</strong>) for most major <a id="_idIndexMarker439"/>infrastructure providers such as <strong class="bold">Amazon Web Services</strong> (<strong class="bold">AWS</strong>), Azure, DigitalOcean, and vSphere. </p>
+			<p>The basic process is that the cluster controller creates a machine object that defines the server being created. The machine controller takes over to handle calling the Rancher machine to start making the API calls to the infrastructure provider using the node templates <a id="_idIndexMarker440"/>defined in Rancher. As a part of the node creation process, Rancher creates an <strong class="bold">SSH</strong> (<strong class="bold">Secure Shell Protocol</strong>) key pair for each node. Note that each node will have a unique key. The Rancher machine then uses <strong class="source-inline">cloud-init</strong> to customize the base image and push the SSH keys to the server. It is important to note that the base image uses Ubuntu as default, but this image can be changed to <a id="_idIndexMarker441"/>any supported OS found at <a href="https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/">https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/</a>. The main requirement is that it supports <strong class="source-inline">cloud-init</strong> and Docker. Once <strong class="source-inline">cloud-init</strong> has been completed successfully, Rancher will SSH into the node to run the <strong class="source-inline">docker run</strong> command to handle pushing the Rancher agent to the node.</p>
+			<h2 id="_idParaDest-100"><a id="_idTextAnchor099"/>How does Rancher manage a cluster?  </h2>
+			<p>In Rancher v2.x, once you have defined the cluster (which we'll cover later in this chapter), Rancher <a id="_idIndexMarker442"/>will create a <strong class="source-inline">docker run</strong> command. Please see the example in the following figure. We're now going to break this command down into its parts: </p>
+			<div>
+				<div id="_idContainer041" class="IMG---Figure">
+					<img src="image/B18053_06_001.jpg" alt="Figure 6.1 – The docker run command for joining a node to the cluster&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.1 – The docker run command for joining a node to the cluster</p>
+			<p>First, the <strong class="source-inline">docker run</strong> command will <a id="_idIndexMarker443"/>create a new container. This is normally called the <strong class="bold">bootstrap agent</strong>. Next is the <strong class="source-inline">-d</strong> flag, which tells Docker to start this container in the background, with the next flag being <strong class="source-inline">--privileged</strong>. This flag is important because the Rancher agent will need access to the host and its resources to spin up the additional tools and containers needed by Rancher and RKE. The <strong class="source-inline">--restart=unless-stopped</strong> flag is to keep this container running even if it crashes. Then, the next flag, <strong class="source-inline">--net=host</strong>, tells Docker to use the host network for this container. This is needed to be able to get items such as the host's IP address and hostname. </p>
+			<p>We then come to the <strong class="source-inline">-v /etc/kubernetes:/etc/kubernetes</strong> and <strong class="source-inline">-v /var/run:/var/run</strong> flags. These two flags will create a bind mount for the host filesystem in the bootstrap container. The first directory is used to store SSL certificates used by the RKE components and some <strong class="source-inline">config</strong> files. The second directory is used to provide access to several <a id="_idIndexMarker444"/>host-level commands. This includes the Docker <strong class="bold">Command-Line Interface (CLI)</strong> access, which Rancher uses for creating additional containers. </p>
+			<p>The next section is the <strong class="source-inline">image</strong> tag. This will, of course, match the version of Rancher. The next section is the command-line options that are passed to the Rancher agent binary. The first option is <strong class="source-inline">-server</strong>, which is Rancher's API endpoint and should be used when it connects back to Rancher. It is important to note that this must be an <strong class="source-inline">HTTPS</strong> URL. The next option is <strong class="source-inline">--token</strong>, a special token used by Rancher to authenticate an agent and tie it to a cluster. It is important to note that this token will be the same for all nodes in the cluster. Also, this token should be treated like a password. </p>
+			<p>The next option is <strong class="source-inline">--ca-checksum</strong>, which is a SHA256 checksum of the root certificate of Rancher's API endpoint. This is used because it is common for users to use self-signed or privately signed certificates for their Rancher servers, and because the root certificates that are inside the container might not be up to date. The Rancher agent will request the root certificate from the Rancher URL and compare that certificate's checksum to the <strong class="source-inline">--ca-checksum</strong> and assume they match. The agent will assume that the root certificate can be trusted. It is important to note that these only handle trusting the root certificate. The rest of the certificate must still be valid – that is, the certificate has not expired <a id="_idIndexMarker445"/>with the correct hostname. This is why it's important not to change the root CAs of your Rancher API endpoint. Officially, there is no support to change the Rancher API endpoint or the root CA, but Rancher <a id="_idIndexMarker446"/>support does have tools such as the <strong class="bold">cluster agent</strong> tool that can take care of this for you. The tool is located at <a href="https://github.com/rancherlabs/support-tools/tree/master/cluster-agent-tool">https://github.com/rancherlabs/support-tools/tree/master/cluster-agent-tool</a>.</p>
+			<p>Finally, at the end of the command, we get to the section that will need to be customized based on the role and settings of the node. In the example shown in <em class="italic">Figure 6.2</em>, we have some of the standard agent options that users use, with the first being <strong class="source-inline">--node-name</strong>, which is an option that lets you override the hostname of the node. This is because, by default, the Rancher agent will use the short hostname of the server as the node name in both Rancher and Kubernetes. For some environments, this is fine, and the option can be skipped, but in cloud environments such as AWS, where a server hostname such as <strong class="source-inline">ip-10-23-24-15</strong> can be hard to read and doesn't match what the server is named in the console, it can be helpful to set the node name to something more user-friendly. </p>
+			<p>It is important to note that Rancher and RKE do not use this hostname for networking communications, so the node name does not need to be a valid DNS record, but it is recommended that it be valid to help with future troubleshooting. Also, it is essential to remember that a hostname shouldn't be changed after a node is registered into Rancher, as the hostname is used as a key, and changing the hostname will cause Rancher to try registering it as a new node. This can break the cluster, as it is in an unknown state, so it is recommended that if you want to change the name of a node, remove it from the cluster, clean it using the cleanup script located at <a href="https://github.com/rancherlabs/support-tools/blob/master/extended-rancher-2-cleanup/extended-cleanup-rancher2.sh">https://github.com/rancherlabs/support-tools/blob/master/extended-rancher-2-cleanup/extended-cleanup-rancher2.sh</a>, and then rejoin the node as a new node to the cluster.</p>
+			<p>The next option is <strong class="source-inline">--address</strong>, which sets the external IP address of the node. Usually, this is only <a id="_idIndexMarker447"/>needed when a node is behind a <strong class="bold">Network Address Translation (NAT</strong>), with the chassis example being AWS, where a VM is assigned a private IP with a one-to-one NAT for the public IP. The agent will try to auto-detect this IP. You can find out more about this process by going to https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/rke-clusters/custom-nodes/agent-options/#dynamic-ip-address-options. This leads us to the next option, which is <strong class="source-inline">--internal-address</strong>, with this setting being used to set the IP address used <a id="_idIndexMarker448"/>by Kubernetes for inter-host communication. If a node has more than one <strong class="bold">Network Interface Controller (NIC</strong>), it is imperative that this setting is used to avoid the network being misrouted.</p>
+			<p>An example is <a id="_idIndexMarker449"/>you have 1 GB NIC for management and 10 GB NIC for data. We would want RKE/Kubernetes to use the 10 GB NIC IP address to improve speed. If this option is not set, the kubelet will try to auto-detect the correct IP for the node by using the default gateway and the DNS record for the node's hostname. It is recommended to set these manually if a node has more than one IP.</p>
+			<p>There are additional flags that can be set at the agent level. For example, <strong class="source-inline">--labels</strong> will set the node's labels and <strong class="source-inline">–taints</strong> will set the node's taints at node creation, but it is important to note that these options are locked in at this point and can cause problems if they need <a id="_idIndexMarker450"/>to be changed at a later date. The rest of the agent options can be found at <a href="https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/rke-clusters/custom-nodes/agent-options/">https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/rke-clusters/custom-nodes/agent-options/</a>. </p>
+			<p>At the very end of the command, we have the <strong class="source-inline">role</strong> options. These flags tell Rancher/RKE what role is assigned to this node, such as <strong class="source-inline">--etcd</strong>, <strong class="source-inline">--controlplane</strong>, and <strong class="source-inline">--worker</strong>. When the node is registering with Rancher for the first time, the <strong class="source-inline">role</strong> options are sent to Rancher and are used by it when generating the cluster configuration. It is important to note that these roles should not be changed after registering a node in Rancher. If you need to change a node's role, it is recommended to remove the node, clean it, and rejoin it:</p>
+			<div>
+				<div id="_idContainer042" class="IMG---Figure">
+					<img src="image/B18053_06_002.jpg" alt="Figure 6.2 – A docker run command with node customizations&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.2 – A docker run command with node customizations</p>
+			<p>What happens after a node has been registered? Once the Rancher agent has been successfully started, it will register the node in Rancher, and the node will go into the <strong class="source-inline">Waiting to register with Kubernetes</strong> state. At this point, the agent will create a WebSocket connection and wait. This triggers the cluster controller inside Rancher to update the <a id="_idIndexMarker451"/>cluster configuration. The object is equivalent to the <strong class="source-inline">cluster.yaml</strong> and <strong class="source-inline">cluster.rkestate</strong> files used by RKE but inside the Rancher container instead. This is because the cluster controller uses the same code as RKE. There are mostly minor differences, with the biggest one being the addition of a dialer to handle tunneling the Docker socket connection over WebSocket. The cluster controller will follow the same process as the RKE command.</p>
+			<p>Now that we understand what a Rancher-managed cluster is, let's look into the requirements and limitations of these types of clusters.</p>
+			<h1 id="_idParaDest-101"><a id="_idTextAnchor100"/>Requirements and limitations</h1>
+			<p>In this <a id="_idIndexMarker452"/>section, we'll be discussing the basic requirements <a id="_idIndexMarker453"/>of Rancher on various nodes along with its limitations and design considerations.</p>
+			<h2 id="_idParaDest-102"><a id="_idTextAnchor101"/>Rancher-created managed nodes</h2>
+			<p>These <a id="_idIndexMarker454"/>are the <strong class="bold">basic requirements</strong>:</p>
+			<ul>
+				<li>A supported OS. The official supported OSes can be found at <a href="https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/">https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/</a>.</li>
+				<li>Rancher-created nodes have a special requirement that the Rancher servers must be able to SSH into the node.</li>
+				<li>The required firewall rules and ports can be found at https://rancher.com/docs/rancher/v2.5/en/installation/requirements/ports/#ports-for-rancher-launched-kubernetes-clusters-using-node-pools.</li>
+				<li>Docker is <a id="_idIndexMarker455"/>not required to be already installed.</li>
+			</ul>
+			<p>These <a id="_idIndexMarker456"/>are the <strong class="bold">design limitations and considerations</strong>:</p>
+			<ul>
+				<li>The base image used to create the nodes should be as small as possible and should be started in less than 10 minutes.</li>
+				<li>Rancher <a id="_idIndexMarker457"/>does not have an IP address pool or integration with any <strong class="bold">IP Address Management</strong> (<strong class="bold">IPAM</strong>) solutions. Rancher relies on the infrastructure provider to handle assigning an IP address to nodes. If <a id="_idIndexMarker458"/>you are using <strong class="bold">Dynamic Host Configuration Protocol</strong> (<strong class="bold">DHCP</strong>), the IP addresses assigned to these nodes should have very long leases and be effectively static – that is, these IP addresses should not change.</li>
+				<li>The hostname of the nodes is defined at the node pool level, with the node names being sequential by adding a number to the end of the template name and incrementing by one each time a node is created. <p class="callout-heading">Important Note</p><p class="callout">Rancher will reuse old hostnames that have been successfully reclaimed.</p></li>
+				<li>If the nodes are being deployed in an air-gapped environment, Rancher will require a proxy server to be configured in <strong class="source-inline">cloud-init</strong>, or the package manager should be able to pull packages such as curl and Docker from its repository. Even if these packages are already installed, Rancher will still run either the <strong class="source-inline">yum install curl</strong> or <strong class="source-inline">apt install curl</strong> commands.</li>
+				<li>Auto should be set to <strong class="source-inline">0</strong> for node pools with etcd and controlplane nodes.</li>
+			</ul>
+			<h2 id="_idParaDest-103"><a id="_idTextAnchor102"/>Existing nodes</h2>
+			<p>These <a id="_idIndexMarker459"/>are the <strong class="bold">basic requirements</strong>:</p>
+			<ul>
+				<li>A supported OS. The official supported OSes can be found at <a href="https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/">https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/</a>.</li>
+				<li>The required firewall rules and ports can be found at <a href="https://rancher.com/docs/rancher/v2.5/en/installation/requirements/ports/#ports-for-rancher-launched-kubernetes-clusters-using-custom-nodes">https://rancher.com/docs/rancher/v2.5/en/installation/requirements/ports/#ports-for-rancher-launched-kubernetes-clusters-using-custom-nodes</a>.</li>
+				<li>Docker should already be installed on the node(s), and we recommend using the installation script located at <a href="https://github.com/rancher/install-Docker">https://github.com/rancher/install-Docker</a>.</li>
+				<li>If you are using auto-scaling groups, it's essential to ensure that only one etcd node or controlplane node is taken offline at once. You want to ensure that you don't lose a quorum for etcd or get stuck in a cluster update because multiple controlplane nodes are down.</li>
+			</ul>
+			<p>These are <a id="_idIndexMarker460"/>the <strong class="bold">design limitations and considerations</strong>:</p>
+			<ul>
+				<li>When registering nodes in a new cluster, Rancher requires at least one node with each of the roles, such as etcd, controlplane, and worker. This can be a single node or separate nodes for each role or a mix of any roles.</li>
+				<li>When adding nodes to a cluster, it is crucial to ensure that new etcd and controlplane nodes are added one at a time. You can technically add them all at once, but you can run into stability issues with new clusters.</li>
+				<li>If you are using a private registry for hosting the Docker images used by Rancher, you should configure the registry setting in the cluster using the steps listed at <a href="https://rancher.com/docs/rke/latest/en/config-options/private-registries/">https://rancher.com/docs/rke/latest/en/config-options/private-registries/</a>.</li>
+			</ul>
+			<p>We now understand the requirements and limitations. In the next section, we are going to use this knowledge, along with additional rules and example designs, to help us architect a solution that meets our needs.</p>
+			<h1 id="_idParaDest-104"><a id="_idTextAnchor103"/>Rules for architecting a solution</h1>
+			<p>In this section, we'll cover some standard designs and the pros and cons of each. It is important <a id="_idIndexMarker461"/>to note that each environment is unique and will require tuning for the best performance and experience. It's also important to note that all CPU, memory, and storage sizes are recommended starting points and may need to be increased or decreased by your workloads and deployment processes. Also, we'll be covering designs <a id="_idIndexMarker462"/>for the major infrastructure providers (AWS and <strong class="bold">Google Cloud Platform</strong> (<strong class="bold">GCP</strong>)), but you should be able to translate the core concepts for other infrastructure providers.</p>
+			<p>Before designing a solution, you should be able to answer the following questions:</p>
+			<ul>
+				<li>Will multiple environments be sharing the same cluster?</li>
+				<li>Will production and non-production workloads be on the same cluster?</li>
+				<li>What level of availability does this cluster require?</li>
+				<li>Will this cluster be spanning multiple data centers in a metro cluster environment?</li>
+				<li>How much latency will there be between nodes in the cluster?</li>
+				<li>How many pods will be hosted in the cluster?</li>
+				<li>What are the average and maximum sizes of pods deployed in the cluster?</li>
+				<li>Will you need GPU support for some of your applications?</li>
+				<li>Will you need to provide storage to your applications?</li>
+				<li>If you <a id="_idIndexMarker463"/>need storage, do you need only <strong class="bold">Read Write Once</strong> (<strong class="bold">RWO</strong>), or will <a id="_idIndexMarker464"/>you need <strong class="bold">Read Write Many</strong> (<strong class="bold">RWX</strong>)?<p class="callout-heading">Note</p><p class="callout">Rancher's official server sizing guide can be found at <a href="https://rancher.com/docs/rancher/v2.5/en/installation/requirements/#rke-and-hosted-kubernetes">https://rancher.com/docs/rancher/v2.5/en/installation/requirements/#rke-and-hosted-kubernetes</a>.</p></li>
+			</ul>
+			<h2 id="_idParaDest-105"><a id="_idTextAnchor104"/>AWS</h2>
+			<p>In this design, we will <a id="_idIndexMarker465"/>be deploying a standard size cluster on AWS using the Rancher EC2 node driver, using a very similar design to the one that we created in <a href="B18053_04_Epub.xhtml#_idTextAnchor052"><em class="italic">Chapter 4</em></a>, <em class="italic">Creating an RKE and RKE2 Cluster</em>, for the medium-size RKE cluster. The basic idea is to try and balance <strong class="bold">High Availability</strong> (<strong class="bold">HA</strong>) with cost and use the fact that AWS intro-zone network speed and latency are so good that we can treat it like a single data center. </p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">This needs to be tested because some regions are slower than others, and some users have reported much higher latency. </p>
+			<p>This design works for 2 to 50 worker nodes in the clusters. This is higher than a medium RKE cluster <a id="_idIndexMarker466"/>because the <strong class="bold">Non-Volatile Memory</strong> (<strong class="bold">NVM</strong>) storage in AWS can handle more throughput than most on-premises storage. </p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">You might need to scale up the management nodes, depending on the environment.</p>
+			<div>
+				<div id="_idContainer043" class="IMG---Figure">
+					<img src="image/B18053_06_003.jpg" alt="Figure 6.3 – A Rancher-managed AWS cluster across zones&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.3 – A Rancher-managed AWS cluster across zones</p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch06/standard_designs/AWS/README.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch06/standard_designs/AWS/README.md</a></p>
+			<p>The<strong class="bold"> pros</strong> are as follows:</p>
+			<ul>
+				<li>Node-level <a id="_idIndexMarker467"/>redundancy – you can lose a worker without an application outage.</li>
+				<li>Full HA – you can lose any one of the management nodes (etcd and controlplane) in the cluster and still have complete cluster management.</li>
+				<li>User workloads and management services run on different nodes, stopping runaway applications from taking down the cluster.</li>
+				<li>Availability zone redundancy – you can lose a whole Availability Zone without an outage.</li>
+				<li>Safer <a id="_idIndexMarker468"/>patching and upgrades for the master nodes because the node pools are across zones. So, we can simply scale up all three node pools from one node to two in parallel, and then scale down each pool one at a time.</li>
+				<li>Uses zone anti-affinity rules to make sure applications are being spread across different zones using Pod topology spread constraints, which you can learn more about here: <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/">https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/</a>.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are as follows:</p>
+			<ul>
+				<li>Additional <a id="_idIndexMarker469"/>cost for the additional worker node.</li>
+				<li>Additional complexity during setup because each Availability Zone has its own node group.</li>
+				<li>Additional complexity with the NLB because it must have an interface in each Availability Zone.</li>
+				<li>Additional complexity during an upgrade as each availability node group needs to upgrade on its own.</li>
+				<li>AWS <a id="_idIndexMarker470"/>doesn't support <strong class="bold">Elastic Block Storage</strong> (<strong class="bold">EBS</strong>) volumes in different zones, so if you plan to use AWS's storage class, you'll need to ensure that application data is stored redundantly across Availability Zones. You can use AWS's EFS, but the cost can be very prohibitive.</li>
+			</ul>
+			<p>The <strong class="bold">node sizing</strong> requirements are as follows:</p>
+			<ul>
+				<li>Servers(s): three <a id="_idIndexMarker471"/>EC2 instances</li>
+				<li>CPU: eight cores per server</li>
+				<li>Memory: 8-16 <a id="_idIndexMarker472"/>GB</li>
+				<li>Storage: <strong class="bold">Solid-State Drive</strong> (<strong class="bold">SSD</strong>) or <strong class="bold">Non-Volatile Memory Express</strong> (<strong class="bold">NVMe</strong>) 10-15 <a id="_idIndexMarker473"/>GB <p class="callout-heading">Important Note</p><p class="callout">The latency is the <a id="_idIndexMarker474"/>most important metric we want to monitor when it comes to etcd.</p><p class="callout">Worker node sizing should be based on your workload and its requirements.</p></li>
+			</ul>
+			<h2 id="_idParaDest-106"><a id="_idTextAnchor105"/>GCP</h2>
+			<p>In this <a id="_idIndexMarker475"/>design, we'll deploy a standard size cluster on GCP as we did with AWS:</p>
+			<div>
+				<div id="_idContainer044" class="IMG---Figure">
+					<img src="image/B18053_06_004.jpg" alt="Figure 6.4 – A Rancher-managed AWS cluster across zones&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.4 – A Rancher-managed AWS cluster across zones</p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch06/standard_designs/GCP/README.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch06/standard_designs/GCP/README.md</a></p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">The pros, cons, and <a id="_idIndexMarker476"/>node sizing requirements for GCP are exactly the same as that of AWS. You can refer to the <em class="italic">Amazon's AWS</em> section for more details on this.</p>
+			<p>Now we have the design for our cluster created. In the next section, we are going to start the process of creating the cluster, with the first step being to prepare the nodes.</p>
+			<h1 id="_idParaDest-107"><a id="_idTextAnchor106"/>Preparing for nodes to join Rancher</h1>
+			<p>Before creating the cluster, we need to prepare the nodes/images that we'll use to create the cluster. This <a id="_idIndexMarker477"/>section will assume that you are <a id="_idIndexMarker478"/>using an Ubuntu or Red Hat-/CentOS-based image/node, as these are the two most common ones used.</p>
+			<p>For Rancher-managed nodes, we need to create a base image cloned and deployed in the environment. There are two main ways to create this image:</p>
+			<ul>
+				<li>The first is to start from a public image such as the Ubuntu ServerW cloud images, which can be found at <a href="https://cloud-images.ubuntu.com/focal/current/">https://cloud-images.ubuntu.com/focal/current/</a>. Note that this image must come from a trusted source directly from the Ubuntu site or your infrastructure provider's official images. These images are designed to be small and lightweight, as they only have the essential tools and pre-installed packages. And for most people, that is the end of the process, as most of the customization you will want to make can be done through the <strong class="source-inline">cloud-init</strong> tool. If you need to install any additional tools or require changes to settings, you should refer to your infrastructure provider's documentation for opening that image and customizing it. </li>
+			</ul>
+			<p>We usually recommend changing as little as possible and not installing tools such as Puppet, Chef, or backup clients because these servers are designed to be disposable and easily replaced. Also, we usually recommend patching the base image for minor updates. Still, we would recommend going back to the official image source and pulling down the new version for major upgrades instead. Finally, we recommend not updating/upgrading the node in the <strong class="source-inline">cloud-init</strong> file, as we want all nodes deployed from that image to be the same. In addition, Rancher has a 10-minute timeout during the node creation process, and updating/patching can cause the node to exceed that window.</p>
+			<ul>
+				<li>The second is to start from a golden image that you or your team already use in your environment for other applications. For example, if your Linux team already has a Red Hat-based image with all the customization needed for your environment, there is no sense in reinventing the wheel, and you can simply use that existing image. Note that you might need to do additional testing and tuning of that image to ensure it is fully supported. <p class="callout-heading">Note</p><p class="callout">You should still follow the same recommendations as listed under the public image option as far as the <strong class="source-inline">cloud-init</strong> settings. </p></li>
+			</ul>
+			<p>In addition, we should make sure that any tools for automating patching are disabled because we don't want the node to change after its creation.</p>
+			<p>The process <a id="_idIndexMarker479"/>is much different for custom nodes because <a id="_idIndexMarker480"/>Rancher has nothing to do with the node creation process or the OS. In this case, you or your Linux team are responsible for creating the server, configuring it, installing Docker, and registering it with Rancher. This has the upside of giving you a great deal of control over the server. You should still follow the same recommendations as listed under the public image option. The difference is that tools such as Puppet or Chef are supported because Rancher is not managing the OS. </p>
+			<p>At this point, you should have your nodes built and ready to go if you are planning to bring your own nodes to Rancher. In the next section, we'll be covering the steps if we want Rancher to build the nodes for us.</p>
+			<h1 id="_idParaDest-108"><a id="_idTextAnchor107"/>Prepping the infrastructure provider</h1>
+			<p>Now that <a id="_idIndexMarker481"/>we have the node image created, we have to configure that image in Rancher.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">This is only applicable to Rancher-managed clusters. If you are using existing nodes, then this section can be skipped.</p>
+			<p>The first step is to create a service account in the infrastructure provider that has the permissions that Rancher needs to create, manage, and delete the nodes. For security reasons, we recommend this to be a dedicated account not shared with other applications or users <a id="_idIndexMarker482"/>and that the permissions for this account be limited to only what is needed. Details for the permissions of <a id="_idIndexMarker483"/>each of the different infrastructure providers can be found at <a href="https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/rke-clusters/cloud-providers/">https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/rke-clusters/cloud-providers/</a>. </p>
+			<p>It is important to remember that Rancher and the infrastructure provider are still evolving, so these permissions might change over time. Once you have that account created, you'll need to log into the Rancher v2.6.x UI and go to the <strong class="bold">Cluster management</strong> page and select the <strong class="bold">Cloud Credential</strong> page. This brings up a setup wizard, as shown in <em class="italic">Figure 6.5</em>.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">The Rancher UI will test that the credentials are correct but will not validate that the account has all the permissions that Rancher will need.</p>
+			<div>
+				<div id="_idContainer045" class="IMG---Figure">
+					<img src="image/B18053_06_005.jpg" alt="Figure 6.5 – The Cloud Credential setup wizard for Amazon&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.5 – The Cloud Credential setup wizard for Amazon</p>
+			<p>For more <a id="_idIndexMarker484"/>details about the cloud credentials, please go to <a href="https://rancher.com/docs/rancher/v2.5/en/user-settings/cloud-credentials/">https://rancher.com/docs/rancher/v2.5/en/user-settings/cloud-credentials/</a>.</p>
+			<p>The next <a id="_idIndexMarker485"/>step is to create the node template. This is how we define a node configuration. This includes selecting the image, location, and any other infrastructure settings. We do this by going to the <strong class="bold">Cluster Management</strong> page, expanding <strong class="bold">RKE1 Configuration</strong>, and then choosing <strong class="bold">Node templates</strong>. This will bring up a setup wizard, as shown in the following screenshot. </p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">The Rancher UI will dynamically query the infrastructure provider as you click through different pages.</p>
+			<div>
+				<div id="_idContainer046" class="IMG---Figure">
+					<img src="image/B18053_06_006.jpg" alt="Figure 6.6 – The node template wizard for Amazon – step one&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.6 – The node template wizard for Amazon – step one</p>
+			<p>The following <a id="_idIndexMarker486"/>two pages are different, based on the infrastructure provider. </p>
+			<div>
+				<div id="_idContainer047" class="IMG---Figure">
+					<img src="image/B18053_06_007.jpg" alt="Figure 6.7 – The node template wizard for Amazon – Instance settings&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.7 – The node template wizard for Amazon – Instance settings</p>
+			<p>The final page of the setup wizard is where you'll do most of the node customization – for example, setting the server size, root disk size, and tags. Most of these settings can be left to the default values; the only setting I usually recommend changing is <strong class="bold">Root Disk Size</strong>, which defaults to 16 GB. This is great for a lab/sandbox, but for actual production nodes, I would recommend going with 30-40 GB. Also, the <strong class="bold">Name</strong> field is usually <a id="_idIndexMarker487"/>not changed, so I recommend using a very descriptive name. There also is a <strong class="bold">Description</strong> field for entering notes. Finally, the <strong class="bold">Labels</strong> field can be a little confusing (refer to <em class="italic">Figure 6.8</em>). The bottom section of the page is for setting the Docker/Kubernetes labels, taints, and engine options:</p>
+			<div>
+				<div id="_idContainer048" class="IMG---Figure">
+					<img src="image/B18053_06_008.jpg" alt="Figure 6.8 – The node template wizard for Amazon – the node settings&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.8 – The node template wizard for Amazon – the node settings</p>
+			<p>For more <a id="_idIndexMarker488"/>details about the node templates, please go to <a href="https://rancher.com/docs/rancher/v2.5/en/user-settings/node-templates/">https://rancher.com/docs/rancher/v2.5/en/user-settings/node-templates/</a>.</p>
+			<p>At this point, we have done all the preparation work that is needed for Rancher to create and manage our nodes for us. In the next section, we'll be starting the process of actually creating the cluster in Rancher. </p>
+			<h1 id="_idParaDest-109"><a id="_idTextAnchor108"/>The steps for creating an RKE cluster using Rancher</h1>
+			<p>In this section, we're going to create a custom cluster mainly using default settings. In the next <a id="_idIndexMarker489"/>section, we'll cover creating an RKE cluster using an infrastructure provider.</p>
+			<p>The first <a id="_idIndexMarker490"/>step is to go to the Rancher UI and the <strong class="bold">Cluster Management</strong> page. From there, go to the <strong class="bold">Clusters</strong> page and click the <strong class="bold">Create</strong> button in the top right corner of the page. This brings you to a page that shows you all the major cluster types. Please see the following figure for an example. From this page, we are going to click the <strong class="bold">Custom</strong> button:</p>
+			<div>
+				<div id="_idContainer049" class="IMG---Figure">
+					<img src="image/B18053_06_009.jpg" alt="Figure 6.9 – The cluster creation page&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.9 – The cluster creation page</p>
+			<p>The next <a id="_idIndexMarker491"/>page is where you can define the cluster. The <a id="_idIndexMarker492"/>first field that you'll fill out is <strong class="bold">Cluster Name</strong>. The cluster name is limited to a maximum of 253 characters, all lower-case and alphanumeric, with dots and dashes. For more details about the rest of the other settings on this page, refer to <a href="https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/rke-clusters/custom-nodes/">https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/rke-clusters/custom-nodes/</a>: </p>
+			<div>
+				<div id="_idContainer050" class="IMG---Figure">
+					<img src="image/B18053_06_010.jpg" alt="Figure 6.10 – The cluster settings page&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.10 – The cluster settings page</p>
+			<p>Now that <a id="_idIndexMarker493"/>we have a cluster, we need to start <a id="_idIndexMarker494"/>adding nodes to the cluster. Because we're creating a custom cluster, the next page will be the <strong class="bold">Customize Node Run Command</strong> wizard. From here, we can generate the <strong class="source-inline">docker run</strong> commands that we'll need to join the different kinds of nodes. This page can be retrieved later by going to the <strong class="bold">Cluster Management</strong> page and selecting <strong class="bold">Cluster</strong> from the list:</p>
+			<div>
+				<div id="_idContainer051" class="IMG---Figure">
+					<img src="image/B18053_06_011.jpg" alt="Figure 6.11 – The Customize Node Run Command wizard&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.11 – The Customize Node Run Command wizard</p>
+			<p>At this <a id="_idIndexMarker495"/>point, Rancher should be creating our <a id="_idIndexMarker496"/>new cluster. You can monitor the process via the Rancher UI by clicking on the cluster dashboard or the <strong class="bold">Nodes</strong> tab. At the end of this process, you will have a Kubernetes cluster. In the next section, we'll cover creating a cluster using node pools.</p>
+			<h1 id="_idParaDest-110"><a id="_idTextAnchor109"/>Deploying a cluster using node pools</h1>
+			<p>Now that <a id="_idIndexMarker497"/>we have a custom cluster, we will follow <a id="_idIndexMarker498"/>the same steps for creating a cluster with node pools. To start with, instead of selecting <strong class="bold">custom</strong>, you'll want to choose the infrastructure provider you wish to use, which will be used for this cluster. This brings you a similar cluster creation wizard to the one we saw when creating a custom cluster, with the difference being the additional <strong class="bold">Node Pool</strong> section and no <strong class="source-inline">docker run</strong> command wizard. </p>
+			<p>With this wizard, you'll add a node pool for each different type of node you want to configure, with the important field being <strong class="bold">Name Prefix</strong>, which is used to set the hostnames on the nodes in this pool. It is essential that these names are meaningful and do not overlap. The other main fields are the roles' checkboxes. The UI will warn you about the <a id="_idIndexMarker499"/>minimum number of nodes required <a id="_idIndexMarker500"/>for each type of node. If this is not met, Rancher will not allow you to create the cluster:</p>
+			<div>
+				<div id="_idContainer052" class="IMG---Figure">
+					<img src="image/B18053_06_012.jpg" alt="Figure 6.12 – The node pool creation wizard&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.12 – The node pool creation wizard</p>
+			<p>At this point, Rancher will take over to start the process of creating servers and provisioning RKE on top of them. You can monitor the creation of the nodes by going to the <strong class="bold">Nodes</strong> tab and watching status messages for each node. The same applies to the status of the cluster as a whole at the top of the page. At the end of this process, you'll have a Kubernetes cluster ready to start deploying applications to. In the next section, we'll be covering some of the tasks that we'll need to do in order to keep the cluster healthy.</p>
+			<h1 id="_idParaDest-111"><a id="_idTextAnchor110"/>Ongoing maintenance tasks</h1>
+			<p>After creating <a id="_idIndexMarker501"/>a cluster, a few ongoing maintenance tasks need to be done to keep the cluster running in a healthy state.</p>
+			<p>The first task that I recommend setting up is the scheduled etcd backups, which in Rancher v2.4 and beyond are enabled by default. The default behavior is to have each etcd node take an etcd snapshot and store it locally in <strong class="source-inline">/opt/rke/etcd-snapshots</strong>. The etcd backup is a point-in-time snapshot of the etcd database that stores the configuration of the cluster. This backup is critical when recovering from a failure. So, it is pretty common to configure the backup to the S3 option, as we don't want to store the backups on the same server that is being backed up. You can find a detailed list of the S3 <a id="_idIndexMarker502"/>settings at <a href="https://rancher.com/docs/rke/latest/en/etcd-snapshots/recurring-snapshots/#options-for-the-etcd-snapshot-service">https://rancher.com/docs/rke/latest/en/etcd-snapshots/recurring-snapshots/#options-for-the-etcd-snapshot-service</a>. </p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Rancher/RKE supports any S3-compatible storage. So, for on-premises environments, you can use a tool such as MinIO. If you already have an enterprise storage solution, you might want to review it and see whether it has S3 support, as several newer enterprise storage subsystems provide S3 out of the box.</p>
+			<p>The second <a id="_idIndexMarker503"/>task that I recommend testing and documenting is how you will patch/upgrade the nodes in the cluster. The two main ways are to patch in place or replace the node. The most common way for custom clusters is to patch in place, with the high-level process being the creation of a script walk-through of all nodes in the cluster and using the following steps: </p>
+			<ol>
+				<li>Drain and cordon the node.</li>
+				<li>Then, apply any patches/upgrades/reboots that are needed on the node.</li>
+				<li>Once all tasks have been completed, the node is un-cordoned, and the next node is processed. An example script can be found at <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch06/cluster_patching/rolling_reboot.sh">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch06/cluster_patching/rolling_reboot.sh</a>. <p class="callout-heading">Note</p><p class="callout">This script is <a id="_idIndexMarker504"/>designed to have a lot of sleep periods, as it was intended to be run in unattended mode. For clusters with node pools, you'll typically replace the nodes instead of changing the existing nodes. This is done by scaling up the node pool and then removing the old nodes one at a time and replacing them.</p></li>
+			</ol>
+			<p>The third task that I recommend testing and documenting is how to upgrade Kubernetes. The basic process is to review the release notes for the new version. Then, when it <a id="_idIndexMarker505"/>comes to upgrading the cluster, you'll want to take an etcd snapshot, as this is the only way to roll back an upgrade. The rules and process for this upgrade can be found at https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/rancher-k8s-upgrades#rke-upgrade--prep-work along with a masterclass that does a deep dive into the subject.</p>
+			<h1 id="_idParaDest-112"><a id="_idTextAnchor111"/>Summary</h1>
+			<p>In this chapter, we learned about the different types of Rancher-managed clusters, including the requirements and limitations of each. We then covered the rules of architecting each type of cluster, including some example designs and the pros and cons of each solution. Finally, we went into detail about the steps for creating each type of cluster using the design we made earlier. We ended the chapter by going over the major maintenance tasks.</p>
+			<p>The next chapter will cover how to create a hosted cluster in Rancher – that is, a downstream cluster. We will cover how Rancher creates these clusters and what the limitations are.</p>
+		</div>
+	</body></html>

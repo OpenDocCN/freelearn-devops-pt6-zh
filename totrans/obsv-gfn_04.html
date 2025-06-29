@@ -1,0 +1,872 @@
+<html><head></head><body>
+		<div id="_idContainer063">
+			<h1 id="_idParaDest-90" class="chapter-number"><a id="_idTextAnchor092"/>4</h1>
+			<h1 id="_idParaDest-91"><a id="_idTextAnchor093"/> Looking at Logs with Grafana Loki</h1>
+			<p>In this chapter, we will get hands-on experience with <strong class="bold">Grafana Loki</strong>. We will learn how to use <strong class="bold">LogQL</strong>, which is the language used for querying Loki, how to select<a id="_idIndexMarker346"/> and filter log streams, and how<a id="_idIndexMarker347"/> to use the operators and aggregations available. This will give you the tools to extract the data in appropriate ways for your dashboard visualizations and alerts. We will review the benefits and drawbacks of the log format and how it impacts your use of Loki. To fully explore the benefits of Loki, we will explore the architecture and where it can be scaled for performance. To finish, we will look at advanced areas of LogQL, such as labels and transformations, and other tips and tricks to expand your use <span class="No-Break">of Loki.</span></p>
+			<p>We will cover the following main topics in <span class="No-Break">this chapter:</span></p>
+			<ul>
+				<li><span class="No-Break">Introducing Loki</span></li>
+				<li><span class="No-Break">Understanding LogQL</span></li>
+				<li>Exploring <span class="No-Break">Loki’s architecture</span></li>
+				<li>Tips, tricks, and <span class="No-Break">best practices</span></li>
+			</ul>
+			<h1 id="_idParaDest-92"><a id="_idTextAnchor094"/>Technical requirements</h1>
+			<p>In this chapter, you will work with LogQL using the Grafana Cloud instance and demo you set up in <a href="B18277_03.xhtml#_idTextAnchor063"><span class="No-Break"><em class="italic">Chapter 3</em></span></a>. The full LogQL language documentation can be found on the Grafana website at <a href="https://grafana.com/docs/loki/latest/logql/">https://grafana.com/docs/loki/latest/logql/</a>. Loki is in active development, so it’s worth checking for new <span class="No-Break">features frequently.</span></p>
+			<p>You’ll find the code for this chapter in the GitHub repository at <a href="https://github.com/PacktPublishing/Observability-with-Grafana/tree/main/chapter4">https://github.com/PacktPublishing/Observability-with-Grafana/tree/main/chapter4</a>. You'll find the <em class="italic">Code in Action</em> videos for this chapter <span class="No-Break">at </span><a href="https://packt.link/aB4mP"><span class="No-Break">https://packt.link/aB4mP</span></a><span class="No-Break">.</span></p>
+			<h1 id="_idParaDest-93"><a id="_idTextAnchor095"/>Updating the OpenTelemetry demo application</h1>
+			<p>First, let’s improve the logging<a id="_idIndexMarker348"/> for our demo application. For this chapter, we have provided an updated <strong class="source-inline">OTEL-Collector.yaml</strong> file with additional Loki log labels in the <strong class="source-inline">chapter4</strong> folder in the GitHub repository. These instructions assume you have already completed the demo project setup in <a href="B18277_03.xhtml#_idTextAnchor063"><span class="No-Break"><em class="italic">Chapter 3</em></span></a>. Full details on this process are available in the GitHub repository in the <a href="B18277_04.xhtml#_idTextAnchor092"><span class="No-Break"><em class="italic">Chapter 4</em></span></a> section of the <span class="No-Break"><strong class="source-inline">README.md</strong></span><span class="No-Break"> file.</span></p>
+			<p>To upgrade the OpenTelemetry Collector, follow <span class="No-Break">these steps:</span></p>
+			<ol>
+				<li>Upgrade the collector <span class="No-Break">with Helm:</span><pre class="source-code">
+<strong class="bold">$ helm upgrade --version '0.73.1' --values chapter4/OTEL-Collector.yaml --values OTEL-Creds.yaml owg open-telemetry/opentelemetry-collector</strong>
+<strong class="bold">NAME: owg-otel-collector</strong>
+<strong class="bold">LAST DEPLOYED: Sun Apr 25 12:15:03 2023</strong>
+<strong class="bold">NAMESPACE: default</strong>
+<strong class="bold">STATUS: deployed</strong>
+<strong class="bold">REVISION: 2</strong>
+<strong class="bold">…</strong></pre></li>				<li>You can validate that the upgrade was successful with <span class="No-Break">this command:</span><pre class="source-code">
+<strong class="bold">$ kubectl get pods --selector=app.kubernetes.io/instance=owg</strong>
+<strong class="bold">NAME  READY   STATUS    RESTARTS   AGE</strong>
+<strong class="bold">owg-opentelemetry-collector-594fddd656-tfstk   1/1     Terminating   1 (70s ago)   2m8s</strong>
+<strong class="bold">owg-opentelemetry-collector-7955d689c4-gsvqm   1/1     Running       0             3s</strong></pre></li>			</ol>
+			<p>You will now have a lot more labels available for your Loki log data. Let’s explore what that means in the <span class="No-Break">next section.</span></p>
+			<h1 id="_idParaDest-94"><a id="_idTextAnchor096"/>Introducing Loki</h1>
+			<p><strong class="bold">Grafana Loki</strong> was designed from the ground up to be a highly scalable<a id="_idIndexMarker349"/> multi-tenant logging solution. Its design was heavily influenced by Prometheus with a few <span class="No-Break">main objectives:</span></p>
+			<ul>
+				<li>It was built with developers and operators in mind (such as <em class="italic">Diego</em> and <em class="italic">Ophelia</em>, who were introduced in <a href="B18277_01.xhtml#_idTextAnchor018"><span class="No-Break"><em class="italic">Chapter 1</em></span></a><span class="No-Break">)</span></li>
+				<li>It has simple ingestion; no pre-parsing <span class="No-Break">is required</span></li>
+				<li>It only indexes metadata <span class="No-Break">about logs</span></li>
+				<li>It stores everything in an <span class="No-Break">object store</span></li>
+			</ul>
+			<p>Let’s look at how Loki ingests data and uses labels as this will provide valuable insight into the way your queries source and then process the data <span class="No-Break">for presentation:</span></p>
+			<ul>
+				<li><strong class="bold">Log ingest</strong>: Loki accepts logs from all sources<a id="_idIndexMarker350"/> with a wide choice of agents available to make that easy. You can even send log data directly to the Loki API. This makes it the perfect choice for complex environments featuring a multitude of systems and <span class="No-Break">hardware components.</span><p class="list-inset">Loki stores its logs as log streams, where each entry has <span class="No-Break">the following:</span></p><ul><li><strong class="bold">Timestamp</strong>: It has nanosecond precision <span class="No-Break">for accuracy.</span></li><li><strong class="bold">Labels</strong>: These are key-value pairs used for the identification and retrieval of your data; they form the <span class="No-Break">Loki index.</span></li><li><strong class="bold">Content</strong>: This refers to the raw log line. It is not indexed and is stored in <span class="No-Break">compressed chunks.</span></li></ul><p class="list-inset">The following diagram shows a log stream with a log line and its <span class="No-Break">associated metadata:</span></p></li>
+			</ul>
+			<div>
+				<div id="_idContainer054" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.1.jpg" alt="Figure 4.1 – Loki log structure"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.1 – Loki log structure</p>
+			<ul>
+				<li><strong class="bold">Log labels</strong>: Loki log labels provide the metadata<a id="_idIndexMarker351"/> for the log line and not only help identify the data but also are used to create the index for the log streams and structure the log storage. They have the <span class="No-Break">following features:</span><ul><li>Each unique set of labels and values creates a <span class="No-Break">log stream</span></li><li>Logs in a stream are batched, compressed, and stored <span class="No-Break">as chunks</span></li><li>Labels are the index to Loki’s <span class="No-Break">log streams</span></li><li>Labels are used to search <span class="No-Break">for logs</span></li></ul></li>
+			</ul>
+			<p>The following diagram demonstrates two log streams. As you can see, in a stream of logs, each log has the same unique set of labels. In this instance, <strong class="source-inline">k8s_node_name</strong> has <span class="No-Break">two values:</span></p>
+			<div>
+				<div id="_idContainer055" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.2.jpg" alt="Figure 4.2 – Loki log streams"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.2 – Loki log streams</p>
+			<p>Now that we have looked at the structure of a Loki log, let’s introduce <strong class="bold">LogQL</strong>, the query language used to extract value from <span class="No-Break">your logs.</span></p>
+			<h1 id="_idParaDest-95"><a id="_idTextAnchor097"/>Understanding LogQL</h1>
+			<p>Grafana developed LogQL<a id="_idIndexMarker352"/> as the query<a id="_idIndexMarker353"/> language for Loki using the <strong class="bold">Prometheus Query Language</strong> (<strong class="bold">PromQL</strong>) for inspiration. It was designed with developers (<em class="italic">Diego</em>) and operators (<em class="italic">Ophelia</em>) in mind (you can refer to <a href="B18277_01.xhtml#_idTextAnchor018"><span class="No-Break"><em class="italic">Chapter 1</em></span></a> for an introduction to these personas), providing familiar filtering and aggregation mechanisms. Loki does not index the log content. Log events are grouped into log streams and indexed with labels (the log metadata). Executing a LogQL query in Loki invokes a type of distributed filtering against log streams to aggregate the <span class="No-Break">log data.</span></p>
+			<p>Let’s explore the <strong class="bold">Grafana explorer UI</strong> for LogQL, where you will be executing most of your <span class="No-Break">LogQL queries.</span></p>
+			<h2 id="_idParaDest-96"><a id="_idTextAnchor098"/>LogQL query builder</h2>
+			<p>We took a brief look at the Grafana<a id="_idIndexMarker354"/> explorer UI in <span class="No-Break"><em class="italic">Figure 3</em></span><em class="italic">.16</em> in <a href="B18277_03.xhtml#_idTextAnchor063"><span class="No-Break"><em class="italic">Chapter 3</em></span></a>. For our examples, we will mostly work with raw LogQL in the <strong class="bold">Code</strong> editor. The following screenshot shows LogQL typed directly into the query builder <span class="No-Break">code editor:</span></p>
+			<div>
+				<div id="_idContainer056" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.3.jpg" alt="Figure 4.3 – LogQL query builder Code editor"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.3 – LogQL query builder Code editor</p>
+			<p>If you ever get stuck with your LogQL, you can lean on the <strong class="bold">Log query starters</strong> and <strong class="bold">Explain query</strong> tools to help you get started with your queries and understand what each step of your pipeline <span class="No-Break">is doing.</span></p>
+			<p><strong class="bold">Log query starters</strong> provides some quick examples to work with your data and get you filtering and formatting it <span class="No-Break">with ease:</span></p>
+			<div>
+				<div id="_idContainer057" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.4.jpg" alt="Figure 4.4 – Log query starters"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.4 – Log query starters</p>
+			<p>Similarly, <strong class="bold">Metric query starters</strong> provides some quick<a id="_idIndexMarker355"/> examples to work with your data and generate metrics ready for use in dashboards <span class="No-Break">and alerts:</span></p>
+			<div>
+				<div id="_idContainer058" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.5.jpg" alt="Figure 4.5 – Metric query starters"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.5 – Metric query starters</p>
+			<p>Available in the LogQL query builder<a id="_idIndexMarker356"/> and the dashboard panel editor, <strong class="bold">Explain query</strong>, when toggled on, provides a breakdown of each stage of your LogQL pipeline. This tool is invaluable when analyzing an existing query or debugging your own <span class="No-Break">during design:</span></p>
+			<div>
+				<div id="_idContainer059" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.6.jpg" alt="Figure 4.6 – Explain query"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.6 – Explain query</p>
+			<p>Let’s now explore the features of LogQL available for selecting, filtering, and parsing your <span class="No-Break">log data.</span></p>
+			<h2 id="_idParaDest-97"><a id="_idTextAnchor099"/>An overview of LogQL features</h2>
+			<p>A basic LogQL query consists <a id="_idIndexMarker357"/>of one or more log stream selectors to retrieve the raw log chunks for processing and an optional log pipeline to filter and parse the log data. The following figure shows a basic LogQL query with the <strong class="source-inline">component="cartservice"</strong> selector and a pipeline filter, <strong class="source-inline">|= `GetCartAsync`</strong>, which would return two lines from the log stream example in <span class="No-Break"><em class="italic">Figure 4</em></span><span class="No-Break"><em class="italic">.2</em></span><span class="No-Break">:</span></p>
+			<div>
+				<div id="_idContainer060" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.7.jpg" alt="Figure 4.7 – A basic LogQL query"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.7 – A basic LogQL query</p>
+			<p>The following reference table<a id="_idIndexMarker358"/> shows the different features available to you when building your LogQL query, which will help while you get familiar with querying your logs <span class="No-Break">with Loki:</span></p>
+			<table id="table001-3" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">LogQL Sections</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Syntax</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Operators</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Scope</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Stream selector</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">{</strong><span class="No-Break"><strong class="source-inline">label="value", foo!="bar"}</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">=</strong>,</p>
+							<p><strong class="source-inline">!=</strong>,</p>
+							<p><strong class="source-inline">=~</strong>,</p>
+							<p><strong class="source-inline">!~</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Select log streams to retrieve; there must always be at least <span class="No-Break">one selector</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Line filter</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">|= `</strong><span class="No-Break"><strong class="source-inline">error`</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">|=</strong>,</p>
+							<p><strong class="source-inline">!=</strong>,</p>
+							<p><strong class="source-inline">|~</strong>,</p>
+							<p><strong class="source-inline">!~</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Filter to matching <span class="No-Break">log lines</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Parser</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">| </strong><span class="No-Break"><strong class="source-inline">json</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">json</strong>, <strong class="source-inline">logfmt</strong>, <strong class="source-inline">pattern</strong>, <span class="No-Break"><strong class="source-inline">regexp</strong></span><span class="No-Break">, </span><span class="No-Break"><strong class="source-inline">unpack</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Parse and extract labels from the log content, with parses for structured and <span class="No-Break">unstructured logs</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Label filter</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">| </strong><span class="No-Break"><strong class="source-inline">label="value"</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">=</strong>,</p>
+							<p><strong class="source-inline">!=</strong>,</p>
+							<p><strong class="source-inline">=~</strong>,</p>
+							<p><strong class="source-inline">!~</strong>,</p>
+							<p><strong class="source-inline">&lt;</strong>,</p>
+							<p><strong class="source-inline">&lt;=</strong>,</p>
+							<p><strong class="source-inline">&gt;</strong>,</p>
+							<p><strong class="source-inline">&gt;=</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Filter log lines using original and newly <span class="No-Break">extracted labels</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Line format</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">| </strong><span class="No-Break"><strong class="source-inline">line_format "{{.label}}"</strong></span></p>
+						</td>
+						<td class="No-Table-Style"/>
+						<td class="No-Table-Style">
+							<p>Rewrite the log line content for <span class="No-Break">presentation purposes</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Label format</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">| </strong><span class="No-Break"><strong class="source-inline">new_label="{{.label}}"</strong></span></p>
+						</td>
+						<td class="No-Table-Style"/>
+						<td class="No-Table-Style">
+							<p>Rename, modify, or <span class="No-Break">add labels</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 4.1 – LogQL feature overview</p>
+			<p>Let’s start by looking<a id="_idIndexMarker359"/> at the log stream selector <span class="No-Break">in detail.</span></p>
+			<h2 id="_idParaDest-98"><a id="_idTextAnchor100"/>Log stream selector</h2>
+			<p>Selecting log streams to include in your query results<a id="_idIndexMarker360"/> requires filtering based on the Loki labels using simple operators. By improving the granularity of your log stream selector, you can reduce the number of streams searched and improve query performance. We will discuss this in more detail later in this chapter when we look at the Loki architecture. There must<a id="_idIndexMarker361"/> always be at least one stream selector, but it must be written in a way that will not match empty values; for example, the <strong class="bold">regular expression</strong> (<strong class="bold">regex</strong>) <strong class="source-inline">{label=~".*"}</strong> will fail as a 0 or more quantifier and <strong class="source-inline">{label=~".+"}</strong> will pass as a 1 or more quantifier. Multiple stream selectors can be used and are separated using commas. The log stream selector must be the first item in your LogQL query and identified with curly braces. For example, the following LogQL query will select log streams where the <strong class="source-inline">component</strong> label ends with <strong class="source-inline">service</strong> and the <strong class="source-inline">name</strong> label <span class="No-Break">equals </span><span class="No-Break"><strong class="source-inline">owg-demo-checkoutservice</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+ {component=~".+service", name="owg-demo-checkoutservice"}</pre>			<p>As mentioned at the beginning of this section, LogQL was inspired by PromQL and as such, the Prometheus label selector rules have been adopted by LogQL for log <span class="No-Break">stream selectors:</span></p>
+			<table id="table002-2" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Operator</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Meaning</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>=</p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break">Exactly equal</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>!=</p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break">Not equal</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>=~</p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break">Regex matches</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>!~</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Regex does <span class="No-Break">not match</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 4.2 – Log stream selector operators</p>
+			<p>Grafana has implemented the <strong class="bold">Golang RE2 syntax</strong> for log streams, which means you will have to match against entire<a id="_idIndexMarker362"/> strings. This includes newlines, so it’s worth checking this if your regex filters are failing. Syntax documentation can be found <span class="No-Break">here: </span><a href="https://github.com/google/re2/wiki/Syntax"><span class="No-Break">https://github.com/google/re2/wiki/Syntax</span></a><span class="No-Break">.</span></p>
+			<p>Once you have<a id="_idIndexMarker363"/> your log streams selected, the <strong class="bold">log pipeline</strong> can then be used to filter and process<a id="_idIndexMarker364"/> them. Let’s discuss <span class="No-Break">this next.</span></p>
+			<h2 id="_idParaDest-99"><a id="_idTextAnchor101"/>Log pipeline</h2>
+			<p>As we presented in <em class="italic">Table 4.1</em>, the expressions available<a id="_idIndexMarker365"/> are line and label filters, parsers, and formatters. Expressions are executed in sequence for each line of the log stream, dropping anything filtered out and moving on to the <span class="No-Break">next line.</span></p>
+			<p>Expressions allow you to transform or mutate the log data to then use it for additional filtering/processing. Let’s look at the following example (this is the pipeline section only; you would need the <strong class="source-inline">{component=~".+service"}</strong> selector to make it work <span class="No-Break">in Grafana):</span></p>
+			<pre class="source-code">
+  |= `emailservice`
+  | json
+  | resources_k8s_container_restart_count &gt; 0
+  | line_format `{{.body}}`
+  | __error__=``</pre>			<p>Here, we’re doing the <span class="No-Break">following tasks:</span></p>
+			<ol>
+				<li>We start by matching the logs <span class="No-Break">containing </span><span class="No-Break"><strong class="source-inline">emailservice</strong></span><span class="No-Break">.</span></li>
+				<li>We then use the <strong class="source-inline">json</strong> parser to extract additional labels that are filtered where <strong class="source-inline">resources_k8s_container_restart_count</strong> is greater <span class="No-Break">than 0.</span></li>
+				<li>We then rewrite the log line to only contain the contents <span class="No-Break">of </span><span class="No-Break"><strong class="source-inline">body</strong></span><span class="No-Break">.</span></li>
+				<li>Finally, we strip all formatting and <span class="No-Break">parsing errors.</span></li>
+			</ol>
+			<p>Let’s now look at each of the log pipeline <a id="_idIndexMarker366"/>expressions and how to <span class="No-Break">use them.</span></p>
+			<h3>Line filters</h3>
+			<p>Grafana describes <strong class="bold">line filters</strong> as a distributed <strong class="source-inline">grep</strong> over the aggregated logs from the matching log streams. We will understand<a id="_idIndexMarker367"/> this statement better in the <em class="italic">Loki’s architecture</em> section. For now, it’s fine to just understand line filters as case-sensitive searches through log line contents dropping lines that do not match. Filter expressions are made up of a filter operator followed by text or regex. The following table shows the meaning of each expression <span class="No-Break">with examples:</span></p>
+			<table id="table003-2" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Operator</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Meaning</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Example</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">|=</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Log line contains <span class="No-Break">a string</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">|= `</strong><span class="No-Break"><strong class="source-inline">emailservice`</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">!=</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Log line does not contain <span class="No-Break">a string</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">!= `</strong><span class="No-Break"><strong class="source-inline">emailservice`</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">|~</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Log line contains a match to <span class="No-Break">the regex</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">|~ `</strong><span class="No-Break"><strong class="source-inline">email\w+`</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">!~</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Log line does not contain a match to <span class="No-Break">the regex</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">!~ `</strong><span class="No-Break"><strong class="source-inline">email\w+`</strong></span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 4.3 – Line filters</p>
+			<p>It is best practice to start log pipelines with line filter expressions to reduce the result set for subsequent expressions and improve<a id="_idIndexMarker368"/> the performance of <span class="No-Break">the query.</span></p>
+			<h3>IP address matching</h3>
+			<p>LogQL provides a useful function to aid <strong class="bold">IP address matching</strong> without complex regex patterns. Using the <strong class="source-inline">ip("&lt;pattern&gt;")</strong> syntax, it supports<a id="_idIndexMarker369"/> both IPv4 and IPv6 addresses, address<a id="_idIndexMarker370"/> ranges, and CIDR patterns. This function works for both line and label filters with a slight caveat in implementation; only <strong class="source-inline">|=</strong> and <strong class="source-inline">!=</strong> are allowed for line filter expressions. We’ll look at this in the context of label filters later in <span class="No-Break">this section.</span></p>
+			<p>The following examples show various patterns (<strong class="source-inline">ip(&lt;pattern&gt;)</strong>) along with an explanation of what each will do, for both IPv4 <span class="No-Break">and IPv6:</span></p>
+			<ul>
+				<li><strong class="bold">Match a single IP address</strong>: <strong class="source-inline">ip("192.168.0.22")</strong> <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">ip("::1")</strong></span></li>
+				<li><strong class="bold">Find a match within a range</strong>: <strong class="source-inline">ip("192.168.0.1-192.189.10.12")</strong> <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">ip("2001:db8::1-2001:db8::8")</strong></span></li>
+				<li><strong class="bold">Find a match within a CIDR specification</strong>: <strong class="source-inline">ip("192.52.100.0/24")</strong> <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">ip("2001:db8::/32")</strong></span></li>
+			</ul>
+			<h3>Decolorize</h3>
+			<p>In <a href="B18277_02.xhtml#_idTextAnchor043"><span class="No-Break"><em class="italic">Chapter 2</em></span></a>, we mentioned unstructured logging<a id="_idIndexMarker371"/> is often color-coded to improve<a id="_idIndexMarker372"/> readability on the computer terminal. However, in a log aggregation system, such as Loki, those color codes are displayed in full. For example, the color red would be displayed <span class="No-Break">as </span><span class="No-Break"><strong class="source-inline">\u001b[31m</strong></span><span class="No-Break">.</span></p>
+			<p>Loki has a simple line filter expression that removes these ANSI sequences for color codes so that you can clean the log to make it more readable <span class="No-Break">in Grafana:</span></p>
+			<pre class="source-code">
+{name="emailservice"} | decolorize</pre>			<h3>Parsers</h3>
+			<p>We have said this<a id="_idIndexMarker373"/> before: Loki accepts logs<a id="_idIndexMarker374"/> from all sources. It does not really matter what your logs look like; they can come in structured, semi-structured, or unstructured formats. It is, however, important when designing and building observability solutions to understand the log formats you are working with. This ensures that you can ingest, store, and parse log data in a way it can be used effectively. The personas in <a href="B18277_01.xhtml#_idTextAnchor018"><span class="No-Break"><em class="italic">Chapter 1</em></span></a> give you an idea of who these will be used by and for <span class="No-Break">what purpose.</span></p>
+			<p>Having a good understanding<a id="_idIndexMarker375"/> of your source log format is important to instruct you on what<a id="_idIndexMarker376"/> to use and help with your overall observability design. The following LogQL parsers can be used to parse and extract labels from your <span class="No-Break">log content:</span></p>
+			<ul>
+				<li><strong class="source-inline">json</strong>: If your log content is structured or semi-structured JSON and has embedded JSON (which can be isolated using the <strong class="source-inline">line_format</strong> expression), the <strong class="bold">JSON parser</strong> can be used. Using <strong class="source-inline">| json</strong> on its own will extract all of the JSON properties as labels. Any nested<a id="_idIndexMarker377"/> properties will be represented as a single label separated with <strong class="source-inline">_</strong>. Arrays are skipped completely when extracting all of the properties. Additionally, expressions can be passed into the JSON parser as quoted strings to restrict the output to only the labels required, for example, <strong class="source-inline">| json label1="expression", label2="expression"</strong>, where the expression identifies a key or nested key. Arrays are returned where identified by expressions and they are assigned to the label formatted <span class="No-Break">as JSON.</span></li>
+				<li><strong class="source-inline">logfmt</strong>: If your log content is structured, single-level <a id="_idIndexMarker378"/>key-value pairs, it can be parsed with the <strong class="bold">logfmt parser</strong>. Using <strong class="source-inline">| logfmt</strong> on its own will extract all of the key-value pairs. Similar to the JSON parser, expressions can be passed into the <strong class="source-inline">logfmt</strong> parser as quoted strings to restrict the output to only the labels required, for example, <strong class="source-inline">| logfmt label1="expression", label2="expression"</strong>, where <strong class="source-inline">expression</strong> identifies <span class="No-Break">a key.</span></li>
+				<li><strong class="source-inline">pattern</strong>: For unstructured log content, the <strong class="bold">pattern parser</strong> allows the explicit extraction of fields from log<a id="_idIndexMarker379"/> lines using <strong class="source-inline">| pattern "&lt;expression&gt;"</strong>, where <strong class="source-inline">expression</strong> matches the structure of a log line. The pattern parser expression is made up of captures delimited by the <strong class="source-inline">&lt;</strong> and <strong class="source-inline">&gt;</strong> characters and literals, which can be any sequence of <span class="No-Break">UTF-8 characters.</span></li>
+				<li><strong class="source-inline">regexp</strong>: Unstructured log content can also be extracted using the <strong class="bold">regular expression parser</strong>, which takes a single expression, <strong class="source-inline">| regexp "&lt;expression&gt;"</strong>, where <strong class="source-inline">expression</strong> is a regex pattern that complies with the Golang RE2 syntax. A valid expression<a id="_idIndexMarker380"/> must contain at least one sub-match, with each sub-match extracting a <span class="No-Break">different label.</span></li>
+				<li><strong class="source-inline">unpack</strong>: If you are using a compatible logging agent, such as Grafana Agent or Promtail, you can take advantage of the <strong class="source-inline">unpack</strong> parser to unpack embedded labels created by Promtail’s <strong class="source-inline">pack</strong> feature. With Promtail’s <strong class="source-inline">pack</strong> feature, the original log line<a id="_idIndexMarker381"/> is stored in the <strong class="source-inline">_entry</strong> key. This value will be used <a id="_idIndexMarker382"/>to replace the <span class="No-Break">log line.</span></li>
+			</ul>
+			<h3>Label filters</h3>
+			<p>We discussed log labels at the beginning<a id="_idIndexMarker383"/> of this section with regard to log ingestion and retrieval. Additionally, labels can be extracted as part of the log pipeline using parser and formatter expressions. The <strong class="bold">label filter</strong> expression can then be used to filter your log line with either of <span class="No-Break">these labels.</span></p>
+			<p>The statement part of the filter is referred to as the <em class="italic">predicate</em>, and in the case of label filters, it contains <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>The <span class="No-Break">label identifier</span></li>
+				<li><span class="No-Break">The operation</span></li>
+				<li><span class="No-Break">A value</span></li>
+			</ul>
+			<p>For example, in <strong class="source-inline">name="emailservice"</strong>, the <strong class="source-inline">name</strong> label is compared, using the <strong class="source-inline">=</strong> operator, with the value <strong class="source-inline">"emailservice"</strong>. It is processed from left to right, so the label identifier must start <span class="No-Break">the predicate.</span></p>
+			<p><strong class="bold">Value types</strong> are inferred from your query input. In the following<a id="_idIndexMarker384"/> table, you will find an overview of these types as a useful reference for building your <span class="No-Break">label filters:</span></p>
+			<table id="table004-1" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Value Type</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Description</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break">String</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Can be surrounded with double quotes or backticks, for example, <strong class="source-inline">"emailservice"</strong> <span class="No-Break">or </span><span class="No-Break"><strong class="source-inline">`emailservice`</strong></span><span class="No-Break">.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break">Duration</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Structured as a sequence of decimal numbers. They can optionally contain fractions and the unit can be declared as a suffix, for example, <strong class="source-inline">"280ms"</strong>, <strong class="source-inline">"1.3h"</strong>, or <strong class="source-inline">"2h30m"</strong>. Units of time that can be used are <strong class="source-inline">"ns"</strong>, <strong class="source-inline">"us"</strong> (or <strong class="source-inline">"µs"</strong>), <strong class="source-inline">"ms"</strong>, <strong class="source-inline">"s"</strong>, <strong class="source-inline">"m"</strong>, and <strong class="source-inline">"h"</strong>, and as the examples show, you can use multiple <span class="No-Break">units: </span><span class="No-Break"><strong class="source-inline">"2h30m"</strong></span><span class="No-Break">.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break">Number</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Standard floating-point numbers, for example, <strong class="source-inline">357</strong> <span class="No-Break">or </span><span class="No-Break"><strong class="source-inline">98.421</strong></span><span class="No-Break">.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break">Bytes</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Structured as a sequence of decimal numbers. They can optionally contain fractions and the unit can be declared as a suffix, for example, <strong class="source-inline">"36MB"</strong>, <strong class="source-inline">"2.4Kib"</strong>, or <strong class="source-inline">"18b"</strong>. Units for bytes that can be used are <strong class="source-inline">"b"</strong>, <strong class="source-inline">"kib"</strong>, <strong class="source-inline">"kb"</strong>, <strong class="source-inline">"mib"</strong>, <strong class="source-inline">"mb"</strong>, <strong class="source-inline">"gib"</strong>, <strong class="source-inline">"gb"</strong>, <strong class="source-inline">"tib"</strong>, <strong class="source-inline">"tb"</strong>, <strong class="source-inline">"pib"</strong>, <strong class="source-inline">"pb"</strong>, <strong class="source-inline">"eib"</strong>, <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">"eb"</strong></span><span class="No-Break">.</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 4.4 – Value types</p>
+			<p>Let’s now look at these<a id="_idIndexMarker385"/> value types<a id="_idIndexMarker386"/> in <span class="No-Break">more detail:</span></p>
+			<ul>
+				<li><strong class="bold">String</strong>: As with the label matchers we use with the log<a id="_idIndexMarker387"/> stream selector, the <strong class="source-inline">=</strong>, <strong class="source-inline">!=</strong>, <strong class="source-inline">=~</strong>, and <strong class="source-inline">!~</strong> operations can be used. The <strong class="source-inline">string</strong> type is used to filter the built in label <strong class="source-inline">__error__</strong>, which is often used to strip formatting and parsing errors<a id="_idIndexMarker388"/> from results; for example, <strong class="source-inline">| </strong><span class="No-Break"><strong class="source-inline">__error__=``</strong></span><span class="No-Break">.</span></li>
+				<li><strong class="bold">Duration, Number, and Bytes</strong>: All of the remaining value types follow the same rules. Duration, Number, and Bytes convert the label value<a id="_idIndexMarker389"/> for use with the following<a id="_idIndexMarker390"/> list <span class="No-Break">of </span><span class="No-Break"><a id="_idIndexMarker391"/></span><span class="No-Break">comparators:</span><table id="table005-1" class="No-Table-Style _idGenTablePara-1"><colgroup><col/><col/></colgroup><tbody><tr class="No-Table-Style"><td class="No-Table-Style"><p><span class="No-Break"><strong class="bold">Operator</strong></span></p></td><td class="No-Table-Style"><p><span class="No-Break"><strong class="bold">Meaning</strong></span></p></td></tr><tr class="No-Table-Style"><td class="No-Table-Style"><p><strong class="source-inline">=</strong> <span class="No-Break">or </span><span class="No-Break"><strong class="source-inline">==</strong></span></p></td><td class="No-Table-Style"><p><span class="No-Break">Equals</span></p></td></tr><tr class="No-Table-Style"><td class="No-Table-Style"><p><strong class="source-inline">!=</strong></p></td><td class="No-Table-Style"><p>Does <span class="No-Break">not equal</span></p></td></tr><tr class="No-Table-Style"><td class="No-Table-Style"><p><strong class="source-inline">&gt;</strong> <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">&gt;=</strong></span></p></td><td class="No-Table-Style"><p>Is greater than or greater than and <span class="No-Break">equal to</span></p></td></tr><tr class="No-Table-Style"><td class="No-Table-Style"><p><strong class="source-inline">&lt;</strong> <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">&lt;=</strong></span></p></td><td class="No-Table-Style"><p>Is less than or less than and <span class="No-Break">equal to</span></p></td></tr></tbody></table></li>
+			</ul>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 4.5 – Type operators</p>
+			<p class="list-inset">Take the example <strong class="source-inline">| resources_k8s_container_restart_count &gt; 0</strong>. Loki attempts to convert the value for use with the operator if it needs to. If there are any errors with the conversion, the <strong class="source-inline">__error__</strong> label will be added to the log line, which as we demonstrated earlier, can be filtered out using <strong class="source-inline">| </strong><span class="No-Break"><strong class="source-inline">__error__=``</strong></span><span class="No-Break">.</span></p>
+			<p>Grafana LogQL<a id="_idIndexMarker392"/> also allows for multiple predicates to be <em class="italic">chained</em> together using <strong class="source-inline">and</strong> and <strong class="source-inline">or</strong> . <strong class="source-inline">and</strong> can alternatively be expressed using <strong class="source-inline">, </strong>or <strong class="source-inline">|</strong> <span class="No-Break">or </span><span class="No-Break"><strong class="source-inline">&lt;space&gt;</strong></span><span class="No-Break">.</span></p>
+			<p>For example, all of the following produce the <span class="No-Break">same output:</span></p>
+			<pre class="source-code">
+  | quantity &gt;= 2 and productId!~"OLJ.*"
+  | quantity &gt;= 2 | productId!~"OLJ.*"
+  | quantity &gt;= 2 , productId!~"OLJ.*"
+  | quantity &gt;= 2 productId!~"OLJ.*"</pre>			<p>We described <strong class="bold">IP address matching</strong> in the <em class="italic">Line filters</em> section. <strong class="bold">Label filter expressions</strong> are the same except only the <strong class="source-inline">=</strong> and <strong class="source-inline">!=</strong> label matchers are allowed. Once you have filtered and parsed<a id="_idIndexMarker393"/> your logs as required, you can begin to transform the data, whether <a id="_idIndexMarker394"/>that is for presentation<a id="_idIndexMarker395"/> or further pipeline processing. We will discuss the two ways of doing this in detail next. But first, let’s explore <strong class="bold">template functions</strong>, which are implemented by both line<a id="_idIndexMarker396"/> and <span class="No-Break">label filters.</span></p>
+			<h3>Template functions</h3>
+			<p>The Golang text/template format<a id="_idIndexMarker397"/> has a large set of available template<a id="_idIndexMarker398"/> functions, all of which are available for use in LogQL queries. Full documentation can be found on the Grafana website. The <strong class="bold">templating engine</strong> has access to your data in <span class="No-Break">various</span><span class="No-Break"><a id="_idIndexMarker399"/></span><span class="No-Break"> ways:</span></p>
+			<ul>
+				<li>It can treat labels as variables, referencing them using <strong class="source-inline">.</strong>, for example, <strong class="source-inline">{{ .</strong><span class="No-Break"><strong class="source-inline">component }}</strong></span></li>
+				<li>It can access the log line itself using <strong class="source-inline">__line__</strong>, for example, <strong class="source-inline">`{{ __line__ | </strong><span class="No-Break"><strong class="source-inline">lower }}`</strong></span></li>
+				<li>It can access the log timestamp using <strong class="source-inline">__timestamp__</strong>, for example, <strong class="source-inline">`{{ __timestamp__ | date "</strong><span class="No-Break"><strong class="source-inline">2023-04-25T12:15:03.00Z+01:00" }}`</strong></span></li>
+			</ul>
+			<p>Template functions can be broken down into the following <span class="No-Break">distinct areas:</span></p>
+			<ul>
+				<li><span class="No-Break">Regex patterns</span></li>
+				<li><span class="No-Break">String functions</span></li>
+				<li><span class="No-Break">Math functions</span></li>
+				<li><span class="No-Break">JSON functions</span></li>
+				<li>Date and <span class="No-Break">time functions</span></li>
+			</ul>
+			<p>In addition, there are other functions that do not necessarily fit into a grouping but are nevertheless very useful. These include encode and decode functions, byte and duration conversions, counts, and <span class="No-Break">default values.</span></p>
+			<h3>Line and label format</h3>
+			<p>Two features are available for <span class="No-Break">transforming logs:</span></p>
+			<ul>
+				<li><strong class="bold">Line format</strong>: The line format expression, given by <strong class="source-inline">| line_format "{{ .label }}"</strong>, is used to rewrite log line<a id="_idIndexMarker400"/> content. This expression is used to modify your log line using the template functions referenced earlier. LogQL injects all labels as variables into the template, making them available for use, for example, <strong class="source-inline">| line_format "{{.label_one}} {{.label_two}}"</strong>. The format takes double quotes or backticks, where backticks allow you to avoid <span class="No-Break">escaping characters.</span><p class="list-inset">For example, if we have the following labels, <strong class="source-inline">method=sent</strong>, <strong class="source-inline">status=200</strong>, and <strong class="source-inline">duration=15ms</strong>, the following LogQL query<a id="_idIndexMarker401"/> would return <strong class="source-inline">sent </strong><span class="No-Break"><strong class="source-inline">200 15ms</strong></span><span class="No-Break">:</span></p><pre class="source-code">
+<strong class="bold">{instance="owg-demo", component="featureflagservice"} |= `Sent`</strong>
+<strong class="bold">| json</strong>
+<strong class="bold">| regexp "(?P&lt;method&gt;Sent) (?P&lt;status&gt;\\d+?) in\\s(?P&lt;duration&gt;.*?ms)"</strong>
+<strong class="bold">| line_format "{{.method}} {{.status}} {{.duration}}"</strong></pre></li>				<li><strong class="bold">Label format</strong>: The label format expression<a id="_idIndexMarker402"/> given by <strong class="source-inline">|label_format new_label="{{ .label }}"</strong> is used to rename, modify, or even create new labels. It accepts a comma-separated list of equality operations, allowing multiple operations to be carried <span class="No-Break">out simultaneously.</span><p class="list-inset">To rename a label with another label, the label identifiers must be on both sides of the operator; for example, <strong class="source-inline">target=source</strong> will put the contents of the <strong class="source-inline">source</strong> label into the <strong class="source-inline">target</strong> label and drop the <span class="No-Break"><strong class="source-inline">source</strong></span><span class="No-Break"> label.</span></p><p class="list-inset">A label can be populated using the Golang text/template format and functions detailed previously (double quotes or backticks). For example, if we have the <strong class="source-inline">user=diego</strong> and <strong class="source-inline">status=200</strong> labels, the <strong class="source-inline">|label_format target="{{.status}} {{.user}}"</strong> pipeline would define the <strong class="source-inline">target</strong> label as <span class="No-Break"><strong class="source-inline">200 diego</strong></span><span class="No-Break">.</span></p><p class="list-inset">Templating can be used if you wish to preserve the original <strong class="source-inline">source</strong> label. In the example, <strong class="source-inline">target=source</strong> removed the <strong class="source-inline">source</strong> label. We can write this as <strong class="source-inline">target="{{.source}}"</strong>, which will put the contents of the <strong class="source-inline">source</strong> label into the <strong class="source-inline">target</strong> label while preserving the <strong class="source-inline">source</strong> label. If the target label does not already exist, a new label <span class="No-Break">is created.</span></p></li>
+			</ul>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Only one instance of a label name can be used per expression; for example, <strong class="source-inline">| label_format foo=bar,foo="new"</strong> would fail. The desired result could be implemented with two expressions, one following the other, like this: <strong class="source-inline">| label_format foo=bar | </strong><span class="No-Break"><strong class="source-inline">label_format foo="new"</strong></span><span class="No-Break">.</span></p>
+			<p>We’ve looked at how the label format<a id="_idIndexMarker403"/> gives you options to create, modify, and rename labels. Additionally, we have the <strong class="source-inline">drop labels</strong> command to remove labels completely. Let’s explore that <span class="No-Break">expression now.</span></p>
+			<h4>Dropping labels</h4>
+			<p>The <strong class="source-inline">drop labels</strong> expression is used to remove<a id="_idIndexMarker404"/> labels from the pipeline. For example, if we have the <strong class="source-inline">user=diego</strong>, <strong class="source-inline">status=200</strong>, and <strong class="source-inline">duration=1000(ms)</strong> labels, the <strong class="source-inline">|drop user</strong> pipeline would drop the <strong class="source-inline">user</strong> label, leaving only <strong class="source-inline">status</strong> <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">duration</strong></span><span class="No-Break">.</span></p>
+			<p>We will now take a look at more of the LogQL features, exploring formatters, metric queries, and the UI for executing LogQL the <strong class="bold">Grafana Explorer</strong> where queries for all data sources <span class="No-Break">are built.</span></p>
+			<h2 id="_idParaDest-100"><a id="_idTextAnchor102"/>Exploring LogQL metric queries</h2>
+			<p>One of the most powerful features<a id="_idIndexMarker405"/> of Loki and LogQL is the ability to create<a id="_idIndexMarker406"/> metrics from logs. With <strong class="bold">metric queries</strong>, you can, for example, calculate the rate of errors or the top 10 log sources with the highest volume of logs over the last hour. This makes it perfect for creating visualizations or <span class="No-Break">triggering alerts.</span></p>
+			<p>If we combine metric queries<a id="_idIndexMarker407"/> with the parsers and formatters we looked at earlier in this section, they can be used to calculate metrics from sample data within a log line. For example, latency or request size can be extracted from log data and used as a metric. These will then be available for aggregations and the generation of <span class="No-Break">new series.</span></p>
+			<p>Let’s now take a look at the aggregations available, namely, <strong class="bold">range vector aggregations</strong> and <strong class="bold">built-in </strong><span class="No-Break"><strong class="bold">aggregation operators</strong></span><span class="No-Break">.</span></p>
+			<h3>Range vector aggregations</h3>
+			<p>The Prometheus concept of a <strong class="bold">range vector</strong> is shared by LogQL, where the range of samples is a range<a id="_idIndexMarker408"/> of log or label values. We will discuss the range vector concept in greater detail in <a href="B18277_05.xhtml#_idTextAnchor106"><span class="No-Break"><em class="italic">Chapter 5</em></span></a>. The selected aggregation<a id="_idIndexMarker409"/> is applied to a time interval specified as a number followed by a unit. The following time interval units can <span class="No-Break">be used:</span></p>
+			<ul>
+				<li><span class="No-Break"><strong class="source-inline">ms</strong></span><span class="No-Break">: Milliseconds</span></li>
+				<li><span class="No-Break"><strong class="source-inline">s</strong></span><span class="No-Break">: Seconds</span></li>
+				<li><span class="No-Break"><strong class="source-inline">m</strong></span><span class="No-Break">: Minutes</span></li>
+				<li><span class="No-Break"><strong class="source-inline">h</strong></span><span class="No-Break">: Hours</span></li>
+				<li><span class="No-Break"><strong class="source-inline">d</strong></span><span class="No-Break">: Days</span></li>
+				<li><span class="No-Break"><strong class="source-inline">w</strong></span><span class="No-Break">: Weeks</span></li>
+				<li><span class="No-Break"><strong class="source-inline">y</strong></span><span class="No-Break">: Years</span></li>
+			</ul>
+			<p>Examples are <strong class="source-inline">6h</strong>, <strong class="source-inline">1h30m</strong>, <strong class="source-inline">10m</strong>, <span class="No-Break">and </span><span class="No-Break"><strong class="source-inline">20s</strong></span><span class="No-Break">.</span></p>
+			<p>There are two types of range vector aggregations supported by Loki and LogQL: <strong class="bold">log range aggregations</strong> and <strong class="bold">unwrapped range aggregations</strong>. Let’s explore these <span class="No-Break">in detail.</span></p>
+			<h4>Log range aggregation</h4>
+			<p>A <strong class="bold">log range aggregation</strong> is a LogQL query followed by a duration, for example, <strong class="source-inline">[10ms]</strong>, with a function <a id="_idIndexMarker410"/>applied to it to aggregate the query over the duration. The duration can be placed after the log stream selector or at the end of the <span class="No-Break">log pipeline.</span></p>
+			<p>Here are the <span class="No-Break">aggregation functions:</span></p>
+			<table id="table006-1" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Aggregation</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Description</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">rate(range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will calculate the number of entries <span class="No-Break">per second.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">count_over_time(range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will count the entries for each log stream within the <span class="No-Break">given range.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">bytes_rate(range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Useful to detect changes in log data volume. It will calculate the number of bytes per second for each <span class="No-Break">log stream.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">bytes_over_time(range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Useful to calculate the volume of log data. It will count the amount of bytes used by each log stream for the <span class="No-Break">given range.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">absent_over_time(range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Useful for alerting when there are no time series and logs streams for label combinations for a duration of time. It returns an empty vector if the range passed to it has elements and a single element vector with the value <strong class="source-inline">1</strong> if the range passed to it has <span class="No-Break">no elements.</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US"> Table 4.6 – Log range aggregation functions</p>
+			<p>Here are a few log range <span class="No-Break">aggregation examples:</span></p>
+			<ul>
+				<li>To count all the log lines within the last 10 minutes for the <span class="No-Break"><strong class="source-inline">currencyservice</strong></span><span class="No-Break"> component:</span><pre class="source-code">
+<strong class="bold">count_over_time({component="currencyservice"}[10m])</strong></pre></li>				<li>To sum the rate per second of errors by component within the <span class="No-Break">last minute:</span><pre class="source-code">
+<strong class="bold">sum by (component) (rate({component=~".+service"}</strong>
+<strong class="bold">|= "error" [1m]))</strong></pre></li>			</ul>
+			<h4>Unwrapped range aggregations</h4>
+			<p><strong class="bold">Unwrapped range aggregations</strong> use the LogQL <strong class="source-inline">unwrap</strong> function to extract a value to be used<a id="_idIndexMarker411"/> in the aggregation. They support grouping using the <strong class="source-inline">by</strong> or <strong class="source-inline">without</strong> clause to aggregate over distinct labels. The <strong class="source-inline">without</strong> aggregation removes the labels identified from the result vector while preserving all other labels. The <strong class="source-inline">by</strong> aggregation drops labels that are not identified in the <span class="No-Break"><strong class="source-inline">by</strong></span><span class="No-Break"> clause.</span></p>
+			<p>Here are the <span class="No-Break">aggregation functions:</span></p>
+			<table id="table007-1" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Aggregation</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Description</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">rate(unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will calculate the per-second rate of the sum of all of the values within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">rate_counter( unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will calculate the per-second rate of all the values within the interval, treating them as <span class="No-Break">counter metrics.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">sum_over_time( unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will sum of all the values within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">avg_over_time( unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the average of all the points within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">max_over_time(range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the maximum of all the points within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">min_over_time( unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the minimum of all the points within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">first_over_time( unwrapped-range):</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the first value of all the points within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">last_over_time( unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the last value of all the points within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">stdvar_over_time( unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the population standard variance of the values within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">stddev_over_time( unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the population standard deviation of the values within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">quantile_over_time(scalar, unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the specified quantile of the values within <span class="No-Break">the interval.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">absent_over_time( unwrapped-range)</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Useful for alerting when there are no time series and logs streams for label combinations for a duration of time. It returns an empty vector if the range passed to it has elements and a single element vector with the value <strong class="source-inline">1</strong> if the range passed to it has <span class="No-Break">no elements.</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US"> Table 4.7 – Unwrapped range aggregation functions</p>
+			<p>The <strong class="source-inline">sum_over_time</strong>, <strong class="source-inline">absent_over_time</strong>, <strong class="source-inline">rate</strong>, and <strong class="source-inline">rate_counter</strong> functions are excluded <span class="No-Break">from grouping.</span></p>
+			<p>Here are a few unwrapped range <span class="No-Break">aggregation</span><span class="No-Break"><a id="_idIndexMarker412"/></span><span class="No-Break"> examples:</span></p>
+			<ul>
+				<li>To calculate the 99th percentile of the <strong class="source-inline">webserver</strong> container <strong class="source-inline">request_time</strong> excluding any JSON formatting errors by <strong class="source-inline">path</strong> within the <span class="No-Break">last minute:</span><pre class="source-code">
+quantile_over_time(0.99,
+  {container="webserver"}
+    | json
+    | __error__ = ""
+    | unwrap duration_seconds(request_time) [1m]) by (path)</pre></li>				<li>To calculate the number of bytes processed by <strong class="source-inline">org_id</strong> within the last minute, filtering where the log contains<a id="_idIndexMarker413"/> the <span class="No-Break"><strong class="source-inline">metrics</strong></span><span class="No-Break"> string:</span><pre class="source-code">
+ sum by (org_id) (
+  sum_over_time(
+  {container="webserver"}
+      |= "metrics"
+      | logfmt
+      | unwrap bytes(bytes_processed) [1m])
+  )</pre></li>			</ul>
+			<h3>Built-in aggregation operators</h3>
+			<p>LogQL supports a subset of the <strong class="bold">built-in aggregation operators</strong> that PromQL supports. These can be used to aggregate<a id="_idIndexMarker414"/> the element of a single vector, resulting in a new vector of fewer elements but with <span class="No-Break">aggregated values.</span></p>
+			<p>The following table shows some built-in range <span class="No-Break">aggregation operators:</span></p>
+			<table id="table008-1" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Aggregation</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Description</strong></span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">sum</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will calculate the sum by the <span class="No-Break">labels specified</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">avg</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will calculate the average by the <span class="No-Break">labels specified</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">min</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will select the minimum by the <span class="No-Break">labels specified</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">max</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will select the maximum by the <span class="No-Break">labels specified</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">stddev</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will calculate the population standard deviation by the <span class="No-Break">labels specified</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">stdvar</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will calculate the population standard variance by the <span class="No-Break">labels specified</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">count</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will count the number of elements in <span class="No-Break">a vector</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">topk</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will select the largest <strong class="source-inline">k</strong> elements by <span class="No-Break">sample value</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">bottomk</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will select the smallest <strong class="source-inline">k</strong> elements by <span class="No-Break">sample value</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">sort</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the vector elements sorted by their sample values, in <span class="No-Break">ascending order</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="source-inline">sort_desc</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Will return the vector elements sorted by their sample values, in <span class="No-Break">descending order</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 4.8 – Built-in range aggregation functions</p>
+			<p>Here are a few built-in range aggregation <span class="No-Break">operator</span><span class="No-Break"><a id="_idIndexMarker415"/></span><span class="No-Break"> examples:</span></p>
+			<ul>
+				<li>To return the top 10 applications by the highest log throughput for the last 10 minutes <span class="No-Break">by </span><span class="No-Break"><strong class="source-inline">name</strong></span><span class="No-Break">:</span><pre class="source-code">
+topk(10, sum(rate({region="us-west1"}[10m])) by (name))</pre></li>				<li>To return the average rate of <strong class="source-inline">GET</strong> requests to the <strong class="source-inline">/hello</strong> endpoint for web server logs by region for the last <span class="No-Break">10 seconds:</span><pre class="source-code">
+avg(rate(({container="webserver"} |= "GET" | json | path="/hello")[10s])) by (region)</pre></li>			</ul>
+			<p>We have looked at how LogQL can parse different log formats. Let’s now take a look at the Loki architecture and how Loki stores and queries the log data <span class="No-Break">you send.</span></p>
+			<h1 id="_idParaDest-101"><a id="_idTextAnchor103"/>Exploring Loki’s architecture</h1>
+			<p>Grafana Loki has a full <strong class="bold">microservices architecture</strong> that can be run as a single binary<a id="_idIndexMarker416"/> and a simple scalable deployment<a id="_idIndexMarker417"/> to a full microservices deployment running all the components as distinct processes. At a high level, it is made up of features that implement write, read, and store functionality, as shown in the <span class="No-Break">following diagram:</span></p>
+			<div>
+				<div id="_idContainer061" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.8.jpg" alt="Figure 4.8 – High-level overview of Loki architecture"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.8 – High-level overview of Loki architecture</p>
+			<p>Both <em class="italic">write</em> and <em class="italic">read</em> functionality can be scaled independently <a id="_idIndexMarker418"/>to suit your particular needs and <span class="No-Break">use cases.</span></p>
+			<p>Under the hood, Loki<a id="_idIndexMarker419"/> has the following <span class="No-Break">core components:</span></p>
+			<ul>
+				<li><span class="No-Break">Distributor</span></li>
+				<li><span class="No-Break">Ingester</span></li>
+				<li><span class="No-Break">Query frontend</span></li>
+				<li><span class="No-Break">Querier</span></li>
+				<li><span class="No-Break">Backend services:</span><ul><li><span class="No-Break">Ruler</span></li><li><span class="No-Break">Compactor</span></li><li><span class="No-Break">Query scheduler</span></li></ul></li>
+			</ul>
+			<p>Let’s now look at the functionality and core components in <span class="No-Break">more detail:</span></p>
+			<ul>
+				<li><strong class="bold">Writes</strong>: Writes for the incoming log data<a id="_idIndexMarker420"/> hit the distributor, which is responsible for data sharding<a id="_idIndexMarker421"/> and partitioning, and sending them to the ingesters. The distributor validates each set of streams, checking labels, timestamps, and log line sizes, then batches log stream chunks to <span class="No-Break">multiple ingesters.</span><p class="list-inset">The ingester writes to the <strong class="bold">write-ahead logs</strong> (<strong class="bold">WALs</strong>) for resiliency and finally into the object <span class="No-Break">storage</span><span class="No-Break"><a id="_idIndexMarker422"/></span><span class="No-Break"> backend.</span></p><p class="list-inset">Both the querier and ruler read the ingester to access the most recent data. The querier can additionally access the object <span class="No-Break">storage data.</span></p></li>
+				<li><strong class="bold">Reads</strong>: The query frontend is responsible for accelerating query execution, distributing large queries across multiple queriers and ensuring retries in the event <span class="No-Break">of failure.</span><p class="list-inset">Queriers parse the LogQL and query the underlying systems: the ingester for the most recent data and object storage for older data. The querier de-duplicates data with the same nanosecond timestamp, labels, and <span class="No-Break">log content.</span></p></li>
+				<li><strong class="bold">Storage</strong>: The object storage is where the batched logs are stored. The compactor is responsible for maintaining the data. It monitors the object storage, de-duplicating data and removing <span class="No-Break">old logs.</span></li>
+				<li><strong class="bold">Backend services</strong>: The ruler evaluates queries and performs actions based on the result. The actions can be recording<a id="_idIndexMarker423"/> rules (generating new metrics for LogQL queries) or alerts for <span class="No-Break">system events.</span><p class="list-inset">The alert manager is responsible for notifications and alerts triggering and being sent from the system, but this is not included <span class="No-Break">with Loki.</span></p></li>
+				<li><strong class="bold">Loki index</strong>: In this chapter, so far, we have covered Loki log labels and LogQL log stream selectors. The underlying architecture completes the picture, explaining how the distributor shards the data. It is that sharding and subsequent storage using the label-based Loki index that makes Loki fast and inexpensive. It also validates the importance<a id="_idIndexMarker424"/> of a good labeling strategy to improving storage and retrieval, and essentially<a id="_idIndexMarker425"/> <span class="No-Break">querying performance.</span></li>
+			</ul>
+			<p>Now that we have built up a good understanding <a id="_idIndexMarker426"/>of Loki, let’s look at a few best practices and some tips for working with Loki <span class="No-Break">log data.</span></p>
+			<h1 id="_idParaDest-102"><a id="_idTextAnchor104"/>Tips, tricks, and best practices</h1>
+			<p>In this section, we will look at a few best practices for filtering and cardinality. We will then look at the LogQL Analyzer and LogCLI, which are tools that can help you when you are working with Grafana Loki <span class="No-Break">log data.</span></p>
+			<p>Here are some best practices<a id="_idIndexMarker427"/> to keep <span class="No-Break">in mind:</span></p>
+			<ul>
+				<li><strong class="bold">Filter first</strong>: Loki stores the raw log in object storage as compressed chunks. Because of this, it is important, from a speed point of view, to filter early. Processing complex parsing on smaller datasets will increase the <span class="No-Break">response time.</span></li>
+				<li><strong class="bold">Cardinality</strong>: High cardinality in Loki can be very detrimental. It is important to design your Loki labels well. Anything that has a lot of variable data in it is a bad idea as that will multiply the number of log streams and therefore storage chunks by that factor. Thinking of them as a locator rather than a content descriptor helps. You can always extract labels from log lines with the range of parsers available. Some examples of good labels (targeted with limited values) are <span class="No-Break">the following:</span><ul><li><span class="No-Break"><strong class="source-inline">namespace</strong></span></li><li><span class="No-Break"><strong class="source-inline">cluster</strong></span></li><li><span class="No-Break"><strong class="source-inline">job</strong></span></li><li><span class="No-Break"><strong class="source-inline">app</strong></span></li><li><span class="No-Break"><strong class="source-inline">instance</strong></span></li><li><span class="No-Break"><strong class="source-inline">filename</strong></span></li></ul><p class="list-inset">Some examples of poor<a id="_idIndexMarker428"/> labels (often vague with unlimited values) are <span class="No-Break">the following:</span></p><ul><li><span class="No-Break"><strong class="source-inline">userid</strong></span></li><li><span class="No-Break"><strong class="source-inline">traceid</strong></span></li><li><span class="No-Break"><strong class="source-inline">path</strong></span></li><li><span class="No-Break"><strong class="source-inline">status code</strong></span></li><li><span class="No-Break"><strong class="source-inline">date</strong></span></li></ul></li>
+			</ul>
+			<p>Now, let’s take a closer look at the advantages offered by using the LogQL Analyzer <span class="No-Break">and LogCLI:</span></p>
+			<ul>
+				<li><strong class="bold">LogQL Analyzer</strong>: The LogQL Analyzer provides an interface<a id="_idIndexMarker429"/> on the Grafana website for you to practice your LogQL queries. You can view detailed explanations <a id="_idIndexMarker430"/>of the actions implemented by your query on a sample log entry. Head over to <a href="https://grafana.com/docs/loki/latest/query/analyzer/">https://grafana.com/docs/loki/latest/query/analyzer/</a> to try it out. Let’s take a look at the Loki <span class="No-Break">LogQL Analyzer:</span></li>
+			</ul>
+			<div>
+				<div id="_idContainer062" class="IMG---Figure">
+					<img src="image/B18277_Figure_4.9.jpg" alt="Figure 4.9 – Loki LogQL Analyzer"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 4.9 – Loki LogQL Analyzer</p>
+			<p class="list-inset">The explanations provided by the LogQL Analyzer<a id="_idIndexMarker431"/> are far more detailed than the <strong class="bold">Explain query</strong> feature in the query builder, so it’s worth checking out while you are <span class="No-Break">learning LogQL.</span></p>
+			<ul>
+				<li><strong class="bold">Using LogCLI</strong>: For command-line lovers everywhere, Grafana<a id="_idIndexMarker432"/> Loki comes with a command-line interface called LogCLI that allows you to do the following at <span class="No-Break">your terminal:</span><ul><li>Query <span class="No-Break">your logs</span></li><li>Evaluate metric queries for a single point <span class="No-Break">in time</span></li><li>Identify Loki labels and obtain stats about <span class="No-Break">their values</span></li><li>Return log streams for a time window with a <span class="No-Break">label matcher</span></li></ul></li>
+			</ul>
+			<p>This is great if you need access to the power of LogQL without leaving the comfort of your <span class="No-Break">own console.</span></p>
+			<p>Full setup documentation<a id="_idIndexMarker433"/> and command references can be found here: <a href="https://grafana.com/docs/loki/latest/query/">https://grafana.com/docs/loki/latest/query/</a>. You can download the binary from the Loki releases page <span class="No-Break">on GitHub.</span></p>
+			<p>We will now wrap up this chapter with a reminder of what you <span class="No-Break">have learned.</span></p>
+			<h1 id="_idParaDest-103"><a id="_idTextAnchor105"/>Summary</h1>
+			<p>In this chapter, we have taken a look at Loki, exploring the log ingest format and the importance of log labels. We then started looking at the comprehensive features of LogQL, the query language of Loki, and how we can select log streams and then filter, parse, format, and transform log lines. These techniques will be invaluable when working with Loki to build dashboards in <a href="B18277_08.xhtml#_idTextAnchor172"><span class="No-Break"><em class="italic">Chapter 8</em></span></a>. Then, we looked at the Loki architecture to get an understanding of what’s going on behind the scenes. We also explained how our data is stored and how Loki can be scaled to increase performance. Lastly, we reviewed some tips and best practices that can help you improve your experience <span class="No-Break">with Loki.</span></p>
+			<p>In the next chapter, we’ll move on from logs to explore <strong class="bold">metrics</strong> and <strong class="bold">Prometheus</strong>, where Loki took its original <span class="No-Break">inspiration from.</span></p>
+		</div>
+	</body></html>

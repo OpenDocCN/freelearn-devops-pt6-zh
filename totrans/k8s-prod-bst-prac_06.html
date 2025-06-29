@@ -1,0 +1,440 @@
+<html><head></head><body><div id="sbo-rt-content"><div id="_idContainer033">
+			<h1 id="_idParaDest-104"><em class="italic"><a id="_idTextAnchor131"/>Chapter 6</em>: Securing Kubernetes Effectively</h1>
+			<p>In previous chapters, you learned how to design and provision the infrastructure of Kubernetes clusters, fine-tune their configuration, and deploy extra add-ons and services on top of the clusters, such as networking, security, monitoring, and scaling.</p>
+			<p>In this chapter, you will learn about the different aspects of Kubernetes security, focusing on qualifying the cluster to have a production-grade security. We will follow an end-to-end security approach to cover all of the essential areas that every production cluster should have. We will know how to bring the cluster security closer to the production readiness state by fine-tuning the security configuration of the cluster and its infrastructure and deploying new security add-ons and tools, and finally ensure cluster security compliance and conformance to security standards and checks.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Securing Kubernetes infrastructure</li>
+				<li>Managing cluster access</li>
+				<li>Managing secrets and certificates</li>
+				<li>Securing workloads and apps</li>
+				<li>Ensuring cluster security and compliance</li>
+				<li>Bonus security tips</li>
+				<li>Deploying the security configurations</li>
+				<li>Destroying the cluster</li>
+			</ul>
+			<h1 id="_idParaDest-105"><a id="_idTextAnchor132"/>Technical requirements</h1>
+			<p>You should have the following tools installed from the previous chapters:</p>
+			<ul>
+				<li>AWS CLI V2</li>
+				<li>AWS IAM Authenticator</li>
+				<li><strong class="source-inline">kubectl</strong></li>
+				<li>Terraform</li>
+				<li>Python3</li>
+				<li>PIP 3</li>
+				<li>virtualenv</li>
+				<li>You need to have an up-and-running Kubernetes cluster</li>
+			</ul>
+			<p>The code for this chapter is available at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06</a>.</p>
+			<p>Check out the following link to see the Code in Action video:</p>
+			<p><a href="https://bit.ly/2MBwZNk">https://bit.ly/2MBwZNk</a></p>
+			<h1 id="_idParaDest-106"><a id="_idTextAnchor133"/>Securing Kubernetes infrastructure</h1>
+			<p>In <a href="B16192_02_Final_PG_ePub.xhtml#_idTextAnchor051"><em class="italic">Chapter 2</em></a>, <em class="italic">Architecting Production-Grade Kubernetes Infrastructure</em>, we discussed the <a id="_idIndexMarker364"/>best practices for the network infrastructure for Kubernetes clusters and we proposed design guidelines that are essential for the infrastructure security of clusters. While these guidelines are essential for you to consider and follow, you still need to evaluate the entire network security requirements of your infrastructure to be sure that you have a complete and appropriate security solution for your environment and product.</p>
+			<p>Most of these security recommendations and best practices are implemented within the Terraform and Ansible configurations that we did in the previous chapters:</p>
+			<ul>
+				<li>Use multiple availability zones (three or more) to deploy your Kubernetes cluster for high availability.</li>
+				<li>Deploy the control plane and worker nodes in private subnets only. Use the public subnets for internet-facing load balancers.</li>
+				<li>Do not allow public access to worker nodes. Expose services externally through load balancers or ingress controllers, and not through node ports.</li>
+				<li>Serve all the traffic between the API server and other control plane components or workers over TLS.</li>
+				<li>Limit network access to the Kubernetes API endpoint.</li>
+				<li>Block <a id="_idIndexMarker365"/>access to <strong class="source-inline">kubelet</strong>.</li>
+				<li>Use security groups to block access to workers and control plane ports, except secure ones.</li>
+				<li>Disable SSH access to worker nodes. You can use AWS Systems Manager Session Manager instead of running SSHD to connect to nodes.</li>
+				<li>Restrict access to the EC2 instance profile credentials. By default, the containers in a pod use the same IAM permissions assigned to the node instance profile. This is considered an insecure behavior, because it gives the containers full control over the node and the underlying AWS services. To avoid this behavior, you must disable the pod's access to the node's instance profile by executing the following <strong class="source-inline">iptables</strong> commands inside the node:<p class="source-code"><strong class="bold">$ yum install -y iptables-services</strong></p><p class="source-code"><strong class="bold">$ iptables --insert FORWARD 1 --in-interface eni+ --destination 169.254.169.254/32 --jump DROP</strong></p><p class="source-code"><strong class="bold">$ iptables-save | tee /etc/sysconfig/iptables </strong></p><p class="source-code"><strong class="bold">$ systemctl enable --now iptables</strong></p><p>We will achieve the same by using the <strong class="source-inline">kube2iam</strong> add-on. It manages the pod's IAM access, and it will block the containers from accessing the instance profile credentials. You will learn about <strong class="source-inline">kube2iam</strong> in detail later in this chapter.</p></li>
+				<li>As we are using EKS, it is highly recommended to use a regular <strong class="bold">Auto Scaling Group (ASG)</strong> instead of the EKS node group. This is because we cannot modify the user data of the EC2 instances in the EKS node group, which prevents us from customizing the deployed services to EC2, including the <strong class="source-inline">kubelet</strong> agent. Another reason for avoiding EKS node groups is that it enforces the attachment of public IPs to the worker nodes, which can represent security threats.</li>
+			</ul>
+			<p>The preceding list covers the essential production infrastructure security guidelines for your Kubernetes clusters. All of these guidelines are covered by cluster provisioning and configuration <a id="_idIndexMarker366"/>management, which we implemented in the previous chapters. It is worth mentioning that your cluster infrastructure may have extra security requirements that you should consider during infrastructure design and provisioning.</p>
+			<h1 id="_idParaDest-107"><a id="_idTextAnchor134"/>Managing cluster access</h1>
+			<p>Requests from a <a id="_idIndexMarker367"/>cluster's users, either humans or service accounts, need to go through authentication and authorization stages before hitting the API server and manipulating the required Kubernetes objects. A typical request goes through three access stages before it gets either allowed or rejected:</p>
+			<div>
+				<div id="_idContainer030" class="IMG---Figure">
+					<img src="Images/B16192_06_001.jpg" alt="Figure 6.1 – Kubernetes access stages&#13;&#10;" width="1456" height="433"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.1 – Kubernetes access stages</p>
+			<p>The request has to go through the authentication stage to verify the client's identity by any of the mechanisms supported by Kubernetes, then it goes through the authorization stage to verify which actions are allowed for this user, and finally it goes through the admission controller stage to decide whether any modifications need to be made. You will learn about each of these in the following subsections.</p>
+			<h2 id="_idParaDest-108"><a id="_idTextAnchor135"/>Cluster authentication</h2>
+			<p>Kubernetes cluster users need to<a id="_idIndexMarker368"/> successfully authenticate into the cluster to access its objects. However, normal cluster users, such as developers and administrators, are not supposed to be managed by Kubernetes, but by <a id="_idIndexMarker369"/>an external <a id="_idIndexMarker370"/>service outside the cluster, such as <strong class="bold">Lightweight Directory Access Protocol</strong> (<strong class="bold">LDAP</strong>), <strong class="bold">OpenID Connect</strong> (<strong class="bold">OIDC</strong>), AWS <strong class="bold">Identity and Access Management</strong> (<strong class="bold">IAM</strong>), or even a file with users and password pairs. On<a id="_idIndexMarker371"/> the other hand, service accounts are managed by Kubernetes, and you can add or delete them using Kubernetes API calls.</p>
+			<p>As a cluster owner, you need to decide how you will manage the cluster's normal users, in other words, which external service to use. To authenticate users in the case of production clusters, we recommend using AWS IAM as the authentication service. However, it is also possible to use an OIDC identity provider, such as Azure Active Directory, or GitHub.</p>
+			<p>It's worth mentioning<a id="_idIndexMarker372"/> that Kubernetes has different authentication modules for different means of authentication, such as client TLS certificates, passwords, and tokens. And the cluster administrator can configure some or all of them during cluster provisioning.</p>
+			<h3>Authenticating users with AWS IAM</h3>
+			<p>EKS <a id="_idIndexMarker373"/>supports the webhook token authentication and service account <a id="_idIndexMarker374"/>tokens. The webhook authentication verifies the bearer tokens. These bearer tokens are generated by the <strong class="source-inline">aws-iam-authenticator</strong> client when you execute <strong class="source-inline">kubectl</strong> commands. Then, the token is passed to <strong class="source-inline">kube-apiserver</strong> before being forwarded to the authentication webhook, which returns the user's account and ARN to <strong class="source-inline">kube-apiserver</strong>.</p>
+			<p>Once the user's identity has been authenticated by the AWS IAM service, <strong class="source-inline">kube-apiserver</strong> reads the <strong class="source-inline">aws-auth</strong> ConfigMap in the <strong class="source-inline">kube-system</strong> namespace to determine the <strong class="bold">Role-Based Access Control (RBAC)</strong> group to associate with the user. The <strong class="source-inline">aws-auth</strong> ConfigMap is used to create a mapping between the IAM users and roles, and Kubernetes RBAC groups for authorization purposes. These RBAC groups can be referenced in Kubernetes ClusterRoleBindings or RoleBindings.</p>
+			<p>We already learned how to create a custom <strong class="source-inline">aws-auth</strong> ConfigMap in <a href="B16192_04_Final_PG_ePub.xhtml#_idTextAnchor100"><em class="italic">Chapter 4</em></a>, <em class="italic">Managing Cluster Configuration with Ansible</em>, where we can add IAM users and IAM roles that users can assume to access the cluster. Please check the <strong class="source-inline">aws-auth</strong> ConfigMap's full configuration code here: <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter06/ansible/templates/auth/aws-auth.yaml">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter06/ansible/templates/auth/aws-auth.yaml</a>.</p>
+			<p>We recommend using IAM roles to manage production cluster access, and you can assign these IAM roles to IAM groups and users, which makes Kubernetes authentication easier to operate and scale.</p>
+			<h3>Modifying the EKS cluster creator</h3>
+			<p>It is worth noting that <a id="_idIndexMarker375"/>EKS gives the IAM user or whatever IAM role that creates the cluster a permanent administrator authentication on the cluster's Kubernetes API service. AWS does not provide any way to change this or to move it to a different IAM user or role. To minimize the security drawbacks of this limitation, we suggest doing the following:</p>
+			<ol>
+				<li>Use a dedicated but temporary IAM role to provision each new cluster.</li>
+				<li>After provisioning the cluster, remove all IAM permissions from this role.</li>
+				<li>Update the <strong class="source-inline">aws-auth</strong> ConfigMap in the <strong class="source-inline">kube-system</strong> namespace and add more IAM users and roles to be able to manage and use the cluster.</li>
+				<li>Add these groups as subjects of <strong class="source-inline">RoleBindings</strong> and <strong class="source-inline">ClusterRoleBindings</strong> in the cluster RBAC as needed.</li>
+			</ol>
+			<p>You already learned in <a href="B16192_04_Final_PG_ePub.xhtml#_idTextAnchor100"><em class="italic">Chapter 4</em></a>, <em class="italic">Managing Cluster Configuration with Ansible</em>, how to handle this drawback in the Ansible cluster configuration as we created a custom <strong class="source-inline">aws-auth</strong> ConfigMap and <strong class="source-inline">ClusterRoleBindings</strong>.</p>
+			<h2 id="_idParaDest-109"><a id="_idTextAnchor136"/>Cluster authorization</h2>
+			<p>The second stage of<a id="_idIndexMarker376"/> cluster access is authorization. This determines whether the operation requested is allowed. In order for Kubernetes to authorize a request, it considers three inputs; first, the user who initiated the request, then the requested action, and finally the Kubernetes resource to be modified by the action, such as pods and services.</p>
+			<p>When you create a cluster, you configure the authorization mode by passing its value to the API server. However, in EKS, all of the authorization modes (RBAC, attribute-based access control, and webhooks) are enabled by default, and Kubernetes will check each of them to authorize the requests.</p>
+			<h2 id="_idParaDest-110"><a id="_idTextAnchor137"/>Admission controller</h2>
+			<p>The final stage of <a id="_idIndexMarker377"/>cluster access is passing through the admission controller. In this step, requests are validated based on the rules defined in the admission controller and the requested object. There is also another type of admission controller, called a mutating controller, which can modify the request, such as injecting side car containers or modifying pod specs before sending the request to <strong class="source-inline">kube-api-server</strong>.</p>
+			<p>An admission controller is a powerful authorization mechanism, and it can be extended by cluster users or third parties to enforce special validations and rules on cluster users. </p>
+			<h1 id="_idParaDest-111"><a id="_idTextAnchor138"/>Managing secrets and certificates</h1>
+			<p>Secrets and TLS <a id="_idIndexMarker378"/>certificates are essential security needs for modern applications, and <a id="_idIndexMarker379"/>while Kubernetes provides a native solution to create and consume secrets and sensitive data, it remains in need of additional hardening. On the other hand, Kubernetes has no native answer to certificate issuing and management, which is why we will deploy one of the popular add-ons and use it for this purpose.</p>
+			<h2 id="_idParaDest-112"><a id="_idTextAnchor139"/>Creating and managing secrets</h2>
+			<p>Kubernetes has a secret <a id="_idIndexMarker380"/>resource type that can be used to store sensitive data, such as <a id="_idIndexMarker381"/>passwords, tokens, certificates, and SSH keys. Pods can consume these secrets by mounting them as volumes or environment variables. However, we do not recommend environment variables because they can leak out and get compromised. </p>
+			<p>Another challenge here arises when users decide to store the secrets that YAML manifests in Git repositories. In such a case, the sensitive data can be easily compromised because secrets do not use encryption, but Base64 encoding, which can simply be decoded.</p>
+			<p>Sealed Secrets solves this problem by providing a mechanism to encrypt the secret sensitive data and make it safe to store in Git repositories.</p>
+			<p>Sealed Secrets consists of two parts:</p>
+			<ol>
+				<li value="1">A<a id="_idIndexMarker382"/> command-line tool, <strong class="source-inline">kubeseal</strong>, to transform <strong class="bold">Custom Resource Definition</strong> (<strong class="bold">CRD</strong>) secrets<a id="_idIndexMarker383"/> into sealed secrets.</li>
+				<li>A Sealed Secrets<a id="_idIndexMarker384"/> controller that is used to generate the encryption key, and decrypt sealed secrets into secrets to be used by the pods.</li>
+			</ol>
+			<p>To learn more about<a id="_idIndexMarker385"/> Sealed Secrets and the <strong class="source-inline">kubeseal</strong> client, please review these here: <a href="https://github.com/bitnami-labs/sealed-secrets">https://github.com/bitnami-labs/sealed-secrets</a>.</p>
+			<p>This is how it works. <strong class="source-inline">kubeseal</strong> communicates with the Sealed Secrets controller to retrieve the encryption public key, and then it uses this key to encrypt the secret CRD into a sealed secret CRD. And when a pod requires use of the sealed secret, the controller uses the encryption private key to decrypt the sealed secret CRD and convert it to a regular secret CRD.</p>
+			<p>It is worthwhile mentioning that Sealed Secrets mitigates the security risks associated with secrets in a multi-tenant cluster by introducing the concept of scopes to limit secret use and manipulation within a namespace, or cluster-wide, and with the possibility to restrict or change the secret name and namespace. The details of the reasoning behind this can be found here in the official documentation: <a href="https://github.com/bitnami-labs/sealed-secrets#scopes">https://github.com/bitnami-labs/sealed-secrets#scopes</a>.</p>
+			<p>Now, let's create the Ansible template and<a id="_idIndexMarker386"/> configuration to deploy the Sealed Secrets controller to the cluster:</p>
+			<ol>
+				<li value="1">Define the required configuration variables and add them to the <strong class="source-inline">group_vars</strong> directory in this path – <strong class="source-inline">ansible/group_vars/all/sealed-secrets.yaml</strong>. The basic configuration contains the number of deployment replicas and the image tag, which is useful for keeping track of the deployed version and controlling its upgrades:<p class="source-code">sealed_secrets_replicas: 1</p><p class="source-code">seald_secrets:</p><p class="source-code">  image: "quay.io/bitnami/sealed-secrets-controller"</p><p class="source-code">  tag: "v0.12.4"</p><p class="callout-heading">Important note</p><p class="callout">You can find the complete source code of the Sealed Secrets deployment template at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter06/ansible/templates/sealed-secrets">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter06/ansible/templates/sealed-secrets</a>.</p></li>
+				<li>Create the <a id="_idIndexMarker387"/>deployment template for the Sealed Secrets controller in this path – <strong class="source-inline">ansible/templates/sealed-secrets/sealed-secrets.yaml</strong>. In this controller, we will only set variables for the deployment replicas and image tags. You can check the complete manifest YAML file at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter06/ansible/templates/sealed-secrets/sealed-secrets.yaml">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter06/ansible/templates/sealed-secrets/sealed-secrets.yaml</a>.</li>
+				<li>Install the <strong class="source-inline">kubeseal</strong> CLI for macOS as follows:<p class="source-code"><strong class="bold">$ brew install kubeseal</strong></p><p>Install it for Linux using the following command:</p><p class="source-code"><strong class="bold">$ wget https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.12.4/kubeseal-linux-amd64 -O kubeseal</strong></p><p class="source-code"><strong class="bold">$ sudo install -m 755 kubeseal /usr/local/bin/kubeseal</strong></p></li>
+			</ol>
+			<p>To deploy the Sealed Secrets controller, please apply the deployment steps covered at the end of this chapter under the <em class="italic">Deploying the security configurations</em> section.</p>
+			<h2 id="_idParaDest-113"><a id="_idTextAnchor140"/>Managing TLS certificates with Cert-Manager</h2>
+			<p>Cert-Manager<a id="_idIndexMarker388"/> is a Kubernetes add-on and controller that allows certificates to be issued from different sources, such as SelfSigned, CA, Vault, and ACME/Let's Encrypt, and external issuers, such as AWS Private Certificate Authority and AWS Key Management Service. It also<a id="_idIndexMarker389"/> ensures the validity of certificates and auto-renews and rotates them. You can learn more about the project here: <a href="https://cert-manager.io/docs/">https://cert-manager.io/docs/</a>.</p>
+			<p>Cert-Manager <a id="_idIndexMarker390"/>will make TLS certificates available out of the box for Kubernetes workloads, and it will make issuing and managing these certificates a native feature within the Kubernetes cluster, which is easy to manage and operate.</p>
+			<p>Cert-Manager does not come pre-installed with the cluster, so you need to deploy it and specify its configuration, which includes its Docker image, the number of replicas to run, certificate issuers, DNS Route 53 zones, and so on.</p>
+			<p>To deploy Cert-Manager, we will create three Kubernetes manifest files: namespace, controller, and certificate issuers. </p>
+			<p>There are various issuers supported by Cert-Manager. Please check here: <a href="https://cert-manager.io/docs/configuration/">https://cert-manager.io/docs/configuration/</a>. In this chapter, we decided to use Let's Encrypt as it is free and commonly used, but you can use Cert-Manager documentation and the same deployment here with any of the other issuers.</p>
+			<p>Now, let's create the Ansible template and the configuration for it:</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">You can find the complete source code of the Cert-Manager deployment template at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06/ansible/templates/cert-manager">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06/ansible/templates/cert-manager</a>.</p>
+			<ol>
+				<li value="1">Define the required configuration variables and add them to the <strong class="source-inline">group_vars</strong> directory in this path – <strong class="source-inline">ansible/group_vars/all/cert-manager.yaml</strong>. The basic configuration contains the number of deployment replicas and the image tags for controller, webhook, and <strong class="source-inline">cainjector</strong>, which is useful for keeping track of the version deployed and for controlling its upgrades. Also, there is the configuration of Let's Encrypt issuers for both <strong class="source-inline">prod</strong> and <strong class="source-inline">nonprod</strong> ACME URLs:<p class="source-code">log_level: error</p><p class="source-code">letsencrypt_email: security@packt.com</p><p class="source-code">letsencrypt_prod_url: https://acme-v02.api.letsencrypt.org/directory</p><p class="source-code">letsencrypt_nonprod_url: https://acme-staging-v02.api.letsencrypt.org/directory</p><p class="source-code">cert_manager_replicas: 1</p><p class="source-code">cert_manager_controller:</p><p class="source-code">  image: "quay.io/jetstack/cert-manager-controller"</p><p class="source-code">  tag: "v0.15.2"</p><p class="source-code">cert_manager_cainjector:</p><p class="source-code">  image: "quay.io/jetstack/cert-manager-cainjector"</p><p class="source-code">  tag: "v0.15.2"</p><p class="source-code">cert_manager_webhook:</p><p class="source-code">  image: "quay.io/jetstack/cert-manager-webhook"</p><p class="source-code">  tag: "v0.15.2"</p></li>
+				<li>Create<a id="_idIndexMarker391"/> the namespace for Cert-Manager<a id="_idIndexMarker392"/> in this path – <strong class="source-inline">ansible/templates/cert-manager/namespace.yaml</strong>:<p class="source-code">---</p><p class="source-code">apiVersion: v1</p><p class="source-code">kind: Namespace</p><p class="source-code">metadata:</p><p class="source-code">  name: cert-manager</p><p class="source-code">  labels:</p><p class="source-code">    certmanager.k8s.io/disable-validation: "true"</p></li>
+				<li>Create the deployment template for the Cert-Manager controller resources in this path – <strong class="source-inline">ansible/templates/cert-manager/cert-manager.yaml</strong>. In this controller, we will only set variables for the deployment replicas and image tags. You can check the complete manifest YAML file here: <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter06/ansible/templates/cert-manager/cert-manager.yaml">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/blob/master/Chapter06/ansible/templates/cert-manager/cert-manager.yaml</a>.</li>
+				<li>Create the issuer configuration for Let's Encrypt in this path – <strong class="source-inline">ansible/templates/cert-manager/letsencrypt-clusterissuer.yaml</strong>. In this file, there are two configurations, the first for the<a id="_idIndexMarker393"/> certificates used for production<a id="_idIndexMarker394"/> workloads, and the other for non-production workloads. The main difference is that Let's Encrypt will allow you to issue as many certificates as you want for non-production, but only limited numbers per week for production ones:<p class="source-code">---</p><p class="source-code">apiVersion: certmanager.k8s.io/v1alpha1</p><p class="source-code">kind: ClusterIssuer</p><p class="source-code">metadata:</p><p class="source-code">  name: letsencrypt-prod</p><p class="source-code">spec:</p><p class="source-code">  acme:</p><p class="source-code">    email: {{ letsencrypt_email }}</p><p class="source-code">    server: {{ letsencrypt_prod_url }}</p><p class="source-code">    privateKeySecretRef:</p><p class="source-code">      name: letsencrypt-prod</p><p class="source-code">    solvers:</p><p class="source-code">    - http01:</p><p class="source-code">        ingress:</p><p class="source-code">          class: nginx</p><p class="source-code">    - selector:</p><p class="source-code">        matchLabels:</p><p class="source-code">          use-dns01-solver: "true"</p><p class="source-code">      dns01:</p><p class="source-code">        route53:</p><p class="source-code">          region: {{ aws_default_region }}</p><p class="source-code">          hostedZoneID: {{ route53_zone_id }}</p><p>The second part of the previous issuer configuration is very similar to the production issuer, but with a different Let's Encrypt server.</p></li>
+			</ol>
+			<p>To deploy the<a id="_idIndexMarker395"/> Cert-Manager add-on, please apply the deployment<a id="_idIndexMarker396"/> steps at the end of this chapter under the <em class="italic">Deploying the security configurations</em> section.</p>
+			<p>Here is an example of how to use Cert-Manager and Let's Encrypt and associate it with an ingress controller and a domain:</p>
+			<p class="source-code">apiVersion: extensions/v1beta1</p>
+			<p class="source-code">kind: Ingress</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  annotations:</p>
+			<p class="source-code">    cert-manager.io/cluster-issuer: letsencrypt-prod</p>
+			<p class="source-code">  name: test-ingress</p>
+			<p class="source-code">  namespace: test-ingress</p>
+			<p class="source-code">spec:</p>
+			<p class="source-code">  rules:</p>
+			<p class="source-code">  - host: example.com</p>
+			<p class="source-code">    http:</p>
+			<p class="source-code">      paths:</p>
+			<p class="source-code">      - backend:</p>
+			<p class="source-code">          serviceName: myservice</p>
+			<p class="source-code">          servicePort: 80</p>
+			<p class="source-code">        path: /</p>
+			<p class="source-code">  tls: </p>
+			<p class="source-code">  - hosts:</p>
+			<p class="source-code">    - example.com</p>
+			<p class="source-code">    secretName: example-cert</p>
+			<p>The previous <strong class="source-inline">Ingress</strong> resource uses the Cert-Manager annotation to connect to the Let's Encrypt TLS production certificate issuer, and it defines a host with a sample DNS <strong class="source-inline">example.com</strong> and <strong class="source-inline">secretName</strong> as <strong class="source-inline">example-cert</strong>, where Cert-Manager will store the<a id="_idIndexMarker397"/> TLS certificates retrieved from Let's Encrypt, and <a id="_idIndexMarker398"/>to be used by this <strong class="source-inline">Ingress</strong> resource. You can use the same <strong class="source-inline">Ingress</strong> resource, but with a domain name that you own.</p>
+			<p>To get an idea of how to use Cert-Manager in other use cases, please check the official documentation at <a href="https://cert-manager.io/docs/usage/">https://cert-manager.io/docs/usage/</a>.</p>
+			<h1 id="_idParaDest-114"><a id="_idTextAnchor141"/>Securing workloads and apps</h1>
+			<p>Kubernetes provides<a id="_idIndexMarker399"/> different built-in and third-party solutions to ensure that<a id="_idIndexMarker400"/> your production workloads are running securely. We will explore what we regard as a must-have for your cluster before going to production, such as workload isolation techniques, pod security policies, network policies, and monitoring workload runtime security.</p>
+			<h2 id="_idParaDest-115"><a id="_idTextAnchor142"/>Isolating critical workloads</h2>
+			<p>Kubernetes, by design, has <a id="_idIndexMarker401"/>a single control plane for each cluster, which makes sharing a single cluster among tenants and workloads challenging, and requires the cluster owners to have a clear strategy about cluster multi-tenancy and resource sharing.</p>
+			<p>There are different use cases where it is critical to address tenant and workload isolation:</p>
+			<ul>
+				<li>In many organizations, there are multiple teams, products, or environments that share a cluster. </li>
+				<li>There are cases where you provide Kubernetes as a service for your own organization or external organizations. </li>
+				<li>Also, there is a common <a id="_idIndexMarker402"/>case when your Kubernetes infrastructure serves a <strong class="bold">Software as a Service</strong> (<strong class="bold">SaaS</strong>) product.</li>
+			</ul>
+			<p>For the preceding use <a id="_idIndexMarker403"/>cases, we need to ensure that the cluster has the required configuration for workload isolation, where we can approach soft multi-tenancy using various Kubernetes objects, such as namespaces, RBAC, quotas, and limit ranges. This is what you will learn in this section and across this chapter. </p>
+			<p>Now, we need to explore the different techniques for implementing tenants' isolation, while decreasing the risks associated with Kubernetes' single-tenancy design.</p>
+			<h3>Using namespaces</h3>
+			<p>Namespaces are the first layer of <a id="_idIndexMarker404"/>isolation that Kubernetes provides. They provide a soft-tenancy mechanism to create boundaries for Kubernetes resources. A lot of Kubernetes security controls, such as network policies, access control, secrets, certificates, and other important security controls can be scoped on the namespace level. By separating tenant workloads into their own namespaces, you will be able to limit the impact of security attacks, as well as intentional and non-intentional mistakes by cluster users.</p>
+			<h3>Creating separate node groups</h3>
+			<p>We usually <a id="_idIndexMarker405"/>avoid privileged containers, but in some cases, such as system pods or product-specific technical requirements, they are unavoidable. To reduce the impact of a security break, we isolate these pods on dedicated nodes and node groups where other tenants' workloads cannot get scheduled. The same can be applied to the pods with sensitive data. This approach decreases the risk of sensitive data being accessed by a less-secure application that shares the worker node. However, it does come with a drawback as it could increase the infrastructure cost, and when you take this design decision, you should weigh security versus cost.</p>
+			<h3>Implementing hard multi-tenancy</h3>
+			<p>In specific use cases, hard multi-tenancy <a id="_idIndexMarker406"/>is a must, which is usually due to laws and regulatory requirements. In this situation, multi-tenancy can be achieved by provisioning separate clusters for each tenant, and this is what we call hard multi-tenancy. On the flip side, however, there are drawbacks, such as the challenges associated with managing these clusters when they grow in number, the increased total cost, and also the decreased compute utilization per cluster. </p>
+			<h2 id="_idParaDest-116"><a id="_idTextAnchor143"/>Hardening the default pod security policy</h2>
+			<p><strong class="bold">Pod security policy</strong> (<strong class="bold">PSP</strong>) is a <a id="_idIndexMarker407"/>Kubernetes resource that is used to ensure that a pod has to meet specific requirements before getting created. </p>
+			<p>PSPs have different security settings that you can configure either by increasing or decreasing pod privileges, aspects such as Linux capabilities allowed to the containers, host network access, and filesystem access. </p>
+			<p>It is still worthwhile<a id="_idIndexMarker408"/> mentioning that PSP is still in beta, and it would be unwelcome to deploy a beta feature for companies with strict production policies.</p>
+			<p>You can define multiple PSPs in your cluster and assign them to different types of pods and namespaces to ensure that every workload and tenant has the correct access rights. EKS clusters come with a default PSP called <strong class="source-inline">eks.privileged</strong>, which is automatically created when you provision the cluster. You can view the specs of the <strong class="source-inline">eks.privileged</strong> PSP by describing it as follows:</p>
+			<p class="source-code">$ kubectl describe psp eks.privileged</p>
+			<p class="source-code">Name:  eks.privileged</p>
+			<p class="source-code">Settings:</p>
+			<p class="source-code">  Allow Privileged:                       true</p>
+			<p class="source-code">  Allow Privilege Escalation:             0xc0004ce5f8</p>
+			<p class="source-code">  Default Add Capabilities:               &lt;none&gt;</p>
+			<p class="source-code">  Required Drop Capabilities:             &lt;none&gt;</p>
+			<p class="source-code">  Allowed Capabilities:                   *</p>
+			<p class="source-code">  Allowed Volume Types:                   *</p>
+			<p class="source-code">  Allow Host Network:                     true</p>
+			<p class="source-code">  Allow Host Ports:                       0-65535</p>
+			<p class="source-code">  Allow Host PID:                         true</p>
+			<p class="source-code">  Allow Host IPC:                         true</p>
+			<p class="source-code">  Read Only Root Filesystem:              false</p>
+			<p class="source-code">  SELinux Context Strategy: RunAsAny</p>
+			<p class="source-code">    User:                                 &lt;none&gt;</p>
+			<p class="source-code">    Role:                                 &lt;none&gt;</p>
+			<p class="source-code">    Type:                                 &lt;none&gt;</p>
+			<p class="source-code">    Level:                                &lt;none&gt;</p>
+			<p class="source-code">  Run As User Strategy: RunAsAny</p>
+			<p class="source-code">    Ranges:                               &lt;none&gt;</p>
+			<p class="source-code">  FSGroup Strategy: RunAsAny</p>
+			<p class="source-code">    Ranges:                               &lt;none&gt;</p>
+			<p class="source-code">  Supplemental Groups Strategy: RunAsAny</p>
+			<p class="source-code">    Ranges:                               &lt;none&gt;</p>
+			<p>This default <strong class="source-inline">eks.privileged</strong> PSP allows any authenticated user to run privileged containers across all namespaces. This behavior is intended to allow system pods such as the AWS VPC CNI and <strong class="source-inline">kube-proxy</strong> to run as privileged because they are responsible for configuring the host's network settings. However, you have to limit this behavior for other types of pods and namespaces.</p>
+			<p>As a best practice, we recommend <a id="_idIndexMarker409"/>that you limit privileged pods to service accounts within the <strong class="source-inline">kube-system</strong> namespace or any other namespace that you use to isolate system pods. For all other namespaces that host other types of pods, we recommend assigning a restrictive default PSP. The following manifest defines a PSP to restrict privileged pods, and accessing the host network. We will add this manifest to our Ansible template's automation at the following path: <strong class="source-inline">ansible/templates/psp/default-psp.yaml</strong>:</p>
+			<p class="source-code">---</p>
+			<p class="source-code">apiVersion: extensions/v1beta1</p>
+			<p class="source-code">kind: PodSecurityPolicy</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  name: default-psp</p>
+			<p class="source-code">  annotations:</p>
+			<p class="source-code">    seccomp.security.alpha.kubernetes.io/allowedProfileNames: 'docker/default,runtime/default'</p>
+			<p class="source-code">    apparmor.security.beta.kubernetes.io/allowedProfileNames: 'runtime/default'</p>
+			<p class="source-code">    seccomp.security.alpha.kubernetes.io/defaultProfileName:  'runtime/default'</p>
+			<p class="source-code">    apparmor.security.beta.kubernetes.io/defaultProfileName:  'runtime/default'</p>
+			<p>The following code snippet defines specs of the default PSP. It will not allow privileged containers, disables container privilege escalation, and drops all Linux capabilities:</p>
+			<p class="source-code">spec:</p>
+			<p class="source-code">  privileged: false</p>
+			<p class="source-code">  defaultAllowPrivilegeEscalation: false</p>
+			<p class="source-code">  allowedCapabilities: []</p>
+			<p class="source-code">  requiredDropCapabilities:</p>
+			<p class="source-code">    - ALL</p>
+			<p> You can check the complete source code of the previous PSP resource here: <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06/ansible/templates/psp">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06/ansible/templates/psp</a>.</p>
+			<p>The following <strong class="source-inline">ClusterRole</strong> definition allows<a id="_idIndexMarker410"/> all roles that are bound to it to use the previous <strong class="source-inline">default-psp</strong> PSP:</p>
+			<p class="source-code">---</p>
+			<p class="source-code">apiVersion: rbac.authorization.k8s.io/v1</p>
+			<p class="source-code">kind: ClusterRole</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  name: default-psp-user</p>
+			<p class="source-code">rules:</p>
+			<p class="source-code">- apiGroups:</p>
+			<p class="source-code">  - extensions</p>
+			<p class="source-code">  resources:</p>
+			<p class="source-code">  - podsecuritypolicies</p>
+			<p class="source-code">  resourceNames:</p>
+			<p class="source-code">  - default-psp</p>
+			<p class="source-code">  verbs:</p>
+			<p class="source-code">  - use</p>
+			<p>The following <strong class="source-inline">ClusterRoleBinding</strong> definition binds the <strong class="source-inline">default-psp-user</strong> <strong class="source-inline">ClusterRole</strong> to the <strong class="source-inline">system:authenticated</strong> RBAC group of users, which means that any user who is added to the cluster RBAC group, <strong class="source-inline">system:authenticated</strong>, has to create pods that comply <a id="_idIndexMarker411"/>with the <strong class="source-inline">default-psp</strong> PSP:</p>
+			<p class="source-code">---</p>
+			<p class="source-code">apiVersion: rbac.authorization.k8s.io/v1</p>
+			<p class="source-code">kind: ClusterRoleBinding</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  name: default-psp-users</p>
+			<p class="source-code">subjects:</p>
+			<p class="source-code">- kind: Group</p>
+			<p class="source-code">  name: system:authenticated</p>
+			<p class="source-code">roleRef:</p>
+			<p class="source-code">   apiGroup: rbac.authorization.k8s.io</p>
+			<p class="source-code">   kind: ClusterRole</p>
+			<p class="source-code">   name: default-psp-user</p>
+			<p>You can create additional pod security policies according to your security requirements, but basically, your cluster needs to have two pod security policies; the first is <strong class="source-inline">eks.privileged</strong> for the pods in the <strong class="source-inline">kube-system</strong> namespace, and the second is <strong class="source-inline">default-psp</strong> for any other namespaces.</p>
+			<h2 id="_idParaDest-117"><a id="_idTextAnchor144"/>Limiting pod access</h2>
+			<p>Usually, pods<a id="_idIndexMarker412"/> require access to the underlying cloud services, such as object stores, databases, and the DNS. Ideally, you do not want the production pods to access all services, or to access a service that they are not intended to use. This is why we need to limit pod access to just the services they use.  </p>
+			<p>In the AWS world, this can be achieved by utilizing the IAM roles and attaching this role and an access policy to the pod. <strong class="source-inline">kube2iam</strong> is one of Kubernetes' add-ons that can do this job efficiently. It is an open source project that is battle-tested in production. It is easy to deploy, configure, and use. You can learn more about it here: <a href="https://github.com/jtblin/kube2iam">https://github.com/jtblin/kube2iam</a>.</p>
+			<p><strong class="source-inline">kube2iam</strong> does not come pre-installed with the cluster, so you need to deploy it and specify its configuration, which includes its Docker image, iptables control, and the host network interface.</p>
+			<p>Now, let's create the <a id="_idIndexMarker413"/>Ansible template and configuration for them:</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">You can find the complete source code at <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06/ansible/templates/kube2iam">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06/ansible/templates/kube2iam</a>.</p>
+			<ol>
+				<li value="1">Define the required configuration variables and add them to the <strong class="source-inline">group_vars</strong> directory in this path – <strong class="source-inline">ansible/group_vars/all/kube2iam.yaml</strong>. The basic configuration contains the image tag for the <strong class="source-inline">kube2iam</strong> DaemonSet, which is useful for keeping track of the deployed version and for controlling its upgrades:<p class="source-code">kube2iam:</p><p class="source-code">  image: "jtblin/kube2iam"</p><p class="source-code">  tag: "0.10.9"</p></li>
+				<li>Create the deployment template for the Cert-Manager controller resources in this path – <strong class="source-inline">ansible/templates/cert-manager/cert-manager.yaml</strong>. In this controller, we will only set variables for the deployment replicas and image tags:<p class="source-code">---</p><p class="source-code">apiVersion: apps/v1</p><p class="source-code">kind: DaemonSet</p><p class="source-code">metadata:</p><p class="source-code">  name: kube2iam</p><p class="source-code">  namespace: kube-system</p><p class="source-code">  labels:</p><p class="source-code">    app: kube2iam</p><p>The following <a id="_idIndexMarker414"/>code snippet is the specification of the <strong class="source-inline">kube2iam</strong> DaemonSet. The most important part of the spec is the container runtime arguments' section: </p><p class="source-code">spec:</p><p class="source-code">---</p><p class="source-code">      containers:</p><p class="source-code">        - image: {{ kube2iam.image }}:{{ kube2iam.tag }}</p><p class="source-code">          name: kube2iam</p><p class="source-code">          args:</p><p class="source-code">            - "--auto-discover-base-arn"</p><p class="source-code">            - "--auto-discover-default-role=true"</p><p class="source-code">            - "--iptables=true"</p><p class="source-code">            - "--host-ip=$(HOST_IP)"</p><p class="source-code">            - "--node=$(NODE_NAME)"</p><p class="source-code">            - "--host-interface=eni+"</p><p class="source-code">            - "--use-regional-sts-endpoint"</p><p>The most notable configuration parameter in the previous YAML file is <strong class="source-inline">"--iptables=true"</strong>, which allows <strong class="source-inline">kube2iam</strong> to add iptables rules to block the pods from accessing the underlying worker node instance profile. </p></li>
+			</ol>
+			<p>To deploy <strong class="source-inline">kube2iam</strong>, please apply the deployment steps at the end of this chapter under the <em class="italic">Deploying the cluster's security configuration</em> section.</p>
+			<p>To use <strong class="source-inline">kube2iam</strong> with a pod, you <a id="_idIndexMarker415"/>have to add the <strong class="source-inline">iam.amazonaws.com/role annotation</strong> to the pod annotations section, and add the IAM role to be used by the pod. Here is an example to illustrate how to use <strong class="source-inline">kube2iam</strong> with your pods:</p>
+			<p class="source-code">apiVersion: v1</p>
+			<p class="source-code">kind: Pod</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  name: aws-cli</p>
+			<p class="source-code">  labels:</p>
+			<p class="source-code">    name: aws-cli</p>
+			<p class="source-code">  annotations:</p>
+			<p class="source-code">    iam.amazonaws.com/role: &lt;add-role-arn-here&gt;</p>
+			<p class="source-code">spec:</p>
+			<p class="source-code">  containers:</p>
+			<p class="source-code">  - image: fstab/aws-cli</p>
+			<p class="source-code">    command:</p>
+			<p class="source-code">      - "/home/aws/aws/env/bin/aws"</p>
+			<p class="source-code">      - "s3"</p>
+			<p class="source-code">      - "ls"</p>
+			<p class="source-code">      - "add-any-bucket-name-here"</p>
+			<p class="source-code">    name: aws-cli</p>
+			<p>The preceding pod will run an <strong class="source-inline">aws-cli</strong> container that executes the S3 list command for a bucket. Please make sure to replace the placeholders with a valid IAM role ARN to the annotation section, and a valid S3 bucket name in the container command section.</p>
+			<h2 id="_idParaDest-118"><a id="_idTextAnchor145"/>Creating network policies with Calico</h2>
+			<p>Communication <a id="_idIndexMarker416"/>between all pods within the cluster is <a id="_idIndexMarker417"/>allowed by default. This behavior is unsecure, especially in multi-tenant clusters. Earlier, you learned about the cluster network infrastructure and how to use security groups to control the network traffic among a cluster's nodes. However, security groups are not effective when it comes to controlling the traffic between pods. This is why Kubernetes provides the <strong class="bold">Network Policy API</strong>. These <a id="_idIndexMarker418"/>network policies allow the cluster's users to enforce ingress and egress rules to allow or deny network traffic among the pods.</p>
+			<p>Kubernetes defines the Network Policy API specification, but it does not provide a built-in capability to enforce these network policies. So, to enforce them, you have to use a network plugin, such as Calico network policy.</p>
+			<p>You can check your cluster to see whether there are any network policies in effect by using the following <strong class="source-inline">kubectl</strong> command:</p>
+			<p class="source-code">$ kubectl get networkpolicies --all-namespaces</p>
+			<p class="source-code">No resources found.</p>
+			<p>Calico is a network policy engine that can be deployed to Kubernetes, and it works smoothly with EKS as well. Calico implements all of Kubernetes' network policy features, but it also supports an additional richer set of features, including policy ordering, priority, deny rules, and flexible match rules. Calico network policy can be applied to different types of endpoints, including pods, VMs, and host interfaces. Unlike Kubernetes' network policies, Calico policies can be applied to namespaces, pods, service accounts, or globally across the cluster. </p>
+			<h3>Creating a default deny policy</h3>
+			<p>As a security<a id="_idIndexMarker419"/> best practice, network policies should allow least privileged access. You start by creating a deny all policy that globally restricts all inbound and outbound traffic using Calico.</p>
+			<p>The following Calico global network policy implements a default, deny-all ingress and egress policy across the cluster:</p>
+			<p class="source-code">apiVersion: crd.projectcalico.org/v1</p>
+			<p class="source-code">kind: GlobalNetworkPolicy</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  name: default-deny</p>
+			<p class="source-code">spec:</p>
+			<p class="source-code">  selector: all()</p>
+			<p class="source-code">  types:</p>
+			<p class="source-code">  - Ingress</p>
+			<p class="source-code">  - Egress</p>
+			<p>Once you have the<a id="_idIndexMarker420"/> default network policy to deny all traffic, you can add allow rules whenever needed by your pods. One of these policies is to add a global rule to allow pods to query CoreDNS for DNS resolution:</p>
+			<p class="source-code">apiVersion: crd.projectcalico.org/v1</p>
+			<p class="source-code">kind: GlobalNetworkPolicy</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  name: allow-dns-egress</p>
+			<p class="source-code">spec:</p>
+			<p class="source-code">  selector: all()</p>
+			<p class="source-code">  types:</p>
+			<p class="source-code">  - Egress</p>
+			<p class="source-code">  egress:</p>
+			<p class="source-code">  - action: Allow</p>
+			<p class="source-code">    protocol: UDP  </p>
+			<p class="source-code">    destination:</p>
+			<p class="source-code">      namespaceSelector: name == "kube-system"</p>
+			<p class="source-code">      ports: </p>
+			<p class="source-code">      - 53</p>
+			<p>The preceding policy <a id="_idIndexMarker421"/>will allow egress network traffic from pods at any namespaces to query the CoreDNS in the <strong class="source-inline">kube-system</strong> namespace.</p>
+			<p>EKS does not come with Calico installed by default. So, we will include it in our Ansible configuration. You can view the full source code here: <a href="https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06/ansible/templates/calico-np">https://github.com/PacktPublishing/Kubernetes-in-Production-Best-Practices/tree/master/Chapter06/ansible/templates/calico-np</a>.</p>
+			<h2 id="_idParaDest-119"><a id="_idTextAnchor146"/>Monitoring runtime with Falco</h2>
+			<p>There is an<a id="_idIndexMarker422"/> essential need to monitor workloads and containers for <a id="_idIndexMarker423"/>security violations at runtime. Falco enables the cluster's users to react in a timely manner for serious security threats and violations, or to catch security issues that bypassed cluster security scanning and testing.</p>
+			<p>Falco is an open source project originally developed by Sysdig with a core functionality of threat detection in Kubernetes. It can detect violations and abnormally behaving applications and send alerts pertaining to them. You can learn more about the Falco project here: <a href="https://github.com/falcosecurity/falco">https://github.com/falcosecurity/falco</a>.</p>
+			<p>Falco runs as a daemon on top of Kubernetes' worker nodes, and it has the violation rules defined in configuration files that you can customize according to your security requirements.</p>
+			<p>Execute the following commands at the worker nodes that you want to monitor. This will install and deploy Falco:</p>
+			<p class="source-code">curl -o install_falco -s https://falco.org/script/install</p>
+			<p class="source-code">sudo bash install_falco</p>
+			<p>To automate Falco's deployment, we will include the previous commands in the worker node bootstrap user data using Terraform in this file: <strong class="source-inline">terraform/modules/eks-workers/user-data.tf</strong>.</p>
+			<p>One example of the security runtime violations that Falco can detect is detecting whenever a shell is started inside a container. The Falco rule for this violation appears as follows:</p>
+			<p class="source-code">- macro: container</p>
+			<p class="source-code">  condition: container.id != host</p>
+			<p class="source-code">- macro: spawned_process</p>
+			<p class="source-code">  condition: evt.type = execve and evt.dir=&lt;</p>
+			<p class="source-code">- rule: run_shell_in_container</p>
+			<p class="source-code">  desc: a shell was spawned by a non-shell program in a container. Container entrypoints are excluded.</p>
+			<p class="source-code">  condition: container and proc.name = bash and spawned_process and proc.pname exists and not proc.pname in (bash, docker)</p>
+			<p class="source-code">  output: "Shell spawned in a container other than entrypoint (user=%user.name container_id=%container.id container_name=%container.name shell=%proc.name parent=%proc.pname cmdline=%proc.cmdline)"</p>
+			<p class="source-code">  priority: WARNING</p>
+			<p>There are enormous <a id="_idIndexMarker424"/>rules that you can use and define in your Falco configuration. To<a id="_idIndexMarker425"/> learn more about them, refer to the Falco<a id="_idIndexMarker426"/> documentation and examples here: <a href="https://falco.org/docs/examples/">https://falco.org/docs/examples/</a>.</p>
+			<h1 id="_idParaDest-120"><a id="_idTextAnchor147"/>Ensuring cluster security and compliance</h1>
+			<p>There are lots of moving parts<a id="_idIndexMarker427"/> and configurations that affect Kubernetes cluster security. And<a id="_idIndexMarker428"/> after deploying the security add-ons and adding more configurations, we need to make sure of the following:</p>
+			<ul>
+				<li>The cluster security configuration is valid and intact</li>
+				<li>The cluster is compliant <a id="_idIndexMarker429"/>with the standard security guidelines according to the <strong class="bold">Center of Internet Security</strong> (<strong class="bold">CIS</strong>) benchmark</li>
+				<li>The cluster passes the conformance tests defined by the CNCF and its partners and community</li>
+			</ul>
+			<p>In this section, you will learn how to validate and guarantee each of the previous points through using the relevant tools.</p>
+			<h2 id="_idParaDest-121"><a id="_idTextAnchor148"/>Executing Kubernetes conformance tests</h2>
+			<p>The Kubernetes <a id="_idIndexMarker430"/>community and CNCF have defined a set of tests that you can run against any Kubernetes cluster to ensure that this cluster passes tests in terms of specific storage features, performance tests, scaling tests, provider tests, and other types of validation that are defined by CNCF and the Kubernetes community. This gives the cluster operators the confidence to use it to serve in production.</p>
+			<p>Sonobuoy is a tool that you can use to run these conformance tests, and we recommend doing that for the new clusters, and periodically whenever you update your cluster. Sonobuoy makes it easier for you to ensure the state of your cluster without harming its operations or causing any downtime.</p>
+			<h3>Installing Sonobuoy</h3>
+			<p>Apply the following instructions to<a id="_idIndexMarker431"/> install Sonobuoy on your local host:</p>
+			<ol>
+				<li value="1">Download the latest Sonobuoy release that matches your operating system: <a href="https://github.com/vmware-tanzu/sonobuoy/releases">https://github.com/vmware-tanzu/sonobuoy/releases</a>.</li>
+				<li>Extract the Sonobuoy binary archive:<p class="source-code"><strong class="bold">$ tar -xvf &lt;RELEASE_TARBALL_NAME&gt;.tar.gz</strong></p></li>
+				<li>Move the<a id="_idIndexMarker432"/> Sonobuoy binary archive to your <strong class="source-inline">bin</strong> folder or to any directory on the <strong class="source-inline">PATH</strong> system.</li>
+			</ol>
+			<h3>Running Sonobuoy</h3>
+			<p>Apply the following <a id="_idIndexMarker433"/>instructions to run Sonobuoy and then view the conformance test results:</p>
+			<ol>
+				<li value="1">Execute the following command to let Sonobuoy run the conformance tests and wait until it finishes:<p class="source-code"><strong class="bold">$ sonobuoy run --wait --mode quick</strong></p></li>
+				<li>To get the test results, execute the following commands:<p class="source-code"><strong class="bold">$ sonobuoy_results=$(sonobuoy retrieve)</strong></p><p class="source-code"><strong class="bold">$ sonobuoy results $sonobuoy_results</strong></p></li>
+				<li>After you finish, you can delete Sonobuoy and it will remove its namespace and any resources that it created for testing purposes:<p class="source-code"><strong class="bold">$ sonobuoy delete --wait</strong></p></li>
+			</ol>
+			<p>To ensure that your<a id="_idIndexMarker434"/> Kubernetes cluster is in a conformance state, we recommend automating execution of the Sonobuoy tests to run periodically on a daily basis or following the deployment of infrastructure and Kubernetes system-level changes. We do not recommend more frequent and continuous runs of Sonobuoy tests to avoid the excessive load this could bring to the cluster. </p>
+			<h2 id="_idParaDest-122"><a id="_idTextAnchor149"/>Scanning cluster security configuration</h2>
+			<p>After<a id="_idIndexMarker435"/> completing the cluster conformance testing, you need to scan the configurations and security settings and ensure that there are no insecure or high-risk configurations. To achieve this, we will use <strong class="source-inline">kube-scan</strong>, which is a security scanning tool that scans cluster workloads and the runtime settings and assigns each one a rating from 0 (no risk) to 10 (high risk). <strong class="source-inline">kube-scan</strong> utilizes a scoring formula based on the Kubernetes Common Configuration Scoring System framework.</p>
+			<h3>Installing kube-scan</h3>
+			<p><strong class="source-inline">kube-scan</strong> is installed<a id="_idIndexMarker436"/> as a Kubernetes deployment in your cluster by using the following <strong class="source-inline">kubectl</strong> command:</p>
+			<p class="source-code">$ kubectl apply -f https://raw.githubusercontent.com/octarinesec/kube-scan/master/kube-scan.yaml</p>
+			<p><strong class="source-inline">kube-scan</strong> scans the cluster when it starts, and will periodically scan it once every day. This way, you can enforce rescanning by restarting the <strong class="source-inline">kube-scan</strong> pod.</p>
+			<h3>Running kube-scan</h3>
+			<p>Apply the following<a id="_idIndexMarker437"/> instructions to run <strong class="source-inline">kube-scan</strong> and view the scanning results:</p>
+			<ol>
+				<li value="1">To access the <strong class="source-inline">kube-scan</strong> results, you need to port forward the <strong class="source-inline">kube-scan</strong> service to port <strong class="source-inline">8080</strong> on your local machine:<p class="source-code"><strong class="bold">$ kubectl port-forward --namespace kube-scan svc/kube-scan-ui 8080:80</strong></p></li>
+				<li>Then, open <strong class="source-inline">http://localhost:8080</strong> in your browser to view the scan results.</li>
+				<li>Once you finish, you can delete <strong class="source-inline">kube-scan</strong> and its resources by using the following <strong class="source-inline">kubectl</strong> command:<p class="source-code"><strong class="bold">$ kubectl delete -f https://raw.githubusercontent.com/octarinesec/kube-scan/master/kube-scan.yaml</strong></p></li>
+			</ol>
+			<p>We recommend deploying <strong class="source-inline">kube-scan</strong> to your cluster and automating the scan result validation to run periodically on a daily basis or after deploying infrastructure and Kubernetes system-level changes. We do not recommend more frequent and continuous runs of Sonobuoy tests to avoid the excessive load this could bring to the cluster.</p>
+			<h2 id="_idParaDest-123"><a id="_idTextAnchor150"/>Executing the CIS Kubernetes benchmark</h2>
+			<p>In the final security <a id="_idIndexMarker438"/>validation stage of the cluster, you should test whether the cluster is deployed and configured according to the Kubernetes benchmark developed by the CIS.</p>
+			<p>To execute this test, you will use <strong class="source-inline">kube-bench</strong>, which is a tool that is used to run CIS Kubernetes benchmark checks.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">For managed Kubernetes services such as EKS, you cannot use <strong class="source-inline">kube-bench</strong> to inspect the master nodes as you do not have access to them. However, it is still possible to use <strong class="source-inline">kube-bench</strong> to inspect the worker nodes.</p>
+			<h3>Installing kube-bench</h3>
+			<p>There are multiple ways to <a id="_idIndexMarker439"/>install <strong class="source-inline">kube-bench</strong>, one of them is to use a Docker container to copy the binary and the configurations to the host machine. The following command will install it:</p>
+			<p class="source-code">$ docker run --rm -v `pwd`:/host aquasec/kube-bench:latest install</p>
+			<h3>Running kube-bench</h3>
+			<p>Execute <strong class="source-inline">kube-bench</strong> against a <a id="_idIndexMarker440"/>Kubernetes node, and specify the Kubernetes version, such as 1.14 or any other supported version:</p>
+			<p class="source-code">$ kube-bench node --version 1.14</p>
+			<p>Instead of specifying a Kubernetes version, you can use a CIS Benchmark version, such as the following:</p>
+			<p class="source-code">$ kube-bench node --benchmark cis-1.5</p>
+			<p>And for EKS, you are allowed to run these specific targets: <strong class="source-inline">master</strong>, <strong class="source-inline">node</strong>, <strong class="source-inline">etcd</strong>, and <strong class="source-inline">policies</strong>:</p>
+			<p class="source-code">$ kube-bench --benchmark cis-1.5 run --targets master,node,etcd,policies</p>
+			<p>The outputs are either <strong class="source-inline">PASS</strong>; <strong class="source-inline">FAIL</strong>, which indicate that the test is completed; <strong class="source-inline">WARN</strong>, which means the test requires manual intervention; <strong class="source-inline">INFO</strong> is an informational output that requires no action.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">We recommend automating the execution of Sonobuoy, <strong class="source-inline">kube-scan</strong>, and <strong class="source-inline">kube-bench</strong> on a daily basis to verify security and compliance for your clusters.</p>
+			<h2 id="_idParaDest-124"><a id="_idTextAnchor151"/>Enabling audit logging</h2>
+			<p>Ensure that you enabled the cluster<a id="_idIndexMarker441"/> audit logs, and also that they are monitored for anomalous or unwanted API calls, especially any authorization failures. For EKS, you need to opt-in to enable these logs and have them streamed to CloudWatch.</p>
+			<p>To enable this, you need to update the Terraform EKS resource in this file, <strong class="source-inline">terraform/modules/eks-cp/main.tf</strong>, and add the following line of code:</p>
+			<p class="source-code">enabled_cluster_log_types = var.cluster_log_types</p>
+			<p>After applying this Terraform change to the EKS configuration, the cluster audit logs will be streamed to CloudWatch, and you can take it from there and create alerts.</p>
+			<h1 id="_idParaDest-125"><a id="_idTextAnchor152"/>Bonus security tips</h1>
+			<p>These are some general security best practices and tips that did not fit under any of the previous sections. However, I find them to be useful:</p>
+			<ol>
+				<li value="1">Always keep Kubernetes updated to the latest version.</li>
+				<li>Update worker AMIs to the latest version. You have to be cautious because this change could introduce some downtime, especially if you are not using a managed node group.</li>
+				<li>Do not run Docker in Docker or mount the socket in a container.</li>
+				<li>Restrict the use of <strong class="source-inline">hostPath</strong> or, if <strong class="source-inline">hostPath</strong> is necessary, restrict which prefixes can be used and configure the volume as read-only.</li>
+				<li>Set requests and limits for each container to avoid <a id="_idIndexMarker442"/>resource contention and <strong class="bold">Denial of Service</strong> (<strong class="bold">DoS</strong>) attacks.</li>
+				<li>Whenever possible, use an optimized operating system for running containers.</li>
+				<li>Use immutable infrastructure, and automate the rotation of the cluster worker nodes.</li>
+				<li>You should not enable the Kubernetes dashboard.</li>
+				<li>Enable AWS VPC Flow Logs to capture metadata about the traffic flowing through a VPC, and then analyze it further for suspicious activities.</li>
+			</ol>
+			<p>Kubernetes security is a fast-growing domain, and you should keep following the latest guidelines and best practices, and integrate them into your processes and DevSecOps automations.</p>
+			<h1 id="_idParaDest-126"><a id="_idTextAnchor153"/>Deploying the security configurations</h1>
+			<p>The following <a id="_idIndexMarker443"/>instructions will deploy the cluster's Ansible playbook, and it will deploy the security add-ons and configuration to the cluster:</p>
+			<ol>
+				<li value="1">Initialize the Terraform state and select the workspace by running the following commands:<p class="source-code"><strong class="bold">$ cd terraform/packtclusters</strong></p><p class="source-code"><strong class="bold">$ terraform workspace select prod1</strong></p></li>
+				<li>Retrieve and configure <strong class="source-inline">kubeconfig</strong> for the target cluster:<p class="source-code"><strong class="bold">$ aws eks --region $(terraform output aws_region) update-kubeconfig --name $(terraform output cluster_full_name)</strong></p></li>
+				<li>Execute the <a id="_idIndexMarker444"/>Ansible playbook:<p class="source-code"><strong class="bold">$ source ~/ansible/bin/activate</strong></p><p class="source-code"><strong class="bold">$ ansible-playbook -i \</strong></p><p class="source-code"><strong class="bold">../../ansible/inventories/packtclusters/ \</strong></p><p class="source-code"><strong class="bold">-e "worker_iam_role_arn=$(terraform output worker_iam_role_arn) \</strong></p><p class="source-code"><strong class="bold">cluster_name=$(terraform output cluster_full_name)</strong></p><p class="source-code"><strong class="bold">aws_default_region=$(terraform output aws_region)" \</strong></p><p class="source-code"><strong class="bold">../../ansible/cluster.yaml</strong></p></li>
+				<li>You will get the following output following successful Ansible execution:<div id="_idContainer031" class="IMG---Figure"><img src="Images/B16192_06_002.jpg" alt="Figure 6.2 – Ansible execution output&#13;&#10;" width="1148" height="71"/></div><p class="figure-caption">Figure 6.2 – Ansible execution output</p></li>
+				<li>Execute the following <strong class="source-inline">kubectl</strong> command to get all the pods running in the cluster. This will ensure that the cluster configuration is applied successfully:<p class="source-code"><strong class="bold">$ kubectl get pods --all-namespaces</strong></p><p>You should get the following output, which lists all the pods running in the cluster including the new pods for the security add-ons:</p></li>
+			</ol>
+			<div>
+				<div id="_idContainer032" class="IMG---Figure">
+					<img src="Images/B16192_06_003.jpg" alt="Figure 6.3 – List of all pods&#13;&#10;" width="1273" height="487"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 6.3 – List of all pods</p>
+			<p>Now you have completed applying the cluster configuration as per the previous instructions. And your cluster has all of the security add-ons and configuration deployed and ready for serving production.</p>
+			<h1 id="_idParaDest-127"><a id="_idTextAnchor154"/>Destroying the cluster</h1>
+			<p>First, you<a id="_idIndexMarker445"/> should delete the <strong class="source-inline">ingress-nginx</strong> service to instruct AWS to destroy the NLB associated with the ingress controller. We need this step because Terraform will fail to destroy this NLB because it is created by Kubernetes:</p>
+			<p class="source-code">$ kubectl -n nginx-ingress destroy svc nginx-ingress</p>
+			<p>Then, you can follow the rest of the instructions in the <em class="italic">Destroying the network and cluster infrastructure</em> section in <a href="B16192_03_Final_PG_ePub.xhtml#_idTextAnchor073"><em class="italic">Chapter 3</em></a>, <em class="italic">Provisioning Kubernetes Clusters Using AWS and Terraform</em>, to destroy the Kubernetes cluster and all related AWS resources. Please ensure that the resources are destroyed in the following order:</p>
+			<ol>
+				<li value="1">Kubernetes cluster <strong class="source-inline">packtclusters</strong> resources</li>
+				<li>Cluster VPC resources</li>
+				<li>Terraform shared state resources</li>
+			</ol>
+			<p>By executing the previous steps, you should have all Kubernetes and AWS infrastructure resources destroyed and cleaned up, ready for the hands-on practice in the next chapter.</p>
+			<h1 id="_idParaDest-128"><a id="_idTextAnchor155"/>Summary</h1>
+			<p>In this chapter, you have learned about Kubernetes security best practices, and learned how to apply an end-to-end security approach to the cluster's infrastructure, network, containers, apps, secrets, apps, and the workload's runtime. You also learned how to apply and validate security compliance checks and tests. You developed all of the required templates and configuration as code for these best practices, controllers, and add-ons with Ansible and Terraform.</p>
+			<p>You deployed Kubernetes add-ons and controllers to provide essential services such as <strong class="source-inline">kube2iam</strong>, Cert-Manager, Sealed Secrets, and Falco, in addition to tuning Kubernetes-native security features such as pod security policies, network policies, and RBAC.</p>
+			<p>You acquired a solid knowledge of Kubernetes security in this chapter, but you should do a detailed evaluation of your cluster security requirements and take further action to deploy any extra tools and configurations that may be required.</p>
+			<p>In the next chapter, you will learn in detail about Kubernetes observability, and the monitoring and logging of best practices, tools, add-ons, and configurations that you need to deploy and optimize for production-grade clusters.</p>
+			<h1 id="_idParaDest-129"><a id="_idTextAnchor156"/>Further reading</h1>
+			<p>You can refer to the following links for more information on the topics covered in this chapter:</p>
+			<ul>
+				<li><em class="italic">Getting Started with Kubernetes – Third Edition</em> (<em class="italic">Chapter 14</em>, <em class="italic">Hardening Kubernetes</em>): <a href="https://www.packtpub.com/virtualization-and-cloud/getting-started-kubernetes-third-edition">https://www.packtpub.com/virtualization-and-cloud/getting-started-kubernetes-third-edition</a></li>
+				<li><em class="italic">Mastering Kubernetes – Second Edition</em> (<a href="B16192_05_Final_PG_ePub.xhtml#_idTextAnchor118"><em class="italic">Chapter 5</em></a>, <em class="italic">Configuring Kubernetes Security, Limits, and Accounts</em>): <a href="https://www.packtpub.com/application-development/mastering-kubernetes-second-edition">https://www.packtpub.com/application-development/mastering-kubernetes-second-edition</a></li>
+				<li><em class="italic">Learn Kubernetes Security</em>: <a href="https://www.packtpub.com/security/learn-kubernetes-security">https://www.packtpub.com/security/learn-kubernetes-security</a></li>
+			</ul>
+		</div>
+	</div></body></html>

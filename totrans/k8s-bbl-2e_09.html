@@ -1,0 +1,869 @@
+<html><head></head><body>
+  <div class="Basic-Text-Frame" id="_idContainer175">
+    <h1 class="chapterNumber">9</h1>
+    <h1 class="chapterTitle" id="_idParaDest-343">Persistent Storage in Kubernetes</h1>
+    <p class="normal">In the previous chapters, we learned about Kubernetes’ key concepts, and this chapter is going to be the last one about that. So far, we’ve discovered that Kubernetes is about representing a desired state for all the traditional IT layers by creating an object in its <code class="inlineCode">etcd</code> datastore that will be converted into actual computing resources within your clusters.</p>
+    <p class="normal">This chapter will focus on persistent storage for stateful applications. As with any other resource abstraction, this will be another set of objects that we will master to get persistent storage on your clusters. Persistent storage is achieved in Kubernetes by using the <code class="inlineCode">PersistentVolume</code> resource type, which has its own mechanics. Honestly, these can be relatively difficult to approach at first, but we are going to discover all of them and cover them in depth!</p>
+    <p class="normal">In this chapter, we’re going to cover the following main topics:</p>
+    <ul>
+      <li class="bulletList">Why use persistent storage?</li>
+      <li class="bulletList">Understanding how to mount <code class="inlineCode">PersistentVolume</code> to your Pod</li>
+      <li class="bulletList">Understanding the life cycle of the <code class="inlineCode">PersistentVolume</code> object in Kubernetes</li>
+      <li class="bulletList">Understanding static and dynamic <code class="inlineCode">PersistentVolume</code> provisioning</li>
+      <li class="bulletList">Advanced storage topics</li>
+    </ul>
+    <h1 class="heading-1" id="_idParaDest-344">Technical requirements</h1>
+    <ul>
+      <li class="bulletList">A working Kubernetes cluster (either local or cloud-based)</li>
+      <li class="bulletList">A working <code class="inlineCode">kubectl</code> CLI configured to communicate with the cluster</li>
+    </ul>
+    <p class="normal">If you do not meet these technical requirements, you can follow <em class="chapterRef">Chapter 2</em>, <em class="italic">Kubernetes Architecture – from Container Images to Running Pods</em>, and <em class="chapterRef">Chapter 3</em>,<em class="italic"> Installing Your Kubernetes Cluster</em>, to get these two prerequisites.</p>
+    <p class="normal">You can download the latest code samples for this chapter from the official GitHub repository at <a href="https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter09"><span class="url">https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter09</span></a>.</p>
+    <h1 class="heading-1" id="_idParaDest-345">Why use persistent storage?</h1>
+    <p class="normal">Storage is an<a id="_idIndexMarker843"/> important resource within the IT world, as it provides a logical way<a id="_idIndexMarker844"/> to <strong class="keyWord">create</strong>, <strong class="keyWord">read</strong>, <strong class="keyWord">update</strong>, and <strong class="keyWord">delete</strong> (<strong class="keyWord">CRUD</strong>) information ranging from employee payslips in a PDF file format to petabytes of healthcare records. While storage is a key element in providing relevant information to the users, containers and microservices should be stateless. In other words, no information saved within a running container will be available when rescheduled or moved to a different cluster. The same goes for microservices; the data component should be decoupled, allowing the microservice to stay micro and not care about the data state and availability when being rescheduled.</p>
+    <p class="normal">So, where do we save the application data? In any sort of datastore, and from a business continuity perspective, if the related datastore runs on the same Kubernetes cluster as the microservices, it should have an application-aware replication mechanism. But remember, Kubernetes is a resource orchestrator that will act on the desired state you have defined for your application. When you’re configuring your Pods, you have the opportunity to define the storage component to be used, providing your containers with a way to create, read, update, and delete data. Let’s explore the different options Kubernetes has to offer to persist data.</p>
+    <h2 class="heading-2" id="_idParaDest-346">Introducing Volumes</h2>
+    <p class="normal">The first layer<a id="_idIndexMarker845"/> of storage abstraction is to access Kubernetes objects and mount them within a container like a data volume. This can be done for:</p>
+    <ul>
+      <li class="bulletList">A ConfigMap</li>
+      <li class="bulletList">A Secret</li>
+      <li class="bulletList">A ServiceAccount token (identical to a Secret)</li>
+    </ul>
+    <p class="normal">This allows an application team to decouple the configuration of a microservice from the container or the<a id="_idIndexMarker846"/> deployment definition. If we consider the lifetime of an application, the credentials, certificates, or tokens to external services might need to be refreshed or a configuration parameter might need to be updated. We don’t want these to be hardcoded in the deployment manifests or the container images for obvious security reasons.</p>
+    <p class="normal">Let’s have a look at a<a id="_idIndexMarker847"/> configMap example with the manifest <code class="inlineCode">nginx-configmap.yaml</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># nginx-configmap.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ConfigMap</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-hello</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">test</span>
+<span class="hljs-attr">immutable:</span> <span class="hljs-literal">false</span>
+<span class="hljs-attr">data:</span>
+  <span class="hljs-attr">hello1.html:</span> <span class="hljs-string">|</span>
+    <span class="hljs-string">&lt;html&gt;</span>
+      <span class="hljs-string">hello</span> <span class="hljs-string">world</span> <span class="hljs-number">1</span>
+    <span class="hljs-string">&lt;/html&gt;</span>
+  <span class="hljs-attr">hello2.html:</span> <span class="hljs-string">|</span>
+    <span class="hljs-string">&lt;html&gt;</span>
+      <span class="hljs-string">hello</span> <span class="hljs-string">world</span> <span class="hljs-number">2</span>
+    <span class="hljs-string">&lt;/html&gt;</span>
+</code></pre>
+    <p class="normal">This <code class="inlineCode">ConfigMap</code> has two definitions for two different files, which we will mount within the NGINX Pod with the manifest <code class="inlineCode">nginx-pod.yaml</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># nginx-pod.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-hello</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">test</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">nginx:1.14.2</span>
+      <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+      <span class="hljs-attr">volumeMounts:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-hello</span>
+          <span class="hljs-attr">mountPath:</span> <span class="hljs-string">"/usr/share/nginx/html/hello"</span>
+  <span class="hljs-attr">volumes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-hello</span>
+      <span class="hljs-attr">configMap:</span>
+        <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-hello</span>
+</code></pre>
+    <p class="normal">Let’s apply<a id="_idIndexMarker848"/> these two manifests:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f nginx-configmap.yaml
+configmap/nginx-hello created
+<span class="hljs-con-meta">$ </span>kubectl apply -f nginx-pod.yaml
+pod/nginx-hello created
+</code></pre>
+    <p class="normal">Let’s verify the status of the two objects:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pod,cm
+NAME              READY   STATUS    RESTARTS   AGE
+pod/nginx-hello   1/1     Running   0          7m26s
+NAME                         DATA   AGE
+configmap/kube-root-ca.crt   1      7d17h
+configmap/nginx-hello        2      7m31s
+</code></pre>
+    <p class="normal">Verify the files are available within the folder <code class="inlineCode">/usr/share/nginx/hello</code> that we provided as a mount path:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl <span class="hljs-con-built_in">exec</span> -t pod/nginx-hello -- <span class="hljs-con-built_in">ls</span> -al /usr/share/nginx/html/hello/
+total 12
+...&lt;removed for brevity&gt;...
+lrwxrwxrwx 1 root root   18 Sep  7 21:19 hello1.html -&gt; ..data/hello1.html
+lrwxrwxrwx 1 root root   18 Sep  7 21:19 hello2.html -&gt; ..data/hello2.html
+</code></pre>
+    <p class="normal">Let’s verify that the data is being served by NGINX via a <code class="inlineCode">port-forward</code> to avoid setting up a service:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl port-forward nginx-hello 8080:80
+Forwarding from 127.0.0.1:8080 -&gt; 80
+Forwarding from [::1]:8080 -&gt; 80
+</code></pre>
+    <p class="normal">In a second terminal, you can then <code class="inlineCode">curl</code> the two URLs:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>curl 127.0.0.1:8080/hello/hello1.html
+&lt;html&gt;
+  hello world 1
+&lt;/html&gt;
+<span class="hljs-con-meta">$ </span>curl 127.0.0.1:8080/hello/hello2.html
+&lt;html&gt;
+  hello world 2
+&lt;/html&gt;
+</code></pre>
+    <p class="normal">While this is <a id="_idIndexMarker849"/>a great start, one limitation of these objects is the amount of data you can store. Since it depends on the <code class="inlineCode">etcd</code> datastore, to avoid performance issues, the limitation is 1.5 MB (refer to <a href="https://etcd.io/docs/v3.5/dev-guide/limit"><span class="url">https://etcd.io/docs/v3.5/dev-guide/limit</span></a>). So, the next set of objects will allow your application to store much more data, in fact, as much data as the system hosting those volume objects can.</p>
+    <p class="normal">Let’s consider a Kubernetes cluster with two worker nodes on which Pods can be scheduled, and explore the following five types of volumes:</p>
+    <ul>
+      <li class="bulletList">An <code class="inlineCode">emptyDir</code></li>
+      <li class="bulletList">A <code class="inlineCode">hostPath</code></li>
+      <li class="bulletList">A local volume</li>
+      <li class="bulletList">A <strong class="keyWord">Fiber Channel</strong> (<strong class="keyWord">FC</strong>) block disk</li>
+      <li class="bulletList">A <strong class="keyWord">Network File System</strong> (<strong class="keyWord">NFS</strong>) volume export</li>
+    </ul>
+    <p class="normal">The<a id="_idIndexMarker850"/> first <a id="_idIndexMarker851"/>three types, <code class="inlineCode">emptyDir</code>, <code class="inlineCode">hostPath</code>, and local volumes, have two major limitations:</p>
+    <ul>
+      <li class="bulletList">They are limited to the disk space available on the worker node they are provisioned on.</li>
+      <li class="bulletList">They are bound to the node on which the Pod will be deployed. If your Pod is provisioned on worker node 1, the data will only be stored on worker node 1.</li>
+    </ul>
+    <p class="normal">These volume types could potentially lead to a degradation of service or worse, like a split-brain scenario. If worker node 1 becomes unhealthy, triggering a rescheduling of the Pod to worker node 2, the application will start without its data and could lead to a major outage.</p>
+    <p class="normal">Note that some applications have a native replication engine. A typical deployment for such an application would have two replicas running and creating a <code class="inlineCode">hostPath</code> volume on each node. In this scenario, if one worker node becomes unhealthy, then the application becomes degraded but only from a high availability and performance perspective.</p>
+    <p class="normal">Being external <a id="_idIndexMarker852"/>to any of the compute resources of your Kubernetes cluster, the last two types, FC block disk and an NFS volume, address the above weaknesses but introduce a bit more complexity. While the first three types of volumes do not require you to interact with your storage administrators, the last two do. Without getting into too many details, your storage administrators will have:</p>
+    <ul>
+      <li class="bulletList">To <a id="_idIndexMarker853"/>provision a <strong class="keyWord">Logical Unit Number</strong> (<strong class="keyWord">LUN</strong> – the FC block disk) on<a id="_idIndexMarker854"/> their <strong class="keyWord">Storage Area Network</strong> (<strong class="keyWord">SAN</strong>) connected via an FC fabric to your Kubernetes worker nodes and allow access via a zoning configuration.</li>
+      <li class="bulletList">To provision a data space <a id="_idIndexMarker855"/>on <strong class="keyWord">Network Attached Storage</strong> (<strong class="keyWord">NAS</strong>) connected to the corporate network and reachable by your Kubernetes worker nodes and allow access via an export policy.</li>
+    </ul>
+    <p class="normal">Note that testing these two types of volumes requires specialized equipment with a nontrivial setup, although NAS is more and more popular within home labs. However, from a Kubernetes standpoint, these volumes can be configured as easily as with the configMap example. Here are the modified versions of the NGINX Pod definition:</p>
+    <ul>
+      <li class="bulletList">For an FC volume (<code class="inlineCode">nginx-pod-fiberchannel.yaml</code>):
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-string">...</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">nginx:1.14.2</span>
+      <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+      <span class="hljs-attr">volumeMounts:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">fc-vol</span>
+          <span class="hljs-attr">mountPath:</span> <span class="hljs-string">"/usr/share/nginx/html/hello"</span>
+  <span class="hljs-attr">volumes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">fc-vol</span>
+      <span class="hljs-attr">fc:</span>
+        <span class="hljs-attr">targetWWNs:</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-string">500a0982991b8dc5</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-string">500a0982891b8dc5</span>
+        <span class="hljs-attr">lun:</span> <span class="hljs-number">2</span>
+        <span class="hljs-attr">fsType:</span> <span class="hljs-string">ext4</span>
+        <span class="hljs-attr">readOnly:</span> <span class="hljs-literal">true</span>
+</code></pre>
+      </li>
+    </ul>
+    <p class="normal-one">The <code class="inlineCode">fc</code> part is where your SAN and LUN must be configured.</p>
+    <ul>
+      <li class="bulletList">For an NFS volume (<code class="inlineCode">nginx-pod-nfs-volume.yaml</code>):
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-string">...</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">nginx:1.14.2</span>
+      <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+      <span class="hljs-attr">volumeMounts:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nfs-volume</span>
+          <span class="hljs-attr">mountPath:</span> <span class="hljs-string">"/usr/share/nginx/html/hello"</span>
+  <span class="hljs-attr">volumes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nfs-volume</span>
+      <span class="hljs-attr">nfs:</span>
+        <span class="hljs-attr">server:</span> <span class="hljs-string">nfs.corp.mycompany.org</span>
+        <span class="hljs-attr">path:</span> <span class="hljs-string">/k8s-nginx-hello</span>
+        <span class="hljs-attr">readOnly:</span> <span class="hljs-literal">true</span>
+</code></pre>
+      </li>
+    </ul>
+    <p class="normal-one">The<a id="_idIndexMarker856"/> <code class="inlineCode">nfs</code> part is where your NAS and exported volume must be configured.</p>
+    <p class="normal">Please note the following points:</p>
+    <ul>
+      <li class="bulletList">These two types of volumes, FC block disk and NFS, will be attached to the nodes as required by the Pod presence.</li>
+      <li class="bulletList">While these two types of volumes can solve a series of challenges, they represent an anti-pattern to the decoupling of configurations and resources.</li>
+      <li class="bulletList">While the configMap is mounted as a volume with the two HTML files on the container, the other types of volumes will require a different approach to have the data injected.</li>
+      <li class="bulletList">There are other volume types available: <a href="https://kubernetes.io/docs/concepts/storage/volumes/"><span class="url">https://kubernetes.io/docs/concepts/storage/volumes/</span></a>.</li>
+    </ul>
+    <p class="normal">The concept of volume within Kubernetes is an amazing starting point for deploying stateful applications. However, with the limitation of some, the complexity of others, and the storage knowledge it requires, it seems to be rather difficult to scale hundreds or thousands of microservices with such object definition. Thanks to an additional layer of abstraction, Kubernetes provides an agnostic approach to consume storage at scale with the usage of the <code class="inlineCode">PersistentVolume</code> object, which we’ll cover in the next section.</p>
+    <h2 class="heading-2" id="_idParaDest-347">Introducing PersistentVolumes</h2>
+    <p class="normal">Just like <a id="_idIndexMarker857"/>the <code class="inlineCode">Pod</code> or <code class="inlineCode">ConfigMap</code>, <code class="inlineCode">PersistentVolume</code> is a resource type that is exposed through <code class="inlineCode">kube-apiserver</code>; you can create, update, and delete <strong class="keyWord">persistent volumes</strong> (<strong class="keyWord">PVs</strong>) using YAML and <code class="inlineCode">kubectl</code> just like any other Kubernetes objects.</p>
+    <p class="normal">The following command will demonstrate how to list the <code class="inlineCode">PersistentVolume</code> resource type currently provisioned within your Kubernetes cluster:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get persistentvolume
+No resource found
+</code></pre>
+    <p class="normal">The <code class="inlineCode">persistentvolume</code> object is also accessible with the plural form of <code class="inlineCode">persistentvolumes</code> along with the alias of <code class="inlineCode">pv</code>. The following three commands are essentially the same:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get persistentvolume
+No resource found
+<span class="hljs-con-meta">$ </span>kubectl get persistentvolumes
+No resource found
+<span class="hljs-con-meta">$ </span>kubectl get pv
+No resource found
+</code></pre>
+    <p class="normal">You’ll find that the <code class="inlineCode">pv</code> alias is very commonly used in the Kubernetes world, and a lot of people refer to PVs as simply <code class="inlineCode">pv</code>, so be aware of that. As of now, no <code class="inlineCode">PersistentVolume</code> object has been created within our Kubernetes cluster, and that is why we don’t see any resource listed in the output of the preceding command.</p>
+    <p class="normal"><code class="inlineCode">PersistentVolume</code> is the object and, essentially, represents a piece of storage that you can attach to your Pod. That piece of storage is referred to as a <em class="italic">persistent</em> one because it is not supposed to be tied to the lifetime of a Pod.</p>
+    <p class="normal">Indeed, as mentioned in <em class="chapterRef">Chapter 5</em>, <em class="italic">Using Multi-Container Pods and Design Patterns</em>, Kubernetes Pods use the notion of volumes. Additionally, we discovered the <code class="inlineCode">emptyDir</code> volumes, which initiate an empty directory that your Pods can share. It also defines a path within the worker node filesystem that will be exposed to your Pods. Both volumes were supposed to be attached to the life cycle of the Pod. This means that once the Pod is destroyed, the data stored within the volumes will be destroyed as well.</p>
+    <p class="normal">However, sometimes, you don’t want the volume to be destroyed. You just want it to have its life cycle to keep both the volume and its data alive even if the Pod fails. That’s where <code class="inlineCode">PersistentVolumes</code> come into play: essentially, they are volumes that are not tied to the life cycle of a Pod. Since they are a resource type just like the Pods themselves, they can live on their own! In essence, PVs ensure that your storage remains available beyond the Pod’s existence, which is crucial for maintaining data integrity in <a id="_idIndexMarker858"/>stateful applications. Now, let’s break down <code class="inlineCode">PersistentVolume</code>s objects: they consist of two key elements – a backend technology (the <code class="inlineCode">PersistentVolume</code> type) and an <a id="_idIndexMarker859"/>access mode (like <strong class="keyWord">ReadWriteOnce</strong> (<strong class="keyWord">RWO</strong>)). Understanding these concepts is essential for effectively utilizing PVs within your Kubernetes environment.</p>
+    <div class="note">
+      <p class="normal">Bear in mind that <code class="inlineCode">PersistentVolumes</code> objects are just entries within the <code class="inlineCode">etcd</code> datastore, and they are not actual disks on their own.</p>
+      <p class="normal"><code class="inlineCode">PersistentVolume</code> is just a kind of pointer within Kubernetes to a piece of storage, such as an NFS, a disk, an Amazon <strong class="keyWord">Elastic Block Store</strong> (<strong class="keyWord">EBS</strong>) volume, and more. This is so that you can access these technologies from within Kubernetes and in a Kubernetes way.</p>
+    </div>
+    <p class="normal">In the next section, we’ll begin by explaining what <code class="inlineCode">PersistentVolume</code> types are.</p>
+    <h2 class="heading-2" id="_idParaDest-348">Introducing PersistentVolume types</h2>
+    <p class="normal">As you <a id="_idIndexMarker860"/>already know, the simplest Kubernetes setup consists of a simple <code class="inlineCode">minikube</code> installation, whereas the most complex Kubernetes setup can be made of dozens of servers on a massively scalable infrastructure. All of these different setups will forcibly have different ways in which to manage persistent storage. For example, the three well-known public cloud providers have a lot of different solutions. Let’s name a few, as follows:</p>
+    <ul>
+      <li class="bulletList">Amazon EBS volumes</li>
+      <li class="bulletList">Amazon <strong class="keyWord">Elastic File System</strong> (<strong class="keyWord">EFS</strong>) filesystems</li>
+      <li class="bulletList">Google GCE <strong class="keyWord">Persistent Disk</strong> (<strong class="keyWord">PD</strong>)</li>
+      <li class="bulletList">Microsoft Azure disks</li>
+    </ul>
+    <p class="normal">These solutions have their own design and set of principles, along with their own logic and mechanics. Kubernetes was built with the principle that all of these setups should be abstracted using just one object to abstract all of the different technologies; that single object is the <code class="inlineCode">PersistentVolume</code> resource type. The <code class="inlineCode">PersistentVolume</code> resource type is the object that is going to be attached to a running Pod. Indeed, a Pod is a Kubernetes resource and does not know what an EBS or a PD is; Kubernetes Pods only play well with <code class="inlineCode">PersistentVolumes</code>, which is also a Kubernetes resource.</p>
+    <p class="normal">Whether your Kubernetes cluster is running on Google GKE or Amazon EKS, or whether it is a single minikube cluster on your local machine has no importance. When you wish to manage persistent storage, you are going to create, use, and deploy <code class="inlineCode">PersistentVolumes</code> objects, and then bind them to your Pods!</p>
+    <p class="normal">Here are some <a id="_idIndexMarker861"/>of the backend technologies supported by Kubernetes out of the box:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">csi</code>: <strong class="keyWord">Container Storage Interface</strong> (<strong class="keyWord">CSI</strong>)</li>
+      <li class="bulletList"><code class="inlineCode">fc</code>: FC storage</li>
+      <li class="bulletList"><code class="inlineCode">iscsi</code>: SCSI over IP</li>
+      <li class="bulletList"><code class="inlineCode">local</code>: Using local storage</li>
+      <li class="bulletList"><code class="inlineCode">hostPath</code>: HostPath volumes</li>
+      <li class="bulletList"><code class="inlineCode">nfs</code>: Regular network file storage</li>
+    </ul>
+    <p class="normal">The preceding list is not exhaustive: Kubernetes is extremely versatile and can be used with many storage solutions that can be abstracted as <code class="inlineCode">PersistentVolume</code> objects in your cluster.</p>
+    <p class="normal">Please note that in recent versions of Kubernetes, several <code class="inlineCode">PersistentVolume</code> types have been deprecated or removed, indicating a shift in how storage is managed within Kubernetes environments. This change is part of the ongoing evolution of Kubernetes to streamline its APIs and improve compatibility with modern storage solutions.</p>
+    <p class="normal">For example, the following <code class="inlineCode">PersistentVolume</code> types are either removed or deprecated in Kubernetes 1.29 onwards:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">awsElasticBlockStore</code> – Amazon EBS</li>
+      <li class="bulletList"><code class="inlineCode">azureDisk</code> – Azure Disk</li>
+      <li class="bulletList"><code class="inlineCode">azureFile</code> – Azure File</li>
+      <li class="bulletList"><code class="inlineCode">portworxVolume</code> – Portworx volume</li>
+      <li class="bulletList"><code class="inlineCode">flexVolume</code> – FlexVolume</li>
+      <li class="bulletList"><code class="inlineCode">vsphereVolume</code> – vSphere VMDK volume</li>
+      <li class="bulletList"><code class="inlineCode">cephfs</code> – CephFS volume</li>
+      <li class="bulletList"><code class="inlineCode">cinder</code></li>
+    </ul>
+    <p class="normal">These changes reflect a broader trend toward standardized storage interfaces and an emphasis on more portable, cloud-agnostic solutions. For detailed guidance and updated information on PVs and supported types, you can refer to the official Kubernetes documentation at <span class="url">https://kubernetes.io/docs/concepts/storage/persistent-volumes/#types-of-persistent-volumes</span>.</p>
+    <h2 class="heading-2" id="_idParaDest-349">Benefits brought by PersistentVolume</h2>
+    <p class="normal">PVs are <a id="_idIndexMarker862"/>an essential component in Kubernetes when managing stateful applications. Unlike ephemeral storage, PVs ensure data persists beyond the life cycle of individual Pods, making them ideal for applications requiring data retention and consistency. These storage resources bring flexibility and reliability to the Kubernetes ecosystem, enhancing both performance and resilience.</p>
+    <p class="normal">There are three major benefits of <code class="inlineCode">PersistentVolume</code>:</p>
+    <ul>
+      <li class="bulletList">A PV in Kubernetes continues to exist independently of the Pod that uses it. This means that if you delete or recreate a Pod attached to a <code class="inlineCode">PersistentVolume</code>, the data stored on that volume remains intact. The data’s persistence depends on the reclaim policy of the <code class="inlineCode">PersistentVolume</code>: with a retain policy, the data stays available for future use, while a delete policy removes both the volume and its data when the Pod is deleted. Thus, you can manage your Pods without worrying about losing data stored on <code class="inlineCode">PersistentVolumes</code>.</li>
+      <li class="bulletList">When a Pod crashes, the <code class="inlineCode">PersistentVolume</code> object will survive the fault and not be removed from the cluster.</li>
+      <li class="bulletList"><code class="inlineCode">PersistentVolume</code> is cluster-wide; this means that it can be attached to any Pod running on any node. (You will learn about restrictions and methods later in this chapter.)</li>
+    </ul>
+    <p class="normal">Bear in mind that these three statements are not always 100% valid. Indeed, sometimes, a <code class="inlineCode">PersistentVolume</code> object can be affected by its underlying technology.</p>
+    <p class="normal">To demonstrate this, let’s consider a <code class="inlineCode">PersistentVolume</code> object that is, for example, a pointer to a <code class="inlineCode">hostPath</code> storage on the compute node. In such a setup, <code class="inlineCode">PersistentVolume</code> won’t be available to any other nodes.</p>
+    <p class="normal">However, if you take <a id="_idIndexMarker863"/>another example, such as an NFS setup, it wouldn’t be the same. Indeed, you can access an NFS from multiple machines at once. Therefore, a <code class="inlineCode">PersistentVolume</code> object that is backed by an NFS would be accessible from several different Pods running on different nodes without much problem. To understand how to make a <code class="inlineCode">PersistentVolume</code> object on several different nodes at a time, we need to consider the concept of access modes, which we’ll be diving into in the next section.</p>
+    <h2 class="heading-2" id="_idParaDest-350">Introducing PersistentVolume access modes</h2>
+    <p class="normal">As the name <a id="_idIndexMarker864"/>suggests, access modes are an option you can set when you create a <code class="inlineCode">PersistentVolume</code> type that will tell Kubernetes how the volume should be mounted.</p>
+    <p class="normal"><code class="inlineCode">PersistentVolumes</code> supports four access modes, as follows:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">ReadWriteOnce</strong> (<strong class="keyWord">RWO</strong>): This <a id="_idIndexMarker865"/>volume allows read/write by only one node at the same time.</li>
+      <li class="bulletList"><strong class="keyWord">ReadOnlyMany</strong> (<strong class="keyWord">ROX</strong>): This<a id="_idIndexMarker866"/> volume allows read-only mode by many nodes at the same time.</li>
+      <li class="bulletList"><strong class="keyWord">ReadWriteMany</strong> (<strong class="keyWord">RWX</strong>): This <a id="_idIndexMarker867"/>volume allows read/write by multiple nodes at the same time.</li>
+      <li class="bulletList"><strong class="keyWord">ReadWriteOncePod</strong>: This<a id="_idIndexMarker868"/> is a new mode introduced recently and is already stable in the Kubernetes 1.29 version. In this access mode, the volume is mountable as read-write by a single Pod. Employ the <code class="inlineCode">ReadWriteOncePod</code> access mode when you want only one Pod throughout the entire cluster to have the capability to read from or write to the <strong class="keyWord">Persistent Volume Claim</strong> (<strong class="keyWord">PVC</strong>).</li>
+    </ul>
+    <p class="normal">It is necessary to set at least one access mode to a <code class="inlineCode">PersistentVolume</code> type, even if said volume supports multiple access modes. Indeed, not all <code class="inlineCode">PersistentVolume</code> types will support all access modes, as shown in the below table.</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_09_01.png"/></figure>
+    <p class="packt_figref">Table 9.1: Access modes supported by different PersistentVolume types (Image source: kubernetes.io/docs/concepts/storage/persistent-volumes)</p>
+    <p class="normal">In Kubernetes, the <a id="_idIndexMarker869"/>access modes of a <code class="inlineCode">PersistentVolume</code> type are closely tied to the underlying storage technology and how it handles data. Here’s why different PV types support specific modes:</p>
+    <p class="normal"><strong class="keyWord">File vs. block storage:</strong></p>
+    <ul>
+      <li class="bulletList">File<a id="_idIndexMarker870"/> storage (like <strong class="keyWord">Network File System</strong> (<strong class="keyWord">NFS</strong>) or <strong class="keyWord">Common Internet File System</strong> (<strong class="keyWord">CIFS</strong>)) allows multiple clients to access the same files concurrently. This is why file storage systems can support a variety of access modes, such as RWO, ROX, and RWX. They are built to handle multi-client access over a network, enabling several nodes to read and write from the same volume without data corruption.</li>
+      <li class="bulletList">Block <a id="_idIndexMarker871"/>storage (like local storage or hostPath) is fundamentally different. Block storage is designed for one client to access at a time because it deals with raw disk sectors rather than files. Concurrent access by multiple clients would lead to data inconsistency or corruption. For this reason, block storage supports only the RWO mode, where a single node can both read and write to the volume.</li>
+    </ul>
+    <p class="normal"><strong class="keyWord">Internal vs. external storage:</strong></p>
+    <ul>
+      <li class="bulletList">hostPath <a id="_idIndexMarker872"/>volumes, which refer to storage on the same node as the workload, are inherently restricted to that node. Since this storage is tied to the physical node, it cannot be accessed by other nodes in the cluster. This makes it only compatible with the RWO mode.</li>
+      <li class="bulletList">NFS or other external storage solutions, on the other hand, are designed to allow access over a network, enabling multiple nodes to share the same storage. This flexibility allows them to support additional modes like RWX.</li>
+    </ul>
+    <p class="normal">Understanding this distinction helps to clarify why some <code class="inlineCode">PersistentVolume</code> types support more flexible access modes, while others are constrained.</p>
+    <p class="normal">Now, let’s create our first <code class="inlineCode">PersistentVolume</code> object.</p>
+    <h2 class="heading-2" id="_idParaDest-351">Creating our first PersistentVolume object</h2>
+    <p class="normal">Let’s<a id="_idIndexMarker873"/> create a <code class="inlineCode">PersistentVolume</code> on the Kubernetes cluster using the declarative approach. Since <code class="inlineCode">PersistentVolume</code>s are more complex resources, it’s highly recommended to avoid using the imperative method. The declarative approach allows you to define and manage resources consistently in YAML files, making it easier to track changes, version control your configurations, and ensure repeatability across different environments. This approach also makes it simpler to manage large or complex resources like <code class="inlineCode">PersistentVolume</code>s, where precise configurations and careful planning are essential.</p>
+    <p class="normal">See the example YAML definition below for creating a <code class="inlineCode">PersistentVolume</code> object:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">PersistentVolume</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">pv-hostpath</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">local</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">storageClassName:</span> <span class="hljs-string">manual</span>
+  <span class="hljs-attr">capacity:</span>
+    <span class="hljs-attr">storage:</span> <span class="hljs-string">1Gi</span>
+  <span class="hljs-attr">accessModes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">ReadWriteOnce</span>
+  <span class="hljs-attr">hostPath:</span>
+    <span class="hljs-attr">path:</span> <span class="hljs-string">"/mnt/data"</span>
+</code></pre>
+    <p class="normal">This is<a id="_idIndexMarker874"/> the simplest form of <code class="inlineCode">PersistentVolume</code>. Essentially, this <code class="inlineCode">YAML</code> file creates a <code class="inlineCode">PersistentVolume</code> entry within the Kubernetes cluster. So, this <code class="inlineCode">PersistentVolume</code> will be a <code class="inlineCode">hostPath</code> type.</p>
+    <div class="note">
+      <p class="normal">The <code class="inlineCode">hostPath</code> type <code class="inlineCode">PersistentVolume</code> is not recommended for production or critical workloads. We are using it here for demonstration purposes only.</p>
+    </div>
+    <p class="normal">Let’s apply the PV configuration to the cluster as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f pv-hostpath.yaml
+persistentvolume/pv-hostpath created
+</code></pre>
+    <p class="normal">It could be a more complex volume, such as a cloud-based disk or an NFS, but in its simplest form, a <code class="inlineCode">PersistentVolume</code> can simply be a <code class="inlineCode">hostPath</code> type on the node running your Pod.</p>
+    <h2 class="heading-2" id="_idParaDest-352">How does Kubernetes PersistentVolumes handle storage?</h2>
+    <p class="normal">As we<a id="_idIndexMarker875"/> learned earlier, the <code class="inlineCode">PersistentVolume</code> resource type is a pointer to a storage location and that can be, for example, a disk, an NFS drive, or a disk volume controlled by a storage operator. All of these different technologies are managed differently. However, fortunately for us, in Kubernetes, they are all represented by the <code class="inlineCode">PersistentVolume</code> object.</p>
+    <p class="normal">Simply put, the <code class="inlineCode">YAML</code> file to create a <code class="inlineCode">PersistentVolume</code> will be a little bit different depending on the backend technology that the <code class="inlineCode">PersistentVolume</code> is backed by. For example, if you want your <code class="inlineCode">PersistentVolume</code> to be a pointer to an NFS share, you have to meet the following two conditions:</p>
+    <ul>
+      <li class="bulletList">The NFS share is already configured and reachable from the Kubernetes nodes.</li>
+      <li class="bulletList">The <code class="inlineCode">YAML</code> file for your <code class="inlineCode">PersistentVolume</code> must include the NFS server details and NFS share information.</li>
+    </ul>
+    <p class="normal">The following YAML definition is a sample for creating a <code class="inlineCode">PersistentVolume</code> using NFS as the backend:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># pv-nfs.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">PersistentVolume</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">pv-nfs</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">capacity:</span>
+    <span class="hljs-attr">storage:</span> <span class="hljs-string">5Gi</span>
+  <span class="hljs-attr">volumeMode:</span> <span class="hljs-string">Filesystem</span>
+  <span class="hljs-attr">accessModes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">ReadWriteOnce</span>
+  <span class="hljs-attr">persistentVolumeReclaimPolicy:</span> <span class="hljs-string">Recycle</span>
+  <span class="hljs-attr">storageClassName:</span> <span class="hljs-string">slow</span>
+  <span class="hljs-attr">mountOptions:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">hard</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">nfsvers=4.1</span>
+  <span class="hljs-attr">nfs:</span>
+    <span class="hljs-attr">path:</span> <span class="hljs-string">/appshare</span>
+    <span class="hljs-attr">server:</span> <span class="hljs-string">nfs.example.com</span>
+</code></pre>
+    <p class="normal">For<a id="_idIndexMarker876"/> a <code class="inlineCode">PersistentVolume</code> to work properly, it needs to be able to link Kubernetes and the actual storage. So, you need to create a piece of storage or provision it outside of Kubernetes and then create the <code class="inlineCode">PersistentVolume</code> entry by including the unique ID of the disk, or the volume, that is backed by a storage technology that is external to Kubernetes. Next, let’s take a closer look at some examples of <code class="inlineCode">PersistentVolume</code> YAML files in the next section.</p>
+    <h2 class="heading-2" id="_idParaDest-353">Creating PersistentVolume with raw block volume</h2>
+    <p class="normal">This <a id="_idIndexMarker877"/>example displays a <code class="inlineCode">PersistentVolume</code> object that is pointing to raw block volume:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># pv-block.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">PersistentVolume</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">pv-block</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">capacity:</span>
+    <span class="hljs-attr">storage:</span> <span class="hljs-string">100Gi</span>
+  <span class="hljs-attr">accessModes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">ReadWriteOnce</span>
+  <span class="hljs-attr">volumeMode:</span> <span class="hljs-string">Block</span>
+  <span class="hljs-attr">persistentVolumeReclaimPolicy:</span> <span class="hljs-string">Retain</span>
+  <span class="hljs-attr">fc:</span>
+    <span class="hljs-attr">targetWWNs:</span> [<span class="hljs-string">"50060e801049cfd1"</span>]
+    <span class="hljs-attr">lun:</span> <span class="hljs-number">0</span>
+    <span class="hljs-attr">readOnly:</span> <span class="hljs-literal">false</span>
+</code></pre>
+    <p class="normal">As you can<a id="_idIndexMarker878"/> see, in this <code class="inlineCode">YAML</code> file, the fc section contains the FC volume details that this <code class="inlineCode">PersistentVolume</code> object is pointing to. The exact raw volume is identified by the <code class="inlineCode">targetWWNs</code> key. That’s pretty much it. With this YAML file, Kubernetes is capable of finding the proper <strong class="keyWord">World Wide Name</strong> (<strong class="keyWord">WWN</strong>) and<a id="_idIndexMarker879"/> maintaining a pointer to it.</p>
+    <p class="normal">Now, let’s discuss a little bit about the provisioning of storage resources.</p>
+    <h2 class="heading-2" id="_idParaDest-354">Can Kubernetes handle the provisioning or creation of the resource itself?</h2>
+    <p class="normal">The fact that you need to create the actual storage resource separately and then create a <code class="inlineCode">PersistentVolume</code> in Kubernetes might be tedious.</p>
+    <p class="normal">Fortunately for us, Kubernetes is also capable of communicating with the <strong class="keyWord">APIs</strong> of your cloud provider or other storage backends in order to create volumes or disks on the fly. There is something <a id="_idIndexMarker880"/>called <strong class="keyWord">dynamic provisioning</strong> that you can use when it comes to managing <code class="inlineCode">PersistentVolume</code>. It makes things a lot simpler when dealing with <code class="inlineCode">PersistentVolume</code> provisioning, but it only works on supported storage backends or cloud providers.</p>
+    <p class="normal">However, this is an advanced topic, so we will discuss it in more detail later in this chapter.</p>
+    <p class="normal">Now that we know how to provision <code class="inlineCode">PersistentVolume</code> objects inside our cluster, we can try to mount them. Indeed, in Kubernetes, once you create a <code class="inlineCode">PersistentVolume</code>, you need to mount it to a Pod so that it can be used. Things will get slightly more advanced and conceptual here; Kubernetes uses an intermediate object in order to mount a <code class="inlineCode">PersistentVolume</code> to Pods. This intermediate object is called <code class="inlineCode">PersistentVolumeClaim</code>. Let’s focus on it in the upcoming section.</p>
+    <h1 class="heading-1" id="_idParaDest-355">Understanding how to mount a PersistentVolume to your Pod</h1>
+    <p class="normal">We can <a id="_idIndexMarker881"/>now try to mount a <code class="inlineCode">PersistentVolume</code> object to a Pod. To do that, we will need to use another object, which is the second object we need to explore in this chapter, called <code class="inlineCode">PersistentVolumeClaim</code>.</p>
+    <h2 class="heading-2" id="_idParaDest-356">Introducing PersistentVolumeClaim</h2>
+    <p class="normal">Just<a id="_idIndexMarker882"/> like <code class="inlineCode">PersistentVolume</code> or <code class="inlineCode">ConfigMap</code>, <code class="inlineCode">PersistentVolumeClaim</code> is another independent resource type living within your Kubernetes cluster.</p>
+    <p class="normal">First, bear in mind that even if both names are almost the same, <code class="inlineCode">PersistentVolume</code> and <code class="inlineCode">PersistentVolumeClaim</code> are two distinct resources that represent two different things.</p>
+    <p class="normal">You can list the <code class="inlineCode">PersistentVolumeClaim</code> resource type created within your cluster using <code class="inlineCode">kubectl</code>, as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get persistentvolumeclaims
+No resources found in default namespace.
+</code></pre>
+    <p class="normal">The following output tells us that we don’t have any <code class="inlineCode">PersistentVolumeClaim</code> resources created within my cluster. Please note that the <code class="inlineCode">pvc</code> alias works, too:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pvc
+No resources found in default namespace.
+</code></pre>
+    <p class="normal">You’ll quickly find that a lot of people working with Kubernetes refer to the <code class="inlineCode">PersistentVolumeClaim</code> resources simply with <code class="inlineCode">pvc</code>. So, don’t be surprised if you see the term <code class="inlineCode">pvc</code> here and there while working with Kubernetes. That being said, let’s explain what <code class="inlineCode">PersistentVolumeClaim</code> resources are in Kubernetes.</p>
+    <h2 class="heading-2" id="_idParaDest-357">Splitting storage creation and storage consumption</h2>
+    <p class="normal">The <a id="_idIndexMarker883"/>key to understanding the difference between <code class="inlineCode">PersistentVolume</code> and <code class="inlineCode">PersistentVolumeClaim</code> is to understand that one is meant to represent the storage itself, whereas the other one represents the request for storage that a Pod makes to get the actual storage.</p>
+    <p class="normal">The reason is that Kubernetes is typically supposed to be used by two types of people:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Kubernetes administrator</strong>: This person is supposed to maintain the cluster, operate it, and also add computation resources and persistent storage.</li>
+      <li class="bulletList"><strong class="keyWord">Kubernetes application developer</strong>: This person is supposed to develop and deploy an application, so, put simply, consume the computation resource and storage offered by the administrator.</li>
+    </ul>
+    <p class="normal">In fact, there is no problem if you handle both roles in your organization; however, this information is crucial to understand the workflow to mount <code class="inlineCode">PersistentVolume</code> to Pods.</p>
+    <p class="normal">Kubernetes was built with the idea that a <code class="inlineCode">PersistentVolume</code> object should belong to the cluster administrator scope, whereas <code class="inlineCode">PersistentVolumeClaim</code> objects belong to the application developer scope. It is up to the cluster administrator to add <code class="inlineCode">PersistentVolumes</code> (or dynamic volume operators) since they might be hardware resources, whereas developers have a better understanding of what amount of storage and what kind of storage is needed, and that’s why the <code class="inlineCode">PersistentVolumeClaim</code> object was built.</p>
+    <p class="normal">Essentially, a Pod cannot mount a <code class="inlineCode">PersistentVolume</code> object directly. It needs to explicitly ask for it. This <em class="italic">asking</em> action is achieved by creating a <code class="inlineCode">PersistentVolumeClaim</code> object and attaching it to the Pod that needs a <code class="inlineCode">PersistentVolume</code> object.</p>
+    <p class="normal">This is the only reason why this additional layer of abstraction exists. Now, let’s understand the <code class="inlineCode">PersistentVolume</code> workflow summarized in the next section.</p>
+    <h2 class="heading-2" id="_idParaDest-358">Understanding the PersistentVolume workflow</h2>
+    <p class="normal">Once the<a id="_idIndexMarker884"/> developer has built the application, it is their responsibility to ask for a <code class="inlineCode">PersistentVolume</code> object if needed. To do that, the developer will write two <code class="inlineCode">YAML</code> manifests:</p>
+    <ul>
+      <li class="bulletList">One manifest will be written for the Pod or deployment.</li>
+      <li class="bulletList">The other manifest will be written for <code class="inlineCode">PersistentVolumeClaim</code>.</li>
+    </ul>
+    <p class="normal">The Pod must be written so that the <code class="inlineCode">PersistentVolumeClaim</code> object is mounted as a <code class="inlineCode">volumeMount</code> configuration key in the YAML file. Please note that for it to work, the <code class="inlineCode">PersistentVolumeClaim</code> object needs to be in the same namespace as the application Pod that is mounting it. When both YAML files are applied and both resources are created in the<a id="_idIndexMarker885"/> cluster, the <code class="inlineCode">PersistentVolumeClaim</code> object will look for a <code class="inlineCode">PersistentVolume</code> object that matches the criteria required in the claim. Supposing that a <code class="inlineCode">PersistentVolume</code> object capable of fulfilling the claim is created and ready in the Kubernetes cluster, the <code class="inlineCode">PersistentVolume</code> object will be attached to the <code class="inlineCode">PersistentVolumeClaim</code> object.</p>
+    <p class="normal">If everything is okay, the claim is considered fulfilled, and the volume is correctly mounted to the Pod: if you understand this workflow, essentially, you understand everything related to <code class="inlineCode">PersistentVolume</code> usage.</p>
+    <p class="normal">The following diagram illustrates the workflow in static storage provisioning in Kubernetes.</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_09_02.png"/></figure>
+    <p class="packt_figref">Figure 9.1: Static storage provisioning in Kubernetes</p>
+    <div class="note">
+      <p class="normal">You will learn about dynamic storage provisioning in a later section of this chapter, <em class="italic">Introducing dynamic provisioning</em>.</p>
+    </div>
+    <p class="normal">Imagine a<a id="_idIndexMarker886"/> developer needs persistent storage for their application running in Kubernetes. Here’s the choreography that ensues:</p>
+    <ol>
+      <li class="numberedList" value="1">The administrator prepares <code class="inlineCode">PersistentVolume</code>: The Kubernetes administrator prepares the backend storage and creates a <code class="inlineCode">PersistentVolume</code> object. This PV acts like a storage declaration, specifying details like capacity, access mode (read-write, read-only), and the underlying storage system (e.g., hostPath, NFS).</li>
+      <li class="numberedList">The developer makes a claim using <code class="inlineCode">PersistentVolumeClaim</code>: The developer creates a <code class="inlineCode">PersistentVolumeClaim</code> object. This PVC acts like a storage request, outlining the developer’s needs. It specifies the size, access mode, and any storage class preferences (think of it as a wishlist for storage). The developer also defines a volume mount in the Pod’s YAML file, specifying how the Pod should access the persistent storage volume.</li>
+      <li class="numberedList">Kubernetes<a id="_idIndexMarker887"/> fulfills the request: After the Pod and PVC are created, Kubernetes searches for a suitable PV that matches the requirements listed in the PVC. It’s like a match-making service, ensuring the requested storage aligns with what’s available.</li>
+      <li class="numberedList">The Pod leverages the storage using <code class="inlineCode">volumeMount</code>: Once Kubernetes finds a matching PV, it binds it to the PVC. This makes the storage accessible to the Pod.</li>
+      <li class="numberedList">Data flow begins (<strong class="keyWord">read/write operations</strong>): Now, the Pod can interact with the persistent storage based on the access mode defined in the PV. It can perform read or write operations on the data stored in the volume, ensuring data persistence even if the Pod restarts.</li>
+    </ol>
+    <div class="note">
+      <p class="normal">Please note that <code class="inlineCode">PersistentVolume</code> is cluster-scoped, while <code class="inlineCode">PersistentVolumeClaim</code>, Pod, and <code class="inlineCode">volumeMount</code> are namespace-scoped objects.</p>
+    </div>
+    <p class="normal">This collaboration between PVs, PVCs, and Kubernetes ensures that the developers have access to persistent storage for their applications, enabling them to store and retrieve data across Pod life cycles.</p>
+    <p class="normal">This setup might seem complex to understand at first, but you will quickly get used to it.</p>
+    <p class="normal">In the following section, we will learn how to use the storage in Pods using <code class="inlineCode">PersistentVolume</code> and <code class="inlineCode">PersistentVolumeClaim</code>.</p>
+    <h2 class="heading-2" id="_idParaDest-359">Creating a Pod with a PersistentVolumeClaim object</h2>
+    <p class="normal">In this section, we will <a id="_idIndexMarker888"/>create a Pod that mounts <code class="inlineCode">PersisentVolume</code> within a <code class="inlineCode">minikube</code> cluster. This is going to be a kind of <code class="inlineCode">PersisentVolume</code> object, but this time, it will not be bound to the life cycle of the Pod. Indeed, since it will be managed as a real <code class="inlineCode">PersisentVolume</code> object, the <code class="inlineCode">hostPath</code> type will get its life cycle independent of the Pod.</p>
+    <p class="normal">The very first thing to do is create the <code class="inlineCode">PersisentVolume</code> object that will be a <code class="inlineCode">hostPath</code> type. Here is the YAML file to do that. Please note that we created this <code class="inlineCode">PersisentVolume</code> object with<a id="_idIndexMarker889"/> some arbitrary labels in the <code class="inlineCode">metadata</code> section. This is so that it will be easier to fetch it from the <code class="inlineCode">PersistentVolumeClaim</code> object later:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># pv.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">PersistentVolume</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">my-hostpath-pv</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">hostpath</span>
+    <span class="hljs-attr">env:</span> <span class="hljs-string">prod</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">capacity:</span>
+    <span class="hljs-attr">storage:</span> <span class="hljs-string">1Gi</span>
+  <span class="hljs-attr">accessModes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">ReadWriteOnce</span>
+  <span class="hljs-attr">hostPath:</span>
+    <span class="hljs-attr">path:</span> <span class="hljs-string">"</span><span class="hljs-string">/tmp/test"</span>
+  <span class="hljs-attr">storageClassName:</span> <span class="hljs-string">slow</span>
+</code></pre>
+    <p class="normal">Please note the following items in the YAML, which we will use for matching the PVC later:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">labels</code></li>
+      <li class="bulletList"><code class="inlineCode">capacity</code></li>
+      <li class="bulletList"><code class="inlineCode">accessModes</code></li>
+      <li class="bulletList"><code class="inlineCode">StorageClassName</code></li>
+    </ul>
+    <p class="normal">We can now create and list the <code class="inlineCode">PersisentVolume</code> entries available in our cluster, and we should observe that this one exists. Please note that the <code class="inlineCode">pv</code> alias works, too:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f pv.yaml
+persistentvolume/my-hostpath-pv created
+<span class="hljs-con-meta">$ </span>kubectl get pv
+NAME             CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+my-hostpath-pv   1Gi        RWO            Retain           Available           slow           &lt;unset&gt;                          3s
+</code></pre>
+    <p class="normal">We can see that the <code class="inlineCode">PersisentVolume</code> was successfully created, and the status is <code class="inlineCode">Available</code>.</p>
+    <p class="normal">Now, we need to create two things to mount the <code class="inlineCode">PersisentVolume</code> object:</p>
+    <ul>
+      <li class="bulletList">A <code class="inlineCode">PersistentVolumeClaim</code> object that targets this specific <code class="inlineCode">PersisentVolume</code> object</li>
+      <li class="bulletList">A Pod to use the <code class="inlineCode">PersistentVolumeClaim</code> object</li>
+    </ul>
+    <p class="normal">To <a id="_idIndexMarker890"/>demonstrate the namespace scoped items and cluster scoped items, let us create a namespace for the PVC and Pod (refer to the <code class="inlineCode">pv-ns.yaml</code> file):</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f pv-ns.yaml
+namespace/pv-ns created
+</code></pre>
+    <p class="normal">Let’s proceed, in order, with the creation of the <code class="inlineCode">PersistentVolumeClaim</code> object:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># pvc.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">PersistentVolumeClaim</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">my-hostpath-pvc</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">pv-ns</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">resources:</span>
+    <span class="hljs-attr">requests:</span>
+      <span class="hljs-attr">storage:</span> <span class="hljs-string">1Gi</span>
+  <span class="hljs-attr">accessModes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">ReadWriteOnce</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">type:</span> <span class="hljs-string">hostpath</span>
+      <span class="hljs-attr">env:</span> <span class="hljs-string">prod</span>
+  <span class="hljs-attr">storageClassName:</span> <span class="hljs-string">slow</span> 
+</code></pre>
+    <p class="normal">Let’s create the PVC and check that it was successfully created in the cluster. Please note that the <code class="inlineCode">pvc</code> alias also works here:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f pvc.yaml
+persistentvolumeclaim/my-hostpath-pvc created
+<span class="hljs-con-meta">$ </span>kubectl get pvc -n pv-ns
+NAME              STATUS   VOLUME           CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+my-hostpath-pvc   Bound    my-hostpath-pv   1Gi        RWO            slow           &lt;unset&gt;                 2m29s
+</code></pre>
+    <p class="normal">Please note the PVC status now – <code class="inlineCode">Bound</code> – which means the PVC is already matched with a PV and ready to consume the storage.</p>
+    <p class="normal">Now<a id="_idIndexMarker891"/> that the <code class="inlineCode">PersisentVolume</code> object and the <code class="inlineCode">PersistentVolumeClaim</code> object exist, we can create a Pod that will mount the PV using the PVC.</p>
+    <p class="normal">Let’s create an NGINX Pod that will do the job:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># pod.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">pv-ns</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">image:</span> <span class="hljs-string">nginx</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+      <span class="hljs-attr">volumeMounts:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">mountPath:</span> <span class="hljs-string">"/var/www/html"</span>
+          <span class="hljs-attr">name:</span> <span class="hljs-string">mypersistentvolume</span>
+  <span class="hljs-attr">volumes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">mypersistentvolume</span>
+      <span class="hljs-attr">persistentVolumeClaim:</span>
+        <span class="hljs-attr">claimName:</span> <span class="hljs-string">my-hostpath-pvc</span>
+</code></pre>
+    <p class="normal">As you can see, in the <code class="inlineCode">volumeMounts</code> section, the <code class="inlineCode">PersistentVolumeClaim</code> object is referenced as a volume, and we reference the PVC by its name. Note that the PVC must live in the same namespace as the Pod that mounts it. This is because PVCs are <strong class="keyWord">namespace-scoped</strong> resources, whereas PVs are not. There are no labels and selectors for this one; to bind a PVC to a Pod, you simply need to use the PVC name.</p>
+    <p class="normal">That way, the Pod will become attached to the <code class="inlineCode">PersistentVolumeClaim</code> object, which will find the corresponding <code class="inlineCode">PersisentVolume</code> object. This, in the end, will make the host path available and mounted on my NGINX Pod.</p>
+    <p class="normal">Create the Pod and test the status:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f pod.yaml
+pod/nginx created
+<span class="hljs-con-meta">$ </span>kubectl get pvc,pod -n pv-ns
+NAME                                    STATUS   VOLUME           CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/my-hostpath-pvc   Bound    my-hostpath-pv   1Gi        RWO            slow           &lt;unset&gt;                 4m32s
+NAME        READY   STATUS    RESTARTS   AGE
+pod/nginx   1/1     Running   0          13s
+</code></pre>
+    <p class="normal">The<a id="_idIndexMarker892"/> Pod is up and running with the hostPath <code class="inlineCode">/tmp/test</code> mounted inside via the PV and PVC. So far, we have learned what <code class="inlineCode">PersistentVolume</code> and <code class="inlineCode">PersistentVolumeClaim</code> objects are and how to use them to mount persistent storage on your Pods.</p>
+    <p class="normal">Next, we must continue our exploration of the <code class="inlineCode">PersistentVolume</code> and <code class="inlineCode">PersistentVolumeClaim</code> mechanics by explaining the life cycle of these two objects. Because they are independent of the Pods, their life cycles have some dedicated behaviors that you need to be aware of.</p>
+    <h1 class="heading-1" id="_idParaDest-360">Understanding the life cycle of a PersistentVolume object in Kubernetes</h1>
+    <p class="normal"><code class="inlineCode">PersistentVolume</code> objects<a id="_idIndexMarker893"/> are good if you want to maintain the state of your app without being constrained by the life cycle of the Pods or containers that are running them.</p>
+    <p class="normal">However, since <code class="inlineCode">PersistentVolume</code> objects get their very own life cycle, they have some very specific mechanics that you need to be aware of when you’re using them. We’ll take a closer look at them next.</p>
+    <h2 class="heading-2" id="_idParaDest-361">Understanding why PersistentVolume objects are not bound to namespaces</h2>
+    <p class="normal">The first thing to be aware of when you’re using <code class="inlineCode">PersistentVolume</code> objects is that they are not <code class="inlineCode">namespaced</code> resources, but <code class="inlineCode">PersistentVolumeClaim</code> objects are.</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl api-resources --namespaced=<span class="hljs-con-literal">false</span> |grep -i volume
+persistentvolumes                 pv           v1                                false        PersistentVolume
+volumeattachments                              storage.k8s.io/v1                 false        VolumeAttachment
+</code></pre>
+    <p class="normal">So, if the Pod wants to use the <code class="inlineCode">PersistentVolume</code>, then the <code class="inlineCode">PersistentVolumeClaim</code> must be created in the same namespace as the Pod.</p>
+    <p class="normal">The <code class="inlineCode">PersistentVolume</code> will have the <a id="_idIndexMarker894"/>following life cycle stages typically:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Provisioning</strong>: Admin creates the PV, defining capacity, access modes, and optional details like storage class and reclaim policy.</li>
+      <li class="bulletList"><strong class="keyWord">Unbound state</strong>: Initially, the PV is available but not attached to any Pod (unbound).</li>
+      <li class="bulletList"><strong class="keyWord">Claiming</strong>: The developer creates a PVC, specifying size, access mode, and storage class preference (request for storage).</li>
+      <li class="bulletList"><strong class="keyWord">Matching and binding</strong>: Kubernetes finds an unbound PV that matches the PVC requirements and binds them together.</li>
+      <li class="bulletList"><strong class="keyWord">Using</strong>: Pod accesses the bound PV through a volume mount defined in its YAML file.</li>
+      <li class="bulletList"><strong class="keyWord">Releasing</strong>: When the Pod using the PVC is deleted, the PVC becomes unbound (the PV state depends on the reclaim policy).</li>
+      <li class="bulletList"><strong class="keyWord">Deletion</strong>: The PV object itself can be deleted by the administrator, following the configured reclaim policy for the storage resource.</li>
+    </ul>
+    <p class="normal">Now, let’s examine another important aspect of <code class="inlineCode">PersistentVolume</code>, known as reclaiming a policy. This is something that is going to be important when you want to unmount a PVC from a running Pod.</p>
+    <h2 class="heading-2" id="_idParaDest-362">Reclaiming a PersistentVolume object</h2>
+    <p class="normal">When it <a id="_idIndexMarker895"/>comes to <code class="inlineCode">PersistentVolume</code>, there is a very important option that you need to understand, which is the reclaim policy. But what does this option do?</p>
+    <p class="normal">This option will tell Kubernetes what treatment it should give to your <code class="inlineCode">PersistentVolume</code> object when you delete the corresponding <code class="inlineCode">PersistentVolumeClaim</code> object that was attaching it to the Pods.</p>
+    <p class="normal">Indeed, deleting a <code class="inlineCode">PersistentVolumeClaim</code> object consists of deleting the link between the Pods and your <code class="inlineCode">PersistentVolume</code> object, so it’s like you unmount the volume and then the volume becomes available again for another application to use. </p>
+    <p class="normal">However, in some cases, you don’t want that behavior; instead, you want your <code class="inlineCode">PersistentVolume</code> object to be automatically removed when its corresponding <code class="inlineCode">PersistentVolumeClaim</code> object has <a id="_idIndexMarker896"/>been deleted. That’s why the reclaim policy option exists, and it is what you should configure.</p>
+    <p class="normal">Let’s explain these three reclaim policies:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Delete</strong>: This is the simplest of the three. When you set your reclaim policy to delete, the <code class="inlineCode">PersistentVolume</code> object will be wiped out and the <code class="inlineCode">PersistentVolume</code> entry will be removed from the Kubernetes cluster when the corresponding <code class="inlineCode">PersistentVolumeClaim</code> object is deleted. You can use this when you want your data to be deleted and not used by any other application. Bear in mind that this is a permanent option, so you might want to build a backup strategy with your underlying storage provider if you need to recover anything.</li>
+    </ul>
+    <div class="note-one">
+      <p class="normal">In our example, the PV was created manually with hostPath and the path is <code class="inlineCode">/tmp/</code>. The deletion operation will work without any issues here. However, the delete operation may not work for all PV types when you create it manually. It is highly recommended to use dynamic PV provisioning, which you will learn about later in this chapter.</p>
+    </div>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Retain</strong>: This is the second policy and is contrary to the delete policy. If you set this reclaim policy, the <code class="inlineCode">PersistentVolume</code> object won’t be deleted if you delete its corresponding <code class="inlineCode">PersistentVolumeClaim</code> object. Instead, the <code class="inlineCode">PersistentVolume</code> object will enter the released status, which means it is still available in the cluster, and all of its data can be manually retrieved by the cluster administrator.</li>
+      <li class="bulletList"><strong class="keyWord">Recycle</strong>: This is a kind of combination of the previous two policies. First, the volume is wiped of all its data, such as a basic <code class="inlineCode">rm -rf volume/*</code> volume. However, the volume itself will remain accessible in the cluster, so you can mount it again on your application.</li>
+    </ul>
+    <div class="note-one">
+      <p class="normal">The recycle reclaim policy has been deprecated. It is now advised to utilize dynamic provisioning as the preferred approach.</p>
+    </div>
+    <p class="normal">The reclaim policy<a id="_idIndexMarker897"/> can be set in your cluster directly in the YAML definition file at the <code class="inlineCode">PersistentVolume</code> level.</p>
+    <h2 class="heading-2" id="_idParaDest-363">Updating a reclaim policy</h2>
+    <p class="normal">The good news with a<a id="_idIndexMarker898"/> reclaim policy is that you can change it after the <code class="inlineCode">PersistentVolume</code> object has been created; it is a mutable setting.</p>
+    <p class="normal">To demonstrate the reclaim policy differences, let us use the previously created Pod, PV, and PVC as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pod,pvc -n pv-ns
+NAME        READY   STATUS    RESTARTS   AGE
+pod/nginx   1/1     Running   0          30m
+NAME                                    STATUS   VOLUME           CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/my-hostpath-pvc   Bound    my-hostpath-pv   1Gi        RWO            slow           &lt;unset&gt;                 34m
+</code></pre>
+    <p class="normal">Delete the Pod first as it is using the PVC:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl delete pod nginx -n pv-ns
+pod "nginx" deleted
+<span class="hljs-con-meta">$ </span>kubectl delete pvc my-hostpath-pvc -n pv-ns
+persistentvolumeclaim "my-hostpath-pvc" deleted
+</code></pre>
+    <p class="normal">Now, check the status of the PV:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pv
+NAME             CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS     CLAIM                   STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+my-hostpath-pv   1Gi        RWO            Retain           Released   pv-ns/my-hostpath-pvc   slow           &lt;unset&gt;                          129m
+</code></pre>
+    <p class="normal">You can see from the output that the PV is in a <code class="inlineCode">Released</code> state but not yet in an <code class="inlineCode">Available</code> state for the next PVC to use.</p>
+    <p class="normal">Let us update the reclaim policy to <code class="inlineCode">Delete</code> using the <code class="inlineCode">kubectl patch</code> command as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl patch pv/my-hostpath-pv -p <span class="hljs-con-string">'{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}'</span>
+persistentvolume/my-hostpath-pv patched
+Since the PV is not bound to any PVC, the PV will be instantly deleted due to the Delete reclaim policy:
+<span class="hljs-con-meta">$ </span>kubectl get pv
+No resources found
+</code></pre>
+    <p class="normal">As you<a id="_idIndexMarker899"/> can see in the preceding output, we have updated the reclaim policy of the PV and then the PV has been deleted from the Kubernetes cluster.</p>
+    <p class="normal">Now, let’s discuss the different statuses that PVs and PVCs can have.</p>
+    <h2 class="heading-2" id="_idParaDest-364">Understanding PersistentVolume and PersistentVolumeClaim statuses</h2>
+    <p class="normal">Just like Pods <a id="_idIndexMarker900"/>can be<a id="_idIndexMarker901"/> in a different state, such as <code class="inlineCode">Pending</code>, <code class="inlineCode">ContainerCreating</code>, <code class="inlineCode">Running</code>, and more, <code class="inlineCode">PersistentVolume</code> and <code class="inlineCode">PersistentVolumeClaim</code> can also hold different states. You can identify their state by issuing the <code class="inlineCode">kubectl get pv</code> and <code class="inlineCode">kubectl get pvc</code> commands.</p>
+    <p class="normal"><code class="inlineCode">PersistentVolume</code> has the following different states that you need to be aware of:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">Available</code>: This is the initial state for a newly created PV. It indicates the PV is ready to be bound to a PVC.</li>
+      <li class="bulletList"><code class="inlineCode">Bound</code>: This status signifies that the PV is currently claimed by a specific PVC and is in use by a Pod. Essentially, it indicates that the volume is currently in use. When this status is applied to a <code class="inlineCode">PersistentVolumeClaim</code> object, this indicates that the PVC is currently in use: that is, a Pod is using it and has access to a PV through it.</li>
+      <li class="bulletList"><code class="inlineCode">Terminating</code>: The <code class="inlineCode">Terminating </code>status applies to a <code class="inlineCode">PersistentVolumeClaim </code>object. This is the status the PVC enters after you issue a <code class="inlineCode">kubectl delete pvc</code> command.</li>
+      <li class="bulletList"><code class="inlineCode">Released</code>: If a PVC using the PV is deleted (and the reclaim policy for the PV is set to “Retain”), the PV will transition to this state. It’s essentially unbound but still available for future PVCs to claim.</li>
+      <li class="bulletList"><code class="inlineCode">Failed</code>: This status indicates an issue with the PV, preventing it from being used. Reasons could be storage provider errors, access issues, or problems with the provisioner (if applicable).</li>
+      <li class="bulletList"><code class="inlineCode">Unknown</code>: In rare cases, the PV status might be unknown due to communication failures with the underlying storage system.</li>
+    </ul>
+    <p class="normal">We <a id="_idIndexMarker902"/>now have <a id="_idIndexMarker903"/>all the basics relating to <code class="inlineCode">PersistentVolume</code> and <code class="inlineCode">PersistentVolumeClaim</code>, which should be enough to start using persistent storage in Kubernetes. However, there’s still something important to know about this topic, and it is called dynamic provisioning. This is a very impressive aspect of Kubernetes that makes it able to communicate with cloud provider APIs to create persistent storage on the cloud. Additionally, it can make this storage available on the cluster by dynamically creating PV objects. In the next section, we will compare static and dynamic provisioning.</p>
+    <h1 class="heading-1" id="_idParaDest-365">Understanding static and dynamic PersistentVolume provisioning</h1>
+    <p class="normal">So far, we’ve only provisioned <code class="inlineCode">PersistentVolume</code> by doing static provisioning. Now, we’re going to discover dynamic <code class="inlineCode">PersistentVolume</code> provisioning, which enables <code class="inlineCode">PersistentVolume</code> provisioning directly from the Kubernetes cluster.</p>
+    <h2 class="heading-2" id="_idParaDest-366">Static versus dynamic provisioning</h2>
+    <p class="normal">So far, when <a id="_idIndexMarker904"/>using static provisioning, you<a id="_idIndexMarker905"/> have learned that you <a id="_idIndexMarker906"/>must follow this workflow:</p>
+    <ol>
+      <li class="numberedList" value="1">You create the piece of storage against the cloud provider or the backend technology.</li>
+      <li class="numberedList">Then, you create the <code class="inlineCode">PersistentVolume</code> object to serve as a Kubernetes pointer to this actual storage.</li>
+      <li class="numberedList">Following this, you create a Pod and a PVC to bind the PV to the Pod.</li>
+    </ol>
+    <p class="normal">That is called static provisioning. It is static because you have to create the piece of storage before creating the PV and the PVC in Kubernetes. It works well; however, at scale, it can <a id="_idIndexMarker907"/>become more and more difficult<a id="_idIndexMarker908"/> to manage, especially if you are managing hundreds of PVs and PVCs. Let’s say you are creating an Amazon EBS volume to mount it as a <code class="inlineCode">PersistentVolume</code> object, and<a id="_idIndexMarker909"/> you would do it like this with static provisioning:</p>
+    <ol>
+      <li class="numberedList" value="1">Authenticate against the AWS console.</li>
+      <li class="numberedList">Create an EBS volume.</li>
+      <li class="numberedList">Copy/paste its unique ID to a <code class="inlineCode">PersistentVolume</code> YAML definition file.</li>
+      <li class="numberedList">Create the PV using your YAML file.</li>
+      <li class="numberedList">Create a PVC to fetch this PV.</li>
+      <li class="numberedList">Mount the PVC to the Pod object.</li>
+    </ol>
+    <p class="normal">Again, it should work in a manual or automated way, but it would become complex and extremely time-consuming to do at scale, with possibly dozens and dozens of PVs and PVCs.</p>
+    <p class="normal">That’s why Kubernetes developers decided that it would be better if Kubernetes was capable of provisioning the piece of actual storage on your behalf along with the <code class="inlineCode">PersistentVolume</code> object to serve as a pointer to it. This is known as dynamic provisioning.</p>
+    <h2 class="heading-2" id="_idParaDest-367">Introducing dynamic provisioning</h2>
+    <p class="normal">When<a id="_idIndexMarker910"/> using dynamic provisioning, you configure your Kubernetes cluster so that it authenticates against the backend storage provider (such as AWS, Azure, or other storage devices). Then, you issue a command to provision a storage disk or volume and automatically create a <code class="inlineCode">PersistentVolume</code> so that the PVC can use it. That way, you can save a huge amount of time by getting things automated. Dynamic provisioning is so useful because Kubernetes supports a wide range of storage technologies. We already introduced a few of them earlier in this chapter, when we mentioned NFS and other types of storage.</p>
+    <p class="normal">But how does Kubernetes achieve this versatility? Well, the answer is that it makes use of a third resource type, the <code class="inlineCode">StorageClass</code> object, which we’re going to learn about in this chapter.</p>
+    <h2 class="heading-2" id="_idParaDest-368">Introduction to CSI</h2>
+    <p class="normal">Before we <a id="_idIndexMarker911"/>talk about <code class="inlineCode">StorageClass</code>, let us learn about CSI, which acts as a bridge between Kubernetes and various storage solutions. It defines a standard interface for exposing the storage to container workloads. CSI provides an abstraction layer to interact with Kubernetes primitives like <code class="inlineCode">PersistentVolume</code>, enabling the integration of diverse storage solutions into Kubernetes, while maintaining a vendor-neutral approach.</p>
+    <p class="normal">Kubernetes dynamic storage provisioning involves the following steps typically:</p>
+    <ol>
+      <li class="numberedList" value="1">Install and configure <code class="inlineCode">StorageClass</code> and provisioner: The administrator installs a CSI driver (or in-tree provisioner) and configures a <code class="inlineCode">StorageClass</code>, which defines the storage type, parameters, and reclaim policy.</li>
+      <li class="numberedList">Developer creates PVC with <code class="inlineCode">StorageClass</code> information: The developer creates a <code class="inlineCode">PersistentVolumeClaim</code>, specifying the desired size and access mode and referencing the <code class="inlineCode">StorageClass</code> to request dynamic provisioning.</li>
+      <li class="numberedList">The <code class="inlineCode">StorageClass</code>/CSI driver triggers a request to the backend provisioner: Kubernetes automatically triggers the CSI driver (or provisioner) when it detects the PVC, sending the request to provision storage from the backend storage system.</li>
+      <li class="numberedList">Provisioner communicates with backend storage and creates the volume: The provisioner communicates with the backend storage system, creates the volume, and generates a <code class="inlineCode">PersistentVolume</code> in Kubernetes that binds to the PVC.</li>
+      <li class="numberedList">The PVC is mounted to the Pod, allowing storage access: The PVC is mounted to the requesting Pod, allowing the Pod to access the storage as specified by the <code class="inlineCode">volumeMount</code> in the Pod’s configuration.</li>
+    </ol>
+    <p class="normal">The following <a id="_idIndexMarker912"/>diagram illustrates the dynamic PV provisioning workflow.</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_09_03.png"/></figure>
+    <p class="packt_figref">Figure 9.2: Dynamic PV provisioning in Kubernetes</p>
+    <p class="normal"><strong class="keyWord">CSI drivers</strong> are <a id="_idIndexMarker913"/>containerized <a id="_idIndexMarker914"/>implementations by storage vendors that adhere to the CSI specification and provide functionalities for provisioning, attaching, detaching, and managing storage volumes.</p>
+    <p class="normal">CSI node and controller services are Kubernetes services that run the CSI driver logic on worker nodes and a control plane respectively, facilitating communication between Pods and the storage system.</p>
+    <p class="normal">Once a CSI-compatible volume driver is deployed on a Kubernetes cluster, users can leverage the <code class="inlineCode">csi</code> volume type. (Refer to the documentation at <a href="https://kubernetes-csi.github.io/docs/drivers.html"><span class="url">https://kubernetes-csi.github.io/docs/drivers.html</span></a> to see the set of CSI drivers that can be used with Kubernetes). This allows them to attach or mount volumes exposed by the CSI driver. There are three ways to utilize a <code class="inlineCode">csi</code> volume within a Pod:</p>
+    <ul>
+      <li class="bulletList">Referencing a <code class="inlineCode">PersistentVolumeClaim</code>: This approach links the Pod to persistent storage managed by Kubernetes.</li>
+      <li class="bulletList">Utilizing a generic ephemeral volume: This method provides temporary storage that doesn’t persist across Pod restarts.</li>
+      <li class="bulletList">Leveraging a CSI ephemeral volume (if supported by the driver): This offers driver-specific ephemeral storage options beyond the generic version.</li>
+    </ul>
+    <p class="normal">Remember, you don’t directly interact with CSI. <code class="inlineCode">StorageClasses</code> can reference CSI drivers by name in the <code class="inlineCode">provisioner</code> field, leveraging CSI for volume provisioning.</p>
+    <h2 class="heading-2" id="_idParaDest-369">Introducing StorageClasses</h2>
+    <p class="normal"><code class="inlineCode">StorageClass</code> is <a id="_idIndexMarker915"/>another resource type exposed by <code class="inlineCode">kube-apiserver</code>. You might already have noticed this field earlier in the <code class="inlineCode">kubectl get pv</code> command output. This resource type is the one that grants Kubernetes the ability to deal with several underlying technologies transparently.</p>
+    <p class="normal"><code class="inlineCode">StorageClasses</code> act as a user-facing interface for defining storage requirements. <strong class="keyWord">CSI drivers</strong>, referenced by <code class="inlineCode">StorageClasses</code>, provide the actual implementation details for provisioning and managing storage based on the specific storage system. <code class="inlineCode">StorageClasses</code> essentially bridge the gap between your storage needs and the capabilities exposed by CSI drivers.</p>
+    <p class="normal">You can access and list the <code class="inlineCode">storageclasses</code> resources created within your Kubernetes cluster by using <code class="inlineCode">kubectl</code>. Here is the command to list the storage classes:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get sc
+NAME                 PROVISIONER                RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+standard (default)   k8s.io/minikube-hostpath
+</code></pre>
+    <p class="normal">We can also check the details about the <code class="inlineCode">StorageClass</code> using the <code class="inlineCode">-o yaml</code> option:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get storageclasses standard  -o yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+...&lt;removed for brevity&gt;...
+  name: standard
+  resourceVersion: "290"
+  uid: f41b765f-301f-4781-b9d0-46aec694336b
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+</code></pre>
+    <p class="normal">Additionally, you can use the plural form of <code class="inlineCode">storageclasses</code> along with the <code class="inlineCode">sc</code> alias. The following three commands are essentially the same:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get storageclass
+<span class="hljs-con-meta">$ </span>kubectl get storageclasses
+<span class="hljs-con-meta">$ </span>kubectl get sc
+</code></pre>
+    <p class="normal">Note that we <a id="_idIndexMarker916"/>haven’t included the output of the command for simplicity, but it is essentially the same for the three commands. There are two fields within the command output that are important to us:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">NAME</code>: This is the name and the unique identifier of the <code class="inlineCode">storageclass</code> object.</li>
+      <li class="bulletList"><code class="inlineCode">PROVISIONER</code>: This is the name of the underlying storage technology: this is basically a piece of code the Kubernetes cluster uses to interact with the underlying technology.</li>
+    </ul>
+    <div class="note">
+      <p class="normal">Note that you can create multiple <code class="inlineCode">StorageClass</code> objects that use the same <code class="inlineCode">provisioner</code>.</p>
+    </div>
+    <p class="normal">As we are currently using a <code class="inlineCode">minikube</code> cluster in our lab environment, we have a <code class="inlineCode">storageclass</code> resource called <code class="inlineCode">standard</code> that is using the <code class="inlineCode">k8s.io/minikube-hostpath</code> provisioner.</p>
+    <p class="normal">This provider deals with my host filesystem to automatically create provisioned host path volumes for my Pods, but it could be the same for Amazon EBS volumes or Google PDs.</p>
+    <p class="normal">In GKE, Google built a storage class with a provisioner that was capable of interacting with the Google PD’s API, which is a pure Google Cloud feature, and you can implement it with <code class="inlineCode">StorageClass</code> as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta"># </span>gce-pd-sc.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: slow
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-standard
+</code></pre>
+    <p class="normal">In contrast, in AWS, we have a <code class="inlineCode">storageclass</code> object with a provisioner that is capable of dealing with EBS volume APIs. These provisioners are just libraries that interact with the APIs of these different cloud providers.</p>
+    <p class="normal">The <code class="inlineCode">storageclass</code> objects <a id="_idIndexMarker917"/>are the reason why Kubernetes can deal with so many different storage technologies. From a Pod perspective, no matter if it is an EBS volume, NFS drive, or GKE volume, the Pod will only see a <code class="inlineCode">PersistentVolume</code> object. All the underlying logic dealing with the actual storage technology is implemented by the provisioner the <code class="inlineCode">storageclass</code> object uses.</p>
+    <p class="normal">The good news is that you can add as many <code class="inlineCode">storageclass</code> objects with their provisioner as you want to your Kubernetes cluster in a plugin-like fashion.</p>
+    <p class="normal">By the way, nothing is preventing you from expanding your cluster by adding <code class="inlineCode">storageclasses</code> to your cluster. You’ll simply add the ability to deal with different storage technologies from your cluster. For example, we can add an Amazon EBS <code class="inlineCode">storageclass</code> object to our <code class="inlineCode">minikube</code> cluster. However, while it is possible, it’s going to be completely useless. Indeed, if your <code class="inlineCode">minikube</code> setup is not running on an EC2 instance but on your local machine, it won’t be able to attach an EBS.</p>
+    <p class="normal">That said, for a more practical approach, you can consider using CSI drivers from providers that support local deployment, such as OpenEBS, TopoLVM, or Portworx. These allow you to work with persistent storage locally, even on minikube. Additionally, most cloud providers offer free tiers for small Kubernetes deployments, which could be useful for testing out storage solutions in a cloud environment without incurring significant costs.</p>
+    <p class="normal">In the next section, we will learn about the difference in dynamic storage provisioning with PVC.</p>
+    <h2 class="heading-2" id="_idParaDest-370">Understanding the role of PersistentVolumeClaim for dynamic storage provisioning</h2>
+    <p class="normal">When<a id="_idIndexMarker918"/> using dynamic storage provisioning, the <code class="inlineCode">PersistentVolumeClaim</code> object will get an entirely new role. Since <code class="inlineCode">PersistentVolume</code> is gone in this use case, the only object that will be left for you to manage is the <code class="inlineCode">PersistentVolumeClaim</code> one because the <code class="inlineCode">PersistentVolume</code> object will be managed by the <code class="inlineCode">StorageClass</code>.</p>
+    <p class="normal">Let’s demonstrate this by creating an NGINX Pod that will mount a <code class="inlineCode">hostPath</code> type dynamically. In this example, the administrator won’t have to provision a <code class="inlineCode">PersistentVolume</code> object at all. This is because the <code class="inlineCode">PersistentVolumeClaim</code> object and the <code class="inlineCode">StorageClass</code> object will be able to create and provision the <code class="inlineCode">PersistentVolume</code> together.</p>
+    <p class="normal">Let’s start by creating a new namespace called <code class="inlineCode">dynamicstorage</code>, where we will run our examples:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create ns dynamicstorage
+namespace/dynamicstorage created
+</code></pre>
+    <p class="normal">Now, let’s <a id="_idIndexMarker919"/>run a <code class="inlineCode">kubectl get sc</code> command to check that we have a storage class that is capable of dealing with the <code class="inlineCode">hostPath</code> that is provisioned in our cluster.</p>
+    <p class="normal">For this specific <code class="inlineCode">storageclass</code> object in this specific Kubernetes setup (<code class="inlineCode">minikube</code>), we don’t have to do anything to get the <code class="inlineCode">storageclass</code> object, as it is created by default at cluster installation. However, this might not be the case depending on your Kubernetes distribution.</p>
+    <p class="normal">Bear this in mind because it is very important: clusters that have been set up on GKE might have default storage classes that are capable of dealing with Google’s storage offerings, whereas an AWS-based cluster might have <code class="inlineCode">storageclass</code> to communicate with Amazon’s storage offerings and more. With <code class="inlineCode">minikube</code>, we have at least one default <code class="inlineCode">storageclass</code> object that is capable of dealing with a <code class="inlineCode">hostPath</code>-based <code class="inlineCode">PersistentVolume</code> object. If you understand that, you should understand that the output of the <code class="inlineCode">kubectl get sc</code> command will be different depending on where your cluster has been set up:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get sc
+NAME                 PROVISIONER                RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+standard (default)   k8s.io/minikube-hostpath   Delete          Immediate           false                  21d
+</code></pre>
+    <p class="normal">As you can see, we do have a storage class called <code class="inlineCode">standard</code> on our cluster that is capable of dealing with <code class="inlineCode">hostPath</code>.</p>
+    <div class="note">
+      <p class="normal">Some complex clusters spanning across multiple clouds and or on-premises might be provisioned with a lot of different <code class="inlineCode">storageclass</code> objects to be able to communicate with a lot of different storage technologies. Bear in mind that Kubernetes is not tied to any cloud provider and, therefore, does not force or limit you in your usage of backing storage solutions.</p>
+    </div>
+    <p class="normal">Now, we will <a id="_idIndexMarker920"/>create a <code class="inlineCode">PersistentVolumeClaim</code> object that will dynamically create a <code class="inlineCode">hostPath</code> type. Here is the YAML file to create the PVC. Please note that <code class="inlineCode">storageClassName</code> is set to <code class="inlineCode">standard</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta"># </span>pvc-dynamic.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-dynamic-hostpath-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard # VERY IMPORTANT !
+  resources:
+    requests:
+      storage: 1Gi
+  selector:
+    matchLabels:
+      type: hostpath
+      env: prod
+</code></pre>
+    <p class="normal">Following this, we can create it in the proper namespace:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f pvc-dynamic.yaml -n dynamicstorage
+persistentvolumeclaim/my-dynamic-hostpath-pvc created
+</code></pre>
+    <p class="normal">Let us check the status of the PV and PVC now:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pod,pvc,pv -n dynamicstorage
+NAME                                            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/my-dynamic-hostpath-pvc   Bound    pvc-4597ab27-c894-40de-a7ac-1b6ca961bcdc   1Gi        RWO            standard       &lt;unset&gt;                 7s
+NAME                                                        CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                                    STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+persistentvolume/pvc-4597ab27-c894-40de-a7ac-1b6ca961bcdc   1Gi        RWO            Delete           Bound    dynamicstorage/my-dynamic-hostpath-pvc   standard       &lt;unset&gt;                          7s
+</code></pre>
+    <p class="normal">We can see that the PV has been created by the <code class="inlineCode">StorageClass</code> and bound to the PVC as per the request.</p>
+    <p class="normal">Now that this<a id="_idIndexMarker921"/> PVC has been created, we can add a new Pod that will mount this <code class="inlineCode">PersistentVolumeClaim</code> object. Here is a YAML definition file of a Pod that will mount the <code class="inlineCode">PersistentVolumeClaim</code> object that was created earlier:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># pod-with-dynamic-pvc.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-dynamic-storage</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">image:</span> <span class="hljs-string">nginx</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+      <span class="hljs-attr">volumeMounts:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">mountPath:</span> <span class="hljs-string">"/var/www/html"</span>
+          <span class="hljs-attr">name:</span> <span class="hljs-string">mypersistentvolume</span>
+  <span class="hljs-attr">volumes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">mypersistentvolume</span>
+      <span class="hljs-attr">persistentVolumeClaim:</span>
+        <span class="hljs-attr">claimName:</span> <span class="hljs-string">my-dynamic-hostpath-pvc</span>
+  
+</code></pre>
+    <p class="normal">Now, let’s create it in the correct namespace:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f pod-with-dynamic-pvc.yaml -n dynamicstorage
+pod/nginx-dynamic-storage created
+<span class="hljs-con-meta">$ </span>kubectl get pod,pvc,pv -n dynamicstorage
+NAME                        READY   STATUS    RESTARTS   AGE
+pod/nginx-dynamic-storage   1/1     Running   0          45s
+NAME                                            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/my-dynamic-hostpath-pvc   Bound    pvc-4597ab27-c894-40de-a7ac-1b6ca961bcdc   1Gi        RWO            standard       &lt;unset&gt;                 7m39s
+NAME                                                        CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                                    STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+persistentvolume/pvc-4597ab27-c894-40de-a7ac-1b6ca961bcdc   1Gi        RWO            Delete           Bound    dynamicstorage/my-dynamic-hostpath-pvc   standard       &lt;unset&gt;                          7m39s
+</code></pre>
+    <p class="normal">Everything is OK! We’re <a id="_idIndexMarker922"/>finally done with dynamic provisioning! Please note that, by default, the reclaim policy will be set to <code class="inlineCode">delete</code> so that the PV is removed when the PVC that created it is removed, too. Don’t hesitate to change the reclaim policy if you need to retain sensitive data.</p>
+    <p class="normal">You can test it by deleting the Pod and PVC; the PV will be removed automatically by the <code class="inlineCode">StorageClass</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl delete po nginx-dynamic-storage -n dynamicstorage
+pod "nginx-dynamic-storage" deleted
+<span class="hljs-con-meta">$ </span>kubectl delete pvc my-dynamic-hostpath-pvc -n dynamicstorage
+persistentvolumeclaim "my-dynamic-hostpath-pvc" deleted
+<span class="hljs-con-meta">$ </span>kubectl get pod,pvc,pv -n dynamicstorage
+No resources found
+</code></pre>
+    <p class="normal">We can see from the above snippet that the PV is also deleted automatically when the PVC gets deleted.</p>
+    <p class="normal">We’ve covered the basics of PVs, PVCs, <code class="inlineCode">StorageClasses</code>, and the differences between static and dynamic provisioning. In the next section, we’ll dive into some advanced storage topics in Kubernetes, exploring how to optimize and extend your storage strategies.</p>
+    <h1 class="heading-1" id="_idParaDest-371">Advanced storage topics</h1>
+    <p class="normal">In addition to<a id="_idIndexMarker923"/> understanding the basics of PVs, PVCs, and <code class="inlineCode">StorageClasses</code>, it’s beneficial to delve into some advanced storage topics in Kubernetes. While not mandatory, having knowledge of these concepts can significantly enhance your expertise as a Kubernetes practitioner. In the following sections, we will introduce advanced topics such as ephemeral volumes for temporary storage, CSI Volume Cloning for flexible volume management, and expanding <code class="inlineCode">PersistentVolumeClaims</code> to accommodate increased storage needs. These topics will provide you with a broader perspective on Kubernetes storage capabilities and practical applications.</p>
+    <h2 class="heading-2" id="_idParaDest-372">Ephemeral volumes for temporary storage in Kubernetes</h2>
+    <p class="normal">Ephemeral volumes <a id="_idIndexMarker924"/>offer a convenient way to provide temporary storage for Pods in Kubernetes. They’re<a id="_idIndexMarker925"/> perfect for applications that need scratch space for caching or require read-only data, like configuration files or Secrets. Unlike PVs, ephemeral volumes are automatically deleted when the Pod terminates, simplifying deployment and management.</p>
+    <p class="normal">Here are a few <a id="_idIndexMarker926"/>key benefits of ephemeral volumes for temporary storage:</p>
+    <ul>
+      <li class="bulletList">Temporary storage for Pods</li>
+      <li class="bulletList">Automatic deletion with Pod termination</li>
+      <li class="bulletList">Simplified deployment and management</li>
+    </ul>
+    <p class="normal">There are multiple types of ephemeral storage available in Kubernetes, as follows:</p>
+    <ul>
+      <li class="bulletList">emptyDir: This creates an empty directory on the node’s local storage</li>
+      <li class="bulletList">ConfigMap, downwardAPI, Secret: This injects data from Kubernetes objects into the Pod</li>
+      <li class="bulletList">CSI ephemeral volumes: These are provided by external CSI drivers (requires specific driver support)</li>
+      <li class="bulletList">Generic ephemeral volumes: These are offered by storage drivers supporting PVs</li>
+    </ul>
+    <p class="normal">Now that we have learned some details with regard to ephemeral volumes, let’s move on to gain some understanding of CSI volume cloning and volume snapshots.</p>
+    <h2 class="heading-2" id="_idParaDest-373">CSI volume cloning and volume snapshots</h2>
+    <p class="normal">CSI introduces <a id="_idIndexMarker927"/>a <a id="_idIndexMarker928"/>powerful feature: volume cloning. This functionality allows you to create an exact copy of an existing <code class="inlineCode">PersistentVolumeClaim</code> as a new PVC.</p>
+    <p class="normal">The following YAML snippet illustrates a typical PVC cloning declaration:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># pv-cloning.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">PersistentVolumeClaim</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">cloned-pvc</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">mynamespace</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">accessModes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">ReadWriteOnce</span>
+  <span class="hljs-attr">storageClassName:</span> <span class="hljs-string">custom-storage-class</span>
+  <span class="hljs-attr">resources:</span>
+    <span class="hljs-attr">requests:</span>
+      <span class="hljs-attr">storage:</span> <span class="hljs-string">5Gi</span>
+  <span class="hljs-attr">dataSource:</span>
+    <span class="hljs-attr">kind:</span> <span class="hljs-string">PersistentVolumeClaim</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">original-pvc</span>
+</code></pre>
+    <p class="normal">Here are<a id="_idIndexMarker929"/> a few<a id="_idIndexMarker930"/> key benefits of CSI Volume Cloning:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Simplified workflows</strong>: CSI Volume Cloning automates data replication, eliminating the need for manual copying and streamlining storage management.</li>
+      <li class="bulletList"><strong class="keyWord">Enhanced efficiency</strong>: Easily create replicas of existing volumes, optimizing deployments and resource utilization.</li>
+      <li class="bulletList"><strong class="keyWord">Troubleshooting live data</strong>: Instead of touching the production data, you can take a copy and use it for QA, troubleshooting, etc.</li>
+    </ul>
+    <p class="normal">Refer to the documentation to learn more about CSI volume cloning: <a href="https://kubernetes.io/docs/concepts/storage/volume-pvc-datasource"><span class="url">https://kubernetes.io/docs/concepts/storage/volume-pvc-datasource</span></a>.</p>
+    <p class="normal">Like volume cloning, Kubernetes also offers another mechanism via CSI drivers to take data backups called volume snapshots. <code class="inlineCode">VolumeSnapshot</code> provides a standardized way to create a point-in-time copy of a volume’s data. Similar to <code class="inlineCode">PersistentVolume</code> and <code class="inlineCode">PersistentVolumeClaim</code> resources, Kubernetes uses VolumeSnapshot, <code class="inlineCode">VolumeSnapshotContent</code>, and <code class="inlineCode">VolumeSnapshotClass</code> resources to manage volume snapshots. VolumeSnapshots are user requests for snapshots, while VolumeSnapshotContent represents the actual snapshots on the storage system. These resources enable users to capture the state of their volumes without provisioning an entirely new volume, making it useful for scenarios such as database backups before performing critical updates or deletions. Unlike regular PVs, these snapshot resources are <strong class="keyWord">Custom Resource Definitions</strong> (<strong class="keyWord">CRDs</strong>) and <a id="_idIndexMarker931"/>require a CSI driver that supports snapshot functionality. The CSI driver uses a sidecar container called <code class="inlineCode">csi-snapshotter</code> to handle <code class="inlineCode">CreateSnapshot</code> and <code class="inlineCode">DeleteSnapshot</code> operations.</p>
+    <p class="normal">When a user creates a<a id="_idIndexMarker932"/> snapshot, it can be either pre-provisioned by an administrator or dynamically provisioned from an existing PVC. The snapshot controller binds<a id="_idIndexMarker933"/> the VolumeSnapshot and <a id="_idIndexMarker934"/>VolumeSnapshotContent in both scenarios, ensuring that the snapshot content matches the user request. Snapshots can be easily deleted or retained based on the set <code class="inlineCode">DeletionPolicy</code>, allowing flexibility in how data is managed. Furthermore, Kubernetes provides the option to convert a snapshot’s volume mode (e.g., from filesystem to block) and restore data from a snapshot to a new PVC. This capability makes VolumeSnapshot a powerful tool in data protection, which can be complemented by CSI volume cloning to create efficient backups or test environments, adding another layer of flexibility to storage management in Kubernetes.</p>
+    <div class="note">
+      <p class="normal">Volume cloning in Kubernetes is ideal for creating identical copies of <code class="inlineCode">PersistentVolumes</code>, often used for development and testing environments. Snapshots, on the other hand, capture the point-in-time state of a volume, making them useful for backup and restore purposes.</p>
+      <p class="normal">Refer to the documentation (<span class="url">https://kubernetes.io/docs/concepts/storage/volume-snapshots/</span>) to learn more about volume snapshots.</p>
+    </div>
+    <p class="normal">In the following section, we will learn how to expand a PVC.</p>
+    <h2 class="heading-2" id="_idParaDest-374">Learning how to expand PersistentVolumeClaim</h2>
+    <p class="normal">Kubernetes offers <a id="_idIndexMarker935"/>built-in support for expanding PVCs, allowing you to seamlessly increase storage capacity for your applications. This functionality is currently limited to volumes provisioned by CSI drivers (as of version 1.29, other volume types are deprecated).</p>
+    <p class="normal">To enable PVC expansion for a specific <code class="inlineCode">StorageClass</code>, you need to set the <code class="inlineCode">allowVolumeExpansion</code> field to <code class="inlineCode">true</code> within the <code class="inlineCode">StorageClass</code> definition. This flag controls whether PVCs referencing this <code class="inlineCode">StorageClass</code> can request more storage space:</p>
+    <p class="normal"><strong class="keyWord">Example StorageClass Configuration:</strong></p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># storageclass-expandable.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">storage.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">StorageClass</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">expadable-sc</span>
+<span class="hljs-attr">provisioner:</span> <span class="hljs-string">vendor-name.example/magicstorage</span>
+<span class="hljs-string">...&lt;removed</span> <span class="hljs-string">for</span> <span class="hljs-string">brevity&gt;...</span>
+<span class="hljs-attr">allowVolumeExpansion:</span> <span class="hljs-literal">true</span>
+</code></pre>
+    <p class="normal">When your<a id="_idIndexMarker936"/> application requires additional storage, simply edit the PVC object and specify a larger size in the <code class="inlineCode">resources.requests.storage</code> field. Kubernetes will then initiate the expansion process, resizing the underlying volume managed by the CSI driver. This eliminates the need to create a new volume and migrate data, streamlining storage management.</p>
+    <p class="normal">Refer to the documentation (<span class="url">https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims</span>) to learn more.</p>
+    <h1 class="heading-1" id="_idParaDest-375">Summary</h1>
+    <p class="normal">We have arrived at the end of this chapter, which taught you how to manage persistent storage on Kubernetes. You discovered that <code class="inlineCode">PersistentVolume</code> is a resource type that acts as a point to an underlying resource technology, such as <code class="inlineCode">hostPath</code> and NFS, along with cloud-based solutions such as Amazon EBS and Google PDs.</p>
+    <p class="normal">Additionally, you discovered the relationship between <code class="inlineCode">PersistentVolume</code>, <code class="inlineCode">PersistentVolumeClaim</code>, and <code class="inlineCode">storageClass</code>. You learned that <code class="inlineCode">PersistentVolume</code> can hold different reclaim policies, which makes it possible to remove, recycle, or retain them when their corresponding <code class="inlineCode">PersistentVolumeClaim</code> object gets removed.</p>
+    <p class="normal">Finally, we discovered what dynamic provisioning is and how it can help us. Bear in mind that you need to be aware of this feature because if you create and retain too many volumes, it can have a negative impact on your cloud bill at the end of the month, even though you can restrict storage usage using resource quotas for the namespaces.</p>
+    <p class="normal">We’re now done with the basics of Kubernetes, and this chapter is also the end of this section. In the next section, you’re going to discover Kubernetes controllers, which are objects designed to automate certain tasks in Kubernetes, such as maintaining a number of replicas of your Pods, either using the Deployment resource type or the StatefulSet resource type. There are still a lot of things to learn!</p>
+    <h1 class="heading-1" id="_idParaDest-376">Further reading</h1>
+    <ul>
+      <li class="bulletList">Persistent Volumes: <span class="url">https://kubernetes.io/docs/concepts/storage/persistent-volumes/</span></li>
+      <li class="bulletList">Types of Persistent Volumes: <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#types-of-persistent-volumes "><span class="url">https://kubernetes.io/docs/concepts/storage/persistent-volumes/#types-of-persistent-volumes</span></a></li>
+      <li class="bulletList">Dynamic Volume Provisioning: <span class="url">https://kubernetes.io/docs/concepts/storage/dynamic-provisioning/</span></li>
+      <li class="bulletList">Expanding Persistent Volumes Claims: <span class="url">https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims</span></li>
+      <li class="bulletList">CSI Volume Cloning: <span class="url">https://kubernetes.io/docs/concepts/storage/volume-pvc-datasource/</span></li>
+    </ul>
+    <h1 class="heading-1" id="_idParaDest-377">Join our community on Discord</h1>
+    <p class="normal">Join our community’s Discord space for discussions with the authors and other readers:</p>
+    <p class="normal"><a href="https://packt.link/cloudanddevops"><span class="url">https://packt.link/cloudanddevops</span></a></p>
+    <p class="normal"><img alt="" src="image/QR_Code119001106479081656.png"/></p>
+  </div>
+</body></html>

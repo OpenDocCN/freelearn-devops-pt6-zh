@@ -1,0 +1,149 @@
+<html><head></head><body>
+		<div id="_idContainer082">
+			<h1 id="_idParaDest-210"><em class="italic"><a id="_idTextAnchor209"/>Chapter 13</em>: Scaling in Kubernetes</h1>
+			<p>In this chapter, we'll be covering scaling your Kubernetes cluster. We'll go over the three main ways of doing so: with the <strong class="bold">Horizontal Pod Autoscaler</strong> (<strong class="bold">HPA</strong>), <strong class="bold">Vertical Pod Autoscaler</strong> (<strong class="bold">VPA</strong>), and Cluster Autoscaler. We will cover the pros and cons and some examples of each of these ways, as well as diving into the best practices for each method. </p>
+			<p>In this chapter, we're going to cover the following main topics:</p>
+			<ul>
+				<li>What is an HPA?</li>
+				<li>What is a VPA?</li>
+				<li>What is Kubernetes Cluster Autoscaler?</li>
+			</ul>
+			<h1 id="_idParaDest-211"><a id="_idTextAnchor210"/>What is an HPA?</h1>
+			<p>An HPA is a <a id="_idIndexMarker908"/>controller within a controller manager. An HPA automatically scales pods in replication controllers, deployments, replica sets, or stateful sets based on CPU usage (or custom metrics). Objects that cannot be scaled, such as DaemonSets, are not affected by horizontal pod autoscaling. With a default value of <strong class="source-inline">15</strong> seconds, the <strong class="source-inline">horizontal-pod-autoscaler-sync-period</strong> flag in the controller manager determines how often the HPA runs. Every cycle, the controller manager checks resource utilization on the workload in question. The controller uses a custom metrics endpoint along with the metrics server to gather its statistics.</p>
+			<p>In essence, the HPA monitors current and desired metric values, and if they do not match the specification, it takes action. The HPA follows the following algorithm:</p>
+			<pre class="source-code">desiredReplicas = ceil[currentReplicas * ( currentMetricValue / desiredMetricValue )]</pre>
+			<p>For example, let's say you have an application to keep the CPU usage at 50%. Currently, this deployment has a CPU request of 1000 m (millicores), which equals one core on the node. It is important to note that the HPA uses the CPU and memory request metrics and not the limits. The HPA computes the <strong class="source-inline">currentMetricValue</strong> object type by dividing the request value by the current usage, which outputs a percentage. HPA does this calculation for every pod in the deployment, then averages them to create a <strong class="source-inline">currentMetricValue</strong> object type for the deployment. The HPA then compares the <strong class="source-inline">currentMetricValue</strong> object type to the <strong class="source-inline">desiredMetricValue</strong> object type, which is 50% for both, so that the HPA won't make a change. But if the ratio is too high (1.0 is the target), it will trigger a scale-up event, which will add more pods. It is important to note that <em class="italic">not ready</em> or <em class="italic">terminating</em> pods are not counted. By default, the metrics for the first 30 seconds of a pod's life are ignored as defined by the <strong class="source-inline">horizontal-pod-autoscaler-initial-readiness-delay</strong> flag. Also, the HPA can scale by more than one pod <a id="_idIndexMarker909"/>at a time, but usually, this requires a significant ratio difference, so most of the time, the workload is only scaled by one.</p>
+			<p>At this point, we know how HPAs work, including how the HPA makes its decisions to scale up and down workloads. Of course, the next question we need to ask is when you should and shouldn't use HPAs for your workload, and in the next section, we will dive into that topic. </p>
+			<h2 id="_idParaDest-212"><a id="_idTextAnchor211"/>When should you use an HPA?</h2>
+			<p>Now that we know how an HPA works, let's dive into when you should use one. An example application <a id="_idIndexMarker910"/>of an HPA is a web server. The question is, why is it a great example? The answer is that, traditionally, even before Kubernetes, web servers were designed in a way that you could remove or add them at any time without impacting your application. </p>
+			<p>The following is a list of characteristics of an application that it would make sense to use with an HPA:</p>
+			<ul>
+				<li><strong class="bold">Stateless</strong> – The application <a id="_idIndexMarker911"/>must be able to be added and removed at any time.</li>
+				<li><strong class="bold">Quick startup</strong> – Generally, your <a id="_idIndexMarker912"/>pods should start up and be ready for requests within 30 seconds.</li>
+				<li><strong class="bold">HTTP-based</strong> – Most <a id="_idIndexMarker913"/>applications that will use HPAs are HTTP-based because we want to leverage the built-in load balancing capabilities that come with an ingress controller.</li>
+				<li><strong class="bold">Batch jobs</strong> – If you have batch jobs that can be run in parallel, you can use an HPA to scale <a id="_idIndexMarker914"/>up and down the number of worker pods based on the load, for example, having a pod that grabs an item out of a queue, processes the data, then publishes the output. Assuming multiple jobs can be run at once, you should set up an HPA based on the length of the queue to scale up and down the number of workers, that is, deployment.</li>
+			</ul>
+			<p>Next, let's learn about when to not use an HPA. </p>
+			<h2 id="_idParaDest-213"><a id="_idTextAnchor212"/>When should you not use an HPA?</h2>
+			<p>Of course, it doesn't make sense to have an HPA on all applications, and having an HPA can break them, for example, a database cluster, where you do not want pods being added and <a id="_idIndexMarker915"/>removed all the time because it could cause application errors. It is important to note that HPAs support scaling StatefulSets, but you should be careful as most applications that require StatefulSets do not like being scaled up and down a lot. There, of course, are other reasons why you might not want to use an HPA with your applications and the following are a few of the most common reasons:</p>
+			<ul>
+				<li><strong class="bold">StatefulSets</strong> – Applications such as databases that require storage and orderly scaling tend to not be compatible with an HPA adding and removing pods as it sees fit.</li>
+				<li><strong class="bold">Pods that require storage</strong> – Applications that require a <strong class="bold">PersistentVolumeClaim</strong> (<strong class="bold">PVC</strong>) are generally not recommended for the fact that provisioning and attaching storage can require a reasonable amount of time to complete and can break over time.</li>
+				<li><strong class="bold">Applications that require reconfiguration when scale changes</strong> – A great example of this kind of workload is a Java app that uses database connection pooling with an external database. This is because any time a pod is created, Java will need to develop several new connections, which can be a heavy load on the database server and cause connection exhaustion as the database runs out of connections, which will cause the pod to fail. This, in turn, will generate a new pod to be created and at the same time, the load on the pods can go up due to the database running slowly, causing more scaling. The problem just runs away, creating more and more pods, which eventually causes a cluster outage.</li>
+				<li><strong class="bold">Workloads that burst</strong> – If you have an application that sits at very low utilization most of the time and then jumps to high utilization for a short time, it doesn't make sense to use an HPA because the HPA will scale down the deployment until it needs the resources. The issue happens during short-lived bursts as by the time the HPA reacts and spins up new pods, the event has already passed, making the HPA worthless. <p class="callout-heading">Note</p><p class="callout">You can set a crazily high minimum scale but at that point, the question needs to be asked, why do you need an HPA if it's never going to scale up or down?</p></li>
+			</ul>
+			<p>We have <a id="_idIndexMarker916"/>covered the pros and cons of an HPA in this section. It is important to note that every application is different, and you should work with the application developer to decide whether adding an HPA could help. Let's look at an example.</p>
+			<h2 id="_idParaDest-214"><a id="_idTextAnchor213"/>Example – simple web server with CPU utilization</h2>
+			<p>To deploy <a id="_idIndexMarker917"/>this example, please run the following command:</p>
+			<pre class="source-code">kubectl apply -f https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch13/examples/simple/deploy.yaml</pre>
+			<p>This command will deploy a namespace called <strong class="source-inline">hpa-example-simple</strong> with a test app called <strong class="source-inline">hello-world</strong> and an HPA that will trigger a CPU utilization of 50%. We can test the HPA using the <strong class="source-inline">load-generator</strong> deployment, which is set to a scale of <strong class="source-inline">0</strong> by default.</p>
+			<p>To create a load on the <strong class="source-inline">hello-world</strong> app, simply run the following command to turn on the load:</p>
+			<pre class="source-code">kubectl -n hpa-example-simple scale deployment load-generator --replicas=1</pre>
+			<p>Run the following command to turn it back off: </p>
+			<pre class="source-code">kubectl -n hpa-example-simple scale deployment load-generator --replicas=0</pre>
+			<p>If you <a id="_idIndexMarker918"/>run the <strong class="source-inline">kubectl -n hpa-example-simple describe hpa hello-world</strong> command, you can see the following events and actions taken by the HPA:</p>
+			<div>
+				<div id="_idContainer080" class="IMG---Figure">
+					<img src="image/B18053_13_01.jpg" alt="Figure 13.1 – HPA events&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 13.1 – HPA events</p>
+			<p>In this section, we covered scaling our workload in the horizontal direction, that is, adding and removing pods. In the next section, we will go in the other direction, vertically.</p>
+			<h1 id="_idParaDest-215"><a id="_idTextAnchor214"/>What is a VPA?</h1>
+			<p>If there is an HPA, is there a VPA? Yes, there is. A VPA is similar to an HPA, but instead of scaling the <a id="_idIndexMarker919"/>pod count up and down, the VPA automatically sets the resource request and limit values based on the actual CPU usage. The main goal of a VPA is to reduce the maintenance overhead associated with managing resource requests and limits for containers and to improve cluster utilization.</p>
+			<p>Even though a VPA is similar to an HPA, it's important to know that VPAs have a different way of working, which we'll be covering in the next section.</p>
+			<h2 id="_idParaDest-216"><a id="_idTextAnchor215"/>How does a VPA work?</h2>
+			<p>There <a id="_idIndexMarker920"/>are three different components that make up a VPA:</p>
+			<ul>
+				<li><strong class="bold">VPA admission hook</strong> – Each pod submitted to the cluster is examined with this webhook <a id="_idIndexMarker921"/>to see whether its parent object <a id="_idIndexMarker922"/>references the pod (a replication set, a deployment, and so on).</li>
+				<li><strong class="bold">VPA recommender</strong> – Connections to the metrics-server application give recommendations <a id="_idIndexMarker923"/>for scaling up or down the <a id="_idIndexMarker924"/>requests and limits of the pods based on historical and current usage data (CPU and memory) for each pod with VPA enabled.</li>
+				<li><strong class="bold">VPA updater</strong> – Each minute the VPA updater runs, it will evict the running version of <a id="_idIndexMarker925"/>a pod that is not in the recommended <a id="_idIndexMarker926"/>range, so the pod can restart and go through the VPA admission webhook to adjust the CPU and memory settings before starting.</li>
+			</ul>
+			<p>This means that if you are running something such as Argo CD, the VPA updater will not detect any changes in the deployment, and the two won't be fighting to adjust the specifications.</p>
+			<p>Next, let's learn why we need a VPA.</p>
+			<h2 id="_idParaDest-217"><a id="_idTextAnchor216"/>Why do you need a VPA?</h2>
+			<p>We need to cover the resource request and limit before diving deeper into VPAs. When kube-scheduler <a id="_idIndexMarker927"/>assigns a pod to a node, it does not know how much memory and CPU it will need. There is only 16 GB of free RAM on the node, but the pod needs 64 GB. As soon as the pod starts, it runs out of memory, evicting pods. A cluster node with the correct amount of memory might support that pod. Here is where resource requests are put in play, where we specify that kube-scheduler should give this pod X amount of CPU and memory on a specific node. By adding this intelligence into the scheduling process, kube-scheduler can make a more informed decision about where to schedule pods. We also have resource limits, which act as hard limits for throttling or killing pods if they exceed their limits.</p>
+			<p>Of course, setting the resource request and limits can require a lot of work because you need to load test your application and review the performance data, and set your requests and limits. Then you have to keep monitoring this over time to tune these settings. This is why we see many environments where everything is set to unlimited, and the cluster <a id="_idIndexMarker928"/>administrator will just throw hardware at the problem. This is where a VPA comes into the picture by setting our requests for us and fine-tuning them over time.</p>
+			<p>For example, we can build a pod with the following settings:</p>
+			<pre class="source-code">requests:</pre>
+			<pre class="source-code">  cpu: 50m</pre>
+			<pre class="source-code">  memory: 100Mi</pre>
+			<pre class="source-code">limits:</pre>
+			<pre class="source-code">  cpu: 200m</pre>
+			<pre class="source-code">  memory: 250Mi</pre>
+			<p>The VPA recommender determines that you will need 120 MB of CPU power and 300 MB of memory to make your pod function properly. The recommended settings are as follows:</p>
+			<pre class="source-code">requests:</pre>
+			<pre class="source-code">  cpu: 120m</pre>
+			<pre class="source-code">  memory: 300Mi</pre>
+			<pre class="source-code">limits:</pre>
+			<pre class="source-code">  cpu: 480m</pre>
+			<pre class="source-code">  memory: 750Mi</pre>
+			<p>There will also be an increase in the limits because the VPA will scale them proportionally. Therefore, it is imperative to set your limits to something realistic rather than something crazy such as 1 TB of memory if your nodes are only equipped with 128 GB each. As a starting point, set your limits by doubling your request size, for example, if your request is 100 MB, your limit should be 200 MB. But don't forget that your limits are meaningless <a id="_idIndexMarker929"/>because the scheduling decision (and therefore, resource contention) will always be based on the requests. Limits are helpful only when there is resource contention or to avoid uncontrollable memory leaks.</p>
+			<h2 id="_idParaDest-218"><a id="_idTextAnchor217"/>How to write VPA manifests</h2>
+			<p>You should never define more than one VPA for the same Pod/ReplicaSet/Deployment/StatefulSet – the behavior becomes unpredictable in such cases. A VPA should not be used on the same pod as an HPA.</p>
+			<p>You first <a id="_idIndexMarker930"/>need to create a VPA object with <strong class="source-inline">updateMode: off</strong> for the target application, which puts the VPA in a dry run mode (which is the recommendation mode). </p>
+			<p>The following is an example VPA with the minimum required settings:</p>
+			<pre class="source-code">apiVersion: autoscaling.k8s.io/v1beta2</pre>
+			<pre class="source-code">kind: VerticalPodAutoscaler</pre>
+			<pre class="source-code">metadata:</pre>
+			<pre class="source-code">  name: hello-world</pre>
+			<pre class="source-code">spec:</pre>
+			<pre class="source-code">  targetRef:</pre>
+			<pre class="source-code">    apiVersion: "apps/v1"</pre>
+			<pre class="source-code">    kind: Deployment</pre>
+			<pre class="source-code">    name: hello-world</pre>
+			<pre class="source-code">  updatePolicy:</pre>
+			<pre class="source-code">    updateMode: "Off"</pre>
+			<p>After about 5 minutes, you will be able to query the data and start to see some of the recommendations:</p>
+			<pre class="source-code">kubectl describe vpa hello-world</pre>
+			<p>As you can see in the following screenshot, the <strong class="source-inline">status</strong> section gives us some recommendations <a id="_idIndexMarker931"/>for our targets, and following the screenshot is a complete breakdown of what each of these sections means:</p>
+			<div>
+				<div id="_idContainer081" class="IMG---Figure">
+					<img src="image/B18053_13_02.jpg" alt="Figure 13.2 – Example VPA description &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 13.2 – Example VPA description </p>
+			<p>You can find the complete output at <a href="https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch13/vpa/describe-vpa.yaml">https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch13/vpa/describe-vpa.yaml</a>. To break down this output, you'll see the following sections:</p>
+			<ul>
+				<li><strong class="source-inline">Uncapped Target</strong>: When upper limits are not configured in the VPA definition, the resource request on your pod will be uncapped.</li>
+				<li><strong class="source-inline">Target</strong>: This is the amount that will be configured on the subsequent execution of the admission webhook. If it already has this configuration, no changes will happen (your pod won't be in a restart/evict loop). Otherwise, the pod will be evicted and restarted using this target setting.</li>
+				<li><strong class="source-inline">Lower Bound</strong>: When your pod goes below this usage, it will be evicted and downscaled.</li>
+				<li><strong class="source-inline">Upper Bound</strong>: When your pod goes above this usage, it will be evicted and upscaled.</li>
+			</ul>
+			<p>At this <a id="_idIndexMarker932"/>point, you can just use this information to create and set the request limits of your deployments. But if you want to use automatic predictions, you need to change the <strong class="source-inline">updateMode</strong> value to <strong class="source-inline">Auto</strong>.</p>
+			<p>Now, if you want to set minimum and maximum limits for the VPA, you can add the following section to your VPA config:</p>
+			<pre class="source-code">      minAllowed:</pre>
+			<pre class="source-code">        cpu: "300m"</pre>
+			<pre class="source-code">        memory: "512Mi"</pre>
+			<pre class="source-code">      maxAllowed:</pre>
+			<pre class="source-code">        cpu: "1800m"</pre>
+			<pre class="source-code">        memory: "3600Mi"</pre>
+			<p>So far, we have focused on scaling pods, but the other half of the picture is scaling the nodes. In the next section, we are going to dive into node autoscaling.</p>
+			<h1 id="_idParaDest-219"><a id="_idTextAnchor218"/>What is Kubernetes Node Autoscaler?</h1>
+			<p>As new <a id="_idIndexMarker933"/>workloads and pods are deployed, all the cluster worker nodes' resources can be exhausted. This will result in pods not being scheduled on existing workers. In some cases, pods can sit in a pending state, awaiting resource allocation and possibly causing an outage. Manually adding or removing worker nodes can, of course, solve this problem, as Cluster Autoscaler increases or decreases <a id="_idIndexMarker934"/>the size of a Kubernetes cluster based on pending pods and node utilization metrics.</p>
+			<p>Now that we know what a Node Autoscaler is, it's essential to know when it should or shouldn't be used, which we'll cover in the next section.</p>
+			<h2 id="_idParaDest-220"><a id="_idTextAnchor219"/>When should you use a Kubernetes Node Autoscaler?</h2>
+			<p>There are <a id="_idIndexMarker935"/>two main reasons to set up a Node Autoscaler in Rancher/Kubernetes environments:</p>
+			<ul>
+				<li><strong class="bold">Cost controls/efficiency</strong> – When moving workloads into the cloud, a big mistake many people make is to treat cloud VMs just like they treated on-prem VMs. What I mean by this is on-prem, if you provision an eight-core VM but are only really using four cores of resources, the cost in physical hardware is only the four cores that are actually in use. But in the cloud, for example, if you provision an eight-core VM in AWS, your bill will be the same if you use 100% of the CPU or zero. Because of this, we want to keep our nodes as close to 100% utilization as possible without impacting applications. The general rule of thumb is 80% CPU and 90% memory. This is because these are the default node pressure limits. Node autoscaling can allow you to add just enough nodes to your cluster to meet your needs when you need them. This is very helpful for workloads that vary throughout the day. For example, your application might just be very busy between 8 A.M. and 5 P.M. from Monday to Friday but have a very low utilization after hours. So autoscaling and spinning up your nodes early in the morning and spinning them down at night will help to cut costs.</li>
+				<li><strong class="bold">Node patching/upgrading</strong> – Node rehydration is one of the side effects of autoscaling your nodes. You have to create a process to easily add and remove nodes from your cluster, instead of patching/upgrading your nodes in place, which means you need to drain and cordon your nodes one at a time, then apply any OS patches and upgrades, then finally reboot the node. You need to wait for the node to come back online and uncordon the node. Then repeat this process for each node in the cluster. This, of course, requires scripting and automation along with checks and tests. With autoscaling, you just need to update the <a id="_idIndexMarker936"/>base VM image and verify its health. Then, just trigger a rolling update on the node pool. At this point, the autoscaling takes over.</li>
+			</ul>
+			<p>Next, let's learn about when to not use a Kubernetes Node Autoscaler.</p>
+			<h2 id="_idParaDest-221"><a id="_idTextAnchor220"/>When should you not use a Kubernetes Node Autoscaler?</h2>
+			<p>Node Autoscaler <a id="_idIndexMarker937"/>has some practical limitations and best practices that can cause instability in your cluster if not followed:</p>
+			<ul>
+				<li><strong class="bold">Kubernetes and OS matching</strong> – Kubernetes is an ever-evolving platform, with new features and releases being released regularly. To ensure the best performance, ensure that you deploy the Kubernetes Cluster Autoscaler with the recommended version. To keep Kubernetes in lockstep with your OSs, you have to upgrade them regularly. For a list of recommended versions, visit <a id="_idIndexMarker938"/>Rancher's support matrix at <a href="https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/">https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/</a>.</li>
+				<li><strong class="bold">Your nodes must be the right size</strong> – The Cluster Autoscaler will only function properly if your node pools have nodes of the same capacity. Among the reasons is the underlying assumption of the Cluster Autoscaler that each node in the node group has the same CPU and memory capacity. Autoscaling decisions are made based on the template nodes for each node group. Therefore, the best practice is to ensure that all nodes and instances in the instance group being autoscaled are the same type. This might not be the best approach for public cloud providers such as AWS, as diversification and availability factors dictate having multiple instance types.</li>
+				<li><strong class="bold">A pod disruption budget can be specified</strong> – By default, the Cluster Autoscaler will scale down nodes without disrupting an application. For instance, an Autoscaler might remove three nodes from a cluster, and your application might be unlucky and run all its pods on those three nodes. If nodes violate the policy, for example, having a <strong class="source-inline">PodDisruptionBudget</strong> flag prevents them from being drained. You can specify the disruption budgets by setting the <strong class="source-inline">.spec.minAvailable</strong> and <strong class="source-inline">.spec.maxUnavailable</strong> fields. As an absolute or a percentage value, <strong class="source-inline">.spec.minAvailable</strong> specifies the minimum <a id="_idIndexMarker939"/>number of pods available after the eviction. In the same way, <strong class="source-inline">.spec.maxUnavailable</strong> specifies the number of pods that will be unavailable after eviction, either as an absolute number or as a percentage.</li>
+			</ul>
+			<p>At this point, we have covered what node autoscaling is and why you would want to use it. In the next section, we will cover how to set up node autoscaling in Rancher.</p>
+			<h2 id="_idParaDest-222"><a id="_idTextAnchor221"/>How to set up autoscaling with Rancher-managed clusters</h2>
+			<p>At present, Rancher supports only AWS Auto Scaling groups. The details can be found in Rancher's <a id="_idIndexMarker940"/>official documentation located at <a href="https://rancher.com/docs/rancher/v2.5/en/cluster-admin/cluster-autoscaler/amazon/">https://rancher.com/docs/rancher/v2.5/en/cluster-admin/cluster-autoscaler/amazon/</a>. It is crucial to note that autoscaling etcd and control plane nodes can be risky as removing and adding multiple management nodes simultaneously can cause cluster outages. Also, you must configure etcd S3 backups because the etcd backups are stored locally on the etcd nodes by default. This can cause you to lose your backups if <a id="_idIndexMarker941"/>you recycle your etcd nodes. Details on configuring S3 backups can be found at <a href="https://rancher.com/docs/rancher/v2.5/en/cluster-admin/backing-up-etcd/">https://rancher.com/docs/rancher/v2.5/en/cluster-admin/backing-up-etcd/</a>. </p>
+			<h2 id="_idParaDest-223"><a id="_idTextAnchor222"/>How to set up autoscaling with hosted clusters</h2>
+			<p>Rancher <a id="_idIndexMarker942"/>does not focus on autoscaling clusters for hosted clusters, but all Kubernetes providers <a id="_idIndexMarker943"/>support Cluster Autoscaler. Visit <a href="https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler#deployment">https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler#deployment</a> for the list of supported providers. </p>
+			<p>At this point, you should be able to autoscale your Rancher-managed and hosted clusters, allowing you to add and remove nodes from your cluster with ease.</p>
+			<h1 id="_idParaDest-224"><a id="_idTextAnchor223"/>Summary</h1>
+			<p>This chapter went over the three main ways of scaling your Kubernetes cluster: with HPA, VPA, and Cluster Autoscaler. For the HPA, we dove into how it works and when it should be used to scale your workloads by adding and removing pods. We then covered how VPAs are like HPAs but are used to add and remove resources from pods, closing out the chapter by covering Cluster Autoscalers for adding and removing nodes from the cluster, including the different autoscalers and when it makes sense to use them. </p>
+			<p>In the next chapter, we'll cover the topics of load balancers and SSL certificates, which are very important for publishing our applications to the outside world. And in that chapter, we'll be covering the different technicalities for accomplishing this task.</p>
+		</div>
+	</body></html>

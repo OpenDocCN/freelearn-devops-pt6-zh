@@ -1,0 +1,503 @@
+<html><head></head><body>
+		<div id="_idContainer070">
+			<h1 id="_idParaDest-107" class="chapter-number"><a id="_idTextAnchor154"/>5</h1>
+			<h1 id="_idParaDest-108"><a id="_idTextAnchor155"/>Helm Dependency Management</h1>
+			<p>As you may recall from <a href="B17979_04.xhtml#_idTextAnchor139"><em class="italic">Chapter 4</em></a>, <em class="italic">Scaffolding a New Helm Chart</em>, the Helm chart we are developing, <strong class="source-inline">guestbook</strong>, will deploy two primary components. The first is a Redis backend, which is used to persist a list of messages. The second component is the frontend, where the user enters the messages in a text box. In this chapter, we will focus on updating our Helm chart to deploy the first major component – Redis.</p>
+			<p>To deploy Redis, you may assume that we will need to make vast modifications to our existing <strong class="source-inline">guestbook</strong> chart. However, this is not necessarily the case. There are many Redis Helm charts available in Artifact Hub, and as a result, we can use the dependency management features of Helm and declare one of those charts as a dependency. Then, when the <strong class="source-inline">guestbook</strong> chart has been installed in a Kubernetes cluster, the dependency is also installed. By declaring Redis as a dependency, we can reduce the amount of effort required to create the backend for our application.</p>
+			<p>In this chapter, we will explore how Helm manages dependencies. Then, we will use what we have learned to incorporate a Redis dependency in our Helm chart.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Declaring chart dependencies</li>
+				<li>The dependencies map</li>
+				<li>Downloading chart dependencies</li>
+				<li>Conditional dependencies</li>
+				<li>Altering dependency names and values</li>
+				<li>Updating the guestbook Helm chart</li>
+				<li>Cleaning up</li>
+			</ul>
+			<h1 id="_idParaDest-109"><a id="_idTextAnchor156"/>Technical requirements</h1>
+			<p>For this chapter, you will require the following tools:</p>
+			<ul>
+				<li><strong class="source-inline">minikube</strong></li>
+				<li><strong class="source-inline">kubectl</strong></li>
+				<li><strong class="source-inline">helm</strong></li>
+				<li><strong class="source-inline">git</strong></li>
+			</ul>
+			<p>We will use minikube to explore several examples throughout this chapter, so now is a good time to start your minikube environment:</p>
+			<p class="source-code">$ minikube start</p>
+			<p>Once minikube has started, create a new namespace for this chapter:</p>
+			<p class="source-code">$ kubectl create namespace chapter5</p>
+			<p>Throughout this chapter, we will follow several examples to gain a better understanding of how chart dependencies work in practice. Ensure that you clone the sample repository to follow along with the examples. To clone the repository, run the following command:</p>
+			<p class="source-code">$ git clone https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm.git</p>
+			<p>With the repository cloned, let’s continue to the next section to begin learning about Helm chart dependencies.</p>
+			<h1 id="_idParaDest-110"><a id="_idTextAnchor157"/>Declaring chart dependencies</h1>
+			<p>Chart <a id="_idIndexMarker288"/>dependencies are used to install another chart’s resources that a Helm chart (referred to as <a id="_idIndexMarker289"/>the <strong class="bold">parent chart</strong>) may depend on. We saw an example of chart dependencies in action when we installed WordPress in <a href="B17979_03.xhtml#_idTextAnchor083"><em class="italic">Chapter 3</em></a>, <em class="italic">Installing Your First App with Helm</em>. When we installed WordPress, we used the <strong class="source-inline">wordpress</strong> chart to install both the WordPress application instance and a MariaDB backend. You may be surprised to learn that the MariaDB database that was installed was not a native WordPress chart resource – it was a dependency! We can confirm this fact by running the <strong class="source-inline">helm show chart</strong> command to view the dependencies declared in the <strong class="source-inline">wordpress Chart.yaml</strong> file:</p>
+			<p class="source-code">$ helm show chart bitnami/wordpress --version 12.1.4</p>
+			<p>In the output, you’ll see the <strong class="source-inline">dependencies</strong> map, as follows:</p>
+			<pre class="source-code">
+dependencies:
+- condition: mariadb.enabled
+  name: mariadb
+  repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami 
+  version: 9.x.x
+- condition: memcached.enabled
+  name: memcached
+  repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami 
+  version: 5.x.x
+- name: common
+  repository:  https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami
+  tags:
+  - bitnami-common
+  version: 1.x.x</pre>
+			<p>Here, you<a id="_idIndexMarker290"/> can see that <strong class="source-inline">mariadb</strong> is the first dependency to be listed. The second dependency, <strong class="source-inline">memcached</strong>, is an in-memory key/value pair database and was not installed when we deployed WordPress in <a href="B17979_03.xhtml#_idTextAnchor083"><em class="italic">Chapter 3</em></a>, <em class="italic">Installing Your First App With Helm</em>, as it depends on the <strong class="source-inline">memcached.enabled</strong> value being set to <strong class="source-inline">true</strong> (this value is <strong class="source-inline">false</strong> by default). The third dependency, <strong class="source-inline">common</strong>, is a library chart. We will explore library charts in greater detail in <a href="B17979_06.xhtml#_idTextAnchor167"><em class="italic">Chapter 6</em></a>, <em class="italic">Understanding Helm Templates</em>.</p>
+			<p>The WordPress dependencies listed previously are examples of what you may see in other <strong class="source-inline">Chart.yaml</strong> files. Let’s look at all possible dependency-related <strong class="source-inline">Chart.yaml</strong> fields to understand how<a id="_idIndexMarker291"/> to declare chart dependencies.</p>
+			<h1 id="_idParaDest-111"><a id="_idTextAnchor158"/>The dependencies map</h1>
+			<p>The <strong class="source-inline">dependencies</strong> map <a id="_idIndexMarker292"/>within <strong class="source-inline">Chart.yaml</strong> supports<a id="_idIndexMarker293"/> many different fields for declaring dependencies and altering their behavior. Let’s look at the fields that are included in this map:</p>
+			<table id="table001-5" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="bold" lang="en-US" xml:lang="en-US">Field</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="bold" lang="en-US" xml:lang="en-US">Description</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="bold" lang="en-US" xml:lang="en-US">Required?</strong></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>Name</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The name of the dependency chart</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Yes</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>Repository</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The location where the dependency chart resides</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Yes</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>Version</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>The chart dependency version</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Yes</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>Condition</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>A Boolean value that determines whether the dependency should be included or not</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>No</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>Tags</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>A list of Boolean values that determine whether the chart should be included or not</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>No</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>import-values</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>A mapping of source values to parent values</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>No</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>Alias</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>An alternative name to give the dependency</p>
+						</td>
+						<td class="No-Table-Style">
+							<p>No</p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 5.1 – The dependencies fields in Chart.yaml</p>
+			<p>The minimum required fields in the <strong class="source-inline">dependencies</strong> map are <strong class="source-inline">name</strong>, <strong class="source-inline">repository</strong>, and <strong class="source-inline">version</strong>. We can see each of these being used in the WordPress <strong class="source-inline">Chart.yaml</strong> file, where the first dependency was called <strong class="source-inline">mariadb</strong>, the repository was <a href="https://protect-eu.mimecast.com/s/ax_4C5lrwTkYXJhOWg2e?domain=raw.githubusercontent.com">https://protect-eu.mimecast.com/s/ax_4C5lrwTkYXJhOWg2e?domain=raw.githubusercontent.com</a>, and the version was <strong class="source-inline">9.x.x</strong>. We will learn more about these three fields in the <em class="italic">Downloading chart dependencies</em> section.</p>
+			<p>The <strong class="source-inline">condition</strong> and <strong class="source-inline">tags</strong> fields are used to conditionally include dependencies based on the settings of specific values. <strong class="source-inline">mariadb</strong>, the first dependency of the WordPress chart, sets the condition field to <strong class="source-inline">mariadb.enabled</strong>, and its third dependency (<strong class="source-inline">common</strong>) uses a tag called <strong class="source-inline">bitnami-common</strong>. We will explore conditional dependencies with these settings in the <em class="italic">Conditional dependencies</em> section.</p>
+			<p>The remaining fields, <strong class="source-inline">alias</strong> and <strong class="source-inline">import-values</strong>, provide methods for manipulating the values of a dependency chart. We will learn more about these fields in the <em class="italic">Altering dependency names and values</em> section.</p>
+			<p>Now that<a id="_idIndexMarker294"/> we’ve <a id="_idIndexMarker295"/>provided a high-level overview of each of the dependency-related fields, let’s learn how to download dependencies declared in <strong class="source-inline">Chart.yaml</strong>. Then, we will dive into using each field while covering several example scenarios.</p>
+			<h1 id="_idParaDest-112"><a id="_idTextAnchor159"/>Downloading chart dependencies</h1>
+			<p>Chart dependencies <a id="_idIndexMarker296"/>can be viewed and downloaded using the <strong class="source-inline">helm dependency</strong> subcommands listed in the following table:</p>
+			<table id="table002-3" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="bold" lang="en-US" xml:lang="en-US">Command</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="bold" lang="en-US" xml:lang="en-US">Description</strong></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">helm dependency list</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Lists the dependencies for the given chart.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">helm dependency update</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Downloads the dependencies listed in <strong class="source-inline">Chart.yaml</strong> and generates a <strong class="source-inline">Chart.lock</strong> file.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">helm dependency build</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Downloads the dependencies listed in <strong class="source-inline">Chart.lock</strong>. If the <strong class="source-inline">Chart.lock</strong> file is not found, then this command will mirror the behavior of the <strong class="source-inline">helm dependency update</strong> command.</p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p>Let’s explore these commands by using the example Helm charts located in the <strong class="source-inline">chapter5/examples</strong> folder of this book’s GitHub repository; we cloned these at the beginning of this chapter.  We’ll start by using the <strong class="source-inline">basic-fields</strong> chart:</p>
+			<ol>
+				<li>Using the <strong class="source-inline">basic-fields</strong> chart located in <strong class="source-inline">chapter5/examples/basic-fields</strong>, list the chart’s declared dependencies:<p class="source-code"><strong class="bold">$ helm dependency list chapter5/examples/basic-fields</strong></p></li>
+			</ol>
+			<p>You’ll see an output similar to the following:</p>
+			<div>
+				<div id="_idContainer064" class="IMG---Figure">
+					<img src="image/Figure_5.1_B17979.jpg" alt="Figure 5.1 – An example helm dependency list output&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 5.1 – An example helm dependency list output</p>
+			<p>The <strong class="source-inline">helm dependency list</strong> command is used to give us a quick look at a chart’s declared dependencies, as well as their download status. From the preceding <a id="_idIndexMarker297"/>output, you can see that the <strong class="source-inline">basic-fields</strong> chart declares one dependency, <strong class="source-inline">mariadb</strong>, and that its status is currently <strong class="source-inline">missing</strong>. When the status is labeled <strong class="source-inline">missing</strong>, it means that you have not downloaded that dependency yet, so the chart cannot be installed yet. Now, let’s download the dependency.</p>
+			<ol>
+				<li value="2">Download the <strong class="source-inline">basic-fields</strong> chart’s dependencies by using the <strong class="source-inline">helm dependency update</strong> command:<p class="source-code"><strong class="bold">$ helm dependency update chapter5/examples/basic-fields</strong></p></li>
+			</ol>
+			<p>You’ll see the following output:</p>
+			<div>
+				<div id="_idContainer065" class="IMG---Figure">
+					<img src="image/Figure_5.2_B17979.jpg" alt="Figure 5.2 – The output of helm dependency update&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 5.2 – The output of helm dependency update</p>
+			<ol>
+				<li value="3">Run the <strong class="source-inline">helm dependency list</strong> command to confirm that the dependency has been downloaded. For brevity, you may want to run this command as <strong class="source-inline">helm dep list</strong> since <strong class="source-inline">helm dep</strong> is a shorthand spelling of <strong class="source-inline">helm dependency</strong>. We will continue to use <strong class="source-inline">helm dependency</strong> throughout this book for clarity, but feel free to use the shorthand spelling to reduce typing effort.</li>
+			</ol>
+			<p>Back to the task at hand, let’s confirm that the download was successful by running the following command:</p>
+			<p class="source-code"><strong class="bold">$ helm dependency list chapter5/examples/basic-fields</strong></p>
+			<p>You will see an output similar to what we saw previously, except that the status has been <a id="_idIndexMarker298"/>updated to <strong class="source-inline">ok</strong>:</p>
+			<div>
+				<div id="_idContainer066" class="IMG---Figure">
+					<img src="image/Figure_5.3_B17979.jpg" alt="Figure 5.3 – The updated helm dependency list status&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 5.3 – The updated helm dependency list status</p>
+			<p>When <strong class="source-inline">helm dependency update</strong> is successful, you will see the dependency’s status turn to <strong class="source-inline">ok</strong>, but you will also see a couple of new files appear in your chart’s directory. First, you will see that the dependency chart has been downloaded under a newly created <strong class="source-inline">charts/</strong> folder, and you will also see a <strong class="source-inline">Chart.lock</strong> file.</p>
+			<p>Let’s look at these new files.</p>
+			<ol>
+				<li value="4">Use the <strong class="source-inline">ls</strong> command to view the downloaded dependency:<p class="source-code"><strong class="bold">$ ls chapter5/examples/basic-fields/charts</strong></p><p class="source-code"><strong class="bold">mariadb-9.5.0.tgz</strong></p></li>
+			</ol>
+			<p>As you can see, dependencies are downloaded in the form of gzip archives with <strong class="source-inline">.tgz</strong> file extensions. The filename contains the dependency name as well as its version.</p>
+			<ol>
+				<li value="5">Use the <strong class="source-inline">cat</strong> command to view the generated <strong class="source-inline">Chart.lock</strong> file:<p class="source-code"><strong class="bold">$ cat chapter5/examples/basic-fields/Chart.lock</strong></p></li>
+			</ol>
+			<p>You will see the following output:</p>
+			<div>
+				<div id="_idContainer067" class="IMG---Figure">
+					<img src="image/Figure_5.4_B17979.jpg" alt="Figure 5.4 – The generated Chart.lock file&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 5.4 – The generated Chart.lock file</p>
+			<p>The <strong class="source-inline">Chart.lock</strong> file is generated upon running <strong class="source-inline">helm dependency update</strong>, and it contains a list of dependencies, such as the <strong class="source-inline">Chart.yaml</strong> file. However, unlike <strong class="source-inline">Chart.yaml</strong>, the <strong class="source-inline">Chart.lock</strong> file is used to lock in the dependency versions so that the same versions can be downloaded on other machines.</p>
+			<p>The impact<a id="_idIndexMarker299"/> that <strong class="source-inline">Chart.lock</strong> has is not profound in the <strong class="source-inline">basic-fields</strong> chart because the MariaDB version is already statically, set at <strong class="source-inline">9.5.0</strong>. However, take a look at the <strong class="source-inline">wildcard-version</strong> chart located under <strong class="source-inline">chapter5/examples/wildcard-version</strong>. Within this directory, the version of MariaDB is set to <strong class="source-inline">9.x.x</strong>, as shown in the following snippet:</p>
+			<p class="source-code">dependencies:</p>
+			<p class="source-code">  - name: mariadb</p>
+			<p class="source-code">    repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami </p>
+			<p class="source-code">    version: 9.x.x</p>
+			<p>The version, <strong class="source-inline">9.x.x</strong>, is a wildcard, and it tells Helm to download the latest minor and patch versions under major release 9 while assuming a SemVer format of <strong class="source-inline">major.minor.patch</strong>. If the version was specified as 9.5.x, Helm would download the latest patch release under major version 9 and minor version 5.</p>
+			<p>Let’s use the <strong class="source-inline">wildcard-version</strong> chart to understand how wildcards play a more important role in the <strong class="source-inline">Chart.lock</strong> file.</p>
+			<ol>
+				<li value="6">Use the <strong class="source-inline">helm dependency update</strong> command to download the <strong class="source-inline">wildcard-version</strong> chart’s dependencies:<p class="source-code"><strong class="bold">$ helm dependency update chapter5/examples/wildcard-version</strong></p></li>
+				<li>View the generated <strong class="source-inline">Chart.lock</strong> file:<p class="source-code"><strong class="bold">$ cat chapter5/examples/wildcard-version/Chart.lock</strong></p></li>
+			</ol>
+			<p>Notice <a id="_idIndexMarker300"/>that the MariaDB version in <strong class="source-inline">Chart.lock</strong>, <strong class="source-inline">9.8.1</strong>, is different than the version in <strong class="source-inline">Chart.yaml</strong>, which was 9.x.x:</p>
+			<div>
+				<div id="_idContainer068" class="IMG---Figure">
+					<img src="image/Figure_5.5_B17979.jpg" alt="Figure 5.5 – The Chart.lock file when using a wildcard dependency version&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 5.5 – The Chart.lock file when using a wildcard dependency version</p>
+			<p>Here, you can see the impact that <strong class="source-inline">Chart.lock</strong> has more clearly. Since version 9.x.x was specified in the <strong class="source-inline">Chart.yaml</strong> file, Helm downloads the latest 9.x.x release, and the resulting <strong class="source-inline">Chart.lock</strong> was generated to lock in version 9.8.1, which was the latest at the time <strong class="source-inline">helm dependency update</strong> was run. However, what happens if dependencies need to be redownloaded or if the <strong class="source-inline">charts/</strong> folder needs to be regenerated? If you run <strong class="source-inline">helm dependency update</strong> again, you run the risk that the latest 9.x.x release is different than 9.8.2, which may cause incompatibility issues. To address this risk, you can use the <strong class="source-inline">helm dependency build</strong> command. Let’s see this command in action:</p>
+			<ol>
+				<li value="1">Delete the <strong class="source-inline">charts/</strong> directory under <strong class="source-inline">wildcard-version</strong>:<p class="source-code"><strong class="bold">$ rm –rf chapter5/examples/wildcard-version/charts</strong></p></li>
+				<li>Run <strong class="source-inline">helm dependency build</strong> to redownload the MariaDB version specified in <strong class="source-inline">Chart.lock</strong>:<p class="source-code"><strong class="bold">$ helm dependency build chapter5/examples/wildcard-version</strong></p></li>
+				<li>Verify that version 9.8.1 was redownloaded to the charts<strong class="source-inline">/</strong> directory:<p class="source-code"><strong class="bold">$ ls chapter5/examples/wildcard-version/charts</strong></p><p class="source-code"><strong class="bold">mariadb-9.8.1.tgz</strong></p></li>
+			</ol>
+			<p>In this section, we walked through downloading dependencies using the <strong class="source-inline">helm dependency</strong> subcommands. However, the examples we have seen so far have always resulted in<a id="_idIndexMarker301"/> dependencies being downloaded. Sometimes, you will want to conditionally include or exclude dependencies based on user input. We will explore this concept in the next section.</p>
+			<h1 id="_idParaDest-113"><a id="_idTextAnchor160"/>Creating conditionals </h1>
+			<p>Conditional dependencies<a id="_idIndexMarker302"/> can be created by using the <strong class="source-inline">condition</strong> and <strong class="source-inline">tags</strong> fields of the <strong class="source-inline">dependencies</strong> map. The <strong class="source-inline">condition</strong> field is used to list <strong class="source-inline">Boolean</strong> values that, if present, toggle the inclusion of the dependency. Let’s explore this field first by looking at the <strong class="source-inline">condition-example</strong> chart located under <strong class="source-inline">chapter5/examples/condition-example</strong>:</p>
+			<ol>
+				<li value="1">Observe the <strong class="source-inline">Chart.yaml</strong> file located at <strong class="source-inline">chapter5/examples/condition-example/Chart.yaml</strong>:<p class="source-code"><strong class="bold">$ cat chapter5/examples/condition-example/Chart.yaml</strong></p><p class="source-code"><strong class="bold">&lt;output omitted&gt;</strong></p><p class="source-code"><strong class="bold">dependencies:</strong></p><p class="source-code"><strong class="bold">  - name: mariadb</strong></p><p class="source-code"><strong class="bold">    repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami </strong></p><p class="source-code"><strong class="bold">    version: 9.5.0</strong></p><p class="source-code"><strong class="bold">    condition: mariadb.enabled</strong></p></li>
+			</ol>
+			<p>Notice that the last line of <strong class="source-inline">Chart.yaml</strong> in the preceding snippet uses the <strong class="source-inline">condition: mariadb.enabled</strong> setting. This setting allows users to set a value called <strong class="source-inline">mariadb.enabled</strong> to either <strong class="source-inline">true</strong> or <strong class="source-inline">false</strong>. If the value evaluates to <strong class="source-inline">true</strong>, the MariaDB dependency will be included. If <strong class="source-inline">false</strong>, MariaDB will not be included. By default, if <strong class="source-inline">mariadb.enabled</strong> does not exist, then this condition will have no effect, and MariaDB will be included.</p>
+			<p>The best practice for setting a condition is to follow a <strong class="source-inline">chartname.enabled</strong> value format, where each dependency has a unique condition, depending on the dependency’s name. This allows for a more intuitive values schema. However, if <a id="_idIndexMarker303"/>necessary, you can specify multiple values for a condition by using a comma-separated expression, like so:</p>
+			<p class="source-code">condition: example.enabled, example2.enabled</p>
+			<p>When a condition is a comma-delimited list, the first value is used if it exists, and the rest are ignored. Otherwise, if the first value does not exist, then subsequent values in the list are used to fall back on.</p>
+			<p>Let’s continue with this example to see the use of the <strong class="source-inline">condition</strong> property in action.</p>
+			<ol>
+				<li value="2">Observe the <strong class="source-inline">condition-example</strong> chart’s <strong class="source-inline">values.yaml</strong> file, which includes the <strong class="source-inline">mariadb.enabled</strong> value by default:<p class="source-code"><strong class="bold">$ cat chapter5/examples/condition-example/values.yaml</strong></p><p class="source-code"><strong class="bold">&lt;output omitted&gt;</strong></p><p class="source-code"><strong class="bold">mariadb:</strong></p><p class="source-code"><strong class="bold">  enabled: true</strong></p></li>
+			</ol>
+			<p>As you can see, <strong class="source-inline">mariadb.enabled</strong> defaults to <strong class="source-inline">true</strong>, so we can expect to see MariaDB resources created in Helm’s output. Let’s verify that this is the case.</p>
+			<ol>
+				<li value="3">Download the <strong class="source-inline">condition-example</strong> chart’s dependencies using the <strong class="source-inline">helm dependency update</strong> command:<p class="source-code"><strong class="bold">$ helm dependency update chapter5/examples/condition-example</strong></p></li>
+				<li>Install the <strong class="source-inline">condition-example</strong> chart in your minikube cluster:<p class="source-code"><strong class="bold">$ helm install conditional-example chapter5/examples/condition-example –n chapter5</strong></p></li>
+				<li>Verify that the MariaDB-related resources were created during the installation:<p class="source-code"><strong class="bold">$ helm get manifest conditional-example –n chapter5 | grep mariadb</strong></p></li>
+			</ol>
+			<p>You should see a lengthy output of strings containing <strong class="source-inline">mariadb</strong>.</p>
+			<p>As expected, MariaDB was installed because the <strong class="source-inline">mariadb.enabled</strong> value was set to <strong class="source-inline">true</strong>. Let’s<a id="_idIndexMarker304"/> set this value to <strong class="source-inline">false</strong> next and verify that MariaDB has been excluded.</p>
+			<ol>
+				<li value="6">Upgrade the <strong class="source-inline">conditional-example</strong> release by setting <strong class="source-inline">mariadb.enabled</strong> to <strong class="source-inline">false</strong>:<p class="source-code"><strong class="bold">$ helm upgrade conditional-example chapter5/examples/condition-example --set mariadb.enabled=false –n chapter5</strong></p></li>
+				<li>Verify that the MariaDB-related resources were excluded after the upgrade:<p class="source-code"><strong class="bold">$ helm get manifest conditional-example –n chapter5 | grep mariadb</strong></p></li>
+			</ol>
+			<p>You should not see any output.</p>
+			<p>The <strong class="source-inline">condition</strong> setting is the most common way to conditionally include dependencies within your Helm charts. However, there is a second setting you can use as well that we will showcase called <strong class="source-inline">tags</strong>. Whereas <strong class="source-inline">condition</strong> is best used for enabling individual dependencies using the <strong class="source-inline">chartname.enabled</strong> format, <strong class="source-inline">tags</strong> is used to enable or disable one or more dependencies by associating each dependency with descriptive labels.</p>
+			<p>Let’s use the <strong class="source-inline">tags-example</strong> chart located in <strong class="source-inline">chapter5/examples/tags-example</strong> to understand how tags can define conditional dependencies.</p>
+			<ol>
+				<li value="8">Observe<a id="_idIndexMarker305"/> the <strong class="source-inline">Chart.yaml</strong> file for the <strong class="source-inline">tags-example</strong> chart located in <strong class="source-inline">chapter5/examples/tags-example/Chart.yaml</strong>:<p class="source-code">&lt;output omitted&gt;</p><p class="source-code">dependencies:</p><p class="source-code">  - name: mariadb</p><p class="source-code">    repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami </p><p class="source-code">    version: 9.5.0</p><p class="source-code">    tags:</p><p class="source-code">      - backend</p><p class="source-code">      - database</p><p class="source-code">  - name: memcached</p><p class="source-code">    repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami </p><p class="source-code">    version: 5.15.6</p><p class="source-code">    tags:</p><p class="source-code">      - backend</p><p class="source-code">      - cache</p></li>
+			</ol>
+			<p>As you can see, the <strong class="source-inline">tags-example</strong> chart defines two different dependencies: <strong class="source-inline">mariadb</strong> and <strong class="source-inline">memcached</strong>. Both <strong class="source-inline">mariadb</strong> and <strong class="source-inline">memcached</strong> share the <strong class="source-inline">backend</strong> tag, while <strong class="source-inline">mariadb</strong> also has the <strong class="source-inline">database</strong> tag; <strong class="source-inline">memcached</strong> has the <strong class="source-inline">cache</strong> tag separately. Let’s explore how these tags are used by checking the chart’s <strong class="source-inline">values.yaml</strong> file.</p>
+			<ol>
+				<li value="9">Observe the <strong class="source-inline">tags-example</strong> chart’s <strong class="source-inline">values.yaml</strong> file. Notice the usage of the <strong class="source-inline">tags</strong> map at the end of the file:<p class="source-code"><strong class="bold">$ cat chapter5/examples/tags-example/values.yaml</strong></p><p class="source-code"><strong class="bold">&lt;output omitted&gt;</strong></p><p class="source-code"><strong class="bold">tags:</strong></p><p class="source-code"><strong class="bold">  backend: true</strong></p></li>
+			</ol>
+			<p>Given the values file for the <strong class="source-inline">tags-example</strong> chart, you can see that the backend tag has <a id="_idIndexMarker306"/>been enabled. Since both <strong class="source-inline">mariadb</strong> and <strong class="source-inline">memcached</strong> share the same <strong class="source-inline">backend</strong> tag, both dependencies are enabled by default (similarly, if the <strong class="source-inline">tags</strong> map was omitted, both dependencies would also be included). To verify this ascertain, we can upgrade our previous <strong class="source-inline">conditional-example</strong> release using the <strong class="source-inline">tags-example</strong> chart.</p>
+			<ol>
+				<li value="10">Use the <strong class="source-inline">helm upgrade</strong> command to upgrade <strong class="source-inline">conditional-example</strong> using the contents from the <strong class="source-inline">tags-example</strong> chart:<p class="source-code"><strong class="bold">$ helm upgrade conditional-example chapter5/examples/tags-example –n chapter5</strong></p></li>
+				<li>Verify that both <strong class="source-inline">mariadb</strong> and <strong class="source-inline">memcached</strong> were installed:<p class="source-code"><strong class="bold">$ helm get manifest conditional-example –n chapter5 | grep mariadb</strong></p><p class="source-code"><strong class="bold">$ helm get manifest conditional-example –n chapter5 | grep memcached</strong></p></li>
+			</ol>
+			<p>While both commands should show large amounts of output, the presence of a match confirms that both dependencies were installed.</p>
+			<p>By using the same tag across multiple dependencies, you can conveniently include or exclude dependencies within your chart. Imagine, however, that you only wanted to include <strong class="source-inline">mariadb</strong> within the <strong class="source-inline">tags-example</strong> chart. While it would be intuitive to believe you could simply set <strong class="source-inline">tags.database</strong> to <strong class="source-inline">true</strong> and <strong class="source-inline">tags.cache</strong> to <strong class="source-inline">false</strong>, this would not have any effect because <strong class="source-inline">tags.backend</strong> already defaults to <strong class="source-inline">true</strong>. If one tag is true, then the dependency is included, even if the other tags are set to false.</p>
+			<p>To address this issue, you can override <strong class="source-inline">tags.backend</strong> to <strong class="source-inline">false</strong>.</p>
+			<ol>
+				<li value="12">Upgrade <a id="_idIndexMarker307"/>the <strong class="source-inline">conditional-example</strong> release so that it includes <strong class="source-inline">mariadb</strong> and excludes <strong class="source-inline">memcached</strong>:<p class="source-code"><strong class="bold">$ helm upgrade conditional-example chapter5/examples/tags-example --set tags.backend=false --set tags.database=true –n chapter5</strong></p></li>
+			</ol>
+			<p>Notice that we have passed <strong class="source-inline">--set tags.backend=false</strong> first to ensure that none of the <strong class="source-inline">memcached</strong> conditions evaluate to true.</p>
+			<ol>
+				<li value="13">Verify that <strong class="source-inline">mariadb</strong> was included during the upgrade:<p class="source-code"><strong class="bold">$ helm get manifest conditional-example –n chapter5 | grep mariadb</strong></p></li>
+			</ol>
+			<p>This command should return a large amount of output.</p>
+			<ol>
+				<li value="14">Verify that <strong class="source-inline">memcached</strong> was excluded during the upgrade:<p class="source-code"><strong class="bold">$ helm get manifest conditional-example –n chapter5 | grep memcached</strong></p></li>
+			</ol>
+			<p>This command should not return any output.</p>
+			<p>The <strong class="source-inline">condition</strong> and <strong class="source-inline">tags</strong> fields both provide a robust set of options for conditionally including dependencies within your Helm charts. Keep in mind that you can also use both of these options together, but <strong class="source-inline">condition</strong> always overrides <strong class="source-inline">tags</strong>. This means that if all tags evaluate to true, and if any condition evaluates to false, then the condition will override the tags, and the dependency will not be included.</p>
+			<p>As a final step<a id="_idIndexMarker308"/> before advancing to the next topic, uninstall the <strong class="source-inline">conditional-example</strong> release:</p>
+			<pre class="source-code">
+<strong class="bold">$ helm uninstall conditional-example –n chapter5</strong></pre>
+			<p>Next, let’s discuss the options available for altering how dependencies and their values are referenced.</p>
+			<h1 id="_idParaDest-114"><a id="_idTextAnchor161"/>Altering dependency names and values</h1>
+			<p>When you<a id="_idIndexMarker309"/> include<a id="_idIndexMarker310"/> a dependency within a chart, you will most likely need to alter some of its values. One way to alter a dependency’s values is to override them under a map whose root has the same name as the dependency.</p>
+			<p>For example, consider the <strong class="source-inline">basic-fields</strong> chart located under <strong class="source-inline">chapter5/examples/basic-fields</strong>. This chart contains one dependency in the <strong class="source-inline">Chart.yaml</strong> file:</p>
+			<pre class="source-code">
+dependencies:
+  - name: mariadb
+    repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami 
+    version: 9.5.0</pre>
+			<p>To override the values from the <strong class="source-inline">mariadb</strong> chart, you could incorporate a values structure, similar to the following:</p>
+			<pre class="source-code">
+mariadb:
+  image:
+    registry: my-registry.example.com
+    repository: my-mariadb
+    tag: my-tag</pre>
+			<p>This will override the <strong class="source-inline">image.registry</strong>, <strong class="source-inline">image.repository</strong>, and <strong class="source-inline">image.tag</strong> values from the <strong class="source-inline">mariadb</strong> chart.</p>
+			<p>Let’s experiment with overriding dependency values by completing a hands-on example:</p>
+			<ol>
+				<li value="1">Install the <strong class="source-inline">basic-fields</strong> chart located in <strong class="source-inline">chapter5/examples/basic-fields</strong>. Override MariaDB’s <strong class="source-inline">image.tag</strong> value to deploy a different tag for the <strong class="source-inline">mariadb</strong> image than the default:<p class="source-code"><strong class="bold">$ helm install override-example chapter5/examples/basic-fields --set mariadb.image.tag=latest –n chapter5</strong></p></li>
+				<li>Verify that the <strong class="source-inline">latest</strong> tag was applied:<p class="source-code"><strong class="bold">$ helm get manifest override-example –n chapter5 | grep latest</strong></p><p class="source-code"><strong class="bold">image: docker.io/bitnami/mariadb:latest</strong></p></li>
+				<li>Uninstall the Helm release:<p class="source-code"><strong class="bold">$ helm uninstall override-example –n chapter5</strong></p></li>
+			</ol>
+			<p>Nesting <a id="_idIndexMarker311"/>values<a id="_idIndexMarker312"/> in this fashion is the simplest and most common way to override the values of dependencies. However, the <strong class="source-inline">dependencies</strong> map provides a configuration for altering the root’s name – <strong class="source-inline">alias</strong>.</p>
+			<p>Let’s run through an example to understand how <strong class="source-inline">alias</strong> can be used.</p>
+			<p>Observe the <strong class="source-inline">Chart.yaml</strong> file of the <strong class="source-inline">alias-example</strong> chart located in <strong class="source-inline">chapter5/examples/alias-example/Chart.yaml</strong>:</p>
+			<pre class="source-code">
+<strong class="bold">$ cat chapter5/examples/alias-example/Chart.yaml</strong>
+<strong class="bold">&lt;output omitted&gt;</strong>
+<strong class="bold">dependencies:</strong>
+<strong class="bold">  - name: mariadb</strong>
+<strong class="bold">    repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami </strong>
+<strong class="bold">    version: 9.5.0</strong>
+<strong class="bold">    alias: db1</strong>
+<strong class="bold">  - name: mariadb</strong>
+<strong class="bold">    repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami </strong>
+<strong class="bold">    version: 9.5.0</strong>
+<strong class="bold">    alias: db2</strong></pre>
+			<p>From the preceding <strong class="source-inline">Chart.yaml</strong> snippet, you can see that <strong class="source-inline">alias-example</strong> has two nearly identical MariaDB dependencies. This is the best use case for using <strong class="source-inline">alias</strong>. Since there are multiple MariaDB dependencies, Helm needs to be able to distinguish between the two. By using <strong class="source-inline">alias</strong>, you can give each identical dependency a unique name. Then, you <a id="_idIndexMarker313"/>can override values from each specific <a id="_idIndexMarker314"/>dependency. Let’s explore <strong class="source-inline">alias</strong>:</p>
+			<ol>
+				<li value="1">Install the Helm chart by overriding the <strong class="source-inline">image.tag</strong> value for each MariaDB instance:<p class="source-code"><strong class="bold">$ helm install alias-example chapter5/examples/alias-example --set db1.image.tag=latest --set db2.image.tag=10.4 -n chapter5</strong></p></li>
+				<li>Verify that each database’s tag was applied:<p class="source-code"><strong class="bold">$ helm get manifest alias-example –n chapter5 | grep latest</strong></p><p class="source-code"><strong class="bold">image: docker.io/bitnami/mariadb:latest</strong></p><p class="source-code"><strong class="bold">$ helm get manifest alias-example –n chapter5 | grep 10.4</strong></p><p class="source-code"><strong class="bold">image: docker.io/bitnami/mariadb:10.4</strong></p></li>
+				<li>Uninstall the Helm release:<p class="source-code"><strong class="bold">$ helm uninstall alias-example –n chapter5</strong></p></li>
+			</ol>
+			<p>In general, when you are working with unique dependencies, you will not need to use <strong class="source-inline">alias</strong>. However, when you are working with multiple invocations of the same dependency, <strong class="source-inline">alias</strong> is an excellent way to manage and override values from each invocation.</p>
+			<p>Besides <strong class="source-inline">alias</strong>, the <strong class="source-inline">dependencies</strong> map in the <strong class="source-inline">Chart.yaml</strong> file provides one additional property for altering how values are managed for dependencies – <strong class="source-inline">import-values</strong>. The <strong class="source-inline">import-values</strong> setting is used to alter how dependency values are propagated to a parent chart. It comes in two different formats: <strong class="source-inline">exports</strong> and <strong class="source-inline">child-parent</strong>. The <strong class="source-inline">exports</strong> format is only applicable when dependency charts contain the <strong class="source-inline">exports</strong> map within its values file. Imagine that a dependency chart contains the following values:</p>
+			<pre class="source-code">
+exports:
+  image:
+    registry: my-registry
+    repository: my-repository
+    tag: my-tag</pre>
+			<p>Using <a id="_idIndexMarker315"/>the <strong class="source-inline">import-values</strong> setting on the parent chart, you could<a id="_idIndexMarker316"/> import each of the image-related values underneath <strong class="source-inline">exports</strong>:</p>
+			<pre class="source-code">
+dependencies:
+  - name: dependency
+    repository: http://localhost:8080
+    version: 1.0.0
+    import-values:
+      - image</pre>
+			<p>Using <strong class="source-inline">import-values</strong> in <strong class="source-inline">exports</strong> format would result in the image-related values being propagated, as follows:</p>
+			<pre class="source-code">
+registry: my-registry
+repository: my-repository
+tag: my-tag</pre>
+			<p>Compare this with the way these dependency values would be propagated by default, without <strong class="source-inline">import-values</strong>:</p>
+			<pre class="source-code">
+dependency:
+  exports:
+    image:
+      registry: my-registry
+      repository: my-repository
+      tag: my-tag</pre>
+			<p>As you can see, using <strong class="source-inline">import-values</strong> resulted in a less complex propagation with fewer deeply nested values.</p>
+			<p>The other format of <strong class="source-inline">import-values</strong> is the <strong class="source-inline">child-parent</strong> format. This format does not require dependency charts (referred<a id="_idIndexMarker317"/> to as <strong class="bold">child</strong> charts) to use <strong class="source-inline">exports</strong>, and it is especially <a id="_idIndexMarker318"/>useful <a id="_idIndexMarker319"/>for importing deeply nested values. Consider the following dependency chart, which contains the following values:</p>
+			<pre class="source-code">
+common:
+  deployment:
+    image:
+      registry: my-registry
+      repository: my-repository
+      tag: my-tag</pre>
+			<p>In the parent chart, you can import the image-related values using the <strong class="source-inline">child-parent</strong> format of <strong class="source-inline">import-values</strong>:</p>
+			<pre class="source-code">
+dependencies:
+  - name: dependency
+    repository: http://localhost:8080
+    version: 1.0.0
+    import-values:
+      - child: common.deployment.image
+        parent: image</pre>
+			<p>This will propagate the dependency values so that each value under <strong class="source-inline">common.deployment.image</strong> is mapped directly under <strong class="source-inline">image</strong> in the parent chart:</p>
+			<pre class="source-code">
+image:
+  registry: my-registry
+  repository: my-repository
+  tag: my-tag</pre>
+			<p>Once again, by using the <strong class="source-inline">import-values</strong> setting, you can simplify how dependency values are propagated into the parent chart.</p>
+			<p>One important detail to note is that, when using <strong class="source-inline">import-values</strong>, you cannot override the values that you are importing. If you need to override values from the dependency, those values should not be imported using <strong class="source-inline">import-values</strong>.</p>
+			<p>Now that<a id="_idIndexMarker320"/> we <a id="_idIndexMarker321"/>have explored each of the different settings involved in Helm dependency management, let’s finish this chapter by updating our <strong class="source-inline">guestbook</strong> chart with a Redis dependency to create the backend.</p>
+			<h1 id="_idParaDest-115"><a id="_idTextAnchor162"/>Updating the guestbook Helm chart</h1>
+			<p>Similar to how <a id="_idIndexMarker322"/>we searched Artifact Hub to locate a WordPress chart in <a href="B17979_03.xhtml#_idTextAnchor083"><em class="italic">Chapter 3</em></a>, <em class="italic">Installing Your First App with Helm</em>, we need to search for a Redis chart so that it can be used as a dependency. Let’s search for a Redis chart: </p>
+			<ol>
+				<li value="1">Execute the following command to search for Redis charts from Artifact Hub:<p class="source-code"><strong class="bold">$ helm search hub redis</strong></p></li>
+				<li>The first chart that’s displayed is Bitnami’s Redis chart. We’ll use this chart as our dependency. If you didn’t add the <strong class="source-inline">bitnami</strong> chart repository in <a href="B17979_03.xhtml#_idTextAnchor083"><em class="italic">Chapter 3</em></a>, <em class="italic">Installing Your First App with Helm</em>, add this chart repository now by using the <strong class="source-inline">helm repo add</strong> command:<p class="source-code"><strong class="bold">$ helm repo add bitnami https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami</strong></p></li>
+				<li>Next, determine the Redis chart version you would like to use. A list of version numbers can be found by running the following command:<p class="source-code"><strong class="bold">$ helm search repo redis --versions</strong></p></li>
+			</ol>
+			<p>You will see an output similar to the following:</p>
+			<div>
+				<div id="_idContainer069" class="IMG---Figure">
+					<img src="image/Figure_5.6_B17979.jpg" alt="Figure 5.6 – Redis chart versions&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 5.6 – Redis chart versions</p>
+			<p>For our <a id="_idIndexMarker323"/>dependency, let’s use the wildcard version <strong class="source-inline">15.5.x</strong> so that we can lock in the latest patch that is currently available, <strong class="source-inline">15.5.1</strong>, but also so that we can easily download newer patch releases as they become available in the future.</p>
+			<p>Let’s also use the <strong class="source-inline">condition</strong> property so that Redis can be toggled to enabled or disabled. While our <strong class="source-inline">guestbook</strong> chart does require Redis, <strong class="source-inline">condition</strong> will allow a user to disable the built-in Redis option so that they can use their own if they desire.</p>
+			<ol>
+				<li value="4">Update your <strong class="source-inline">guestbook</strong> chart’s <strong class="source-inline">Chart.yaml</strong> file to declare the Redis dependency. An updated <strong class="source-inline">Chart.yaml</strong> file is located in this book’s GitHub repository in <strong class="source-inline">chapter5/guestbook/Chart.yaml</strong> for reference:<p class="source-code">dependencies:</p><p class="source-code">  - name: redis</p><p class="source-code">    repository:  https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami</p><p class="source-code">    version: 15.5.x</p><p class="source-code">    condition: redis.enabled</p></li>
+			</ol>
+			<p>Your full <strong class="source-inline">Chart.yaml</strong> file <a id="_idIndexMarker324"/>should look as follows:</p>
+			<p class="source-code">apiVersion: v2</p>
+			<p class="source-code">name: guestbook</p>
+			<p class="source-code">description: An application used for keeping a running record of guests</p>
+			<p class="source-code">type: application</p>
+			<p class="source-code">version: 0.1.0</p>
+			<p class="source-code">appVersion: v5</p>
+			<p class="source-code">dependencies:</p>
+			<p class="source-code">  - name: redis</p>
+			<p class="source-code">    repository:  https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami</p>
+			<p class="source-code">    version: 15.5.x</p>
+			<p class="source-code">    condition: redis.enabled</p>
+			<p>Now that the <strong class="source-inline">Chart.yaml</strong> file has been updated, download the Redis dependency by using <strong class="source-inline">helm dependency update</strong>. Now, we can deploy the <strong class="source-inline">guestbook</strong> chart to ensure that the dependency has been installed properly.</p>
+			<ol>
+				<li value="5">Download the latest Redis <strong class="source-inline">15.5.x</strong> release by running <strong class="source-inline">helm dependency update</strong>:<p class="source-code"><strong class="bold">$ helm dependency update guestbook</strong></p></li>
+				<li>Install the <strong class="source-inline">guestbook</strong> chart in your minikube environment:<p class="source-code"><strong class="bold">$ helm install guestbook guestbook -n chapter5</strong></p></li>
+				<li>Verify that the Redis StatefulSets have been created:<p class="source-code"><strong class="bold">$ kubectl get statefulsets –n chapter5</strong></p><p class="source-code"><strong class="bold">NAME                       READY   AGE</strong></p><p class="source-code"><strong class="bold">guestbook-redis-master     1/1     3m24s</strong></p><p class="source-code"><strong class="bold">guestbook-redis-replicas   3/3     3m24s</strong></p></li>
+			</ol>
+			<p>If you see a similar output for the StatefulSets shown here, then you have successfully created the Redis dependency! As you can see, by using Helm’s dependency management, the effort required to deploy the backend was relatively low. In the next chapter, we’ll<a id="_idIndexMarker325"/> continue developing the <strong class="source-inline">guestbook</strong> chart by writing templates for creating the frontend resources.</p>
+			<p>Before we wrap up, let’s clean up the minikube environment.</p>
+			<h1 id="_idParaDest-116"><a id="_idTextAnchor163"/>Cleaning up</h1>
+			<p>First, delete <a id="_idIndexMarker326"/>the <strong class="source-inline">chapter5</strong> namespace:</p>
+			<p class="source-code">$ kubectl delete namespace chapter5</p>
+			<p>Now, you can shut down your minikube environment.</p>
+			<p class="source-code">$ minikube stop</p>
+			<p>Now, let’s summarize this chapter.</p>
+			<h1 id="_idParaDest-117"><a id="_idTextAnchor164"/>Summary</h1>
+			<p>Dependencies can greatly reduce the effort required to deploy complex applications in Kubernetes. As we saw with our <strong class="source-inline">guestbook</strong> chart, to deploy a Redis backend, we only needed to add five lines of YAML to our <strong class="source-inline">Chart.yaml</strong> file. Compare this to the effort required to write an entirely separate Redis chart from scratch, which would have required both a high level of Kubernetes and Redis expertise.</p>
+			<p>Helm dependency management supports several different configurations to declare, as well as configure dependencies. To declare a dependency, you can specify the chart’s <strong class="source-inline">name</strong>, <strong class="source-inline">version</strong>, and <strong class="source-inline">repository</strong> under the <strong class="source-inline">dependencies</strong> map in the <strong class="source-inline">Chart.yaml</strong> file. You can allow users to toggle whether to enable or disable each dependency using the <strong class="source-inline">condition</strong> and <strong class="source-inline">tags</strong> properties. When incorporating multiple instances of the same dependency, you can use <strong class="source-inline">alias</strong> to provide each with a unique identifier, and when working with dependencies with complex values, you can use <strong class="source-inline">import-values</strong> to simplify how values are propagated from a dependency to a parent chart. To list and download dependencies, Helm provides a set of <strong class="source-inline">helm dependency</strong> subcommands that are used regularly when managing chart dependencies.</p>
+			<p>In the next chapter, we will dive deep into the next crucial topic in the world of Helm chart development – templates.</p>
+			<h1 id="_idParaDest-118"><a id="_idTextAnchor165"/>Further reading</h1>
+			<p>To learn more about Helm dependency management, visit the Helm documentation’s <em class="italic">Chart Dependencies</em> section at <a href="https://helm.sh/docs/topics/charts/#chart-dependencies">https://helm.sh/docs/topics/charts/#chart-dependencies</a>.</p>
+			<h1 id="_idParaDest-119"><a id="_idTextAnchor166"/>Questions</h1>
+			<p>Answer the following questions to test your knowledge of this chapter:</p>
+			<ol>
+				<li value="1">What file is used to declare chart dependencies?</li>
+				<li>What is the difference between the <strong class="source-inline">helm dependency update</strong> and <strong class="source-inline">helm dependency build</strong> commands?</li>
+				<li>What is the difference between the <strong class="source-inline">Chart.yaml</strong> and <strong class="source-inline">Chart.lock</strong> files?</li>
+				<li>Imagine that you want to allow users to enable or disable dependencies within your chart. What <strong class="source-inline">dependencies</strong> properties can you use?</li>
+				<li>What <strong class="source-inline">dependencies</strong> properties should you use if you need to declare multiple invocations of the same dependency?</li>
+				<li>If you have a dependency with complex values, which <strong class="source-inline">dependencies</strong> property can you use to simplify the propagated values?</li>
+				<li>How do you override the values of a dependency?</li>
+				<li>As a chart developer, what is the value of using a chart dependency?</li>
+			</ol>
+		</div>
+		<div>
+			<div id="_idContainer071">
+			</div>
+		</div>
+	</body></html>

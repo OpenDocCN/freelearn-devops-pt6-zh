@@ -1,0 +1,694 @@
+<html><head></head><body>
+  <div id="_idContainer159" class="Basic-Text-Frame">
+    <h1 class="chapterNumber">7</h1>
+    <h1 id="_idParaDest-348" class="chapterTitle">Running Stateful Applications with Kubernetes</h1>
+    <p class="normal">In this chapter, we will learn how to run stateful applications on Kubernetes. Kubernetes takes a lot of work out of our hands by automatically starting and restarting pods across the cluster nodes as needed, based on complex requirements and configurations such as namespaces, limits, and quotas. But when pods run storage-aware software, such as databases and queues, relocating a pod can cause a system to break.</p>
+    <p class="normal">First, we’ll explore the essence of stateful pods and why they are much more complicated to manage in Kubernetes. We will look at a few ways to manage the complexity, such as shared environment variables and DNS records. In some situations, a redundant in-memory state, a <code class="inlineCode">DaemonSet</code>, or persistent storage claims can do the trick. The main solution that Kubernetes promotes for state-aware pods is the <code class="inlineCode">StatefulSet</code> (previously called <code class="inlineCode">PetSet</code>) resource, which allows us to manage an indexed collection of pods with stable properties. Finally, we will dive deep into a full-fledged example of running a Cassandra cluster on top of Kubernetes.</p>
+    <p class="normal">This chapter will cover the following main topics:</p>
+    <ul>
+      <li class="bulletList">Stateful versus stateless applications in Kubernetes</li>
+      <li class="bulletList">Running a Cassandra cluster in Kubernetes</li>
+    </ul>
+    <p class="normal">By the end of this chapter, you will understand the challenges of state management in Kubernetes, get a deep look into a specific example of running Cassandra as a data store on Kubernetes, and be able to determine the state management strategy for your workloads.</p>
+    <h1 id="_idParaDest-349" class="heading-1">Stateful versus stateless applications in Kubernetes</h1>
+    <p class="normal">A stateless Kubernetes application<a id="_idIndexMarker759"/> is an application that doesn’t manage its state in the Kubernetes cluster. All the state is stored in memory or outside the cluster, and the cluster containers access it in some manner. A stateful Kubernetes application, on<a id="_idIndexMarker760"/> the other hand, has a persistent state that is managed in the cluster. In this section, we’ll learn why state management is critical to the design of a distributed system and the benefits of managing the state within the Kubernetes cluster.</p>
+    <h2 id="_idParaDest-350" class="heading-2">Understanding the nature of distributed data-intensive apps</h2>
+    <p class="normal">Let’s start with the <a id="_idIndexMarker761"/>basics here. Distributed applications are a collection of processes that run on multiple machines, process inputs, manipulate data, expose APIs, and possibly have other side effects. Each process is a combination of its program, its runtime environment, and its inputs and outputs.</p>
+    <p class="normal">The programs you write at school get their input as command-line arguments; maybe they read a file or access a database, and then write their results to the screen, a file, or a database. Some programs keep state in memory and can serve requests over a network. Simple programs run on a single machine and can hold all their state in memory or read from a file. Their runtime environment is their operating system. If they crash, the user has to restart them manually. They are tied to their machine.</p>
+    <p class="normal">A distributed application is a different animal. A single machine is not enough to process all the data or serve all the requests quickly enough. A single machine can’t hold all the data. The data that needs to be processed is so large that it can’t be downloaded cost-effectively into each processing machine. Machines can fail and need to be replaced. Upgrades need to be performed over all the processing machines. Users may be distributed across the globe.</p>
+    <p class="normal">Taking all these issues into account, it becomes clear that the traditional approach doesn’t work. The limiting factor becomes the data. Users/clients must receive only summary or processed data. All massive data processing must be done close to the data itself because transferring data is prohibitively slow and expensive. Instead, the bulk of processing code must<a id="_idIndexMarker762"/> run in the same data center and network environment of the data.</p>
+    <h2 id="_idParaDest-351" class="heading-2">Why manage the state in Kubernetes?</h2>
+    <p class="normal">The main reason to manage the state<a id="_idIndexMarker763"/> in Kubernetes itself as opposed to a separate cluster is that a lot of the infrastructure needed to monitor, scale, allocate, secure, and operate a storage cluster is already provided by Kubernetes. Running a parallel storage cluster will lead to a lot of duplicated effort.</p>
+    <h2 id="_idParaDest-352" class="heading-2">Why manage the state outside of Kubernetes?</h2>
+    <p class="normal">Let’s not rule out the other option. It <a id="_idIndexMarker764"/>may be better in some situations to manage the state in a separate non-Kubernetes cluster, as long as it shares the same internal network (data proximity trumps everything).</p>
+    <p class="normal">Some valid reasons are as follows:</p>
+    <ul>
+      <li class="bulletList">You already have a separate storage cluster and you don’t want to rock the boat</li>
+      <li class="bulletList">Your storage cluster is used by other non-Kubernetes applications</li>
+      <li class="bulletList">Kubernetes support for your storage cluster is not stable or mature enough</li>
+      <li class="bulletList">You may want to approach stateful applications in Kubernetes incrementally, starting with a separate storage cluster and integrating more tightly with <a id="_idIndexMarker765"/>Kubernetes later</li>
+    </ul>
+    <h2 id="_idParaDest-353" class="heading-2">Shared environment variables versus DNS records for discovery</h2>
+    <p class="normal">Kubernetes provides several mechanisms for global discovery across the cluster. If your storage cluster is not managed by Kubernetes, you still need to tell Kubernetes pods how to find it and access it. </p>
+    <p class="normal">There are two common methods:</p>
+    <ul>
+      <li class="bulletList">DNS</li>
+      <li class="bulletList">Environment variables</li>
+    </ul>
+    <p class="normal">In some cases, you may want to use both, as environment variables can override DNS.</p>
+    <h3 id="_idParaDest-354" class="heading-3">Accessing external data stores via DNS</h3>
+    <p class="normal">The DNS approach is<a id="_idIndexMarker766"/> simple and straightforward. Assuming your<a id="_idIndexMarker767"/> external storage cluster is load-balanced and can provide a stable endpoint, then pods can just hit that endpoint directly and connect to the external cluster.</p>
+    <h3 id="_idParaDest-355" class="heading-3">Accessing external data stores via environment variables</h3>
+    <p class="normal">Another simple <a id="_idIndexMarker768"/>approach is to use <a id="_idIndexMarker769"/>environment variables to pass connection information to an external storage cluster. Kubernetes offers the <code class="inlineCode">ConfigMap</code> resource as a way to keep configuration separate from the container image. The configuration is a set of <code class="inlineCode">key-value</code> pairs. The configuration information can be exposed in two ways. One way is as environment variables. The other way is as a configuration file mounted as a volume in the container. You may prefer to use secrets for sensitive connection information like passwords.</p>
+    <h4 class="heading-4">Creating a ConfigMap</h4>
+    <p class="normal">The following file <a id="_idIndexMarker770"/>is a <code class="inlineCode">ConfigMap</code> that keeps a list of addresses:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ConfigMap</span> 
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">db-config</span> 
+<span class="hljs-attr">data:</span>
+  <span class="hljs-attr">db-ip-addresses:</span> <span class="hljs-number">1.2.3.4</span><span class="hljs-string">,5.6.7.8</span>
+</code></pre>
+    <p class="normal">Save it as <code class="inlineCode">db-config-map.yaml</code> and run:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k create -f db-config-map.yaml
+configmap/db-config created
+</code></pre>
+    <p class="normal">The <code class="inlineCode">data</code> section contains all the <code class="inlineCode">key-value</code> pairs, in this case, just a single pair with a key name of <code class="inlineCode">db-ip-addresses</code>. It will be important later when consuming the <code class="inlineCode">ConfigMap</code> in a pod. You can check out the content to make sure it’s OK:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get configmap db-config -o yaml
+apiVersion: v1
+data:
+  db-ip-addresses: 1.2.3.4,5.6.7.8
+kind: ConfigMap
+metadata:
+  creationTimestamp: "2022-07-17T17:39:05Z"
+  name: db-config
+  namespace: default
+  resourceVersion: "504571"
+  uid: 11e49df0-ed1e-4bee-9fd7-bf38bb2aa38a
+</code></pre>
+    <p class="normal">There are other<a id="_idIndexMarker771"/> ways to create a <code class="inlineCode">ConfigMap</code>. You can directly create one using the <code class="inlineCode">--from-value</code> or <code class="inlineCode">--from-file</code> command-line arguments.</p>
+    <h3 id="_idParaDest-356" class="heading-3">Consuming a ConfigMap as an environment variable</h3>
+    <p class="normal">When you are<a id="_idIndexMarker772"/> creating a pod, you can specify a <code class="inlineCode">ConfigMap</code> and <a id="_idIndexMarker773"/>consume its values in several ways. Here is how to consume our configuration map as an environment variable:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">some-pod</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">some-container</span>
+    <span class="hljs-attr">image:</span> <span class="hljs-string">busybox</span>
+    <span class="hljs-attr">command:</span> [<span class="hljs-string">"/bin/sh"</span>, <span class="hljs-string">"-c"</span>, <span class="hljs-string">"env"</span>]
+    <span class="hljs-attr">env:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">DB_IP_ADDRESSES</span>
+      <span class="hljs-attr">valueFrom:</span>
+        <span class="hljs-attr">configMapKeyRef:</span>
+          <span class="hljs-attr">name:</span> <span class="hljs-string">db-config</span>
+          <span class="hljs-attr">key:</span> <span class="hljs-string">db-ip-addresses</span>
+  <span class="hljs-attr">restartPolicy:</span> <span class="hljs-string">Never</span>
+</code></pre>
+    <p class="normal">This pod runs the <code class="inlineCode">busybox</code> minimal container and executes an <code class="inlineCode">env bash</code> command and it immediately exists. The <code class="inlineCode">db-ip-addresses</code> key from the <code class="inlineCode">db-configmap</code> is mapped to the <code class="inlineCode">DB_IP_ADDRESSES</code> environment variable, and is reflected in the logs:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k create -f pod-with-db.yaml
+pod/some-pod created
+$ k logs some-pod | grep DB_IP
+DB_IP_ADDRESSES=1.2.3.4,5.6.7.8
+</code></pre>
+    <h3 id="_idParaDest-357" class="heading-3">Using a redundant in-memory state</h3>
+    <p class="normal">In some <a id="_idIndexMarker774"/>cases, you may want to keep a transient state in memory. Distributed caching is a common case. Time-sensitive information is another one. For these use cases, there is no need for persistent storage, and multiple pods accessed through a service may be just the right solution. </p>
+    <p class="normal">We can use standard Kubernetes techniques, such as labeling, to identify pods that belong to the distributed cache, store redundant copies of the same state, and expose them through a service. If a pod dies, Kubernetes will create a new one and, until it catches up, the other pods will serve the state. We can even use the pod’s anti-affinity feature to ensure that pods that <a id="_idIndexMarker775"/>maintain redundant copies of the same state are not scheduled to the same node.</p>
+    <p class="normal">Of course, you could also use something like Memcached or Redis.</p>
+    <h3 id="_idParaDest-358" class="heading-3">Using DaemonSet for redundant persistent storage</h3>
+    <p class="normal">Some stateful applications, such as<a id="_idIndexMarker776"/> distributed databases or<a id="_idIndexMarker777"/> queues, manage their state redundantly and sync their nodes automatically (we’ll take a very deep look into Cassandra later). In these cases, it is important that pods are scheduled to separate nodes. It is also important that pods are scheduled to nodes with a particular hardware configuration or are even dedicated to the stateful application. The <code class="inlineCode">DaemonSet</code> feature is perfect for this use case. We can label a set of nodes and make sure that the stateful pods are scheduled on a one-by-one basis to the selected group of nodes.</p>
+    <h3 id="_idParaDest-359" class="heading-3">Applying persistent volume claims</h3>
+    <p class="normal">If the stateful application can <a id="_idIndexMarker778"/>use effectively shared persistent storage, then using a persistent volume claim in each pod is the way to go, as we demonstrated in <em class="chapterRef">Chapter 6</em>, <em class="italic">Managing Storage</em>. The stateful application will be presented with a mounted volume that looks just like a local filesystem.</p>
+    <h3 id="_idParaDest-360" class="heading-3">Utilizing StatefulSet</h3>
+    <p class="normal">StatefulSets are <a id="_idIndexMarker779"/>specially designed to support distributed stateful applications where the identities of the members are important, and if a pod is restarted, it must retain its identity in the set. It provides ordered deployment and scaling. Unlike regular pods, the pods of a <code class="inlineCode">StatefulSet</code> are associated with persistent storage.</p>
+    <h4 class="heading-4">When to use StatefulSet</h4>
+    <p class="normal"><code class="inlineCode">StatefulSets</code> are great <a id="_idIndexMarker780"/>for applications that necessitate any of the following capabilities:</p>
+    <ul>
+      <li class="bulletList">Consistent and distinct network identifiers</li>
+      <li class="bulletList">Persistent and enduring storage</li>
+      <li class="bulletList">Methodical and orderly deployment and scaling</li>
+      <li class="bulletList">Systematic and organized deletion and termination</li>
+    </ul>
+    <h4 class="heading-4">The components of StatefulSet</h4>
+    <p class="normal">There are several elements that <a id="_idIndexMarker781"/>need to be configured correctly in order to have a working <code class="inlineCode">StatefulSet</code>:</p>
+    <ul>
+      <li class="bulletList">A headless service responsible for managing the network identity of the <code class="inlineCode">StatefulSet</code> pods</li>
+      <li class="bulletList">The <code class="inlineCode">StatefulSet</code> itself with a number of replicas</li>
+      <li class="bulletList">Local storage on nodes or persistent storage provisioned dynamically or by an administrator</li>
+    </ul>
+    <p class="normal">Here is an example of a headless service called <code class="inlineCode">nginx</code> that will be used for a <code class="inlineCode">StatefulSet</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span> 
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span> 
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span> 
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span> <span class="hljs-number">80</span> 
+    <span class="hljs-attr">name:</span> <span class="hljs-string">web</span>
+    <span class="hljs-attr">clusterIP:</span> <span class="hljs-string">None</span> 
+</code></pre>
+    <p class="normal">Now, the <code class="inlineCode">StatefulSet</code> manifest file will reference the service:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span> 
+<span class="hljs-attr">kind:</span> <span class="hljs-string">StatefulSet</span> 
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">web</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">serviceName:</span> <span class="hljs-string">"nginx"</span> 
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">3</span>
+  <span class="hljs-attr">template:</span> 
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span>
+</code></pre>
+    <p class="normal">The next part is the pod template, which includes a mounted volume named <code class="inlineCode">www</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">terminationGracePeriodSeconds:</span> <span class="hljs-number">10</span> 
+  <span class="hljs-attr">containers:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+    <span class="hljs-attr">image:</span> <span class="hljs-string">gcr.io/google_containers/nginx-slim:0.8</span> 
+    <span class="hljs-attr">ports:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span> 
+      <span class="hljs-attr">name:</span> <span class="hljs-string">web</span> 
+    <span class="hljs-attr">volumeMounts:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">www</span>
+      <span class="hljs-attr">mountPath:</span> <span class="hljs-string">/usr/share/nginx/html</span>
+</code></pre>
+    <p class="normal">Last but not<a id="_idIndexMarker782"/> least, <code class="inlineCode">volumeClaimTemplates</code> use a claim named <code class="inlineCode">www</code> matching the mounted volume. The claim requests 1 Gib of storage with <code class="inlineCode">ReadWriteOnce</code> access:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">volumeClaimTemplates:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">www</span> 
+      <span class="hljs-attr">spec:</span>
+        <span class="hljs-attr">accessModes:</span> [<span class="hljs-string">"ReadWriteOnce"</span>] 
+        <span class="hljs-attr">resources:</span>
+            <span class="hljs-attr">requests:</span> 
+                <span class="hljs-attr">storage:</span> <span class="hljs-string">1Gib</span>
+</code></pre>
+    <h3 id="_idParaDest-361" class="heading-3">Working with StatefulSets</h3>
+    <p class="normal">Let’s create the <code class="inlineCode">nginx</code> headless <a id="_idIndexMarker783"/>service and <code class="inlineCode">statefulset</code>:</p>
+    <pre class="programlisting gen"><code class="hljs">k apply -f nginx-headless-service.yaml
+service/nginx created
+$ k apply -f nginx-stateful-set.yaml
+statefulset.apps/nginx created
+</code></pre>
+    <p class="normal">We can use the <code class="inlineCode">kubectl get all</code> command to see all the resources that were created:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get all
+NAME          READY   STATUS    RESTARTS   AGE
+pod/nginx-0   1/1     Running   0          107s
+pod/nginx-1   1/1     Running   0          104s
+pod/nginx-2   1/1     Running   0          102s
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+service/nginx        ClusterIP   None         &lt;none&gt;        80/TCP    2m5s
+NAME                     READY   AGE
+statefulset.apps/nginx   3/3     107s
+</code></pre>
+    <p class="normal">As expected, we have the <code class="inlineCode">statefulset</code> with three replicas and the headless service. What is not pre-set is a <code class="inlineCode">ReplicaSet</code>, which you find when you create a Deployment. StatefulSets manage their pods directly.</p>
+    <p class="normal">Note that <a id="_idIndexMarker784"/>the <code class="inlineCode">kubectl get all</code> doesn’t actually show all resources. The StatefulSet also creates a persistent volume claim backed by a persistent volume for each pod. Here they are:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get pvc
+NAME          STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+www-nginx-0   Bound    pvc-40ac1c62-bba0-4e3c-9177-eda7402755b3   10Mi       RWO            standard       1m37s
+www-nginx-1   Bound    pvc-94022a60-e4cb-4495-825d-eb744088266f   10Mi       RWO            standard       1m43s
+www-nginx-2   Bound    pvc-8c60523f-a3e8-4ae3-a91f-6aaa53b02848   10Mi       RWO            standard       1m52h
+$ k get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                 STORAGECLASS   REASON   AGE
+pvc-40ac1c62-bba0-4e3c-9177-eda7402755b3   10Mi       RWO            Delete           Bound    default/www-nginx-0   standard                1m59s
+pvc-8c60523f-a3e8-4ae3-a91f-6aaa53b02848   10Mi       RWO            Delete           Bound    default/www-nginx-2   standard                2m2s
+pvc-94022a60-e4cb-4495-825d-eb744088266f   10Mi       RWO            Delete           Bound    default/www-nginx-1   standard                2m1s
+</code></pre>
+    <p class="normal">If we delete a pod, the StatefulSet will create a new pod and bind it to the corresponding persistent volume claim. The pod <code class="inlineCode">nginx-1</code> is bound to the <code class="inlineCode">www-nginx-1</code> pvc:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get po nginx-1 -o yaml | yq '.spec.volumes[0]'
+name: www
+persistentVolumeClaim:
+  claimName: www-nginx-1
+</code></pre>
+    <p class="normal">Let’s delete the <code class="inlineCode">nginx-1</code> pod and check all remaining pods:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k delete po nginx-1
+pod "nginx-1" deleted
+$ k get po
+NAME      READY   STATUS    RESTARTS   AGE
+nginx-0   1/1     Running   0          12m
+nginx-1   1/1     Running   0          14s
+nginx-2   1/1     Running   0          12m
+</code></pre>
+    <p class="normal">As you can see, the StatefulSet immediately replaced it with a new <code class="inlineCode">nginx-1</code> pod (14 seconds old). The new pod is bound to the same persistent volume claim:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get po nginx-1 -o yaml | yq '.spec.volumes[0]'
+name: www
+persistentVolumeClaim:
+  claimName: www-nginx-1
+</code></pre>
+    <p class="normal">The persistent volume claim and its backing persistent volume were not deleted when the old <code class="inlineCode">nginx-1</code> pod was deleted, as you can tell by their age:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get pvc www-nginx-1
+NAME          STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+www-nginx-1   Bound    pvc-94022a60-e4cb-4495-825d-eb744088266f   10Mi       RWO            standard       143s
+$ k get pv pvc-94022a60-e4cb-4495-825d-eb744088266f
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                 STORAGECLASS   REASON   AGE
+pvc-94022a60-e4cb-4495-825d-eb744088266f   10Mi       RWO            Delete           Bound    default/www-nginx-1   standard                2m1s
+</code></pre>
+    <p class="normal">That means that<a id="_idIndexMarker785"/> the state of the StatefulSet is preserved even as pods come and go. Each pod identified by its index is always bound to a specific shard of the state, backed up by the corresponding persistent volume claim.</p>
+    <p class="normal">At this point, we understand what StatefulSets are all about and how to work with them. Let’s dive into the implementation of an industrial-strength data store and see how it can be deployed as a StatefulSet in Kubernetes.</p>
+    <h1 id="_idParaDest-362" class="heading-1">Running a Cassandra cluster in Kubernetes</h1>
+    <p class="normal">In this section, we will explore in<a id="_idIndexMarker786"/> detail a very large example of configuring a<a id="_idIndexMarker787"/> Cassandra cluster to run on a Kubernetes cluster. I will dissect and give some context for interesting parts. If you wish to explore this even further, the full example can be accessed here:</p>
+    <p class="normal"><a href="https://kubernetes.io/docs/tutorials/stateful-application/cassandra"><span class="url">https://kubernetes.io/docs/tutorials/stateful-application/cassandra</span></a></p>
+    <p class="normal">The goal here is to get a sense of what it takes to run a real-world stateful workload on Kubernetes and how StatefulSets help. Don’t worry if you don’t understand every little detail.</p>
+    <p class="normal">First, we’ll learn a little bit about Cassandra and its idiosyncrasies, and then follow a step-by-step procedure to get it running using several of the techniques and strategies we covered in the previous section.</p>
+    <h2 id="_idParaDest-363" class="heading-2">A quick introduction to Cassandra</h2>
+    <p class="normal">Cassandra<a id="_idIndexMarker788"/> is a distributed columnar data store. It was designed from the get-go for big data. Cassandra is fast, robust (no single point of failure), highly available, and linearly scalable. It also has multi-data center support. It achieves all this by having a laser focus and carefully crafting the features it supports and—just as importantly—the features it doesn’t support.</p>
+    <p class="normal">In a previous company, I ran a Kubernetes cluster that used Cassandra as the main data store for sensor data (about 100 TB). Cassandra allocates the data to a set of nodes (node ring) based on<a id="_idIndexMarker789"/> a <strong class="keyWord">distributed hash table</strong> (<strong class="keyWord">DHT</strong>) algorithm. </p>
+    <p class="normal">The cluster nodes talk to each other via a gossip protocol and learn quickly about the overall state of the cluster (what nodes joined and what nodes left or are unavailable). Cassandra constantly compacts the data and balances the cluster. The data is typically replicated multiple times for redundancy, robustness, and high availability.</p>
+    <p class="normal">From a developer’s point of view, Cassandra is very good for time-series data and provides a flexible model where you can specify the consistency level in each query. It is also idempotent (a very important feature for a distributed database), which means repeated inserts or updates are allowed.</p>
+    <p class="normal">Here is a diagram that shows how a Cassandra cluster<a id="_idIndexMarker790"/> is organized, how a client can access any node, and how a request will be forwarded automatically to the nodes that have the requested data:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_07_01.png" alt="Figure 7.1: Request interacting with a Cassandra cluster"/></figure>
+    <p class="packt_figref">Figure 7.1: Request interacting with a Cassandra cluster</p>
+    <h2 id="_idParaDest-364" class="heading-2">The Cassandra Docker image</h2>
+    <p class="normal">Deploying Cassandra on Kubernetes as<a id="_idIndexMarker791"/> opposed to a standalone Cassandra cluster deployment requires a special Docker image. This is an important step because it means we can use Kubernetes to keep track of our Cassandra pods. The Dockerfile for an image is available here: <a href="https://github.com/kubernetes/examples/blob/master/cassandra/image/Dockerfile"><span class="url">https://github.com/kubernetes/examples/blob/master/cassandra/image/Dockerfile</span></a>.</p>
+    <p class="normal">See below the Dockerfile that builds the Cassandra image. The base image is a flavor of Debian designed for use in containers (see <a href="https://github.com/kubernetes/kubernetes/tree/master/build/debian-base"><span class="url">https://github.com/kubernetes/kubernetes/tree/master/build/debian-base</span></a>).</p>
+    <p class="normal">The Cassandra Dockerfile defines some build arguments that must be set when the image is built, creates a bunch of labels, defines many environment variables, adds all the files to the root directory inside the container, runs the <code class="inlineCode">build.sh</code> script, declares the Cassandra data volume (where the data is stored), exposes a bunch of ports, and finally, uses <code class="inlineCode">dumb-init</code> to execute the <code class="inlineCode">run.sh</code> scripts:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">FROM</span> k8s.gcr.io/debian-base-amd64:<span class="hljs-number">0.3</span>
+<span class="hljs-keyword">ARG</span> BUILD_DATE
+<span class="hljs-keyword">ARG</span> VCS_REF
+<span class="hljs-keyword">ARG</span> CASSANDRA_VERSION
+<span class="hljs-keyword">ARG</span> DEV_CONTAINER
+<span class="hljs-keyword">LABEL</span> \
+    org.label-schema.build-date=<span class="hljs-variable">$BUILD_DATE</span> \
+    org.label-schema.docker.dockerfile=<span class="hljs-string">"/Dockerfile"</span> \
+    org.label-schema.license=<span class="hljs-string">"Apache License 2.0"</span> \
+    org.label-schema.name=<span class="hljs-string">"k8s-for-greeks/docker-cassandra-k8s"</span> \
+    org.label-schema.url=<span class="hljs-string">"https://github.com/k8s-for-greeks/"</span> \
+    org.label-schema.vcs-ref=<span class="hljs-variable">$VCS_REF</span> \
+    org.label-schema.vcs-type=<span class="hljs-string">"Git"</span> \
+    org.label-schema.vcs-url=<span class="hljs-string">"https://github.com/k8s-for-greeks/docker-cassandra-k8s"</span>
+<span class="hljs-keyword">ENV</span> CASSANDRA_HOME=/usr/local/apache-cassandra-${CASSANDRA_VERSION} \
+    CASSANDRA_CONF=/etc/cassandra \
+    CASSANDRA_DATA=/cassandra_data \
+    CASSANDRA_LOGS=/var/log/cassandra \
+    JAVA_HOME=/usr/lib/jvm/java-<span class="hljs-number">8</span>-openjdk-amd64 \
+    PATH=${PATH}:/usr/lib/jvm/java-<span class="hljs-number">8</span>-openjdk-amd64/bin:/usr/local/apache-cassandra-${CASSANDRA_VERSION}/bin
+<span class="hljs-keyword">ADD</span> files /
+<span class="hljs-keyword">RUN</span> clean-install bash \
+    &amp;&amp; /build.sh \
+    &amp;&amp; <span class="hljs-built_in">rm</span> /build.sh
+<span class="hljs-keyword">VOLUME</span> [<span class="hljs-string">"/</span><span class="hljs-variable">$CASSANDRA_DATA</span><span class="hljs-string">"</span>]
+<span class="hljs-comment"># 7000: intra-node communication</span>
+<span class="hljs-comment"># 7001: TLS intra-node communication</span>
+<span class="hljs-comment"># 7199: JMX</span>
+<span class="hljs-comment"># 9042: CQL</span>
+<span class="hljs-comment"># 9160: thrift service</span>
+<span class="hljs-keyword">EXPOSE</span> <span class="hljs-number">7000</span> <span class="hljs-number">7001</span> <span class="hljs-number">7199</span> <span class="hljs-number">9042</span> <span class="hljs-number">9160</span>
+<span class="hljs-keyword">CMD</span> [<span class="hljs-string">"/usr/bin/dumb-init"</span>, <span class="hljs-string">"/bin/bash"</span>, <span class="hljs-string">"/run.sh"</span>]
+</code></pre>
+    <p class="normal">Here are all the<a id="_idIndexMarker792"/> files used by the Dockerfile:</p>
+    <pre class="programlisting gen"><code class="hljs">build.sh
+cassandra-seed.h
+cassandra.yaml
+jvm.options
+kubernetes-cassandra.jar
+logback.xml
+ready-probe.sh
+run.sh
+</code></pre>
+    <p class="normal">We will not cover all of them, but will focus on a couple of interesting scripts: the <code class="inlineCode">build.sh</code> and <code class="inlineCode">run.sh</code> scripts.</p>
+    <h3 id="_idParaDest-365" class="heading-3">Exploring the build.sh script</h3>
+    <p class="normal">Cassandra is a Java program. The build script installs the Java runtime environment and a few necessary libraries and tools. It <a id="_idIndexMarker793"/>then sets a few variables that will be used later, such as <code class="inlineCode">CASSANDRA_PATH</code>.</p>
+    <p class="normal">It downloads the correct version of Cassandra from the Apache organization (Cassandra is an Apache open source project), creates the <code class="inlineCode">/cassandra_data/data</code> directory where Cassandra will store its <code class="inlineCode">SSTables</code> and the <code class="inlineCode">/etc/cassandra</code> configuration directory, copies files into the configuration directory, adds a Cassandra user, sets the readiness probe, installs Python, moves the Cassandra JAR file and the seed shared library to their target destination, and then cleans up all the intermediate files generated during this process:</p>
+    <pre class="programlisting code"><code class="hljs-code">...
+clean-install \
+    openjdk-8-jre-headless \
+    libjemalloc1 \
+    localepurge \
+    dumb-init \
+    wget
+CASSANDRA_PATH="cassandra/${CASSANDRA_VERSION}/apache-cassandra-${CASSANDRA_VERSION}-bin.tar.gz"
+CASSANDRA_DOWNLOAD="http://www.apache.org/dyn/closer.cgi?path=/${CASSANDRA_PATH}&amp;as_json=1"
+CASSANDRA_MIRROR=`wget -q -O - ${CASSANDRA_DOWNLOAD} | grep -oP "(?&lt;=\"preferred\": \")[^\"]+"`
+echo "Downloading Apache Cassandra from $CASSANDRA_MIRROR$CASSANDRA_PATH..."
+wget -q -O - $CASSANDRA_MIRROR$CASSANDRA_PATH \
+    | tar -xzf - -C /usr/local
+mkdir -p /cassandra_data/data
+mkdir -p /etc/cassandra
+mv /logback.xml /cassandra.yaml /jvm.options /etc/cassandra/
+mv /usr/local/apache-cassandra-${CASSANDRA_VERSION}/conf/cassandra-env.sh /etc/cassandra/
+adduser --disabled-password --no-create-home --gecos '' --disabled-login cassandra
+chmod +x /ready-probe.sh
+chown cassandra: /ready-probe.sh
+DEV_IMAGE=${DEV_CONTAINER:-}
+if [ ! -z "$DEV_IMAGE" ]; then
+    clean-install python;
+else
+    rm -rf  $CASSANDRA_HOME/pylib;
+fi
+mv /kubernetes-cassandra.jar /usr/local/apache-cassandra-${CASSANDRA_VERSION}/lib
+mv /cassandra-seed.so /etc/cassandra/
+mv /cassandra-seed.h /usr/local/lib/include
+apt-get -y purge localepurge
+apt-get -y autoremove
+apt-get clean
+rm -rf &lt;many files&gt;
+</code></pre>
+    <h3 id="_idParaDest-366" class="heading-3">Exploring the run.sh script</h3>
+    <p class="normal">The <code class="inlineCode">run.sh</code> script <a id="_idIndexMarker794"/>requires some shell skills and knowledge of Cassandra to understand, but it’s worth the effort. First, some local variables are set for the Cassandra configuration file at <code class="inlineCode">/etc/cassandra/cassandra.yaml</code>. The <code class="inlineCode">CASSANDRA_CFG</code> variable will be used in the rest of the script:</p>
+    <pre class="programlisting code"><code class="hljs-code">set -e
+CASSANDRA_CONF_DIR=/etc/cassandra
+CASSANDRA_CFG=$CASSANDRA_CONF_DIR/cassandra.yaml
+</code></pre>
+    <p class="normal">If no <code class="inlineCode">CASSANDRA_SEEDS</code> were specified, then set the <code class="inlineCode">HOSTNAME</code>, which is used by the <code class="inlineCode">StatefulSet</code> later:</p>
+    <pre class="programlisting code"><code class="hljs-code"># we are doing StatefulSet or just setting our seeds
+if [ -z "$CASSANDRA_SEEDS" ]; then
+  HOSTNAME=$(hostname -f)
+  CASSANDRA_SEEDS=$(hostname -f)
+fi
+</code></pre>
+    <p class="normal">Then comes a long list of environment variables with defaults. The syntax, <code class="inlineCode">${VAR_NAME:-}</code>, uses the <code class="inlineCode">VAR_NAME</code> environment variable, if it’s defined, or the default value.</p>
+    <p class="normal">A similar syntax, <code class="inlineCode">${VAR_NAME:=}</code>, does the same thing but also assigns the default value to the environment variable if it’s not defined. This is a subtle but important difference.</p>
+    <p class="normal">Both variations are<a id="_idIndexMarker795"/> used here:</p>
+    <pre class="programlisting code"><code class="hljs-code"># The following vars relate to their counter parts in $CASSANDRA_CFG
+# for instance rpc_address
+CASSANDRA_RPC_ADDRESS="${CASSANDRA_RPC_ADDRESS:-0.0.0.0}"
+CASSANDRA_NUM_TOKENS="${CASSANDRA_NUM_TOKENS:-32}"
+CASSANDRA_CLUSTER_NAME="${CASSANDRA_CLUSTER_NAME:='Test Cluster'}"
+CASSANDRA_LISTEN_ADDRESS=${POD_IP:-$HOSTNAME}
+CASSANDRA_BROADCAST_ADDRESS=${POD_IP:-$HOSTNAME}
+CASSANDRA_BROADCAST_RPC_ADDRESS=${POD_IP:-$HOSTNAME}
+CASSANDRA_DISK_OPTIMIZATION_STRATEGY="${CASSANDRA_DISK_OPTIMIZATION_STRATEGY:-ssd}"
+CASSANDRA_MIGRATION_WAIT="${CASSANDRA_MIGRATION_WAIT:-1}"
+CASSANDRA_ENDPOINT_SNITCH="${CASSANDRA_ENDPOINT_SNITCH:-SimpleSnitch}"
+CASSANDRA_DC="${CASSANDRA_DC}"
+CASSANDRA_RACK="${CASSANDRA_RACK}"
+CASSANDRA_RING_DELAY="${CASSANDRA_RING_DELAY:-30000}"
+CASSANDRA_AUTO_BOOTSTRAP="${CASSANDRA_AUTO_BOOTSTRAP:-true}"
+CASSANDRA_SEEDS="${CASSANDRA_SEEDS:false}"
+CASSANDRA_SEED_PROVIDER="${CASSANDRA_SEED_PROVIDER:-org.apache.cassandra.locator.SimpleSeedProvider}"
+CASSANDRA_AUTO_BOOTSTRAP="${CASSANDRA_AUTO_BOOTSTRAP:false}"
+</code></pre>
+    <p class="normal">By the way, I contributed my part to Kubernetes by opening a PR to fix a minor typo here. See <a href="https://github.com/kubernetes/examples/pull/348"><span class="url">https://github.com/kubernetes/examples/pull/348</span></a>.</p>
+    <p class="normal">The next part configures monitoring JMX and controls garbage collection output:</p>
+    <pre class="programlisting code"><code class="hljs-code"># Turn off JMX auth
+CASSANDRA_OPEN_JMX="${CASSANDRA_OPEN_JMX:-false}"
+# send GC to STDOUT
+CASSANDRA_GC_STDOUT="${CASSANDRA_GC_STDOUT:-false}"
+</code></pre>
+    <p class="normal">Then comes a section where all the variables are printed on the screen. Let’s skip most of it:</p>
+    <pre class="programlisting code"><code class="hljs-code">echo Starting Cassandra on ${CASSANDRA_LISTEN_ADDRESS}
+echo CASSANDRA_CONF_DIR ${CASSANDRA_CONF_DIR}
+echo CASSANDRA_CFG ${CASSANDRA_CFG}
+echo CASSANDRA_AUTO_BOOTSTRAP ${CASSANDRA_AUTO_BOOTSTRAP}
+...
+</code></pre>
+    <p class="normal">The next section is very important. By default, Cassandra uses a simple snitch, which is unaware of racks and data centers. This is not optimal when the cluster spans multiple data centers and racks.</p>
+    <p class="normal">Cassandra<a id="_idIndexMarker796"/> is rack-aware and<a id="_idIndexMarker797"/> data center-aware and can optimize both for redundancy and high availability while limiting communication across data centers appropriately:</p>
+    <pre class="programlisting code"><code class="hljs-code"># if DC and RACK are set, use GossipingPropertyFileSnitch
+if [[ $CASSANDRA_DC &amp;&amp; $CASSANDRA_RACK ]]; then
+  echo "dc=$CASSANDRA_DC" &gt; $CASSANDRA_CONF_DIR/cassandra-rackdc.properties
+  echo "rack=$CASSANDRA_RACK" &gt;&gt; $CASSANDRA_CONF_DIR/cassandra-rackdc.properties
+  CASSANDRA_ENDPOINT_SNITCH="GossipingPropertyFileSnitch"
+fi
+</code></pre>
+    <p class="normal">Memory management is also important, and you can control the maximum heap size to ensure Cassandra doesn’t start thrashing and swapping to disk:</p>
+    <pre class="programlisting code"><code class="hljs-code">if [ -n "$CASSANDRA_MAX_HEAP" ]; then
+  sed -ri "s/^(#)?-Xmx[0-9]+.*/-Xmx$CASSANDRA_MAX_HEAP/" "$CASSANDRA_CONF_DIR/jvm.options"
+  sed -ri "s/^(#)?-Xms[0-9]+.*/-Xms$CASSANDRA_MAX_HEAP/" "$CASSANDRA_CONF_DIR/jvm.options"
+fi
+if [ -n "$CASSANDRA_REPLACE_NODE" ]; then
+   echo "-Dcassandra.replace_address=$CASSANDRA_REPLACE_NODE/" &gt;&gt; "$CASSANDRA_CONF_DIR/jvm.options"
+fi
+</code></pre>
+    <p class="normal">The rack and data center information is stored in a simple Java <code class="inlineCode">propertiesfile</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">for</span> rackdc <span class="hljs-keyword">in</span> dc rack; <span class="hljs-keyword">do</span>
+  <span class="hljs-keyword">var</span>=<span class="hljs-string">"CASSANDRA_${rackdc^^}"</span>
+  val=<span class="hljs-string">"${!var}"</span>
+  <span class="hljs-keyword">if</span> [ <span class="hljs-string">"$val"</span> ]; then
+    sed -ri <span class="hljs-string">'s/^('"$rackdc"'=).*/\1 '"$val"'/'</span> <span class="hljs-string">"$CASSANDRA_CONF_DIR/cassandra-rackdc.properties"</span>
+  fi
+done
+</code></pre>
+    <p class="normal">The next section loops <a id="_idIndexMarker798"/>over all the variables defined earlier, finds the corresponding key in the <code class="inlineCode">Cassandra.yaml</code> configuration files, and overwrites them. That ensures that each configuration file is customized on the fly just before it launches Cassandra itself:</p>
+    <pre class="programlisting code"><code class="hljs-code">for yaml in \
+  broadcast_address \
+  broadcast_rpc_address \
+  cluster_name \
+  disk_optimization_strategy \
+  endpoint_snitch \
+  listen_address \
+  num_tokens \
+  rpc_address \
+  start_rpc \
+  key_cache_size_in_mb \
+  concurrent_reads \
+  concurrent_writes \
+  memtable_cleanup_threshold \
+  memtable_allocation_type \
+  memtable_flush_writers \
+  concurrent_compactors \
+  compaction_throughput_mb_per_sec \
+  counter_cache_size_in_mb \
+  internode_compression \
+  endpoint_snitch \
+  gc_warn_threshold_in_ms \
+  listen_interface \
+  rpc_interface \
+  ; do
+  var="CASSANDRA_${yaml^^}"
+  val="${!var}"
+  if [ "$val" ]; then
+    sed -ri 's/^(# )?('"$yaml"':).*/\2 '"$val"'/' "$CASSANDRA_CFG"
+  fi
+done
+echo "auto_bootstrap: ${CASSANDRA_AUTO_BOOTSTRAP}" &gt;&gt; $CASSANDRA_CFG
+</code></pre>
+    <p class="normal">The next section is all about setting the seeds or seed provider depending on the deployment solution (<code class="inlineCode">StatefulSet</code> or not). There is a little trick for the first pod to bootstrap as its own seed:</p>
+    <pre class="programlisting code"><code class="hljs-code"># set the seed to itself.  This is only for the first pod, otherwise
+# it will be able to get seeds from the seed provider
+if [[ $CASSANDRA_SEEDS == 'false' ]]; then
+  sed -ri 's/- seeds:.*/- seeds: "'"$POD_IP"'"/' $CASSANDRA_CFG
+else # if we have seeds set them.  Probably StatefulSet
+  sed -ri 's/- seeds:.*/- seeds: "'"$CASSANDRA_SEEDS"'"/' $CASSANDRA_CFG
+fi
+sed -ri 's/- class_name: SEED_PROVIDER/- class_name: '"$CASSANDRA_SEED_PROVIDER"'/' $CASSANDRA_CFG
+</code></pre>
+    <p class="normal">The following section sets up <a id="_idIndexMarker799"/>various options for remote management and JMX monitoring. It’s critical in complicated distributed systems to have proper administration tools. Cassandra<a id="_idIndexMarker800"/> has deep support for the ubiquitous <strong class="keyWord">JMX</strong> standard:</p>
+    <pre class="programlisting code"><code class="hljs-code"># send gc to stdout
+if [[ $CASSANDRA_GC_STDOUT == 'true' ]]; then
+  sed -ri 's/ -Xloggc:\/var\/log\/cassandra\/gc\.log//' $CASSANDRA_CONF_DIR/cassandra-env.sh
+fi
+# enable RMI and JMX to work on one port
+echo "JVM_OPTS=\"\$JVM_OPTS -Djava.rmi.server.hostname=$POD_IP\"" &gt;&gt; $CASSANDRA_CONF_DIR/cassandra-env.sh
+# getting WARNING messages with Migration Service
+echo "-Dcassandra.migration_task_wait_in_seconds=${CASSANDRA_MIGRATION_WAIT}" &gt;&gt; $CASSANDRA_CONF_DIR/jvm.options
+echo "-Dcassandra.ring_delay_ms=${CASSANDRA_RING_DELAY}" &gt;&gt; $CASSANDRA_CONF_DIR/jvm.options
+if [[ $CASSANDRA_OPEN_JMX == 'true' ]]; then
+  export LOCAL_JMX=no
+  sed -ri 's/ -Dcom\.sun\.management\.jmxremote\.authenticate=true/ -Dcom\.sun\.management\.jmxremote\.authenticate=false/' $CASSANDRA_CONF_DIR/cassandra-env.sh
+  sed -ri 's/ -Dcom\.sun\.management\.jmxremote\.password\.file=\/etc\/cassandra\/jmxremote\.password//' $CASSANDRA_CONF_DIR/cassandra-env.sh
+fi
+</code></pre>
+    <p class="normal">Finally, it protects the data directory such that only the <code class="inlineCode">cassandra</code> user can access it, the <code class="inlineCode">CLASSPATH</code> is set to the Cassandra <code class="inlineCode">JAR</code> file, and it launches Cassandra in the foreground (not daemonized) as the <code class="inlineCode">cassandra</code> user:</p>
+    <pre class="programlisting code"><code class="hljs-code">chmod 700 "${CASSANDRA_DATA}"
+chown -c -R cassandra "${CASSANDRA_DATA}" "${CASSANDRA_CONF_DIR}"
+export CLASSPATH=/kubernetes-cassandra.jar
+su cassandra -c "$CASSANDRA_HOME/bin/cassandra -f"
+</code></pre>
+    <h2 id="_idParaDest-367" class="heading-2">Hooking up Kubernetes and Cassandra</h2>
+    <p class="normal">Connecting Kubernetes and Cassandra takes some work because Cassandra was designed to be very self-sufficient, but we want to let it hook into Kubernetes at the right time to provide capabilities such as automatically restarting failed nodes, monitoring, allocating Cassandra pods, and providing a unified view of the Cassandra pods side by side with other pods.</p>
+    <p class="normal">Cassandra is a complicated beast and has many knobs to control it. It comes with a <code class="inlineCode">Cassandra.yaml</code> configuration file, and you can override all the options with environment variables.</p>
+    <h3 id="_idParaDest-368" class="heading-3">Digging into the Cassandra configuration file</h3>
+    <p class="normal">There are two settings that are<a id="_idIndexMarker801"/> particularly relevant: the seed provider and the snitch. The seed provider is responsible for publishing a list of IP addresses (seeds) for nodes in the cluster. Each node that starts running connects to the seeds (there are usually at least three) and if it successfully reaches one of them, they immediately exchange information about all the nodes in the cluster. This information is updated constantly for each node as the nodes gossip with each other.</p>
+    <p class="normal">The default seed provider configured in <code class="inlineCode">Cassandra.yaml</code> is just a static list of IP addresses, in this case, just the loopback interface:</p>
+    <pre class="programlisting code"><code class="hljs-code"># any class that implements the SeedProvider interface and has a
+# constructor that takes a Map&lt;String, String&gt; of parameters will do.
+seed_provider:
+    # Addresses of hosts that are deemed contact points.
+    # Cassandra nodes use this list of hosts to find each other and learn
+    # the topology of the ring.  You must change this if you are running
+    # multiple nodes!
+    #- class_name: io.k8s.cassandra.KubernetesSeedProvider
+    - class_name: SEED_PROVIDER
+      parameters:
+          # seeds is actually a comma-delimited list of addresses.
+          # Ex: "&lt;ip1&gt;,&lt;ip2&gt;,&lt;ip3&gt;"
+          - seeds: "127.0.0.1"
+</code></pre>
+    <p class="normal">The other important setting is the snitch. It has two roles:</p>
+    <ul>
+      <li class="bulletList">Cassandra utilizes the snitch to gain valuable insights into your network topology, enabling it to effectively route requests. </li>
+      <li class="bulletList">Cassandra employs this knowledge to strategically distribute replicas across your cluster, mitigating the risk of correlated failures. To achieve this, Cassandra organizes machines into data centers and racks, ensuring that replicas are not concentrated on a single rack, even if it doesn’t necessarily correspond to a physical location.</li>
+    </ul>
+    <p class="normal">Cassandra comes pre-loaded with several snitch classes, but none of them are Kubernetes-aware. The default is <code class="inlineCode">SimpleSnitch</code>, but it can be overridden:</p>
+    <pre class="programlisting code"><code class="hljs-code"># You can use a custom Snitch by setting this to the full class
+# name of the snitch, which will be assumed to be on your classpath. 
+endpoint_snitch: SimpleSnitch
+</code></pre>
+    <p class="normal">Other<a id="_idIndexMarker802"/> snitches are: </p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">GossipingPropertyFileSnitch</code></li>
+      <li class="bulletList"><code class="inlineCode">PropertyFileSnitch</code></li>
+      <li class="bulletList"><code class="inlineCode">Ec2Snitch</code></li>
+      <li class="bulletList"><code class="inlineCode">Ec2MultiRegionSnitch</code></li>
+      <li class="bulletList"><code class="inlineCode">RackInferringSnitch</code></li>
+    </ul>
+    <h3 id="_idParaDest-369" class="heading-3">The custom seed provider</h3>
+    <p class="normal">When running Cassandra nodes as <a id="_idIndexMarker803"/>pods in Kubernetes, Kubernetes may move pods around, including seeds. To accommodate that, a Cassandra seed provider needs to interact with the Kubernetes API server.</p>
+    <p class="normal">Here is a short snippet from the custom <code class="inlineCode">KubernetesSeedProvider</code> (a Java class that implements the Cassandra <code class="inlineCode">SeedProvider</code> API):</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">public</span> <span class="hljs-keyword">class</span> <span class="hljs-title">KubernetesSeedProvider</span> <span class="hljs-keyword">implements</span> <span class="hljs-title">SeedProvider</span> {
+...
+    <span class="hljs-comment">/**</span>
+<span class="hljs-comment">     * Call Kubernetes API to collect a list of seed providers</span>
+<span class="hljs-comment">     *</span>
+<span class="hljs-comment">     * </span><span class="hljs-doctag">@return</span><span class="hljs-comment"> list of seed providers</span>
+<span class="hljs-comment">     */</span>
+    <span class="hljs-keyword">public</span> List&lt;InetAddress&gt; <span class="hljs-title">getSeeds</span><span class="hljs-params">()</span> {
+        <span class="hljs-type">GoInterface</span> <span class="hljs-variable">go</span> <span class="hljs-operator">=</span> (GoInterface) Native.loadLibrary(<span class="hljs-string">"cassandra-seed.so"</span>, GoInterface.class);
+        <span class="hljs-type">String</span> <span class="hljs-variable">service</span> <span class="hljs-operator">=</span> getEnvOrDefault(<span class="hljs-string">"CASSANDRA_SERVICE"</span>, <span class="hljs-string">"cassandra"</span>);
+        <span class="hljs-type">String</span> <span class="hljs-variable">namespace</span> <span class="hljs-operator">=</span> getEnvOrDefault(<span class="hljs-string">"POD_NAMESPACE"</span>, <span class="hljs-string">"default"</span>);
+        <span class="hljs-type">String</span> <span class="hljs-variable">initialSeeds</span> <span class="hljs-operator">=</span> getEnvOrDefault(<span class="hljs-string">"CASSANDRA_SEEDS"</span>, <span class="hljs-string">""</span>);
+        <span class="hljs-keyword">if</span> (<span class="hljs-string">""</span>.equals(initialSeeds)) {
+            initialSeeds = getEnvOrDefault(<span class="hljs-string">"POD_IP"</span>, <span class="hljs-string">""</span>);
+        }
+        <span class="hljs-type">String</span> <span class="hljs-variable">seedSizeVar</span> <span class="hljs-operator">=</span> getEnvOrDefault(<span class="hljs-string">"CASSANDRA_SERVICE_NUM_SEEDS"</span>, <span class="hljs-string">"8"</span>);
+        <span class="hljs-type">Integer</span> <span class="hljs-variable">seedSize</span> <span class="hljs-operator">=</span> Integer.valueOf(seedSizeVar);
+        <span class="hljs-type">String</span> <span class="hljs-variable">data</span> <span class="hljs-operator">=</span> go.GetEndpoints(namespace, service, initialSeeds);
+        <span class="hljs-type">ObjectMapper</span> <span class="hljs-variable">mapper</span> <span class="hljs-operator">=</span> <span class="hljs-keyword">new</span> <span class="hljs-title">ObjectMapper</span>();
+        <span class="hljs-keyword">try</span> {
+            <span class="hljs-type">Endpoints</span> <span class="hljs-variable">endpoints</span> <span class="hljs-operator">=</span> mapper.readValue(data, Endpoints.class);
+            logger.info(<span class="hljs-string">"cassandra seeds: {}"</span>, endpoints.ips.toString());
+            <span class="hljs-keyword">return</span> Collections.unmodifiableList(endpoints.ips);
+        } <span class="hljs-keyword">catch</span> (IOException e) {
+            <span class="hljs-comment">// This should not happen</span>
+            logger.error(<span class="hljs-string">"unexpected error building cassandra seeds: {}"</span> , e.getMessage());
+            <span class="hljs-keyword">return</span> Collections.emptyList();
+        }
+    }
+</code></pre>
+    <h2 id="_idParaDest-370" class="heading-2">Creating a Cassandra headless service</h2>
+    <p class="normal">The role of the <a id="_idIndexMarker804"/>headless service is to allow clients in the Kubernetes cluster to connect to the Cassandra cluster through a standard Kubernetes service instead of keeping track of the network identities of the nodes or putting a dedicated load balancer in front of all the nodes. Kubernetes provides all that out of the box through its services.</p>
+    <p class="normal">Here is the <code class="inlineCode">Service</code> manifest:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span>  <span class="hljs-string">v1</span>  
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span> 
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">cassandra</span> 
+    <span class="hljs-attr">name:</span> <span class="hljs-string">cassandra</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">clusterIP:</span> <span class="hljs-string">None</span> 
+  <span class="hljs-attr">ports:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span> <span class="hljs-number">9042</span> 
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">Cassandra</span>
+</code></pre>
+    <p class="normal">The <code class="inlineCode">app: cassandra</code> label will group all the pods that participate in the service. Kubernetes will create endpoint records and the DNS will return a record for discovery. The <code class="inlineCode">clusterIP</code> is <code class="inlineCode">None</code>, which means the service is headless and Kubernetes will not do any load-balancing or proxying. This is important because Cassandra nodes do their own communication directly.</p>
+    <p class="normal">The <code class="inlineCode">9042</code> port is<a id="_idIndexMarker805"/> used by Cassandra to serve CQL requests. Those can be queries, inserts/updates (it’s always an upsert with Cassandra), or deletes.</p>
+    <h2 id="_idParaDest-371" class="heading-2">Using StatefulSet to create the Cassandra cluster</h2>
+    <p class="normal">Declaring a <code class="inlineCode">StatefulSet</code> is not <a id="_idIndexMarker806"/>trivial. It is arguably the most complex Kubernetes resource. It has a lot of moving parts: standard metadata, the StatefulSet spec, the pod template (which is often pretty complex itself), and volume claim templates.</p>
+    <h3 id="_idParaDest-372" class="heading-3">Dissecting the StatefulSet YAML file</h3>
+    <p class="normal">Let’s go methodically over this example <a id="_idIndexMarker807"/>StatefulSet YAML file that declares a three-node Cassandra cluster.</p>
+    <p class="normal">Here is the basic metadata. Note the <code class="inlineCode">apiVersion</code> string is <code class="inlineCode">apps/v1</code> (<code class="inlineCode">StatefulSet</code> became generally available in Kubernetes 1.9):</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">"apps/v1"</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">StatefulSet</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">cassandra</span>
+  <span class="hljs-attr">labels:</span>
+     <span class="hljs-attr">app:</span> <span class="hljs-string">cassandra</span>
+</code></pre>
+    <p class="normal">The StatefulSet spec defines the headless service name, the label selector (<code class="inlineCode">app: cassandra</code>), how many pods there are in the StatefulSet, and the pod template (explained later). The <code class="inlineCode">replicas</code> field specifies how many pods are in the StatefulSet:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">serviceName:</span> <span class="hljs-string">cassandra</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">3</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">app:</span> <span class="hljs-string">cassandra</span>
+  <span class="hljs-attr">template:</span>      
+      <span class="hljs-string">...</span>
+</code></pre>
+    <p class="normal">The term “replicas” for the pods is an unfortunate choice because the pods are not replicas of each other. They share the same pod template, but they have a unique identity, and they are responsible for different subsets of the state in general. This is even more confusing in the case of Cassandra, which uses the same term, “replicas,” to refer to groups of nodes that redundantly duplicate some subset of the state (but are not identical, because each can manage an additional state too). </p>
+    <p class="normal">I opened a GitHub issue with the Kubernetes project to change the term from replicas to members:</p>
+    <p class="normal"><a href="https://github.com/kubernetes/kubernetes.github.io/issues/2103"><span class="url">https://github.com/kubernetes/kubernetes.github.io/issues/2103</span></a></p>
+    <p class="normal">The pod template contains a single container based on the custom Cassandra image. It also sets the termination grace period to 30 minutes. This means that when Kubernetes needs to terminate the pod, it will send the containers a <code class="inlineCode">SIGTERM</code> signal notifying them they should exit, giving them a chance to do so gracefully. Any container that is still running after the grace period will be killed via <code class="inlineCode">SIGKILL</code>.</p>
+    <p class="normal">Here is the<a id="_idIndexMarker808"/> pod template with the <code class="inlineCode">app: cassandra</code> label:</p>
+    <pre class="programlisting code"><code class="hljs-code">  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">app:</span> <span class="hljs-string">cassandra</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">terminationGracePeriodSeconds:</span> <span class="hljs-number">1800</span>
+      <span class="hljs-attr">containers:</span>
+      <span class="hljs-string">...</span>
+</code></pre>
+    <p class="normal">The <code class="inlineCode">containers</code> section has multiple important parts. It starts with a name and the image we looked at earlier:</p>
+    <pre class="programlisting code"><code class="hljs-code">      <span class="hljs-attr">containers:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">cassandra</span>
+        <span class="hljs-attr">image:</span> <span class="hljs-string">gcr.io/google-samples/cassandra:v14</span>
+        <span class="hljs-attr">imagePullPolicy:</span> <span class="hljs-string">Always</span>
+</code></pre>
+    <p class="normal">Then, it defines multiple container ports needed for external and internal communication by Cassandra nodes:</p>
+    <pre class="programlisting code"><code class="hljs-code">        <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">7000</span>
+          <span class="hljs-attr">name:</span> <span class="hljs-string">intra-node</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">7001</span>
+          <span class="hljs-attr">name:</span> <span class="hljs-string">tls-intra-node</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">7199</span>
+          <span class="hljs-attr">name:</span> <span class="hljs-string">jmx</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">9042</span>
+          <span class="hljs-attr">name:</span> <span class="hljs-string">cql</span>
+</code></pre>
+    <p class="normal">The <code class="inlineCode">resources</code> section specifies the CPU and memory needed by the container. This is critical because the storage management layer should never be a performance bottleneck due to CPU or memory. Note that it follows the best practice of identical requests and limits to ensure the resources are always available once allocated:</p>
+    <pre class="programlisting code"><code class="hljs-code">        <span class="hljs-attr">resources:</span>
+          <span class="hljs-attr">limits:</span>
+            <span class="hljs-attr">cpu:</span> <span class="hljs-string">"500m"</span>
+            <span class="hljs-attr">memory:</span> <span class="hljs-string">1Gi</span>
+          <span class="hljs-attr">requests:</span>
+           <span class="hljs-attr">cpu:</span> <span class="hljs-string">"500m"</span>
+           <span class="hljs-attr">memory:</span> <span class="hljs-string">1Gi</span>
+</code></pre>
+    <p class="normal">Cassandra needs access<a id="_idIndexMarker809"/> to <strong class="keyWord">inter-process communication</strong> (<strong class="keyWord">IPC</strong>), which the container requests through the security context’s capabilities:</p>
+    <pre class="programlisting code"><code class="hljs-code">        <span class="hljs-attr">securityContext:</span>
+          <span class="hljs-attr">capabilities:</span>
+            <span class="hljs-attr">add:</span>
+              <span class="hljs-bullet">-</span> <span class="hljs-string">IPC_LOCK</span>
+</code></pre>
+    <p class="normal">The <code class="inlineCode">lifecycle</code> section runs the Cassandra <code class="inlineCode">nodetool drain</code> command to make sure data on the node is transferred to other nodes in the Cassandra cluster when the container needs to shut down. This is the reason a 30-minute grace period is needed. Node draining involves moving a lot of data around:</p>
+    <pre class="programlisting code"><code class="hljs-code">        <span class="hljs-attr">lifecycle:</span>
+          <span class="hljs-attr">preStop:</span>
+            <span class="hljs-attr">exec:</span>
+              <span class="hljs-attr">command:</span>
+              <span class="hljs-bullet">-</span> <span class="hljs-string">/bin/sh</span>
+              <span class="hljs-bullet">-</span> <span class="hljs-string">-c</span>
+              <span class="hljs-bullet">-</span> <span class="hljs-string">nodetool</span> <span class="hljs-string">drain</span>
+</code></pre>
+    <p class="normal">The <code class="inlineCode">env</code> section<a id="_idIndexMarker810"/> specifies the environment variables that will be available inside the container. The following is a partial list of the necessary variables. The <code class="inlineCode">CASSANDRA_SEEDS</code> variable is set to the headless service, so a Cassandra node can talk to seed nodes on startup and discover the whole cluster. Note that in this configuration we don’t use the special Kubernetes seed provider. <code class="inlineCode">POD_IP</code> is interesting because it utilizes the Downward API to populate its value via the field reference to <code class="inlineCode">status.podIP</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code">        <span class="hljs-attr">env:</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">MAX_HEAP_SIZE</span>
+            <span class="hljs-attr">value:</span> <span class="hljs-string">512M</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">HEAP_NEWSIZE</span>
+            <span class="hljs-attr">value:</span> <span class="hljs-string">100M</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">CASSANDRA_SEEDS</span>
+            <span class="hljs-attr">value:</span> <span class="hljs-string">"cassandra-0.cassandra.default.svc.cluster.local"</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">CASSANDRA_CLUSTER_NAME</span>
+            <span class="hljs-attr">value:</span> <span class="hljs-string">"K8Demo"</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">CASSANDRA_DC</span>
+            <span class="hljs-attr">value:</span> <span class="hljs-string">"DC1-K8Demo"</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">CASSANDRA_RACK</span>
+            <span class="hljs-attr">value:</span> <span class="hljs-string">"Rack1-K8Demo"</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">CASSANDRA_SEED_PROVIDER</span>
+            <span class="hljs-attr">value:</span> <span class="hljs-string">io.k8s.cassandra.KubernetesSeedProvider</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">POD_IP</span>
+            <span class="hljs-attr">valueFrom:</span>
+              <span class="hljs-attr">fieldRef:</span>
+                <span class="hljs-attr">fieldPath:</span> <span class="hljs-string">status.podIP</span>
+</code></pre>
+    <p class="normal">The readiness probe makes sure that requests are not sent to the node until it is actually ready to service them. The <code class="inlineCode">ready-probe.sh</code> script utilizes Cassandra’s <code class="inlineCode">nodetool status</code> command:</p>
+    <pre class="programlisting code"><code class="hljs-code">        <span class="hljs-attr">readinessProbe:</span>
+          <span class="hljs-attr">exec:</span>
+            <span class="hljs-attr">command:</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-string">/bin/bash</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-string">-c</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-string">/ready-probe.sh</span>
+          <span class="hljs-attr">initialDelaySeconds:</span> <span class="hljs-number">15</span>
+          <span class="hljs-attr">timeoutSeconds:</span> <span class="hljs-number">5</span>
+</code></pre>
+    <p class="normal">The last part of the container spec is the volume mount, which must match a persistent volume claim:</p>
+    <pre class="programlisting code"><code class="hljs-code">        <span class="hljs-attr">volumeMounts:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">cassandra-data</span>
+          <span class="hljs-attr">mountPath:</span> <span class="hljs-string">/var/lib/cassandra</span>
+</code></pre>
+    <p class="normal">That’s it for<a id="_idIndexMarker811"/> the container spec. The last part is the volume claim templates. In this case, dynamic provisioning is used. It’s highly recommended to use SSD drives for Cassandra storage, especially its journal. The requested storage in this example is 1 GiB. I discovered through experimentation that 1–2 TB is ideal for a single Cassandra node. The reason is that Cassandra does a lot of data shuffling under the covers, compacting and rebalancing the data. If a node leaves the cluster or a new one joins the cluster, you have to wait until the data is properly rebalanced before the data from the node that left is properly redistributed or a new node is populated.</p>
+    <p class="normal">Note that Cassandra needs a lot of disk space to do all this shuffling. It is recommended to have 50% free disk space. When you consider that you also need replication (typically 3x), then the required storage space can be 6x your data size. You can get by with 30% free space if you’re adventurous and maybe use just 2x replication depending on your use case. But don’t get below 10% free disk space, even on a single node. I learned the hard way that Cassandra will simply get stuck and will be unable to compact and rebalance such nodes without extreme measures.</p>
+    <p class="normal">The storage class <code class="inlineCode">fast</code> must be defined in this case. Usually, for Cassandra, you need a special storage class and can’t use the Kubernetes cluster default storage class.</p>
+    <p class="normal">The access mode is, of course, <code class="inlineCode">ReadWriteOnce</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code">  <span class="hljs-attr">volumeClaimTemplates:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">cassandra-data</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">storageClassName:</span> <span class="hljs-string">fast</span>
+      <span class="hljs-attr">accessModes:</span> [ <span class="hljs-string">"ReadWriteOnce"</span> ]
+      <span class="hljs-attr">resources:</span>
+        <span class="hljs-attr">requests:</span>
+          <span class="hljs-attr">storage:</span> <span class="hljs-string">1Gi</span>
+</code></pre>
+    <p class="normal">When deploying a<a id="_idIndexMarker812"/> StatefulSet, Kubernetes creates the pods in order per their index number. When scaling up or down, it also does so in order. For Cassandra, this is not important because it can handle nodes joining or leaving the cluster in any order. When a Cassandra pod is destroyed (ungracefully), the persistent volume remains. If a pod with the same index is created later, the original persistent volume will be mounted into it. This stable connection between a particular pod and its storage enables Cassandra to manage the state properly.</p>
+    <h1 id="_idParaDest-373" class="heading-1">Summary</h1>
+    <p class="normal">In this chapter, we covered the topic of stateful applications and how to integrate them with Kubernetes. We discovered that stateful applications are complicated and considered several mechanisms for discovery, such as DNS and environment variables. We also discussed several state management solutions, such as in-memory redundant storage, local storage, and persistent storage. The bulk of the chapter revolved around deploying a Cassandra cluster inside a Kubernetes cluster using a StatefulSet. We drilled down into the low-level details in order to appreciate what it really takes to integrate a third-party complex distributed system like Cassandra into Kubernetes. At this point, you should have a thorough understanding of stateful applications and how to apply them within your Kubernetes-based system. You are armed with multiple methods for various use cases, and maybe you’ve even learned a little bit about Cassandra.</p>
+    <p class="normal">In the next chapter, we will continue our journey and explore the important topic of scalability, in particular auto-scalability, and how to deploy and do live upgrades and updates as the cluster dynamically grows. These issues are very intricate, especially when the cluster has stateful apps running on it.</p>
+  </div>
+</body></html>

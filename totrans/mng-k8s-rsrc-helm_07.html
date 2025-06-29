@@ -1,0 +1,426 @@
+<html><head></head><body>
+		<div id="_idContainer084">
+			<h1 id="_idParaDest-149" class="chapter-number"><a id="_idTextAnchor196"/>7</h1>
+			<h1 id="_idParaDest-150"><a id="_idTextAnchor197"/>Helm Lifecycle Hooks</h1>
+			<p>A Helm release undergoes several different phases during its lifetime. The first phase, <strong class="bold">install</strong>, occurs when the Helm chart is first installed. The second phase, <strong class="bold">upgrade</strong>, occurs when the Helm release is updated by either updating values or the Helm chart itself. At a later point, a Helm user may need to execute the <strong class="bold">rollback</strong> phase, which reverts the Helm release to an earlier state. Finally, if a user needs to delete the Helm release and its associated resources from the Kubernetes cluster, users must execute the <strong class="bold">uninstall</strong> phase.</p>
+			<p>Each phase is powerful on its own, but to provide additional capabilities around the release lifecycle, Helm features a <strong class="bold">hooks</strong> mechanism that allows custom actions to be undertaken at different points within a release cycle. For example, you may use hooks to do the following:</p>
+			<ul>
+				<li>Perform operations on a database, such as back up after upgrading or restoring a chart from a previous snapshot during a rollback.</li>
+				<li>Fetch secrets from a secrets management engine after installing a chart.</li>
+				<li>Clean up external assets after uninstalling a chart.</li>
+			</ul>
+			<p>In this chapter, we will explore Helm hooks and understand how they can be used to enhance the capabilities of a Helm chart. Then, we will implement hooks in our Guestbook Helm chart to back up and restore the Redis database when the Helm release is upgraded and rolled back.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>The basics of a Helm hook</li>
+				<li>Hook life cycle</li>
+				<li>Hook cleanup</li>
+				<li>Writing hooks in the Guestbook Helm chart</li>
+				<li>Cleaning up</li>
+			</ul>
+			<h1 id="_idParaDest-151"><a id="_idTextAnchor198"/>Technical requirements</h1>
+			<p>For this chapter, you will need the following tools:</p>
+			<ul>
+				<li>minikube</li>
+				<li>kubectl</li>
+				<li>Helm</li>
+				<li>Git</li>
+			</ul>
+			<p>We will use minikube to explore several examples throughout this chapter, so feel free to start your minikube environment using the following command:</p>
+			<p class="source-code">$ minikube start</p>
+			<p>Once minikube has started, create a new namespace for this chapter:</p>
+			<p class="source-code">$ kubectl create namespace chapter7</p>
+			<p>If you have not already cloned the example <strong class="source-inline">git</strong> repository in previous chapters, clone the repository by running the following command:</p>
+			<p class="source-code">$ git clone https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm.git</p>
+			<p>Next, let’s understand the basics of a Helm hook and explore an example of running one.</p>
+			<h1 id="_idParaDest-152"><a id="_idTextAnchor199"/>The basics of a Helm hook</h1>
+			<p>A hook <a id="_idIndexMarker417"/>executes as a one-time action at a designated point in time during the life span of a release. A hook is <a id="_idIndexMarker418"/>implemented as a Kubernetes resource and, more specifically, within a container. While the majority of workloads within Kubernetes are designed to be long-living processes, such as an application serving API requests, hooks are made up of a single task or set of tasks that return 0 to indicate success or non-0 to indicate a failure.</p>
+			<p>The options that are typically used in a Kubernetes environment for creating short-lived tasks are a bare <strong class="bold">pod</strong> or a <strong class="bold">job</strong>. A <a id="_idIndexMarker419"/>bare pod is <a id="_idIndexMarker420"/>a pod that runs until completion and then terminates but will not be rescheduled if the underlying node fails. A bare pod differentiates from a standard pod by toggling the <strong class="source-inline">restartPolicy</strong> property. By default, this field is configured as <strong class="source-inline">Always</strong>, meaning that the pod will be restarted if it completes (either due to success or failure). Even though there are use cases for running bare pods, it is preferred to run <a id="_idIndexMarker421"/>lifecycle hooks as jobs, which has advantages over bare pods, including that you can reschedule the hook if the node fails or becomes unavailable.</p>
+			<p>Since hooks are <a id="_idIndexMarker422"/>simply defined as Kubernetes resources, they are created like other Helm templates and are placed in the <strong class="source-inline">templates/</strong> folder. However, hooks are different in that they are always annotated with the <strong class="source-inline">helm.sh/hook</strong> annotation. Hooks use this annotation to ensure that they are not rendered in the same fashion as the rest of the resources during standard processing. Instead, they are rendered and applied based on the value specified within the <strong class="source-inline">helm.sh/hook</strong> annotation, which determines when it should be executed within Kubernetes as part of the Helm release lifecycle.</p>
+			<p>The following is an example of a hook. This example can also be found in this book’s GitHub repository at <strong class="source-inline">chapter7/examples/hook-example/templates/hooks/job.yaml</strong>:</p>
+			<pre class="source-code">
+apiVersion: batch/v1 
+kind: Job 
+metadata: 
+  name: {{ .Release.Name }}-hook
+  annotations: 
+    "helm.sh/hook": post-install 
+spec: 
+  template: 
+    metadata: 
+      name: {{ .Release.Name }}-hook
+    spec: 
+      restartPolicy: Never 
+      containers: 
+      - name: {{ .Release.Name }}-hook
+        command: ["/bin/sh", "-c"]
+        args:
+          - echo "Hook executed at $(date)"
+        image: alpine</pre>
+			<p>This trivial example prints out the current date and time after the chart is installed. A use case for this <a id="_idIndexMarker423"/>type of hook is to integrate with an auditing system that tracks when applications are installed in a Kubernetes environment. Note that although the hook is saved under the <strong class="source-inline">template/hooks/</strong> folder, it could have also been saved directly under <strong class="source-inline">templates/</strong>. The additional <strong class="source-inline">hooks/</strong> subdirectory was created only to separate application-specific templates from hook templates.</p>
+			<p>To demonstrate the behavior of Helm hooks, let’s see this hook in action by installing the Helm <a id="_idIndexMarker424"/>chart located within <strong class="source-inline">chapter7/examples/hook-example</strong>:</p>
+			<ol>
+				<li>First, install the <strong class="source-inline">hook-example</strong> Helm chart:<p class="source-code"><strong class="bold">$ helm install my-app chapter7/examples/hook-example –n chapter7</strong></p></li>
+			</ol>
+			<p>Note that this command may hang for longer than the Helm commands that have been invoked in the past. This is because Helm is waiting for the hook to be created and completed before returning.</p>
+			<p>Next, view the pods in the namespace. You will see two pods. The first is the application, while the second is the hook:</p>
+			<p class="source-code"><strong class="bold">$ kubectl get pods –n chapter7</strong></p>
+			<p class="source-code"><strong class="bold">NAME                                  READY   STATUS</strong></p>
+			<p class="source-code"><strong class="bold">my-app-hook-example-6747bfbb6-dd9xz   1/1     Running</strong></p>
+			<p class="source-code"><strong class="bold">my-app-hook-p8rrd                     0/1     Completed</strong></p>
+			<ol>
+				<li value="2">The pod with a status of <strong class="source-inline">Completed</strong> is the hook. Let’s check the pod logs to view the output produced by the hook:<p class="source-code"><strong class="bold">$ kubectl logs jobs/my-app-hook –n chapter7</strong></p><p class="source-code"><strong class="bold">Hook executed at Mon Jan 17 21:40:38 UTC 2022</strong></p></li>
+			</ol>
+			<p>As you can see, the hook logged the time just after the Helm chart was installed.</p>
+			<ol>
+				<li value="3">Uninstall the <a id="_idIndexMarker425"/>release and check the remaining pods. You will see that the hook remains in the namespace:<p class="source-code"><strong class="bold">$ helm uninstall my-app –n chapter7</strong></p><p class="source-code"><strong class="bold">$ kubectl get pods –n chapter7</strong></p><p class="source-code"><strong class="bold">NAME                                  READY   STATUS</strong></p><p class="source-code"><strong class="bold">my-app-hook-p8rrd                     0/1     Completed</strong></p></li>
+			</ol>
+			<p>Once hooks have been created and executed, they become unmanaged. (This happens unless the <strong class="source-inline">helm.sh/hook-delete-policy</strong> annotation is applied. We will cover this later in this chapter in the <em class="italic">Advanced hook concepts</em> section.) As a result, we are responsible for cleaning up the hook ourselves. Let’s do this now by deleting the job:</p>
+			<p class="source-code"><strong class="bold">$ kubectl delete job my-app-hook –n chapter7</strong></p>
+			<p>At this point, all the resources associated with the installation of the chart have been cleaned up.</p>
+			<p>Since hooks may contain long-running tasks, the release may time out. By default, Helm sets a timeout value of 5 minutes to complete all the steps related to a release. The timeout related to a release can also be controlled using the <strong class="source-inline">--timeout</strong> flag when performing a <strong class="source-inline">helm install</strong> or <strong class="source-inline">helm upgrade</strong> when an alternate value is desired. Modifying this value may be needed if a hook is long-running and may extend past the default timeout value. </p>
+			<p>Now that we have a basic understanding of Helm hooks, let’s take a look at the different hook life cycle options.</p>
+			<h1 id="_idParaDest-153"><a id="_idTextAnchor200"/>Helm hook life cycle</h1>
+			<p>As you saw regarding the job hook in the previous section, the point at which the job was executed <a id="_idIndexMarker426"/>was based on the value of the <strong class="source-inline">helm.sh/hook</strong> annotation. Since <strong class="source-inline">post-install</strong> was specified, the job was executed once all the associated resources were created as part of the release. The <strong class="source-inline">post-install</strong> option represents one of the points during the life span of a Helm chart where a hook can be executed.</p>
+			<p>The following table describes the available options for the <strong class="source-inline">helm.sh/hook</strong> annotation. A description <a id="_idIndexMarker427"/>of each hook can be found in the official Helm documentation, which can be found at <a href="https://helm.sh/docs/topics/charts_hooks/#the-available-hooks">https://helm.sh/docs/topics/charts_hooks/#the-available-hooks</a>:</p>
+			<table id="table001-7" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="bold">Annotation Value</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="bold">Description</strong></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">pre-install</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes after templates are rendered but before any resources are created in Kubernetes.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">post-install</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes after all resources are created in Kubernetes.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">pre-delete</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes due to a deletion request before any resources are deleted from Kubernetes.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">post-delete</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes due to a deletion request after all the release’s resources have been deleted.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">pre-upgrade</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes due to an upgrade request after templates are rendered but before any resources are updated.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">post-upgrade</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes due to an upgrade after all the resources have been upgraded.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">pre-rollback</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes due to a rollback request after templates are rendered but before any resources are rolled back.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">post-rollback</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes due to a rollback request after all resources have been modified.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">test</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Executes when the <strong class="source-inline">helm test</strong> subcommand is invoked. This will be discussed in more detail in <a href="B17979_09.xhtml#_idTextAnchor222"><em class="italic">Chapter 9</em></a>, <em class="italic">Testing Helm Charts</em>.</p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p>Sometimes, you may <a id="_idIndexMarker428"/>have multiple resources with the same <strong class="source-inline">helm.sh/hook</strong> setting. For example, you may have a ConfigMap resource and a job resource both marked as hooks to run in the same phase, such as <strong class="source-inline">pre-upgrade</strong>. In this case, you can define the order in which these resources are created by using the <strong class="source-inline">helm.sh/weight</strong> annotation. This annotation is used to assign weighted values to each of the hook resources that are marked to execute in the same phase. Weights are sorted in ascending order, so the resource marked with the lowest weight is executed first. If weights are not applied but the Helm chart contains multiple hooks that execute in the same phase, then Helm infers the order by sorting the templates by resource kind and name in alphabetical order.</p>
+			<p>The following example illustrates setting the annotation value for a hook’s weight to <strong class="source-inline">0</strong>:</p>
+			<pre class="source-code">
+annotations:
+  "helm.sh/hook": pre-upgrade
+  "helm.sh/weight": "0"</pre>
+			<p>This hook will be executed during the chart upgrade process and after the necessary resources have been rendered, but before them being applied to the Kubernetes cluster.</p>
+			<p>Apart from being <a id="_idIndexMarker429"/>able to position hooks in a single lifecycle phase, we can use the <strong class="source-inline">helm.sh/hook</strong> annotation to specify multiple phases. This can be done by specifying a comma-separated list of lifecycle phases. The following example defines a hook that should be installed both before and after a chart has been installed:</p>
+			<pre class="source-code">
+annotations:
+  "helm.sh/hook": pre-install,post-install</pre>
+			<p>In this example, where both the <strong class="source-inline">pre-install</strong> and <strong class="source-inline">post-install</strong> options are selected, the <strong class="source-inline">helm install</strong> command would be executed as follows:</p>
+			<ol>
+				<li value="1">The user initiates the installation of a Helm chart (by running, for example, <strong class="source-inline">helm install wordpress bitnami/wordpress</strong>).</li>
+				<li>Any CRDs in the <strong class="source-inline">crds/</strong> folder, if present, are installed in the Kubernetes environment.</li>
+				<li>The chart templates are verified and the resources are rendered.</li>
+				<li>The <strong class="source-inline">pre-install</strong> hooks are ordered by weight, then rendered and applied to the Kubernetes environment.</li>
+				<li>Helm waits until the hook resources have been created and, for pods and jobs, are reported to have been <strong class="source-inline">Completed</strong> or in an <strong class="source-inline">Error</strong> state.</li>
+				<li>The template resources are rendered and applied to the Kubernetes environment.</li>
+				<li>The <strong class="source-inline">post-install</strong> hooks are ordered by weight and then executed.</li>
+				<li>Helm waits until the <strong class="source-inline">post-install</strong> hooks have finished running.</li>
+				<li>The results of the <strong class="source-inline">helm install</strong> command are returned.</li>
+			</ol>
+			<p>In this section, we reviewed the options for running hooks within different lifecycle phases. Next, we will discuss the cleanup process for hook-related resources.</p>
+			<h1 id="_idParaDest-154"><a id="_idTextAnchor201"/>Helm hook cleanup</h1>
+			<p>In the <em class="italic">Helm hook basics</em> section, we noted that Helm hooks, by default, are not removed with <a id="_idIndexMarker430"/>the rest of the chart’s resources when the <strong class="source-inline">helm uninstall</strong> command is invoked. Instead, we must clean up the resources manually. Luckily, several strategies can be employed to automatically remove hooks during a release’s life cycle. These <a id="_idIndexMarker431"/>options include configuring a deletion policy and setting a <strong class="bold">time to live</strong> (<strong class="bold">TTL</strong>) on a job.</p>
+			<p>The <strong class="source-inline">helm.sh/hook-delete-policy</strong> annotation is used to set a deletion policy on hook resources. This annotation determines when Helm should remove the resources from Kubernetes. The following table highlights the available options. You can find descriptions <a id="_idIndexMarker432"/>for these in the Helm documentation at <a href="https://helm.sh/docs/topics/charts_hooks/#hook-deletion-policies">https://helm.sh/docs/topics/charts_hooks/#hook-deletion-policies</a>:</p>
+			<table id="table002-5" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="bold">Annotation Value</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="bold">Description</strong></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">before-hook-creation</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Deletes the previous resources before the hook is launched (this is the default)</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">hook-succeeded</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Deletes the resources after the hook is successfully executed</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">hook-failed</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Deletes the resources if the hook failed during execution</p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p>If the <strong class="source-inline">helm.sh/hook-delete-policy</strong> annotation is not provided, then the <strong class="source-inline">before-hook-creation</strong> policy is applied by default. This means that if any existing hook resources are deleted (if they are present), they are recreated when the hook is executed. This is useful, especially for jobs, as conflicts can occur if jobs are recreated with the same name. By making use of the <strong class="source-inline">before-hook-create</strong> annotation, we can avoid this situation.</p>
+			<p>There are also situations where the other types of hook cleanup policies could be used. For example, you may want to apply the <strong class="source-inline">hook-succeeded</strong> value, which cleans up the hook if it is successfully executed, to avoid retaining excess resources. However, if an error does occur during the execution of the hook, the resources will remain to help with any troubleshooting to determine the cause of the error. The <strong class="source-inline">hook-failed</strong> cleanup type, as you <a id="_idIndexMarker433"/>can probably guess, removes the associated hook resources from the hook upon failure. This can be a useful option if you don’t wish to retain the assets associated with a hook, regardless of whether it completes successfully or fails. Similar to the <strong class="source-inline">helm.sh/hook</strong> annotation, multiple deletion policies can be applied by setting the <strong class="source-inline">helm.sh/hook-delete-policy</strong> annotation with a comma-separated string:</p>
+			<pre class="source-code">
+annotations:
+  "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded</pre>
+			<p>The Helm delete policy represents the most encompassing way to clean up after hooks, but you can also leverage a job’s <strong class="source-inline">ttlSecondsAfterFinished</strong> configuration to define a TTL in which jobs should be retained before they are automatically deleted. This will limit the amount of time that the job is retained in the namespace after it is completed. The following code shows an example of using the <strong class="source-inline">ttlSecondsAfterFinished</strong> job setting:</p>
+			<pre class="source-code">
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-hook
+  annotations:
+    "helm.sh/hook": post-install
+spec:
+  ttlSecondsAfterFinished: 60
+  &lt;omitted&gt;</pre>
+			<p>In this example, the job will be removed 60 seconds after it completes or fails.</p>
+			<p>In this section, we discussed ways to automatically clean up resources and how regular chart resources (that is, resources that are not associated with hooks) are automatically removed when <strong class="source-inline">helm uninstall</strong> is invoked. There may be some situations, however, when you want specific chart resources to follow the behavior of hooks and remain installed in <a id="_idIndexMarker434"/>the cluster, even when the <strong class="source-inline">helm uninstall</strong> command is invoked. A common use case for this is when your chart has created persistent storage via a standalone <strong class="source-inline">PersistentVolumeClaim</strong> resource (as opposed to a <strong class="source-inline">PersistentVolumeClaim</strong> resource managed by a <strong class="source-inline">StatefulSet</strong> object). You may want this storage to be retained beyond the release’s normal life cycle. You can enable this behavior by applying the <strong class="source-inline">helm.sh/resource-policy</strong> annotation to the resource, as shown in the following snippet:</p>
+			<pre class="source-code">
+annotations:
+  "helm.sh/resource-policy": keep</pre>
+			<p>Note that when using this annotation on non-hook resources, naming conflicts may occur if the chart is reinstalled.</p>
+			<p>So far, we have covered Helm hooks and the various options that are associated with them. Now, let’s look at the power that hooks bring by writing a hook in our Guestbook Helm chart.</p>
+			<h1 id="_idParaDest-155"><a id="_idTextAnchor202"/>Writing hooks in the Guestbook Helm chart</h1>
+			<p>As you may recall, the Guestbook Helm chart uses a Redis database to persist messages created by the user. Using Helm hooks, we can create a process that performs simple backup and <a id="_idIndexMarker435"/>restore processes of the Redis database <a id="_idIndexMarker436"/>at various points of the chart’s life cycle. Let’s take a look at the two hooks that we will create in this section:</p>
+			<ul>
+				<li>The first <a id="_idIndexMarker437"/>hook will occur in the <strong class="source-inline">pre-upgrade</strong> lifecycle phase. This phase takes place immediately after the <strong class="source-inline">helm-upgrade</strong> command is run, but before any Kubernetes resources have been modified. This hook will be used to take a data snapshot of the Redis database before the upgrade is performed, ensuring that the database is backed up in case any errors occur during the upgrade.</li>
+				<li>The second <a id="_idIndexMarker438"/>hook will occur in the pre-rollback lifecycle phase. This phase takes place immediately after the <strong class="source-inline">helm-rollback</strong> command is run, but before any Kubernetes resources are reverted. This hook will restore the Redis database to a previously taken snapshot and ensure that the Kubernetes resources are reverted so that they match the configuration at the point in time when the snapshot was taken.</li>
+			</ul>
+			<p>By the end of this section, you will be more familiar with lifecycle hooks and some of the powerful <a id="_idIndexMarker439"/>capabilities that can be performed <a id="_idIndexMarker440"/>with them. Be sure to keep in mind that the hooks that will be created in this section are simple and are designed for demonstration purposes only. It is not advised to use these hooks as-is in applications that may use Redis.</p>
+			<p>Let’s begin by creating the <strong class="source-inline">pre-upgrade</strong> hook.</p>
+			<h2 id="_idParaDest-156"><a id="_idTextAnchor203"/>Creating the pre-upgrade hook to take a data snapshot</h2>
+			<p>In Redis, data snapshots are contained inside <a id="_idIndexMarker441"/>a file called <strong class="source-inline">dump.rdb</strong>. We can back this file up by creating a hook that creates a new PVC in the Kubernetes <a id="_idIndexMarker442"/>namespace to store database backup contents. The hook can then create a <strong class="source-inline">Job</strong> resource that copies the <strong class="source-inline">dump.rdb</strong> file to the newly created <strong class="source-inline">PersistentVolumeClaim</strong>.</p>
+			<p>While the <strong class="source-inline">helm create</strong> command generates some powerful resource templates that allow the initial <strong class="source-inline">guestbook</strong> chart to be created quickly, it does not scaffold out any hooks that can be used for this task. As a result, you can create the pre-upgrade hook from scratch by following these steps:</p>
+			<ol>
+				<li value="1">First, you should create a new folder that will contain the hook templates. While this is not a technical requirement, it does help you organize the structure of your chart so that your hook templates are separate from the regular chart templates. It also allows you to group the hook templates by function (backup versus restore).</li>
+			</ol>
+			<p>Create a new folder called <strong class="source-inline">templates/backup</strong> in your <strong class="source-inline">guestbook</strong> Helm chart, as follows:</p>
+			<p class="source-code"><strong class="bold">$ mkdir -p guestbook/templates/backup</strong></p>
+			<ol>
+				<li value="2">Next, you should create the two template files required to perform the backup. The first template that’s required is a <strong class="source-inline">PersistentVolumeClaim</strong> template since this will be used to contain the backup <strong class="source-inline">dump.rdb</strong> file. The second template will be a job template that will be used to perform the copy.</li>
+			</ol>
+			<p>Create <a id="_idIndexMarker443"/>two empty template files to serve as placeholders, as follows:</p>
+			<p class="source-code"><strong class="bold">$ touch guestbook/templates/backup/persistentvolumeclaim.yaml</strong></p>
+			<p class="source-code"><strong class="bold">$ touch guestbook/templates/backup/job.yaml</strong></p>
+			<p>You can double-check your work by referencing this book’s GitHub repository. The file structure should reflect the example at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/tree/main/chapter7/guestbook/templates/backup">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/tree/main/chapter7/guestbook/templates/backup</a>.</p>
+			<ol>
+				<li value="3">Now, let’s fill in the contents of the <strong class="source-inline">persistentvolumeclaim.yaml</strong> template. Since the template’s content is relatively lengthy, we’ll copy each template from the GitHub repository and then take a deep dive into how they were created.</li>
+				<li>Copy the contents of the file shown in the following screenshot to your <strong class="source-inline">backup/persistentvolumeclaim.yaml</strong> file. You can find this file at https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/backup/persistentvolumeclaim.yaml:</li>
+			</ol>
+			<div>
+				<div id="_idContainer076" class="IMG---Figure">
+					<img src="image/Figure_7.01_B17979.jpg" alt="Figure 7.1 – The backup/persistentvolumeclaim.yaml template&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.1 – The backup/persistentvolumeclaim.yaml template</p>
+			<ul>
+				<li>Lines 1 and 17 of the <strong class="source-inline">backup/persistentvolumeclaim.yaml</strong> file consist <a id="_idIndexMarker444"/>of an <strong class="source-inline">if</strong> action. Since this action encapsulates the whole file, it indicates that this resource will only be included if the <strong class="source-inline">redis.master.persistence.enabled</strong> value is set to <strong class="source-inline">true</strong>. This value defaults to <strong class="source-inline">true</strong> in the Redis chart and can be observed using the <strong class="source-inline">helm show values</strong> command.</li>
+				<li>Line 5 determines the name of the new backup PVC (<strong class="source-inline">PersistentVolumeClaim</strong>). This name is based on the release name, Redis name, and the revision number from which the backup was taken. Notice the <a id="_idIndexMarker445"/>usage of the <strong class="source-inline">sub</strong> function, which aids in calculating the revision number. This is used to subtract <strong class="source-inline">1</strong> from the revision number since the <strong class="source-inline">helm upgrade</strong> command increments this value before the templates are rendered.</li>
+				<li>Line 9 creates an annotation to declare this resource as a <strong class="source-inline">pre-upgrade</strong> hook. Finally, line 10 creates a <strong class="source-inline">helm.sh/hook-weight</strong> annotation to determine the order in which this resource should be created compared to other pre-upgrade hooks. Weights are run in ascending order, so this resource will be created before other pre-upgrade resources.</li>
+			</ul>
+			<ol>
+				<li value="5">Now that the <strong class="source-inline">persistentvolumeclaim.yaml</strong> file has been created, we must create <a id="_idIndexMarker446"/>the final pre-upgrade template – that is, <strong class="source-inline">job.yaml</strong>. Copy the following contents to your previously <a id="_idIndexMarker447"/>created <strong class="source-inline">backup/job.yaml</strong> file. This can also be copied from this book’s GitHub repository at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/backup/job.yaml">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/backup/job.yaml</a>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer077" class="IMG---Figure">
+					<img src="image/Figure_7.02_B17979.jpg" alt="Figure 7.2 – The backup/job.yaml template&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.2 – The backup/job.yaml template</p>
+			<ul>
+				<li>Once again, line 9 defines <a id="_idIndexMarker448"/>this template as a pre-upgrade hook, while line 10 sets the hook weight to <strong class="source-inline">1</strong>, indicating that this resource will be created after the <strong class="source-inline">persistentvolumeclaim.yaml</strong> template.</li>
+				<li>Line 11 sets the <strong class="source-inline">helm.sh/hook-delete-policy</strong> annotation to specify when this job should be deleted. Here, we have applied two different policies. The first is <strong class="source-inline">before-hook-creation</strong>, which indicates it will be removed during subsequent <strong class="source-inline">helm upgrade</strong> commands if the job already exists in the <a id="_idIndexMarker449"/>namespace, allowing a fresh job to be created in its place. The second policy is <strong class="source-inline">hook-succeeded</strong>, which deletes the job if it finishes successfully. Another policy we could have added is <strong class="source-inline">hook-failed</strong>, which would delete the job if it failed. However, given that we want to keep failures around <a id="_idIndexMarker450"/>for the sake of troubleshooting, we haven’t implemented this policy.</li>
+				<li>Lines 19 through 22 contain the commands for backing up the Redis database. First, <strong class="source-inline">redis-cli</strong> is used to save the current state. Then, the <strong class="source-inline">dump.rdb</strong> file is copied from the master to the backup PVC created in the <strong class="source-inline">backup/persistentvolumeclaim.yaml</strong> template.</li>
+				<li>Finally, lines 29 through 35 define the volumes that reference the master and backup PVCs.</li>
+			</ul>
+			<p>In this section, we created two <strong class="source-inline">pre-upgrade</strong> hooks – one to create a backup PVC and another to copy the Redis <strong class="source-inline">dump.rdb</strong> file to the PVC. In the next section, we will create the <strong class="source-inline">pre-rollback</strong> hooks for restoring Redis to a previously taken backup. Afterward, we will deploy the <strong class="source-inline">guestbook</strong> chart to see these hooks in action.</p>
+			<h2 id="_idParaDest-157"><a id="_idTextAnchor204"/>Creating the pre-rollback hook to restore the database</h2>
+			<p>Whereas the <strong class="source-inline">pre-upgrade</strong> hook was written to copy the <strong class="source-inline">dump.rdb</strong> file from the Redis <a id="_idIndexMarker451"/>master PVC to the backup PVC, a <strong class="source-inline">pre-rollback</strong> hook can be written to do the opposite – that is, restore the database to a previous snapshot.</p>
+			<p>This hook can be implemented by copying the <strong class="source-inline">dump.rdb</strong> file from the backup PVC to the master Redis instance. Then, a rollout of Redis must be performed to create new Redis replica pods. When the replicas reconnect to the master, they will load the backup <strong class="source-inline">dump.rdb</strong> file for the Guestbook frontend to read.</p>
+			<p>Follow these steps to create the <strong class="source-inline">pre-rollback</strong> hook:</p>
+			<ol>
+				<li value="1">Create the <strong class="source-inline">templates/restore</strong> folder, which will be used to contain the <strong class="source-inline">pre-rollback</strong> hook:<p class="source-code"><strong class="bold">$ mkdir guestbook/templates/restore</strong></p></li>
+				<li>Next, scaffold the templates that are required for this hook. We need to create a <strong class="source-inline">serviceaccount.yaml</strong> template and a <strong class="source-inline">rolebinding.yaml</strong> template to create a <strong class="bold">ServiceAccount</strong> with permission to redeploy the Redis replicas. Then, we need a <strong class="source-inline">job.yaml</strong> template to perform the restore task:<p class="source-code"><strong class="bold">$ touch guestbook/templates/restore/serviceaccount.yaml</strong></p><p class="source-code"><strong class="bold">$ touch guestbook/templates/restore/rolebinding.yaml</strong></p><p class="source-code"><strong class="bold">$ touch guestbook/templates/restore/job.yaml</strong></p></li>
+			</ol>
+			<p>You can check that you have created the correct structure by referencing this book’s GitHub repository at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/tree/main/chapter7/guestbook/templates/restore">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/tree/main/chapter7/guestbook/templates/restore</a>.</p>
+			<ol>
+				<li value="3">Now, let’s create the first <strong class="source-inline">pre-rollback</strong> hook, <strong class="source-inline">serviceaccount.yaml</strong>. Copy the <a id="_idIndexMarker452"/>contents shown in the following screenshot into <strong class="source-inline">restore/serviceaccount.yaml</strong>. This code can also be found within this book’s GitHub repository at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/restore/serviceaccount.yaml">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/restore/serviceaccount.yaml</a>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer078" class="IMG---Figure">
+					<img src="image/Figure_7.03_B17979.jpg" alt="Figure 7.3 – The restore/serviceaccount.yaml template&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.3 – The restore/serviceaccount.yaml template</p>
+			<p>Line 8 defines <a id="_idIndexMarker453"/>this template as a <strong class="source-inline">pre-rollback</strong> hook. Since the hook’s weight is <strong class="source-inline">0</strong> (on line 10), this will be created before the other pre-rollback templates. </p>
+			<ol>
+				<li value="4">The <a id="_idIndexMarker454"/>previous template created a ServiceAccount that we will use later in the job, but now, we need to give the ServiceAccount permission to roll out new Redis replica pods when it communicates with the Kubernetes API. To keep it simple for this example, we will give the ServiceAccount <strong class="source-inline">edit</strong> permission in the <strong class="source-inline">chapter7</strong> namespace.</li>
+			</ol>
+			<p>Copy the contents shown in the following screenshot into the <strong class="source-inline">restore/rolebinding.yaml</strong> template. This code can also be found in this book’s GitHub repository at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/restore/rolebinding.yaml">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/restore/rolebinding.yaml</a>:</p>
+			<div>
+				<div id="_idContainer079" class="IMG---Figure">
+					<img src="image/Figure_7.04_B17979.jpg" alt="Figure 7.4 – The restore/rolebinding.yaml template&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.4 – The restore/rolebinding.yaml template</p>
+			<p>Lines 11 <a id="_idIndexMarker455"/>through 14 reference the <strong class="source-inline">edit</strong> ClusterRole that we want to grant, while lines 15 through 19 target our ServiceAccount in the namespace we are going to release to (which will be the <strong class="source-inline">chapter7</strong> namespace).</p>
+			<ol>
+				<li value="5">Finally, we <a id="_idIndexMarker456"/>need to add content to the <strong class="source-inline">job.yaml</strong> file. Copy the following content to your <strong class="source-inline">restore/job.yaml</strong> template. This content can also be found at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/restore/job.yaml">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/blob/main/chapter7/guestbook/templates/restore/job.yaml</a>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer080" class="IMG---Figure">
+					<img src="image/Figure_7.05_B17979.jpg" alt="Figure 7.5 – The restore/job.yaml hook&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.5 – The restore/job.yaml hook</p>
+			<p>This <strong class="source-inline">job.yaml</strong> template is <a id="_idIndexMarker457"/>where the core pre-rollback logic takes place. Lines 18 through 29 define an <strong class="source-inline">initContainer</strong> that <a id="_idIndexMarker458"/>copies the backup <strong class="source-inline">dump.rdb</strong> file to the Redis master and performs a reload, reverting the state of the master, as represented in the backup <strong class="source-inline">dump.rdb</strong> file. An <strong class="source-inline">initContainer</strong> is a container that runs until completion before any of the containers listed under the <strong class="source-inline">containers</strong> section are run. We created this first to ensure that the master is reverted before we move on to the next step.</p>
+			<p>Lines 30 through 37 <a id="_idIndexMarker459"/>represent the next step of the rollback. Here, we restart the Redis replica’s <strong class="source-inline">StatefulSet</strong>. When the replicas reconnect to the master, they will serve the data represented by the backup <strong class="source-inline">dump.rdb</strong> file.</p>
+			<p>With the <strong class="source-inline">pre-upgrade</strong> and <strong class="source-inline">pre-rollback</strong> hooks created, let’s see them in action within the minikube environment.</p>
+			<h2 id="_idParaDest-158"><a id="_idTextAnchor205"/>Executing the life cycle hooks</h2>
+			<p>To run the <a id="_idIndexMarker460"/>lifecycle hooks you created, you must install your chart by running the <strong class="source-inline">helm install</strong> command:</p>
+			<p class="source-code">$ helm install guestbook chapter7/guestbook -n chapter7 --dependency-update</p>
+			<p>When each pod reports the <strong class="source-inline">1/1 Ready</strong> state, access your Guestbook application by running a <strong class="source-inline">port-forward</strong> command, as follows:</p>
+			<p class="source-code">$ kubectl port-forward svc/guestbook 8080:80 –n chapter7</p>
+			<p>Next, access the Guestbook frontend at <strong class="source-inline">http://localhost:8080</strong>, write a message, and click <strong class="bold">Submit</strong>. An example message can be seen in the following screenshot:</p>
+			<div>
+				<div id="_idContainer081" class="IMG---Figure">
+					<img src="image/Figure_7.06_B17979.jpg" alt="Figure 7.6 – Entering a message in the Guestbook frontend&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.6 – Entering a message in the Guestbook frontend</p>
+			<p>Once a message has been entered, run the <strong class="source-inline">helm upgrade</strong> command to trigger the <strong class="source-inline">pre-upgrade</strong> hook. The <strong class="source-inline">helm upgrade</strong> command will hang briefly until the backup has finished:</p>
+			<p class="source-code">$ helm upgrade guestbook guestbook –n chapter7</p>
+			<p>When the command returns, you should find a new PVC that was created that contains the backup. The PVC is called <strong class="source-inline">guestbook-redis-backup-1</strong>:</p>
+			<p class="source-code">$ kubectl get pvc -n chapter7</p>
+			<p class="source-code">NAME                                 STATUS</p>
+			<p class="source-code">redis-data-redis-master-0            Bound</p>
+			<p class="source-code">redis-redis-backup-1                 Bound</p>
+			<p>Now that a <a id="_idIndexMarker461"/>backup has been completed, let’s add another message. We plan to roll back after this message is entered. The following screenshot shows an example of the <strong class="source-inline">guestbook</strong> application after both messages have been added:</p>
+			<div>
+				<div id="_idContainer082" class="IMG---Figure">
+					<img src="image/Figure_7.07_B17979.jpg" alt="Figure 7.7 – A second message entered in the Guestbook frontend&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.7 – A second message entered in the Guestbook frontend</p>
+			<p>Now, let’s run the <strong class="source-inline">helm rollback</strong> command to revert to the first revision. This command will hang briefly until the <strong class="source-inline">helm rollback</strong> command returns:</p>
+			<p class="source-code">$ helm rollback guestbook 1 –n chapter7 </p>
+			<p>When this command finishes, the Redis replicas should roll out. This rollout can be observed with the following command:</p>
+			<p class="source-code">$ kubectl get pods –n chapter7 –w</p>
+			<p>Once the new replicas have been rolled out, refresh your Guestbook frontend in your browser. You will see the message you added after the upgrade disappears, as shown in the following screenshot:</p>
+			<div>
+				<div id="_idContainer083" class="IMG---Figure">
+					<img src="image/Figure_7.08_B17979.jpg" alt="Figure 7.8 – The Guestbook frontend after the pre-rollback phase&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.8 – The Guestbook frontend after the pre-rollback phase</p>
+			<p>Hopefully, this example provided you with a greater understanding of Helm hooks. We want to <a id="_idIndexMarker462"/>emphasize again that this was just a simple example and is not a production-ready solution.</p>
+			<p>Note that while this chapter focused on developing and running lifecycle hooks, hooks can be skipped by adding the <strong class="source-inline">--no-hooks</strong> flag to the <strong class="source-inline">helm install</strong>, <strong class="source-inline">helm upgrade</strong>, <strong class="source-inline">helm rollback</strong>, and <strong class="source-inline">helm delete</strong> commands. Adding this flag will cause Helm to skip the hooks associated with the lifecycle phase that was executed.</p>
+			<p>Let’s wrap things up by cleaning up the minikube environment.</p>
+			<h1 id="_idParaDest-159"><a id="_idTextAnchor206"/>Cleaning up</h1>
+			<p>First, delete the <strong class="source-inline">chapter7</strong> namespace to delete the <strong class="source-inline">guestbook</strong> release and associated PVCs:</p>
+			<p class="source-code">$ kubectl delete ns chapter7</p>
+			<p>Next, stop the minikube environment:</p>
+			<p class="source-code">$ minikube stop</p>
+			<p>With that, everything has been cleaned up.</p>
+			<h1 id="_idParaDest-160"><a id="_idTextAnchor207"/>Summary</h1>
+			<p>Lifecycle hooks open the door to additional capabilities by allowing chart developers to install resources at different lifecycle phases. Hooks commonly include job resources to execute the actions that take place within a hook, but they also often include other resources, such as ServiceAccounts, policies including <strong class="source-inline">RoleBindings</strong>, and <strong class="source-inline">PersistentVolumeClaims</strong>. At the end of this chapter, we added lifecycle hooks to our Guestbook chart and ran through a backup and restore of the Redis database.</p>
+			<p>In the next chapter, we will discuss publishing a Helm chart to a chart repository.</p>
+			<h1 id="_idParaDest-161"><a id="_idTextAnchor208"/>Further reading</h1>
+			<p>To learn more about lifecycle hooks, visit the Helm documentation at <a href="https://helm.sh/docs/topics/charts_hooks/">https://helm.sh/docs/topics/charts_hooks/</a>.</p>
+			<h1 id="_idParaDest-162"><a id="_idTextAnchor209"/>Questions</h1>
+			<p>Answer the following questions to test your knowledge of this chapter:</p>
+			<ol>
+				<li value="1">What are the nine different types of lifecycle hooks?</li>
+				<li>What annotation is used to define a hook?</li>
+				<li>What annotation is used to define the order in which a hook should be created?</li>
+				<li>What can a chart developer add to ensure that hooks are always deleted upon success?</li>
+				<li>How can a Helm user skip lifecycle hooks?</li>
+				<li>What Kubernetes resource is most often used to execute a lifecycle hook?</li>
+			</ol>
+		</div>
+		<div>
+			<div id="_idContainer085">
+			</div>
+		</div>
+	</body></html>

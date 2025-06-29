@@ -1,0 +1,458 @@
+<html><head></head><body>
+		<div id="_idContainer039">
+			<h1 id="_idParaDest-241"><em class="italic"><a id="_idTextAnchor240"/>Chapter 10</em>: Case Study for Optional Operators – the Prometheus Operator</h1>
+			<p>The point of this book is to introduce, discuss, and demonstrate the main processes for developing an Operator for Kubernetes using the Operator Framework. To do this, a sample Operator with the basic functionality of managing an nginx deployment was built. This example was intended to serve as a tutorial on Operator development without overwhelming the reader with excessive features or the requirement of significant background knowledge to understand the use case. Hopefully, it has served that purpose well.</p>
+			<p>But the simplicity of that nginx Operator might make some of the steps in the Operator Framework seem excessive. It's also a big jump to go from learning about an example Operator to understanding the applications of real-world use cases. So, in this chapter, we will examine the Prometheus Operator (<a href="https://prometheus-operator.dev/">https://prometheus-operator.dev/</a>), which is used to manage individual deployments of the Prometheus monitoring service (which was used to gather metrics from the nginx Operator earlier in the book). In this chapter, we are calling this an <em class="italic">optional</em> Operator because the Operand it manages is an application-level component and is not critical to the running of the cluster (in contrast, the next chapter will discuss how Operators can manage core cluster-level components). The Prometheus Operator will be discussed in the following sections:</p>
+			<ul>
+				<li>A real-world use case</li>
+				<li>Operator design</li>
+				<li>Operator distribution and development</li>
+				<li>Updates and maintenance</li>
+			</ul>
+			<p>Of course, while there are going to be many parallels to draw between the Prometheus Operator and the example nginx Operator from this book (which strictly followed the Operator Framework template), it is just as important to highlight the differences, too. Some of these will be covered throughout the chapter to show that even within the Operator Framework, there is no one-size-fits-all way to develop an Operator. That is the beauty of open source software such as this: its patterns and divergences promote a broad community of diverse projects.</p>
+			<h1 id="_idParaDest-242"><a id="_idTextAnchor241"/>A real-world use case</h1>
+			<p>Prometheus (<a href="https://github.com/prometheus/prometheus">https://github.com/prometheus/prometheus</a>) is a tool that is used for monitoring applications<a id="_idIndexMarker712"/> and clusters by collecting metrics exported by those applications and storing them in a time series manner. In <a href="B18147_05_ePub.xhtml#_idTextAnchor078"><em class="italic">Chapter 5</em></a>, <em class="italic">Developing an Operator – Advanced Functionality</em>, we implemented basic Prometheus metrics in the nginx Operator to expose aggregate information about the total reconciliation attempts<a id="_idIndexMarker713"/> made by the Operator. This was just one small example of the potential application architecture designs that rely on Prometheus for monitoring.</p>
+			<h2 id="_idParaDest-243"><a id="_idTextAnchor242"/>Prometheus overview</h2>
+			<p>Along with scraping and aggregating metrics, Prometheus<a id="_idIndexMarker714"/> also defines a data model for creating different types of metrics and implementing them in applications. This model is instrumented via the clients provided by Prometheus in various languages, including Ruby, Python, Java, and Go. These clients make it easy for application developers to export metrics in a format that is compatible with the Prometheus server's API (just as we did for the example nginx Operator).</p>
+			<p>Besides the counter metric type (which was used to sum the <strong class="source-inline">reconciles_total</strong> metric in the nginx Operator), the other metric types offered by Prometheus include Gauge, Histogram, and Summary. Each of these metrics can export additional attributes in the form of labels to give additional dimensions to the data they report.</p>
+			<p>In addition, Prometheus allows users to search metrics using its own query language called <strong class="bold">PromQL</strong>. The functionality of this language<a id="_idIndexMarker715"/> combined with the flexible and broad implementation possibilities of the metrics themselves has helped Prometheus grow to become one of the (if not the) leading metrics-gathering tools for cloud-native applications beyond just Kubernetes.</p>
+			<p>Earlier in the book, we briefly discussed how to use Prometheus clients to create new metrics and retrieve those metrics using PromQL (<a href="B18147_05_ePub.xhtml#_idTextAnchor078"><em class="italic">Chapter 5</em></a>, <em class="italic">Developing an Operator – Advanced Functionality</em>) while also building the sample Operator. These topics, while important, do not relate much to the Prometheus Operator (regardless, they are briefly described here for the full context of the real-world use case). The more relevant aspects of Prometheus<a id="_idIndexMarker716"/> that the Operator addresses are the installation and configuration of Prometheus as an Operand.</p>
+			<h2 id="_idParaDest-244"><a id="_idTextAnchor243"/>Installing and running Prometheus</h2>
+			<p>In <a href="B18147_06_ePub.xhtml#_idTextAnchor090"><em class="italic">Chapter 6</em></a>, <em class="italic">Building and Deploying Your Operator</em>, we demonstrated<a id="_idIndexMarker717"/> one way to install<a id="_idIndexMarker718"/> Prometheus in a cluster by instrumenting the <strong class="source-inline">kube-prometheus</strong> library in the nginx Operator<a id="_idIndexMarker719"/> project. The advantage of kube-prometheus is that it installs a full monitoring<a id="_idIndexMarker720"/> stack, including components such as <strong class="bold">Grafana</strong>, but also including the Prometheus Operator itself. But what does it mean to install Prometheus in a cluster? And what steps do we save by using kube-prometheus (and, by extension, the Prometheus Operator)? To answer those questions, first, let's take a step back and understand how Prometheus works.</p>
+			<p>Central to an instance of Prometheus is the Prometheus server, which runs as a single binary that retrieves metrics and serves them to the web UI, notification services, or long-term storage. Similar to an Operator (or any application intended to be deployed to Kubernetes), this binary must be compiled and packaged into a container image. As described in the Prometheus documentation, the precompiled binary is available to download directly (as an executable or a container image), or it can be built from source (<a href="https://github.com/prometheus/prometheus#install">https://github.com/prometheus/prometheus#install</a>). This is accessible enough for running locally, but for deployment to a Kubernetes cluster (especially a production one), further setup is required.</p>
+			<p>First, it is rarely acceptable to deploy a container directly into a cluster without some form of configuration. Kubernetes objects such as Deployments wrap the container in a managed and configurable representation that exposes options such as replica count and rollout strategies. So, installing Prometheus in a Kubernetes cluster manually would require defining the Kubernetes Deployment yourself.</p>
+			<p>Once it's running in a cluster, Prometheus then needs access to the applications that are exposing metrics. This requires additional resources such as <strong class="source-inline">ClusterRoles</strong> and <strong class="source-inline">RoleBindings</strong> to ensure the Prometheus Pod has permission to scrape metrics from the cluster and its applications. Those RBAC permissions must be bound to the Prometheus Pod via a <strong class="source-inline">ServiceAccount</strong> instance. Then, user access to the web UI requires a Service to make that frontend reachable in a web browser. That Service can only be exposed outside the cluster with an Ingress object.</p>
+			<p>These are already a lot of steps for an initial installation. However, managing that installation by hand also requires<a id="_idIndexMarker721"/> constant vigilance and a schematic understanding<a id="_idIndexMarker722"/> of each resource and its role. While certainly possible, having an Operator to handle these resources frees up engineering time and enables better scaling by abstracting complex manifest declarations.</p>
+			<p>However, as discussed throughout this book, many (if not most) Operators do more than simply install their Operand. Usually, they continue to manage the life cycle of the installed application, including allowing you to make changes to the running Operand's configuration. The Prometheus Operator does this for Prometheus, too.</p>
+			<h2 id="_idParaDest-245"><a id="_idTextAnchor244"/>Configuring Prometheus</h2>
+			<p>As a full-featured application, Prometheus<a id="_idIndexMarker723"/> provides a rich set of configuration options to fit different scenarios. This configuration is documented<a id="_idIndexMarker724"/> in the official Prometheus documentation at <a href="https://prometheus.io/docs/prometheus/latest/configuration/configuration/">https://prometheus.io/docs/prometheus/latest/configuration/configuration/</a>. Within these settings, there are two sets of options for configuring Prometheus:</p>
+			<ul>
+				<li>Command-line flags: They control the settings<a id="_idIndexMarker725"/> that affect the Prometheus server itself, such as persistent storage access<a id="_idIndexMarker726"/> and logging settings.</li>
+				<li>The YAML config: This is passed to Prometheus<a id="_idIndexMarker727"/> via a command-line flag (<strong class="source-inline">--config.file</strong> or <strong class="source-inline">--web.config.file</strong>) and provides declarative<a id="_idIndexMarker728"/> controls over the behavior of Prometheus' monitoring; for example, the metrics scraping settings.</li>
+			</ul>
+			<p>This separation of setting types is a good design that is often employed in Kubernetes applications, Operators, and non-Kubernetes software. It has the benefit of clearly decoupling the runtime application settings from behavioral options, and this distinction is evident to users. However, from an administrative perspective, this creates two separate areas of concern that must be individually tracked.</p>
+			<h3>Command-line flags</h3>
+			<p>The full list of command-line flags<a id="_idIndexMarker729"/> that are available<a id="_idIndexMarker730"/> to the Prometheus binary is available by running <strong class="source-inline">prometheus -h</strong>. There are a few dozen options in total, but they are roughly organized into the following categories:</p>
+			<ul>
+				<li>Web</li>
+				<li>Storage</li>
+				<li>Rules</li>
+				<li>Query</li>
+				<li>Logging</li>
+			</ul>
+			<p>Each of these categories has up to 10 (or more) individual settings controlling different aspects of the Prometheus server. In addition, there is the <strong class="source-inline">--enable-feature</strong> flag, which accepts a comma-separated list of features to enable (for example, <strong class="source-inline">--enable-feature=agent,exemplar-storage,expand-internal-labels,memory-snapshot-on-shutdown</strong> enables these four additional feature gates).</p>
+			<p>In a Kubernetes Deployment manifest, these flags would be controlled in the <strong class="source-inline">spec.template.spec.containers.command</strong> (or <strong class="source-inline">.args</strong>) field. For example, a simple Prometheus Deployment YAML with a config file passed to it and the preceding features enabled would look similar to the following:</p>
+			<pre class="source-code">apiVersion: apps/v1</pre>
+			<pre class="source-code">kind: Deployment</pre>
+			<pre class="source-code">metadata:</pre>
+			<pre class="source-code">  name: prometheus</pre>
+			<pre class="source-code">  labels:</pre>
+			<pre class="source-code">    app: prometheus</pre>
+			<pre class="source-code">spec:</pre>
+			<pre class="source-code">  replicas: 1</pre>
+			<pre class="source-code">  selector:</pre>
+			<pre class="source-code">    matchLabels:</pre>
+			<pre class="source-code">      app: prometheus</pre>
+			<pre class="source-code">  template:</pre>
+			<pre class="source-code">    metadata:</pre>
+			<pre class="source-code">      labels:</pre>
+			<pre class="source-code">        app: prometheus</pre>
+			<pre class="source-code">    spec:</pre>
+			<pre class="source-code">      containers:</pre>
+			<pre class="source-code">      - name: prometheus</pre>
+			<pre class="source-code">        image: docker.io/prom/prometheus:latest</pre>
+			<pre class="source-code">        command: ["prometheus"]</pre>
+			<pre class="source-code">        args:</pre>
+			<pre class="source-code">        - --config=/etc/prom/config-file.yaml</pre>
+			<pre class="source-code">        - --enable-feature=agent,exemplar-storage,expand-internal-labels,memory-snapshot-on-shutdown</pre>
+			<p>Of course, the config file<a id="_idIndexMarker731"/> also needs to be mounted into the Prometheus Pod<a id="_idIndexMarker732"/> so that it can be accessed, as shown in the following code. This shows the preceding Deployment YAML modified to add a <strong class="source-inline">VolumeMount</strong> instance, which makes the config file accessible to the Prometheus Pod as if it were a local file (the new code has been highlighted):</p>
+			<pre class="source-code">apiVersion: apps/v1</pre>
+			<pre class="source-code">kind: Deployment</pre>
+			<pre class="source-code">metadata:</pre>
+			<pre class="source-code">  name: prometheus</pre>
+			<pre class="source-code">  labels:</pre>
+			<pre class="source-code">    app: prometheus</pre>
+			<pre class="source-code">spec:</pre>
+			<pre class="source-code">  replicas: 1</pre>
+			<pre class="source-code">  selector:</pre>
+			<pre class="source-code">    matchLabels:</pre>
+			<pre class="source-code">      app: prometheus</pre>
+			<pre class="source-code">  template:</pre>
+			<pre class="source-code">    metadata:</pre>
+			<pre class="source-code">      labels:</pre>
+			<pre class="source-code">        app: prometheus</pre>
+			<pre class="source-code">    spec:</pre>
+			<pre class="source-code">      containers:</pre>
+			<pre class="source-code">      - name: prometheus</pre>
+			<pre class="source-code">        image: docker.io/prom/prometheus:latest</pre>
+			<pre class="source-code">        command: ["prometheus"]</pre>
+			<pre class="source-code">        args:</pre>
+			<pre class="source-code">        - --config=/etc/prom/config-file.yaml</pre>
+			<pre class="source-code">        - --enable-feature=agent,exemplar-storage,expand-internal-labels,memory-snapshot-on-shutdown</pre>
+			<pre class="source-code"><strong class="bold">        volumeMounts:</strong></pre>
+			<pre class="source-code"><strong class="bold">        - name: prom-config</strong></pre>
+			<pre class="source-code"><strong class="bold">          mountPath: /etc/prom</strong></pre>
+			<pre class="source-code"><strong class="bold">      volumes:</strong></pre>
+			<pre class="source-code"><strong class="bold">      - name: prom-config</strong></pre>
+			<pre class="source-code"><strong class="bold">        configMap:</strong></pre>
+			<pre class="source-code"><strong class="bold">          name: prometheus-cfg</strong></pre>
+			<p>That config file (mounted as <strong class="source-inline">/etc/prom/config-file.yaml</strong>) will then need<a id="_idIndexMarker733"/> to be created<a id="_idIndexMarker734"/> as its own ConfigMap. This brings us to the second set of Prometheus options that the config file controls.</p>
+			<h3>The YAML config settings</h3>
+			<p>The Prometheus YAML configuration<a id="_idIndexMarker735"/> format exposes settings<a id="_idIndexMarker736"/> that control the general scraping (metrics-gathering) behavior of Prometheus. Among the available<a id="_idIndexMarker737"/> options are the platform-specific <strong class="bold">Service Discovery</strong> (<strong class="bold">SD</strong>) controls for individual cloud providers, including Azure, Amazon EC2, and Google Compute Engine instances. There are also options to relabel the metrics, enable the remote reading and writing of metrics data, and configure AlertManager notifications, tracing, and exemplars. Finally, the config offers TLS and OAuth settings for secure metrics scraping.</p>
+			<p>All of these options already present complex possibilities for a Prometheus config. Even the sample config file provided by Prometheus is almost 400 lines long! (However, it is intended to demonstrate many different types of metric setup. For example, take a look at <a href="https://github.com/prometheus/prometheus/blob/release-2.34/config/testdata/conf.good.yml">https://github.com/prometheus/prometheus/blob/release-2.34/config/testdata/conf.good.yml</a>.) This can quickly seem overwhelming, especially if you only want a simple metrics solution (as many users do). For this reason, we will mainly focus on a basic <strong class="source-inline">scrape_config</strong> section in a Prometheus config file. This is the main section of the config file that tells Prometheus where and how to find the metrics it is interested in. </p>
+			<p>This instruction is carried out by defining a series of <strong class="source-inline">job</strong> instances. Each job provides information about certain metrics targets and instructs Prometheus on how it can discover new metrics from targets that match those criteria. For example, the <strong class="source-inline">kubernetes_sd_config</strong> settings (which are relevant to scraping<a id="_idIndexMarker738"/> Kubernetes applications: <a href="https://prometheus.io/docs/prometheus/latest/configuration/configuration/#kubernetes_sd_config">https://prometheus.io/docs/prometheus/latest/configuration/configuration/#kubernetes_sd_config</a>) can control metrics gathering for Nodes, Pods, Services, Endpoints, and Ingress objects.</p>
+			<h2 id="_idParaDest-246"><a id="_idTextAnchor245"/>Summarizing the problems with manual Prometheus</h2>
+			<p>This chapter is not meant to be an introduction<a id="_idIndexMarker739"/> to how to run Prometheus. Rather, the intent of the earlier sections was to demonstrate, through specific examples, the potential complexities that can arise when running any sophisticated application and how these complexities multiply when that application is deployed to a platform such as Kubernetes, which demands its own maintenance overhead, too.</p>
+			<p>In summary, the problems discovered earlier fall into a few categories, as we will discuss next.</p>
+			<h3>Excessive platform knowledge</h3>
+			<p>From the very beginning (when installing Prometheus inside a cluster), it was necessary to know more about the platform and deployment resources than about running the actual application itself. From ClusterRoles and RoleBindings to even just the Deployment manifest declaration, an administrator must understand the Kubernetes installation architecture before they can even begin to run Prometheus itself. </p>
+			<p>This is bad because it distracts from engineering time, which could be otherwise allocated. However, it also creates an unstable environment, where this architectural knowledge is likely only learned once (at the time of installation) and promptly forgotten, or at the very least, not documented as well as other application-relevant resources. In the event of a disaster, this costs precious recovery time as the knowledge must be reacquired.</p>
+			<h3>Complex configuration</h3>
+			<p>Once Prometheus has been installed inside a cluster, immutable server settings must be passed via flags, and the individual metrics scraping jobs must be configured within a YAML file. For both of these steps, the vast number of available settings and flexible options for each setting present complex overall configurations. For metrics jobs, this complexity can potentially grow over time as more services are added to the cluster with metrics that must be gathered. This configuration must be maintained, and any changes need to be done with care to ensure they are rolled out effectively.</p>
+			<h3>Restarts are required to enable changes</h3>
+			<p>Speaking of changes, neither command-line flags nor config file settings take effect immediately. The Prometheus application must be restarted to notice the changes. This is not a big problem with changes to command-line flags, as doing so obviously requires the current running replica to stop (and, usually, making changes to a Kubernetes Deployment manifest will trigger a new replica with those changes anyway).</p>
+			<p>But it is less obvious for config file settings, which can lead to frustrating confusion as it might appear as though the changes are not taking effect. This might seem like a silly mistake, but it is one that is far too easy to make to consider risking it in a production environment. Even worse, it can lead to frustrated users making multiple changes at once before the mistake is realized, causing the new Deployment to pick up multiple unintended changes at once when it is finally restarted.</p>
+			<p>These are just a few<a id="_idIndexMarker740"/> simple examples of the problems that can be encountered when running applications without Operators. In the next section, we'll look more in detail at how the Prometheus Operator specifically approaches these issues with the goal of presenting an abstractable set of solutions that can be considered when building your own Operator for your application.</p>
+			<h1 id="_idParaDest-247"><a id="_idTextAnchor246"/>Operator design</h1>
+			<p>The Prometheus Operator<a id="_idIndexMarker741"/> is designed to alleviate the issues mentioned earlier in regard to the complexity involved with running an instance of Prometheus in a Kubernetes cluster. It does so by abstracting the various configuration options<a id="_idIndexMarker742"/> that are available for Prometheus into <strong class="bold">CustomResourceDefinitions</strong> (<strong class="bold">CRDs</strong>), which are reconciled by the Operator's controllers to maintain that the cluster's Prometheus installation is consistent with the desired state, whatever that might be (and however it might change).</p>
+			<p>Of course, in contrast to the example nginx Operator from earlier tutorials, the Prometheus Operator manages a far more complex application with many more possible states that it must be able to reconcile. But the general approach is still the same, so we can evaluate this Operator through the lens of the same development steps that have been shown throughout this book.</p>
+			<h2 id="_idParaDest-248"><a id="_idTextAnchor247"/>CRDs and APIs</h2>
+			<p>As discussed many<a id="_idIndexMarker743"/> times already, CRDs<a id="_idIndexMarker744"/> are the main objects<a id="_idIndexMarker745"/> upon which many Operators<a id="_idIndexMarker746"/> are built. This is because they allow developers to define custom API types that can be consumed by the Operator. Usually, this is how the user interacts with the Operator, setting their desired cluster state through the CRD that pertains to their Operator.</p>
+			<p>While this book has mainly focused on the concept of an Operator providing only a single configuration CRD (in the examples, this was just the <strong class="source-inline">NginxOperators</strong> object), the reality is that Operators can provide multiple different CRDs depending on their functionality. This is what the Prometheus Operator does. In fact, it provides eight different CRDs (which are described in detail at <a href="https://github.com/prometheus-operator/prometheus-operator/blob/v0.55.1/Documentation/design.md">https://github.com/prometheus-operator/prometheus-operator/blob/v0.55.1/Documentation/design.md</a>). The full list of available CRDs it provides defines<a id="_idIndexMarker747"/> the following object types:</p>
+			<ul>
+				<li><strong class="source-inline">Prometheus</strong></li>
+				<li><strong class="source-inline">Alertmanager</strong></li>
+				<li><strong class="source-inline">ThanosRuler</strong></li>
+				<li><strong class="source-inline">ServiceMonitor</strong></li>
+				<li><strong class="source-inline">PodMonitor</strong></li>
+				<li><strong class="source-inline">Probe</strong></li>
+				<li><strong class="source-inline">PrometheusRule</strong></li>
+				<li><strong class="source-inline">AlertmanagerConfig</strong></li>
+			</ul>
+			<p>We will discuss some of these object types in more detail next. In general, the purposes of these CRDs can be roughly broken down into a few categories:</p>
+			<ul>
+				<li>Operand deployment management</li>
+				<li>Monitoring configuration settings</li>
+				<li>Additional config objects</li>
+			</ul>
+			<p>In order to keep the context of this chapter focused, we will only dive deeper into the first two groups<a id="_idIndexMarker748"/> of CRDs, as listed earlier. (The third, which is, here, referred to as <em class="italic">additional config objects</em>, includes<a id="_idIndexMarker749"/> the <strong class="source-inline">Probe</strong>, <strong class="source-inline">PrometheusRule</strong>, and <strong class="source-inline">AlertmanagerConfig</strong> types, which go into advanced monitoring settings that are beyond the scope of understanding Operator use cases.)</p>
+			<h3>Operand deployment management</h3>
+			<p>The first three CRDs, <strong class="source-inline">Prometheus</strong>, <strong class="source-inline">Alertmanager</strong>, and <strong class="source-inline">ThanosRuler</strong>, allow users to control<a id="_idIndexMarker750"/> the settings for Operand deployments. For comparison, our example <strong class="source-inline">NginxOperator</strong> CRD controlled the Kubernetes Deployment for an instance of nginx, exposing options such as <strong class="source-inline">port</strong> and <strong class="source-inline">replicas</strong>, which directly affected how that Deployment was configured. These Prometheus Operator CRDs serve the same purpose, just for three different types of Operand deployments. (Technically, the Prometheus Operator runs these Operands as StatefulSets, which is another type of Kubernetes object, not Deployments, but the same principles apply.)</p>
+			<p>These Operand-related CRDs are defined in the Operator's code at <strong class="source-inline">pkg/apis/monitoring/v1/types.go</strong> (note that the <strong class="source-inline">pkg/api/&lt;version&gt;</strong> pattern is similar to the one used in our Operator SDK code path). Talking specifically about the <strong class="source-inline">Prometheus</strong> object's top-level definition, it is exactly the same as our <strong class="source-inline">NginxOperator</strong> CRD:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">prometheus-operator/pkg/apis/monitoring/v1/types.go:</p>
+			<pre class="source-code">type Prometheus struct {</pre>
+			<pre class="source-code">     metav1.TypeMeta   `json:",inline"`</pre>
+			<pre class="source-code">     metav1.ObjectMeta `json:"metadata,omitempty"`</pre>
+			<pre class="source-code">     Spec PrometheusSpec `json:"spec"`</pre>
+			<pre class="source-code">     Status *PrometheusStatus `json:"status,omitempty"`</pre>
+			<pre class="source-code">}</pre>
+			<p>With just the <strong class="source-inline">TypeMeta</strong>, <strong class="source-inline">ObjectMeta</strong>, <strong class="source-inline">Spec</strong>, and <strong class="source-inline">Status</strong> fields, this definition seems very straightforward. However, looking more closely at the <strong class="source-inline">PrometheusSpec</strong> object, the number of configuration options available becomes more evident:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">prometheus-operator/pkg/apis/monitoring/v1/types.go:</p>
+			<pre class="source-code">type PrometheusSpec struct {</pre>
+			<pre class="source-code">     <strong class="bold">CommonPrometheusFields</strong> `json:",inline"`</pre>
+			<pre class="source-code">     Retention string <strong class="bold">`json:"retention,omitempty"`</strong></pre>
+			<pre class="source-code">     DisableCompaction bool </pre>
+			<pre class="source-code">     WALCompression *bool </pre>
+			<pre class="source-code">     Rules Rules </pre>
+			<pre class="source-code">     PrometheusRulesExcludedFromEnforce []PrometheusRuleExcludeConfig </pre>
+			<pre class="source-code">     Query *QuerySpec </pre>
+			<pre class="source-code">     RuleSelector *metav1.LabelSelector </pre>
+			<pre class="source-code">     RuleNamespaceSelector *metav1.LabelSelector </pre>
+			<pre class="source-code">     Alerting *AlertingSpec </pre>
+			<pre class="source-code">     RemoteRead []RemoteReadSpec </pre>
+			<pre class="source-code">     AdditionalAlertRelabelConfigs *v1.SecretKeySelector </pre>
+			<pre class="source-code">     AdditionalAlertManagerConfigs *v1.SecretKeySelector </pre>
+			<pre class="source-code">     Thanos *ThanosSpec </pre>
+			<pre class="source-code">     QueryLogFile string </pre>
+			<pre class="source-code">     AllowOverlappingBlocks bool </pre>
+			<pre class="source-code">}</pre>
+			<p>For the purposes of this chapter, it's not necessary<a id="_idIndexMarker751"/> to know what each option does. But the myriad of fields demonstrates how much an Operator's CRD can grow, emphasizing the need for careful management of an Operator's API. The list of available options goes even deeper with the embedded <strong class="source-inline">CommonPrometheusFields</strong> type, which offers controls over the number of replicas of Prometheus to run, the ServiceAccount settings for the Operand Pods, and a number of other settings related to the Prometheus deployment.</p>
+			<p>However, from a user's perspective, the <strong class="source-inline">Prometheus</strong> custom resource object they create in the cluster could look much simpler. This is because all of the fields in its type definition are marked with the <strong class="source-inline">omitempty</strong> JSON tag (for clarity, they were removed from all of the fields in the preceding code block except one). This denotes the fields as optional in the Kubebuilder CRD generator and does not print them if they are not set. Therefore, an example <strong class="source-inline">Prometheus</strong> object<a id="_idIndexMarker752"/> could be as simple as the following one:</p>
+			<pre class="source-code">apiVersion: monitoring.coreos.com/v1</pre>
+			<pre class="source-code">kind: Prometheus</pre>
+			<pre class="source-code">metadata:</pre>
+			<pre class="source-code">  name: sample</pre>
+			<pre class="source-code">spec:</pre>
+			<pre class="source-code">  replicas: 2</pre>
+			<p>Altogether, the <strong class="source-inline">Prometheus</strong> CRD offers a single spot for controlling some of the settings from either category, as discussed in the <em class="italic">Configuring Prometheus</em> section. That is, it exposes both command-line flag options and config file options in a single spot (along with Kubernetes-specific Deployment settings such as the replica count). It takes another step to disentangle some of these settings with the CRDs that control the monitoring options, which we will discuss next.</p>
+			<h3>Monitoring configuration settings</h3>
+			<p>While the <strong class="source-inline">Prometheus</strong> CRD allows users<a id="_idIndexMarker753"/> to configure the settings of the Prometheus metrics service itself, the <strong class="source-inline">ServiceMonitor</strong> and <strong class="source-inline">PodMonitor</strong> CRDs effectively translate to the Prometheus <strong class="source-inline">job</strong> config YAML settings, as described in the <em class="italic">Configuring Prometheus</em> section. In this section, we'll discuss how <strong class="source-inline">ServiceMonitor</strong> works to configure Prometheus to scrape metrics from specific Services (the same basic ideas apply to PodMonitor, which scrapes metrics from Pods directly).</p>
+			<p>To demonstrate this translation, the following <strong class="source-inline">ServiceMonitor</strong> object will be used to make the Prometheus Operator configure Prometheus so that it scrapes metrics from Service endpoints that are labeled with the <strong class="source-inline">serviceLabel: webapp</strong> labels:</p>
+			<pre class="source-code">apiVersion: monitoring.coreos.com/v1</pre>
+			<pre class="source-code">kind: ServiceMonitor</pre>
+			<pre class="source-code"><strong class="bold">metadata:</strong></pre>
+			<pre class="source-code">  name: web-service-monitor</pre>
+			<pre class="source-code">  labels:</pre>
+			<pre class="source-code">    app: web</pre>
+			<pre class="source-code"><strong class="bold">spec:</strong></pre>
+			<pre class="source-code">  selector:</pre>
+			<pre class="source-code">    matchLabels:</pre>
+			<pre class="source-code">      <strong class="bold">serviceLabel: webapp</strong></pre>
+			<pre class="source-code">  endpoints:</pre>
+			<pre class="source-code">  - port: http</pre>
+			<p>More specifically, this object is broken<a id="_idIndexMarker754"/> down into two sections that are common to most Kubernetes objects: <strong class="source-inline">metadata</strong> and <strong class="source-inline">spec</strong>. Each serves an important role:</p>
+			<ul>
+				<li>The <strong class="source-inline">metadata</strong> field defines the labels<a id="_idIndexMarker755"/> that describe this <strong class="source-inline">ServiceMonitor</strong> object. These labels must be passed to the Prometheus Operator (in a <strong class="source-inline">Prometheus</strong> object, as described in the <em class="italic">Operand deployment management</em> section) to inform it about which <strong class="source-inline">ServiceMonitor</strong> objects the Operator should watch.</li>
+				<li>The <strong class="source-inline">spec</strong> field defines a <strong class="source-inline">selector</strong> field, which specifies<a id="_idIndexMarker756"/> which application Services to scrape for metrics based on the labels on those Services. Here, Prometheus will ultimately know to scrape application metrics from Services labeled with <strong class="source-inline">serviceLabel: webapp</strong>. It will collect those metrics by querying the named <strong class="source-inline">http</strong> port on the Endpoints of each Service.</li>
+			</ul>
+			<p>To gather this service discovery information (and, eventually, process it inside a Prometheus YAML configuration), the Prometheus Operator must be set up to watch <strong class="source-inline">ServiceMonitors</strong> with the <strong class="source-inline">app: web</strong> label. To do this, a <strong class="source-inline">Prometheus</strong> CRD object can be created similar to the following:</p>
+			<pre class="source-code">apiVersion: monitoring.coreos.com/v1</pre>
+			<pre class="source-code">kind: Prometheus</pre>
+			<pre class="source-code">metadata:</pre>
+			<pre class="source-code">  name: prometheus</pre>
+			<pre class="source-code">spec:</pre>
+			<pre class="source-code">  serviceAccountName: prometheus</pre>
+			<pre class="source-code">  serviceMonitorSelector:</pre>
+			<pre class="source-code">    matchLabels:</pre>
+			<pre class="source-code">      app: web</pre>
+			<p>With this <strong class="source-inline">Prometheus</strong> object, the Prometheus Operator<a id="_idIndexMarker757"/> watches for instances of these <strong class="source-inline">ServiceMonitor</strong> objects and automatically generates the equivalent Prometheus YAML config. For the earlier <strong class="source-inline">ServiceMonitor</strong> object, that Prometheus configuration file looks similar to the following (note that this code is only shown here as an example to emphasize the complexity of a Prometheus config, and it is not necessary to understand it in depth):</p>
+			<pre class="source-code">global:</pre>
+			<pre class="source-code">  evaluation_interval: 30s</pre>
+			<pre class="source-code">  scrape_interval: 30s</pre>
+			<pre class="source-code">  external_labels:</pre>
+			<pre class="source-code">    prometheus: default/prometheus</pre>
+			<pre class="source-code">    prometheus_replica: $(POD_NAME)</pre>
+			<pre class="source-code">scrape_configs:</pre>
+			<pre class="source-code">- job_name: serviceMonitor/default/web-service-monitor/0</pre>
+			<pre class="source-code">  honor_labels: false</pre>
+			<pre class="source-code">  kubernetes_sd_configs:</pre>
+			<pre class="source-code">  - role: endpoints</pre>
+			<pre class="source-code">    namespaces:</pre>
+			<pre class="source-code">      names:</pre>
+			<pre class="source-code">      - default</pre>
+			<pre class="source-code">  relabel_configs:</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - job</pre>
+			<pre class="source-code">    target_label: __tmp_prometheus_job_name</pre>
+			<pre class="source-code">  - action: keep</pre>
+			<pre class="source-code">    source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_service_label_serviceLabel</pre>
+			<pre class="source-code">    - __meta_kubernetes_service_labelpresent_serviceLabel</pre>
+			<pre class="source-code">    regex: (webapp);true</pre>
+			<pre class="source-code">  - action: keep</pre>
+			<pre class="source-code">    source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_endpoint_port_name</pre>
+			<pre class="source-code">    regex: http</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_endpoint_address_target_kind</pre>
+			<pre class="source-code">    - __meta_kubernetes_endpoint_address_target_name</pre>
+			<pre class="source-code">    separator: ;</pre>
+			<pre class="source-code">    regex: Node;(.*)</pre>
+			<pre class="source-code">    replacement: ${1}</pre>
+			<pre class="source-code">    target_label: node</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_endpoint_address_target_kind</pre>
+			<pre class="source-code">    - __meta_kubernetes_endpoint_address_target_name</pre>
+			<pre class="source-code">    separator: ;</pre>
+			<pre class="source-code">    regex: Pod;(.*)</pre>
+			<pre class="source-code">    replacement: ${1}</pre>
+			<pre class="source-code">    target_label: pod</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_namespace</pre>
+			<pre class="source-code">    target_label: namespace</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_service_name</pre>
+			<pre class="source-code">    target_label: service</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_pod_name</pre>
+			<pre class="source-code">    target_label: pod</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_pod_container_name</pre>
+			<pre class="source-code">    target_label: container</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __meta_kubernetes_service_name</pre>
+			<pre class="source-code">    target_label: job</pre>
+			<pre class="source-code">    replacement: ${1}</pre>
+			<pre class="source-code">  - target_label: endpoint</pre>
+			<pre class="source-code">    replacement: http</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __address__</pre>
+			<pre class="source-code">    target_label: __tmp_hash</pre>
+			<pre class="source-code">    modulus: 1</pre>
+			<pre class="source-code">    action: hashmod</pre>
+			<pre class="source-code">  - source_labels:</pre>
+			<pre class="source-code">    - __tmp_hash</pre>
+			<pre class="source-code">    regex: $(SHARD)</pre>
+			<pre class="source-code">    action: keep</pre>
+			<pre class="source-code">  metric_relabel_configs: []</pre>
+			<p>Of course, this full YAML config<a id="_idIndexMarker758"/> is very long, and it would require significant effort to create (much less maintain) by hand. It's not important for the purpose of this discussion to explain the full config in detail. It is mainly shown here to emphasize the work done by an Operator to abstract such a complex configuration into a relatively simple CRD.</p>
+			<p>It is the relationship between CRDs such as <strong class="source-inline">Prometheus</strong> and <strong class="source-inline">ServiceMonitor</strong> that enables such abstraction in reasonable ways. For example, it would be easy to ship a single large <strong class="source-inline">Prometheus</strong> CRD that includes the settings for the monitoring services. This would also simplify the Operator's code by only requiring it to monitor one type of CRD for changes. </p>
+			<p>But decoupling these settings allows each CRD object to remain manageable and readable. Additionally, it provides granular access control over the modification of the Operand settings (in other words, specific teams can be granted the ability to create <strong class="source-inline">ServiceMonitor</strong> objects within their own namespaces in the cluster). This ad hoc configuration design gives cluster tenants control over the consumption of their own projects.</p>
+			<p>With this general understanding of the CRDs used by the Prometheus Operator (and how their design creates a cohesive API), next, we will look, in more detail, at how the Operator reconciles these objects from a technical perspective.</p>
+			<h2 id="_idParaDest-249"><a id="_idTextAnchor248"/>Reconciliation logic</h2>
+			<p>To better understand the role<a id="_idIndexMarker759"/> of all the Prometheus Operator CRDs, it helps to know more about how the Operator configures the Prometheus Operand. Under the hood, the Prometheus Operator manages the Prometheus Pods' configuration through a secret (that is, the Kubernetes object designed to contain sensitive data of an arbitrary nature). That Secret is mounted into the Prometheus Pods as if it were a file and, thereby, passed to the Prometheus binary's <strong class="source-inline">--config.file</strong> flag.</p>
+			<p>The Operator knows to update this secret (and redeploy the Prometheus Operand, reloading the config file in the process) because it watches its <strong class="source-inline">Prometheus</strong> CRD (along with other CRDs such as <strong class="source-inline">ServiceMonitor</strong> and <strong class="source-inline">PodMonitor</strong>) in the cluster for changes.</p>
+			<p class="callout-heading">Reloading Config Changes with Prometheus</p>
+			<p class="callout">Technically, the Prometheus Operator<a id="_idIndexMarker760"/> reloads the Prometheus config when it is changed without needing to redeploy the entire<a id="_idIndexMarker761"/> Operand. It does this with a sidecar container, running <strong class="bold">prometheus-config-reloader</strong> (<a href="https://github.com/prometheus-operator/prometheus-operator/tree/main/cmd/prometheus-config-reloader">https://github.com/prometheus-operator/prometheus-operator/tree/main/cmd/prometheus-config-reloader</a>), which triggers a runtime reload by querying the <strong class="source-inline">/-/reload</strong> endpoint on the Prometheus server. While Prometheus supports runtime config reloading this way, many applications do not. So, for demonstration purposes, this chapter glosses over this technical detail to focus on the capabilities of the Operator and the more common use cases.</p>
+			<p>The Operator is able to monitor these CRD objects once it has been granted appropriate RBAC permissions to do so. This is because even though it defines those objects in its own project, the Kubernetes authentication services don't know that. To the cluster, the Operator is simply another Pod running an arbitrary application, so it needs permission to list, watch, get, or perform any other action on any type of API object. </p>
+			<p>In the nginx Operator <a id="_idIndexMarker762"/>example, the RBAC rules for accessing our Operator's CRD objects were automatically generated using Kubebuilder markers. Instead, the Prometheus Operator provides sample YAML files for its users with the appropriate permissions defined.</p>
+			<p>The Prometheus Operator creates three separate controllers for the three different Operands it supports (that is, Prometheus, Alertmanager, and Thanos). With the Operator SDK, the same design could be achieved by running <strong class="source-inline">operator-sdk create api --controller</strong> for each CRD that requires its own reconciliation logic.</p>
+			<p>Each controller watches for adds, updates, and deletes for the relevant objects that inform its reconciliation. For the Prometheus controller, these include the <strong class="source-inline">Prometheus</strong>, <strong class="source-inline">ServiceMonitor</strong>, and <strong class="source-inline">PodMonitor</strong> CRDs. But it also watches for changes to things such as Secrets and StatefulSets because, as mentioned earlier, these are the objects that are used to deploy the Prometheus Operand. So, by watching for these too, it can ensure that the Operand objects themselves are maintained at the appropriate settings and can recover from any deviations (for example, accidental manual changes to the Secret that holds the current Prometheus config YAML).</p>
+			<p>The main controller logic is implemented in a function called <strong class="source-inline">sync()</strong>, which is the equivalent to the Operator SDK's automatically created <strong class="source-inline">Reconcile()</strong> function. The <strong class="source-inline">sync()</strong> function follows the same general outline, as described for our sample nginx Operator, too. Some of the relevant code snippets from the Prometheus <strong class="source-inline">sync()</strong> function are detailed next.</p>
+			<p>First, the function gets the <strong class="source-inline">Prometheus</strong> CRD object that is necessary for the Prometheus Operand deployment to exist. If the object cannot be found, the controller returns an error. If it is found, then it creates a copy to work with:</p>
+			<pre class="source-code">func (c *Operator) sync(ctx context.Context, key string) error {</pre>
+			<pre class="source-code">     pobj, err := c.promInfs.Get(key)</pre>
+			<pre class="source-code">     if apierrors.IsNotFound(err) {</pre>
+			<pre class="source-code">          c.metrics.ForgetObject(key)</pre>
+			<pre class="source-code">          return nil</pre>
+			<pre class="source-code">     }</pre>
+			<pre class="source-code">     if err != nil {</pre>
+			<pre class="source-code">          return err</pre>
+			<pre class="source-code">     }</pre>
+			<pre class="source-code">     p := pobj.(*monitoringv1.Prometheus)</pre>
+			<pre class="source-code">     p = p.DeepCopy()</pre>
+			<p>Next, it parses the <strong class="source-inline">Prometheus</strong> object (and gathers any relevant <strong class="source-inline">ServiceMonitor</strong> objects or <strong class="source-inline">PodMonitor</strong> objects to parse too) in order to generate<a id="_idIndexMarker763"/> the YAML configuration Secret. This is done in a helper function that also checks for an existing Secret and creates one if none exist:</p>
+			<pre class="source-code">     if err := c.createOrUpdateConfigurationSecret(…); err != nil {</pre>
+			<pre class="source-code">          return errors.Wrap(err, "creating config failed")</pre>
+			<pre class="source-code">     }</pre>
+			<p>Finally, it creates the Prometheus StatefulSet, which runs the Operand deployment. Similar to generating the config Secret, this part also uses helper functions to check for the presence of an existing StatefulSet and then decides whether to update it or create a new StatefulSet:</p>
+			<pre class="source-code">ssetClient := c.kclient.AppsV1().StatefulSets(p.Namespace)</pre>
+			<pre class="source-code">…</pre>
+			<pre class="source-code">obj, err := c.ssetInfs.Get(…)</pre>
+			<pre class="source-code">  exists := !apierrors.IsNotFound(err)</pre>
+			<pre class="source-code">  if err != nil &amp;&amp; !apierrors.IsNotFound(err) {</pre>
+			<pre class="source-code">    return errors.Wrap(err, "retrieving statefulset failed")</pre>
+			<pre class="source-code">  }</pre>
+			<pre class="source-code">…</pre>
+			<pre class="source-code">sset, err := makeStatefulSet(ssetName)</pre>
+			<pre class="source-code">  if err != nil {</pre>
+			<pre class="source-code">    return errors.Wrap(err, "making statefulset failed")</pre>
+			<pre class="source-code">  }</pre>
+			<pre class="source-code">…</pre>
+			<pre class="source-code">if !exists {</pre>
+			<pre class="source-code">    level.Debug(logger).Log("msg", "no current statefulset found")</pre>
+			<pre class="source-code">    level.Debug(logger).Log("msg", "creating statefulset")</pre>
+			<pre class="source-code">    if _, err := ssetClient.Create(ctx, sset, metav1.CreateOptions{}); err != nil {</pre>
+			<pre class="source-code">      return errors.Wrap(err, "creating statefulset failed")</pre>
+			<pre class="source-code">    }</pre>
+			<pre class="source-code">    return nil</pre>
+			<pre class="source-code">}</pre>
+			<pre class="source-code">…</pre>
+			<pre class="source-code">level.Debug(logger).Log("msg", "updating current statefulset")</pre>
+			<pre class="source-code">err = k8sutil.UpdateStatefulSet(ctx, ssetClient, sset)</pre>
+			<p>This is equivalent to how the example nginx Operator<a id="_idIndexMarker764"/> created a Kubernetes Deployment object. However, rather than using a file-embedding library as we eventually did, the Prometheus Operator builds the StatefulSet object in memory. Without going into too much detail, that makes sense for this application because much of the StatefulSet definition is dependent on variable options that are set by logic in the code. So, there is not much advantage to maintaining an embedded file to represent this object.</p>
+			<p>Throughout this reconciliation<a id="_idIndexMarker765"/> loop, the Operator makes extensive use of structured logs and metrics to inform the user about its health. And while it doesn't report any <strong class="source-inline">Condition</strong> updates as our Nginx operator did, it does report other custom-defined fields in the <strong class="source-inline">PrometheusStatus</strong> field of the <strong class="source-inline">Prometheus</strong> CRD:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pkg/apis/monitoring/v1/types.go:</p>
+			<pre class="source-code">type PrometheusStatus struct {</pre>
+			<pre class="source-code">  Paused bool `json:"paused"`</pre>
+			<pre class="source-code">  Replicas int32 `json:"replicas"`</pre>
+			<pre class="source-code">  UpdatedReplicas int32 `json:"updatedReplicas"`</pre>
+			<pre class="source-code">  AvailableReplicas int32 `json:"availableReplicas"`</pre>
+			<pre class="source-code">  UnavailableReplicas int32 `json:"unavailableReplicas"`</pre>
+			<pre class="source-code">}</pre>
+			<p>This is a good demonstration of the fact that Operator CRDs can provide application-specific health information rather than only relying on existing patterns and upstream API types to convey a detailed status report. Combined with the fact that multiple <strong class="source-inline">Prometheus</strong> CRD objects can be created, with each representing a new deployment of Prometheus, the status information of individual Operand deployments is separated.</p>
+			<p>This is all a very high-level overview of the Prometheus Operator's reconciliation<a id="_idIndexMarker766"/> logic, with many specific implementation details omitted in order to draw more comparisons between the concepts discussed throughout the book related to Operator design.</p>
+			<h1 id="_idParaDest-250"><a id="_idTextAnchor249"/>Operator distribution and deve<a href="https://github">lopment</a></h1>
+			<p><a href="https://github">The Pr</a>ometheus Operator is hosted on GitHub at <a href="https://github.com/prometheus-operator/prometheus-operator">https://github.com/prometheus-operator/prometheus-operator</a>, where most of its documentation is also<a href="https://operatorhub"> maintained. It is </a>also distributed via OperatorHub at <a href="https://operatorhub.io/operator/prometheus">https://operatorhub.io/operator/prometheus</a>.</p>
+			<div>
+				<div id="_idContainer037" class="IMG---Figure">
+					<img src="image/Figure_10.1_B18147.jpg" alt="Figure 10.1 – The Prometheus Operator page on OperatorHub.io"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.1 – The Prometheus Operator page on OperatorHub.io</p>
+			<p>As discussed in <a href="B18147_06_ePub.xhtml#_idTextAnchor090"><em class="italic">Chapter 6</em></a>, <em class="italic">Building and Deploying Your Operator</em>, there are many different ways to run an Operator. From local builds to container deployments, each offers advantages for different development use cases. Then, in <a href="B18147_07_ePub.xhtml#_idTextAnchor108"><em class="italic">Chapter 7</em></a>, <em class="italic">Installing and Running Operators with the Operator Lifecycle Manager</em>, the function of OperatorHub was explained as both a distribution index and an installation method when combined with the <strong class="bold">Operator Lifecycle Manager</strong> (<strong class="bold">OLM</strong>).</p>
+			<p>In practice, this spectrum of distribution and installation options is illustrated by the Prometheus Operator. Inside its GitHub repository, the Prometheus Operator maintainers provide a single <strong class="source-inline">bundle.yaml</strong> file that allows curious users to quickly install all of the resources that are necessary to run the Operator with a simple <strong class="source-inline">kubectl create</strong> command.</p>
+			<p>Note that while this is similar in function to the bundle that's created to package an Operator for OperatorHub and OLM, technically, it is not the same. That's because it doesn't contain a <strong class="bold">ClusterServiceVersion</strong> (<strong class="bold">CSV</strong>) or other metadata that could be used by the OLM to manage an installation of the Prometheus Operator.</p>
+			<p>However, the Prometheus Operator does provide this information on OperatorHub. The backing CSV, along with the Operator's CRD files, are hosted for OperatorHub in its GitHub repository at <a href="https://github.com/k8s-operatorhub/community-operators/tree/main/operators/prometheus">https://github.com/k8s-operatorhub/community-operators/tree/main/operators/prometheus</a>. This directory follows the same structure that was described in <a href="B18147_07_ePub.xhtml#_idTextAnchor108"><em class="italic">Chapter 7</em></a>, <em class="italic">Installing and Running Operators with the Operator Lifecycle Manager</em>. Each new version of the Prometheus Operator's bundle is kept in its own numbered directory.</p>
+			<div>
+				<div id="_idContainer038" class="IMG---Figure">
+					<img src="image/Figure_10.2_B18147.jpg" alt="Figure 10.2 – The Prometheus Operator version directories on OperatorHub"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.2 – The Prometheus Operator version directories on OperatorHub</p>
+			<p>The individual versions contain the YAML definitions for each CRD used by the Operator alongside a CSV that provides the metadata about the Operator and its resources.</p>
+			<p>To demonstrate the use case of this CSV, we can briefly look at some of the relevant sections, as shown in the following code. First, it describes the Operator's descriptive information, including its capability level (in this case, the Prometheus Operator is a Level IV Operator providing <em class="italic">Deep Insights</em> such as metrics about itself and its Operand):</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">prometheusoperator.0.47.0.clusterserviceversion.yaml:</p>
+			<pre class="source-code">apiVersion: operators.coreos.com/v1alpha1</pre>
+			<pre class="source-code">kind: ClusterServiceVersion</pre>
+			<pre class="source-code">metadata:</pre>
+			<pre class="source-code">  annotations:</pre>
+			<pre class="source-code">    <strong class="bold">capabilities: Deep Insights</strong></pre>
+			<pre class="source-code">    categories: Monitoring</pre>
+			<pre class="source-code">    certified: "false"</pre>
+			<pre class="source-code">    containerImage: quay.io/prometheus -operator/prometheus -operator:v0.47.0</pre>
+			<pre class="source-code">    createdAt: "2021-04-15T23:43:00Z"</pre>
+			<pre class="source-code">    description: Manage the full lifecycle of configuring and managin<a href="https://github">g Prometheus a</a>nd Alertmanager servers.</pre>
+			<pre class="source-code">    Repository: https://github.com/prometheus -operator/prometheus -operator</pre>
+			<pre class="source-code">    support: Red Hat, Inc.</pre>
+			<pre class="source-code">  name: prometheusoperator.0.47.0</pre>
+			<pre class="source-code">  namespace: placeholder</pre>
+			<p>Next, it embeds the various CRDs and a description of their fields. The following is an excerpt from the <strong class="source-inline">Prometheus</strong> CRD description:</p>
+			<pre class="source-code">spec:</pre>
+			<pre class="source-code">  customresourcedefinitions:</pre>
+			<pre class="source-code">    owned:</pre>
+			<pre class="source-code">    - description: A running Prometheus instance</pre>
+			<pre class="source-code">      displayName: Prometheus</pre>
+			<pre class="source-code">      kind: Prometheus</pre>
+			<pre class="source-code">      name: prometheuses.monitoring.coreos.com</pre>
+			<pre class="source-code">      resources:</pre>
+			<pre class="source-code">      - kind: StatefulSet</pre>
+			<pre class="source-code">        version: v1beta2</pre>
+			<pre class="source-code">      - kind: Pod</pre>
+			<pre class="source-code">        version: v1</pre>
+			<pre class="source-code">      - kind: ConfigMap</pre>
+			<pre class="source-code">        version: v1</pre>
+			<pre class="source-code">      - kind: Service</pre>
+			<pre class="source-code">        version: v1</pre>
+			<pre class="source-code">      specDescriptors:</pre>
+			<pre class="source-code">      - description: Desired number of Pods for the cluster</pre>
+			<pre class="source-code">        displayName: Size</pre>
+			<pre class="source-code">        path: replicas</pre>
+			<pre class="source-code">        x-descriptors:</pre>
+			<pre class="source-code">        - urn:alm:descriptor:com.tectonic.ui:podCount</pre>
+			<p>The CSV goes on to define the deployment of the Operator. This maps directly to the Kubernetes Deployment object, which will run the Operator Pods:</p>
+			<pre class="source-code">  install:</pre>
+			<pre class="source-code">    spec:</pre>
+			<pre class="source-code">      deployments:</pre>
+			<pre class="source-code">      - name: prometheus -operator</pre>
+			<pre class="source-code">        spec:</pre>
+			<pre class="source-code">          replicas: 1</pre>
+			<pre class="source-code">          selector:</pre>
+			<pre class="source-code">            matchLabels:</pre>
+			<pre class="source-code">                k8s-app: prometheus -operator</pre>
+			<pre class="source-code">          template:</pre>
+			<pre class="source-code">            metadata:</pre>
+			<pre class="source-code">              labels:</pre>
+			<pre class="source-code">                k8s-app: prometheus -operator</pre>
+			<pre class="source-code">            spec:</pre>
+			<pre class="source-code">              containers:</pre>
+			<pre class="source-code">              - args:</pre>
+			<pre class="source-code">                - --prometheus-instance-namespaces=$(NAMESPACES)</pre>
+			<pre class="source-code">                - --prometheus-config-reloader=quay.io/prometheus -operator/prometheus -config-reloader:v0.47.0</pre>
+			<p>Finally, the CSV provides the RBAC permissions needed by the Operator to monitor its relevant resources in the cluster. Additionally, it also creates the RBAC permissions needed by the actual Prometheus Pods, which are separate from what the Operator needs. This is because the Operator and its Operand are separate entities in the cluster, and the Prometheus Server itself needs access to different resources to gather metrics (this is in contrast to the Prometheus Operator, which needs to access its CRDs).</p>
+			<p>Here are the RBAC permissions used to access its own CRDs, with wildcard (<strong class="source-inline">*</strong>) access under <strong class="source-inline">verbs</strong> indicating that the Operator can perform any API action against these objects (such as <strong class="source-inline">get</strong>, <strong class="source-inline">create</strong>, <strong class="source-inline">delete</strong>, and more):</p>
+			<pre class="source-code">     permissions:</pre>
+			<pre class="source-code">      - rules:</pre>
+			<pre class="source-code">        - apiGroups:</pre>
+			<pre class="source-code">          - monitoring.coreos.com</pre>
+			<pre class="source-code">          resources:</pre>
+			<pre class="source-code">          - alertmanagers</pre>
+			<pre class="source-code">          - alertmanagers/finalizers</pre>
+			<pre class="source-code">          - alertmanagerconfigs</pre>
+			<pre class="source-code">          - prometheuses</pre>
+			<pre class="source-code">          - prometheuses/finalizers</pre>
+			<pre class="source-code">          - thanosrulers</pre>
+			<pre class="source-code">          - thanosrulers/finalizers</pre>
+			<pre class="source-code">          - servicemonitors</pre>
+			<pre class="source-code">          - podmonitors</pre>
+			<pre class="source-code">          - probes</pre>
+			<pre class="source-code">          - prometheusrules</pre>
+			<pre class="source-code">          verbs:</pre>
+			<pre class="source-code">          - '*'</pre>
+			<pre class="source-code">          serviceAccountName: prometheus -operator</pre>
+			<p>The CSV concludes with contact information for the maintainers, along with links to the documentation and the version number of this release.</p>
+			<p>Offering a variety of distribution channels, in this case, GitHub and OperatorHub, has the obvious benefit of enabling an Operator to reach a broader audience of users. But this range of users can often be defined less by where the Operator is distributed and more by how the Operator is intended to be used. In other words, a user installing from OperatorHub is more likely to be evaluating (or actively running) the Operator in a production environment (with the full OLM stack) than a user installing the Operator from GitHub. In the latter case, such installations are probably more experimental, possibly from users seeking to contribute to the project themselves.</p>
+			<p>Accommodating the different use cases of an Operator in your distribution choices helps not only with the growth of a project but also its health. Recall that in <a href="B18147_02_ePub.xhtml#_idTextAnchor032"><em class="italic">Chapter 2</em></a>,<em class="italic"> Understanding How Operators Interact with Kubernetes</em>, we identified several types of potential users such as cluster users and administrators. While, in theory, an Operator's function might only apply to one type of user, the way that Operator is installed and run could vary for different kinds of users, including developers. Understanding these users and providing usage pathways for them increases the coverage of an Operator's functionality, improving the odds that bugs and potential features are identified.</p>
+			<p>As with many other topics in this book, these concepts are not specific to Operator design. But they are worth noting in the context of an Operator discussion to reiterate the ways in which they apply here. Similarly, while the topics of maintaining software and providing updates are not strictly specific to Operators, in the next section, we will still examine them through the lens of this Operator.</p>
+			<h1 id="_idParaDest-251"><a id="_idTextAnchor250"/>Updates and maintenance</h1>
+			<p>The Prometheus Operator's community of maintainers is very active. With over 400 contributors to date (<a href="https://github.com/prometheus-operator/prometheus-operator/graphs/contributors">https://github.com/prometheus-operator/prometheus-operator/graphs/contributors</a>), its code base remains fresh through ongoing maintenance. This allows the Prometheus Operator to publish regular releases on its GitHub Releases page (<a href="https://github.com/prometheus-operator/prometheus-operator/releases">https://github.com/prometheus-operator/prometheus-operator/releases</a>). As with any application, releasing regular updates promotes confidence in potential users by demonstrating an active investment in the project's support by its owners. In Kubernetes projects, such as Operators, this is even more important due to the relatively fast-paced and highly fluctuant developments in the underlying Kubernetes platform. Otherwise, with the current Kubernetes deprecation policy, an Operator might become unusable in new clusters in as little as a year (see <a href="B18147_08_ePub.xhtml#_idTextAnchor126"><em class="italic">Chapter 8</em></a>, <em class="italic">Preparing for Ongoing Maintenance of Your Operator</em>).</p>
+			<p>In reality, in most cases, the main dependencies used by an Operator project will not frequently introduce breaking changes that require manual updates to remain compatible with existing users. Instead, most updates will simply be version bumps that bring in security, performance, and edge-case optimization improvements. To automate this process, the Prometheus Operator uses GitHub's Dependabot, which automatically creates pull requests to update any dependencies with new releases (<a href="https://docs.github.com/en/code-security/dependabot">https://docs.github.com/en/code-security/dependabot</a>).</p>
+			<p>Automated dependency management tools such as Dependabot are a great way to ensure your Operator remains up to date with its dependencies, and thereby compatible with the most recent environment updates made by users. However, depending on your own scenario, you might still choose to manually update your Operator (for example, if you are aligning with a different release cadence where upstream patch releases might not be of significance to your own release).</p>
+			<p>Besides dependency updates, most Operators will also ship their own updates; for example, shipping a new API version (as covered in the <em class="italic">Releasing new versions of your operator</em> section of <a href="B18147_08_ePub.xhtml#_idTextAnchor126"><em class="italic">Chapter 8</em></a>, <em class="italic">Preparing for Ongoing Maintenance</em>). In the case of the Prometheus Operator, the transition from API version <strong class="source-inline">v1alpha1</strong> to <strong class="source-inline">v1</strong> also involved a migration from Kubernetes <strong class="bold">ThirdPartyResources</strong> (a now-deprecated early implementation of extensible Kubernetes objects) to the at-the-time newly available CRDs (<a href="https://github.com/prometheus-operator/prometheus-operator/pull/555">https://github.com/prometheus-operator/prometheus-operator/pull/555</a>). So, examples of the Prometheus Operator shipping multiple API versions in a CRD are not currently available. However, as part of the project's roadmap, the intent is to update the <strong class="source-inline">AlertManager</strong> CRD from <strong class="source-inline">v1alpha1</strong> to <strong class="source-inline">v1beta1</strong>, leveraging conversion webhooks to translate betwe<a href="https://github">en the two (th</a>is proposal is tracked and documented at <a href="https://github.com/prometheus-operator/prometheus-operator/issues/4677">https://github.com/prometheus-operator/prometheus-operator/issues/4677</a>). </p>
+			<p>Finally, the Prometheus Operator maintains its own Slack channel for community support and discussion. Because the Operator is a third-party open source effort not directly affiliated with Prometheus itself, openly advertising the proper channels for support not only helps users find the right contacts but also respects the Prometheus maintainers' scope of responsibility. In this way, it is perfectly acceptable to publish an Operator that manages an Operand that you do not own. However, if this is not made clear, it can be very disruptive to your users and the owners of that Operand if the distinction between Operator and Operand is blurred.</p>
+			<h1 id="_idParaDest-252"><a id="_idTextAnchor251"/>Summary</h1>
+			<p>In this chapter, we used the Prometheus Operator as an example to apply many of the concepts covered throughout the book. This Operator makes a good example because, aside from serving a common need by managing a popular application, it is actually one of the earliest Operators (having published its first release, v0.1.1, in December 2016). This predates the formalized Operator Framework, which developers can benefit from today, explaining idiosyncrasies such as its lack of Operator SDK libraries, but demonstrating the influence of early development decisions in the design of the Operator Framework.</p>
+			<p>At the beginning of this chapter, we gave a brief overview of Prometheus itself. This gave us a foundational understanding of the use case for a Prometheus Operator, particularly regarding the installation and configuration of Prometheus. This laid the groundwork to understand what the Prometheus Operator does to alleviate these pain points. By examining the CRDs it uses and how they are reconciled, we demonstrated how the Prometheus Operator abstracts that underlying functionality from the user, drawing parallels with the earlier chapters in the book (and the much simpler Nginx operator used to build the examples in those chapters). Finally, we looked at the more intangible aspects of the Prometheus Operator, such as its distribution and maintenance, to show how popular Operators apply these concepts from the Operator Framework.</p>
+			<p>In the next chapter, we will follow a similar case study but for a different Operator, that is, the etcd Operator. </p>
+		</div>
+	</body></html>

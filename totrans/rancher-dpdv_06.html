@@ -1,0 +1,478 @@
+<html><head></head><body>
+		<div id="_idContainer032">
+			<h1 id="_idParaDest-53"><em class="italic"><a id="_idTextAnchor052"/>Chapter 4</em>: Creating an RKE and RKE2 Cluster</h1>
+			<p>The standard way of deploying Rancher is by creating an <strong class="bold">Rancher Kubernetes Engine (RKE</strong>) cluster then using Helm to install Rancher on the cluster. The new way to deploy Kubernetes clusters using RKE2 is built on K3s and the new internal cluster management model. By doing so, Rancher can manage the cluster it lives on directly without requiring an external tool such as RKE. This chapter will cover when using RKE2 over RKE makes sense, and how to bootstrap the first node and join additional nodes to the cluster. At this point, we'll install Rancher on the cluster using the <strong class="bold">Helm</strong> tool, which installs the Rancher server workload on the cluster. Finally, we'll cover how to configure a load balancer to support the Rancher URL.</p>
+			<p>In this chapter, we're going to cover the following main topics:</p>
+			<ul>
+				<li>What is an RKE cluster?</li>
+				<li>What is an RKE2 cluster?</li>
+				<li>What is RancherD?</li>
+				<li>Requirements and limitations</li>
+				<li>Rules for architecting a solution</li>
+				<li>Install steps (RKE)</li>
+				<li>Install steps (RKE2)</li>
+				<li>Configuring an external load balancer (HAProxy)</li>
+				<li>Configuring MetalLB</li>
+			</ul>
+			<p>Let's get started!</p>
+			<h1 id="_idParaDest-54"><a id="_idTextAnchor053"/>What is an RKE cluster?</h1>
+			<p>RKE is Rancher's<a id="_idIndexMarker242"/> Kubernetes distribution that runs entirely inside Docker containers. Of course, RKE is a CNCF-certified distribution, so all the standard Kubernetes components and API resources are available. The easiest way to understand <a id="_idIndexMarker243"/>RKE clusters is to know where it originated and how it works.</p>
+			<h2 id="_idParaDest-55"><a id="_idTextAnchor054"/>Where did RKE come from? </h2>
+			<p>Originally, when<a id="_idIndexMarker244"/> Rancher first started creating Kubernetes clusters, Rancher used its clustering software <a id="_idIndexMarker245"/>called <strong class="bold">Cattle</strong>, with the idea being Kubernetes was just another application in the cluster. This caused several problems ranging from kubelet and Cattle fighting to control the containers to even needing a custom load balancer solution built on top of HAProxy. But for most components, the most significant issue was that the Rancher server managed the Cattle side of the cluster, and Kubernetes managed the pod side. This meant that the cluster had a dependency on Rancher to get pod IPs and needed Rancher to update the load balancer when pod changes happened. This all changed with Rancher v2.x and the creation of RKE, the idea being RKE will create and manage the cluster independent of the Rancher server. Of course, some of the core ideas of Cattle were brought forward into RKE, with the main idea being if everything is just a container, then Rancher doesn't need to care about the OS. RKE doesn't need any libraries or packages. At its core, RKE manages standalone Docker containers for core Kubernetes services. These include etcd, kube-apiserver, kube-scheduler, kube-controller-manager, kubelet, and kube-proxy. </p>
+			<h2 id="_idParaDest-56"><a id="_idTextAnchor055"/>How does RKE work? </h2>
+			<p>One of the core<a id="_idIndexMarker246"/> design principles is that RKE has desired state configuration in the form of a configuration file called <strong class="source-inline">cluster.yaml</strong>. With this file, RKE knows what kind of cluster you want to build, what nodes to use, and how each Kubernetes component should be configured. This file is a YAML formatted file, so you will need to follow the YAML standard when creating/editing this file with a common trap for new players being tabs. YAML uses spaces and not taba, even though they look the same. If you start running into syntax errors, it might be because of tabs. What follows is an example <strong class="source-inline">cluster.yaml</strong> with the next section. We'll break down the different parts of the config file.</p>
+			<div>
+				<div id="_idContainer020" class="IMG---Figure">
+					<img src="image/B18053_04_001.jpg" alt="Figure 4.1 – Example cluster.yml&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.1 – Example cluster.yml</p>
+			<p>Full <a id="_idIndexMarker247"/>config: <a href="https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch04/example_configs/simple_3_node_cluster.yml">https://raw.githubusercontent.com/PacktPublishing/Rancher-Deep-Dive/main/ch04/example_configs/simple_3_node_cluster.yml</a></p>
+			<p>The first section is <strong class="source-inline">nodes</strong>. In this section, you'll define the nodes used to create the cluster. If we break down the node definition, we'll see the first line, which is <strong class="source-inline">address</strong>. This is the hostname or IP address that RKE will use to connect to the node. It is pretty standard to use a<a id="_idIndexMarker248"/> server's <strong class="bold">FQDN</strong> (<strong class="bold">Fully Qualified Domain Name</strong>). </p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">The server where RKE is being run from must be able to resolve the hostname. </p>
+			<p>This address should not be changed without removing the node from the cluster first then rejoining it as a new node. The <strong class="source-inline">address</strong> field is required when defining a node. </p>
+			<p>The following section is <strong class="source-inline">hostname_override</strong>, which sets the node name in Kubernetes. Most people will set this to be the short hostname. This name does not have to be in DNS as it is just a label in Kubernetes. For example, AWS uses the naming convention of <strong class="source-inline">ip-12-34-56-78.us-west-2.compute.internal</strong>, but you might want <a id="_idIndexMarker249"/>to override this to be something more helpful such as <strong class="source-inline">etcd01</strong> or <strong class="source-inline">prod-worker01</strong>. </p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Just like the address field, the hostname field should not be changed after a node has been configured. </p>
+			<p>If you would like to change the hostname, IP address, or role, you should remove, clean it, and rejoin it. If this field is not set, RKE will default to using the <strong class="source-inline">address</strong> field. </p>
+			<p>The following field is <strong class="source-inline">user</strong>. This field is used by RKE when creating its SSH tunnel to the nodes. This account should have permission to run the <strong class="source-inline">docker</strong> command without <strong class="source-inline">sudo</strong>. This user must be a member of the group Docker or be root. If a user is not defined at the node level, RKE will default to the currently running user. It is standard for this to be root or a service account. Rancher recommends typically not using a personal account as you will need to set up SSH keys. </p>
+			<p>This brings us to the next field: <strong class="source-inline">ssh_key_path</strong>. This should be the path to the SSH private key for connecting to a node. RKE does require SSH keys to be set up between the server running the RKE binary and all of the nodes. When you SSH to the nodes, you get prompted <a id="_idIndexMarker250"/>with a password or <strong class="bold">2FA</strong> (<strong class="bold">two-factor authentication</strong>). You will need to work with your Linux server team to change this. If <strong class="source-inline">ssh_key_path</strong> is not set at the node level, it will default to the cluster's default option as defined in the <strong class="bold">Global settings</strong> section. If <strong class="source-inline">ssh_key_path</strong> is not set, RKE will default to <strong class="source-inline">~/.ssh/id_rsa</strong>. </p>
+			<p>This ties into the next section, <strong class="source-inline">port</strong>, which is the port that RKE will use for connecting to the SSH server. RKE will default to port <strong class="source-inline">22</strong>. Usually, this is not changed, but in rare cases, when using port forwarding, multiple servers can share the same public IP address without RKE needing direct IP access to the nodes. The following field is <strong class="source-inline">docker_socket</strong>, which is the file path to the Docker socket. This file is a Unix domain socket, sometimes called an IPC socket. This file provides API access to dockerd. </p>
+			<p>Note that this API does not have authentication or encryption and has complete control over Docker and its containers. This file must be protected; hence, by default, this file is owned by the root user and the Docker group. RKE uses this file to connect to Docker Engine to run commands, create containers, and so on. </p>
+			<p>Finally, we get to the <strong class="source-inline">role</strong> fields. These fields define what role (<strong class="source-inline">etcd</strong>, <strong class="source-inline">controlplane</strong>, or <strong class="source-inline">worker</strong>) is assigned to a node. You can mix and match these role assignments as you want. For example, the standard three-node cluster has all three nodes having <a id="_idIndexMarker251"/>all three roles. We will go into more detail in the <em class="italic">Rules for architecting a solution</em> section.</p>
+			<p>The following section is what I call the global settings section. This section is where you can define cluster-level settings. We'll be covering the most common settings, with the complete list of cluster settings being located at <a href="https://rancher.com/docs/rke/latest/en/config-options/">https://rancher.com/docs/rke/latest/en/config-options/</a>. The first field is <strong class="source-inline">cluster_name</strong>, which is used for setting the name of your cluster. This setting doesn't affect the cluster, with the only real change being the <strong class="source-inline">kubeconfig</strong> file that RKE generates will have the cluster name in it, which can make mapping kubeconfig to a cluster much more straightforward. By default, RKE will set this to local, and this setting can be changed at any time. </p>
+			<p>The next most common setting is <strong class="source-inline">ignore_docker_version</strong>. This setting tells RKE if it should ignore an unsupported Docker version on a node. RKE has a built-in metadata file that maps all the supported versions that have been tested and approved by Rancher. It is expected that Docker will be upgraded with the operating system as part of standard patching, which can cause RKE not to upgrade a cluster if the RKE release is not as up to date. It is pretty common to set this setting to <strong class="source-inline">true</strong> so that RKE will still throw a warning message in the logs, but it will continue building the cluster. </p>
+			<p>The next field is probably the most important setting you can set, which is <strong class="source-inline">kubernetes_version</strong>. By default, when RKE is created, it will have a default Kubernetes version set. This is usually the highest officially supported version at build time. For example, RKE v1.2.3 will default the Kubernetes version <strong class="source-inline">v1.19.4-rancher1-1</strong>, which is fine when the cluster is created. But if later, someone upgrades RKE to v1.3.1, which has the new default of <strong class="source-inline">v1.21.5-rancher1-1</strong>, suppose you didn't set your Kubernetes versions in your <strong class="source-inline">cluster.yaml</strong> file. The next RKE upgrade event will cause what I call an accidental upgrade. This can be fine but has been known to cause problems. We don't want to upgrade a cluster without testing and planning. Hence, Rancher usually recommends setting <strong class="source-inline">kubernetes_version</strong> in your <strong class="source-inline">cluster.yaml</strong> as a safety measure. </p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">This setting also sets the image version tags of all the Kubernetes components such as etcd, kube-apiserver, canal, ingress-nginx-controller, and so on. </p>
+			<p>This brings us <a id="_idIndexMarker252"/>to the next field, <strong class="source-inline">system_images</strong>. This section has a list of all the Docker images and their tags for all the different components. For example, the line <strong class="source-inline">etcd: rancher/coreos-etcd:v3.1.12</strong> sets the Docker image to use for etcd. Note that, by default, Docker pulls images without a registry name from Docker Hub. You can change the behavior using the <strong class="source-inline">--registry-mirror</strong> flag to force Docker to use a private registry instead. This is usually used in air-gapped environments where your servers cannot pull images from Docker Hub. If you want to learn more about setting this up, please see Rancher's documentation at <a href="https://rancher.com/docs/rke/latest/en/config-options/system-images/#air-gapped-setups">https://rancher.com/docs/rke/latest/en/config-options/system-images/#air-gapped-setups</a>.</p>
+			<p>Finally, we come to the <strong class="source-inline">services</strong> section. In this section, we'll define the settings for each of the Kubernetes components, for e.g., if you want to configure etcd backups. Note that you should have etcd backups turned on, and newer RKE versions turn local backups on by default. You go to services, etcd, and <strong class="source-inline">backup_config</strong>. There you can enable recurring etcd snapshots by setting <strong class="source-inline">enabled</strong> to <strong class="source-inline">true</strong>. You can also set the backup schedule using <strong class="source-inline">interval_hours</strong>. RKE doesn't use a schedule like cron for its backup schedule. The schedule is based on when the <strong class="source-inline">etcd-tools</strong> container is started. The basic process is that <strong class="source-inline">etcd-tools</strong> will take a backup as soon the container starts, then sleep for X number of hours as defined in <strong class="source-inline">interval_hours</strong> until taking another backup and repeating this process. Currently, there is no way of telling RKE to take a backup at a scheduled time. </p>
+			<p>The next setting is <strong class="source-inline">retention</strong>, which sets how many hours <strong class="source-inline">etcd-tools</strong> will keep a snapshot before purging them. The current default is 6 hours. But it is common to increase this setting to something like 72 hours. This is mainly to stop backups from rolling off too quickly. For example, if a change was made late on a Friday, you might not catch it until Monday. With the default setting, you will have lost that recovery point. But if you set it to 72 hours, you still have a chance. It is important to note that etcd snapshots are complete copies of the database, so if your etcd database is 1 GB in size, your backup will be 1 GB before compression, with most backups being in the 100~200 MB range after compression. By default, RKE will back up locally on the etcd nodes to the directory <strong class="source-inline">/opt/rke/etcd-snapshots</strong> with each etcd node having a full copy of the backups. This is great for ease of use but leads to the problem that you are storing your backups on the same server you are backing up. You can, of course, set up <strong class="source-inline">rsync</strong> scripts to copy this data off another server or use a backup tool such as TSM to back up this directory, or even use a tool such as Veeam to take an image backup of the whole server. But what I usually recommend is to use the S3 backup option. </p>
+			<p>This leads us into the next section, which is <strong class="source-inline">s3backupconfig</strong>. These settings allow you to configure <strong class="source-inline">etcd-tools</strong> to send its etcd snapshots to an S3 bucket instead of local storage. This helps in disaster recovery cases where you lose a data center or when someone deleted all your etcd nodes in vCenter by mistake, because with <strong class="source-inline">cluster.yaml</strong>, <strong class="source-inline">cluster.rkestate</strong>, and an etcd backup, we can rebuild a cluster from <a id="_idIndexMarker253"/>nothing. Please have a look at my Kubernetes Master Class on Disaster Recovery located at <a href="https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery">https://github.com/mattmattox/Kubernetes-Master-Class/tree/main/disaster-recovery</a> for more details on this process. It's also important to note that just because this is S3, it doesn't mean you have to use AWS's S3 offering. Any S3 provider will work assuming they are following the S3 standard.</p>
+			<h1 id="_idParaDest-57"><a id="_idTextAnchor056"/>What is an RKE2 cluster?</h1>
+			<p>RKE2, also<a id="_idIndexMarker254"/> known as RKE Government, is Rancher's new Kubernetes distribution. RKE2 differs from RKE in several ways, the first being its focus on security.</p>
+			<p class="callout-heading">Note </p>
+			<p class="callout">To make things easier in this section, we will call the original RKE distribution <strong class="bold">RKE1</strong>, with the new distribution being called <strong class="bold">RKE2</strong>.</p>
+			<p>Originally in RKE1 clusters, the cluster was not entirely secure by default, meaning you had to take steps (The Rancher Hardening Guide: https://rancher.com/docs/rancher/v2.6/en/security/#rancher-hardening-guide) to pass the CIS Kubernetes Benchmark. Both because of the difficulty of the process and the fact that some people didn't even know about it meant a good number of RKE1 clusters were left insecure. RKE2 flips that model around by being secure by default and requiring you to go through several complex steps to make it less secure. RKE2 also passes the CIS Kubernetes Benchmark v1.5 and v1.6 like RKE1 does and FIPS 140-2 compliance. Finally, on the security side, the RKE2 process has been built from the start with CVE scanning as part of the build pipeline, making it very difficult to include known CVE issues in the product. </p>
+			<p>The second big <a id="_idIndexMarker255"/>difference is the conversion from Docker to containerd. With RKE1, everything was built around Docker and Docker-based commands/APIs. And with the announcement of removing support for the Docker runtime in Kubernetes v1.22, this migration is a must in the long-term supportability of Kubernetes. I will note that<a id="_idIndexMarker256"/> Dockershim, an adapter between the Kubernetes <strong class="bold">CRI</strong> (<strong class="bold">Container Runtime Interface</strong>) and Docker, has allowed people to keep using Docker with Kubernetes for the foreseeable future. Rancher is also going to maintain a fork of cri-dockerd. Please see <a href="https://github.com/rancher/rancher/issues/30307">https://github.com/rancher/rancher/issues/30307</a> for more details and the official statement. With all that being said, RKE2 and K3s moved to containerd because of speed and management overhead. Docker brings a lot of tools and libraries into the picture that are not needed by a Kubernetes host and wastes resources. This is because Docker is running containerd under the hood, so why not remove that layer and just let kubelet directly manage containterd? </p>
+			<p>The third significant change was moving from running everything in containers to allowing some low-level components such as kubelet to run as a binary directly on the host. Because items such as kubelet are outside of containterd, kubelet can do tasks such as upgrading containerd without running into the chicken and the egg issue as you would in RKE1. Kubelet can't upgrade Docker because the first step is to stop Docker, which stops kubelet, which stops the upgrade. As you can see in the following diagram shown, RKE2 has <strong class="bold">Managed processes</strong>, which run directly on the operating system and not as containers. </p>
+			<div>
+				<div id="_idContainer021" class="IMG---Figure">
+					<img src="image/B18053_04_002.jpg" alt="Figure 4.2 – RKE2 server and agent high-level diagram &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.2 – RKE2 server and agent high-level diagram </p>
+			<p>The fourth significant change was no more containers that are not pods. In RKE1, most of the core components such as the kubelet, etcd, kube-apiserver, kube-controller-manger, and kube-scheduler <a id="_idIndexMarker257"/>were Docker containers but were not Kubernetes pods. This was because these containers were created and managed by the RKE binary and not by kubelet. With RKE2, kubelet is a binary on the host operating system, and kubelet can use static pods. These pods are unique because they can be created and started without etcd, kube-apiserver, and so on. This is done by making the manifest files that include all the items usually provided by the cluster ahead of time, such as the pod name, IP, MAC address, secrets, volumes, and so on, at which point, kubelet can start and manage the pod just like any other pod. Once kubelet can connect to the cluster, that pod can be discovered and added into etcd.</p>
+			<p>This leads us to the most significant change in RKE2 over RKE1: moving from centralized control to a distributed control model. With RKE1, all the core cluster management tasks were managed by the RKE1 binary itself. Even when Rancher is managing the cluster, it creates the <strong class="source-inline">cluster.yml</strong> file and runs the RKE1 binary inside the Rancher server. Because of this, with RKE1, you must update <strong class="source-inline">cluster.yaml</strong> and run an <strong class="source-inline">rke up </strong>command. This process then causes the RKE1 binary to reconcile the cluster. RKE2 takes this process and moves it into the cluster, meaning an RKE2 cluster can manage itself. RKE2 uses an approach where you bootstrap the first master node in the cluster then join the other master and worker nodes.</p>
+			<p>As part of moving to a distributed model with RKE1, you had the option to deploy simple YAML files as an add-on job. RKE2 builds on this to allow you to deploy YAML files and Helm charts as part of the deployment process. This allows you to move several tasks into the cluster creation process. For example, you are deploying Rancher's Longhorn product, which provides a distributed storage provider, as part of cluster creation. This is important as a good number of environments will need storage to start deploying over services such as Prometheus. RKE2 integrates K3s' Helm controller, which allows you to define a Helm chart installation via YAML. Then the Helm controller will spin up a pod to handle deploying and upgrading that chart, with the end goal being to move most of the cluster tasks, such as adding and removing nodes to and from clusters, from a process inside the Rancher server to a process on the downstream cluster itself. This helps Rancher support managing clusters at a mass scale (1 million+ clusters for a single Rancher deployment), including better data handling for edge clusters by lowering traffic between the Rancher servers and the edge cluster.</p>
+			<p>Finally, the process of joining a node to an existing RKE2 cluster is a lot different than an RKE1 cluster. With RKE1, the binary handles deploying the containers to the new node. With RKE2, there is a <a id="_idIndexMarker258"/>simple process where the first node is started with a special flag, <strong class="source-inline">cluster-init</strong>. This tells RKE2 to create a new cluster. This includes creating a new etcd cluster and creating a fresh root CA (kube-ca), and if it is not set, RKE2 will generate a token for the cluster. Once the first node has been created, the Kubernetes API should be available and used by the rest of the nodes to join the cluster. This is why you need a round-robin DNS record or a load balancer for your Kubernetes API endpoint. Moving forward, you need to set the RKE2 cluster token on each new node in the cluster along with the server endpoint. Both these settings are required for RKE2 even to start. These settings are defined in the file <strong class="source-inline">/etc/rancher/rke2/config.yaml</strong>. Note that with RKE2, this file configures RKE2 in general. So if you want to define kubelet settings, node labels/taints, and so on, this file must be protected as the token stored in that file is used for several security-related tasks such as Kube-API access and etcd encryption. So, the token should be treated as a password, that is, it should be unique, random, and long. The default length is 32 characters. You should also avoid using special control characters such as the dollar sign, backslash, quotemarks, and so on.</p>
+			<h1 id="_idParaDest-58"><a id="_idTextAnchor057"/>What is RancherD?</h1>
+			<p>RancherD is <a id="_idIndexMarker259"/>a special binary designed to bootstrap a Kubernetes cluster (K3s/RKE2) and Rancher. The idea is to simplify the creation of the K3s/RKE2 cluster that directly supports the Rancher server application and its components. RancherD is designed only to be run once on a node, at which point RancherD takes care of setting up K3s/RKE2 and the manifest files needed for Rancher. This process can be beneficial when you want to deploy large numbers of Rancher deployments. For example, if you wish each of your Kubernetes clusters to have its own Rancher dashboard, environments do not share a single Rancher deployment. This is seen a lot with hosting companies that provide Rancher as a service to their customers.</p>
+			<p>It is important to note that RancherD uses RKE2 behind the scenes, so the same requirements and limitations apply. We'll be covering those requirements and limitations in the next section. </p>
+			<h1 id="_idParaDest-59"><a id="_idTextAnchor058"/>Requirements and limitations</h1>
+			<p>In this section, we'll discuss the basic requirements for RKE and RKE2 clusters along with their limitations.</p>
+			<h2 id="_idParaDest-60"><a id="_idTextAnchor059"/>Basic requirements</h2>
+			<p>Let's <a id="_idIndexMarker260"/>have a<a id="_idIndexMarker261"/> look at the basic requirements for <strong class="bold">RKE</strong> first:</p>
+			<ul>
+				<li>RKE requires Docker to be installed on the host before RKE can join it to the cluster.</li>
+				<li>RKE runs on almost any Linux OS, but you should refer to the Rancher Support Matrix located at <a href="https://rancher.com/support-maintenance-terms/">https://rancher.com/support-maintenance-terms/</a>.</li>
+				<li>RKE requires SSH access to all nodes in the cluster using an SSH key.</li>
+				<li>RKE requires permissions to run Docker commands without sudo or a password.</li>
+				<li>All nodes in a cluster must be routable to all other nodes, meaning you can have nodes on direct subnets, but you must be able to connect between nodes directly without using an NAT.</li>
+				<li>RKE requires firewall rules to be opened between nodes depending on the role of the node. Please see https://rancher.com/docs/rke/latest/en/os/#ports for more details.</li>
+				<li>An RKE cluster requires at least one node for each role in the cluster, with the roles being etcd, controlplane, and worker. The cluster will not come online until this requirement is met. Note that a node can have multiple roles, including having all three roles.</li>
+				<li>RKE only requires a minimum of one core, which changes with cluster size and node role selection. It's recommended to at least have two cores, with the standard size being four cores.</li>
+				<li>The memory <a id="_idIndexMarker262"/>requirement is based on the node's role, with <a id="_idIndexMarker263"/>the etcd role needing about 4 GB, kube-apiserver needing 4 GB, and the worker role needing about 2 GB.</li>
+				<li>For storage, you'll need around 10 GB of tier 1/2 storage (SSD is preferred but not required).</li>
+				<li>For the filesystem, RKE relies on Docker storage drivers, so please review Docker's documentation at <a href="https://docs.docker.com/storage/storagedriver/">https://docs.docker.com/storage/storagedriver/</a>.</li>
+				<li>RKE doesn't require its own filesystem, but it's recommended that <strong class="source-inline">/var/lib/docker</strong> be on its own filesystem/disk to prevent Docker from filling up the root filesystem. </li>
+				<li>On etcd nodes, the database is stored in a bind mount located at <strong class="source-inline">/var/lib/etcd</strong> and is not required to be on its own dedicated disk. Also, with larger clusters, it is recommended for this data to be stored on tier 1 storage as etcd can be sensitive to storage latency.</li>
+				<li>If you are using RKE's local backup option, the <strong class="source-inline">/opt/rke/etcd-snapshots</strong> directory should be its own filesystem or an NFS share for safety reasons.</li>
+			</ul>
+			<p>The following are the requirements of <strong class="bold">RKE2</strong>:</p>
+			<ul>
+				<li>RKE2 runs on almost any Linux OS, but you should refer to the Rancher Support Matrix located at <a href="https://rancher.com/support-maintenance-terms/">https://rancher.com/support-maintenance-terms/</a>. </li>
+				<li>Installing and configuring RKE2 requires root-level permissions on the host.</li>
+				<li>All nodes in a cluster must be routable to all other nodes, meaning you can have nodes on direct subnets, but you must be able to connect between nodes directly without using an NAT.</li>
+				<li>RKE2 requires firewall rules to be opened between nodes depending on the role of the node. Please see <a href="https://rancher.com/docs/rancher/v2.5/en/installation/requirements/ports/">https://rancher.com/docs/rancher/v2.5/en/installation/requirements/ports/</a> for more details.</li>
+				<li>RKE2<a id="_idIndexMarker264"/> requires a master and worker node in the cluster. Note<a id="_idIndexMarker265"/> that both roles can be on the same node.</li>
+				<li>RKE2 only requires a minimum of one core, which changes with cluster size and node role selection. It's recommended to have at least have two cores, with the standard size being four cores.</li>
+				<li>The memory requirement is based on the node's role, with the master role needing 4 GB and the worker/agent role requiring about 2 GB.</li>
+				<li>RKE2 stores its data under the mount point <strong class="source-inline">/var/lib/rancher</strong>, which includes containerd data, images, etcd, and so on.</li>
+				<li>For master nodes, etcd is stored under <strong class="source-inline">/var/lib/rancher/rke2/server/db/etcd</strong>; it is recommended that this data be stored on tier 1 storage as etcd can be sensitive to storage latency. </li>
+				<li>RKE2 has etcd backups turned on by default and stores the backups under <strong class="source-inline">/var/lib/rancher/rke2/server/db/snapshots,</strong> which should be its own<a id="_idIndexMarker266"/> filesystem or can be an NFS share for safety<a id="_idIndexMarker267"/> reasons.</li>
+			</ul>
+			<h2 id="_idParaDest-61"><a id="_idTextAnchor060"/>Design limitations and considerations</h2>
+			<p>Now, let's<a id="_idIndexMarker268"/> discuss <a id="_idIndexMarker269"/>the design limitations for both clusters.</p>
+			<p>The following lists the design considerations for RKE:</p>
+			<ul>
+				<li>After creating a cluster, you cannot change the network provider (CNI), called the network plugin in the RKE documentation located at <a href="https://rancher.com/docs/rancher/v2.5/en/faq/networking/cni-providers/">https://rancher.com/docs/rancher/v2.5/en/faq/networking/cni-providers/</a>.</li>
+				<li>By default, RKE will use the subnets <strong class="source-inline">10.42.0.0/16</strong> and <strong class="source-inline">10.43.0.0/16</strong> for the pod overlay and service network. This cannot be changed after cluster creation, so if these networks overlap with your current network, you'll need to choose different subnets for your cluster.</li>
+				<li>Support for Windows worker nodes is currently limited to Rancher-managed RKE clusters. You cannot use RKE directly to join a Windows node.</li>
+				<li>RKE currently doesn't provide support for the ARM64 OS.</li>
+				<li>RKE supports an air-gapped environment, but you are required to do some additional steps, which are located at https://rancher.com/docs/rke/latest/en/config-options/system-images/#air-gapped-setups.</li>
+				<li>Switching an RKE to an air-gapped environment can be done by reconfiguring the cluster, deployments, and applications.</li>
+				<li>RKE clusters can be built across data centers so long as there is an odd number of data centers with an etcd and control plane node in each data center.</li>
+				<li>Network latency between etcd nodes should be less than 10 ms. </li>
+			</ul>
+			<p>The following are the design considerations for RKE2:</p>
+			<ul>
+				<li>After creating a cluster, you cannot change the network provider (CNI), called the network plugin in the RKE2 documentation located at <a href="https://docs.rke2.io/install/network_options/">https://docs.rke2.io/install/network_options/</a>. </li>
+				<li>By default, RKE2 will use the subnets <strong class="source-inline">10.42.0.0/16</strong> and <strong class="source-inline">10.43.0.0/16</strong> for the pod overlay and service network. This cannot be changed after cluster creation so if you are currently using one of these subnets in your current network, you should change this setting.</li>
+				<li>As of writing, RKE2 provides experimental support for Windows nodes, but you still need to provide a Linux node in the cluster.</li>
+				<li>As<a id="_idIndexMarker270"/> of <a id="_idIndexMarker271"/>writing, RKE2 doesn't provide support for the ARM64 OS even though K3s does.<p class="callout-heading">Note</p><p class="callout">There is an open feature request (<a href="https://github.com/rancher/rke2/issues/1946">https://github.com/rancher/rke2/issues/1946</a>) to offer ARM64 support.</p></li>
+				<li>RKE2 supports an air-gapped environment, but you are required to do some additional steps, which are located at <a href="https://docs.rke2.io/install/airgap/">https://docs.rke2.io/install/airgap/</a>.</li>
+				<li>RKE2 in an air-gapped environment can work in private registry mode and tarball mode with the steps located at <a href="https://docs.rke2.io/install/airgap/">https://docs.rke2.io/install/airgap/</a>.</li>
+				<li>RKE2 clusters can be built across data centers so long as there is an odd number of data centers with a master node in each data center.</li>
+				<li>Network latency between etcd nodes should be less than 10 ms.</li>
+			</ul>
+			<p>Now that we understand the limitations of RKE1 and RKE2, we'll be using these along with a set of rules and examples to help us design a solution using RKE1 and RKE2.</p>
+			<h1 id="_idParaDest-62"><a id="_idTextAnchor061"/>Rules for architecting a solution</h1>
+			<p>In this section, we'll cover some standard designs and the pros and cons of each. It is important to note that each environment is unique and will require tuning for the best performance and experience. It's also important to note that all CPU, memory, and storage sizes are recommended starting points and may need to be increased or decreased by your workloads and deployment processes.</p>
+			<p>Before designing a solution, you should be able to answer the following questions:</p>
+			<ul>
+				<li>Will multiple environments be sharing the same cluster?</li>
+				<li>Will production and non-production workloads be on the same cluster?</li>
+				<li>What level of availability does this cluster require?</li>
+				<li>Will this cluster be spanning multiple data centers in a metro cluster environment?</li>
+				<li>How much latency will there be between nodes in the cluster?</li>
+				<li>How many pods will be hosted in the cluster?</li>
+				<li>What are the average and maximum size of pods you will be deploying in the cluster?</li>
+				<li>Will you need GPU support for some of your applications?</li>
+				<li>Will you need to provide storage to your applications?</li>
+				<li>If you need<a id="_idIndexMarker272"/> storage, do you need only <strong class="bold">RWO</strong> (<strong class="bold">Read Write Once</strong>), or <a id="_idIndexMarker273"/>will you need <strong class="bold">RWX</strong> (<strong class="bold">Read Write Many</strong>)?</li>
+			</ul>
+			<h2 id="_idParaDest-63"><a id="_idTextAnchor062"/>RKE clusters</h2>
+			<p>The following<a id="_idIndexMarker274"/> are designs for RKE clusters.</p>
+			<h3>Single-node clusters </h3>
+			<p>In this<a id="_idIndexMarker275"/> design, we <a id="_idIndexMarker276"/>will be deploying an RKE cluster on a single node with all roles.</p>
+			<div>
+				<div id="_idContainer022" class="IMG---Figure">
+					<img src="image/B18053_04_003.jpg" alt="Figure 4.3 – RKE single-node cluster&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.3 – RKE single-node cluster</p>
+			<p>Example config: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/00_single_node_cluster/cluster.yaml">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/00_single_node_cluster/cluster.yaml</a></p>
+			<p>The <strong class="bold">pros</strong> of a single-node<a id="_idIndexMarker277"/> cluster are listed as follows:</p>
+			<ul>
+				<li>Simple to set up.</li>
+				<li>Fast and easy to create.</li>
+				<li>No external load balancer is needed.</li>
+				<li>A great cluster for CI/CD pipelines that need a Kubernetes cluster for testing that can be destroyed later.</li>
+				<li>Useful for sandbox testing where HA and scale is not needed.</li>
+				<li>Can be installed on a developer's laptop where resources are minimal.</li>
+				<li>A single-node RKE cluster can be converted to an HA cluster later.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are listed <a id="_idIndexMarker278"/>as follows:</p>
+			<ul>
+				<li>No HA.</li>
+				<li>Downtime is required during patching and upgrades.</li>
+				<li>Can encourage bad application behavior by using the server's IP or hostname for the application endpoint instead of VIP or CNAME.</li>
+				<li>Many Kubernetes components get their HA features from the cluster itself, so a lot of the components won't be able to handle failures as cleanly as they would in an HA cluster.</li>
+				<li>User applications share the same nodes as management services, meaning that a runaway application can take down the cluster.</li>
+			</ul>
+			<p>The <a id="_idIndexMarker279"/>following are the <strong class="bold">hardware requirements</strong>:</p>
+			<ul>
+				<li>Servers(s): 1 physical/virtual server</li>
+				<li>CPU: 4 cores</li>
+				<li>Memory: 4-8GB</li>
+			</ul>
+			<h3>Small three-node clusters</h3>
+			<p>In this<a id="_idIndexMarker280"/> design, we<a id="_idIndexMarker281"/> will be deploying the smallest RKE cluster with full HA, a three-node cluster with all nodes having all roles.</p>
+			<div>
+				<div id="_idContainer023" class="IMG---Figure">
+					<img src="image/B18053_04_004.jpg" alt="Figure 4.4 – Standard three-node RKE cluster&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.4 – Standard three-node RKE cluster</p>
+			<p>Example <a id="_idIndexMarker282"/>config: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/cluster.yaml">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/cluster.yaml</a></p>
+			<p>The <strong class="bold">pros</strong> of a small <a id="_idIndexMarker283"/>three-node cluster are listed as follows:</p>
+			<ul>
+				<li>Full HA – you can lose any node in the cluster and still have full cluster and application availability.</li>
+				<li>Simple to manage as all nodes have the same roles, so all nodes are the same.</li>
+				<li>No required downtime during patching and upgrades. Please see Rancher's zero downtime documentation for more details at <a href="https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/">https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/</a>.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are <a id="_idIndexMarker284"/>listed as follows:</p>
+			<ul>
+				<li>An external load balancer or a round-robin DNS record is needed for external application access.</li>
+				<li>User applications share the same nodes as management services, meaning that a runaway application can take down the cluster.</li>
+				<li>Only <strong class="source-inline">N+1</strong> of availability, so<a id="_idIndexMarker285"/> during maintenance tasks, you cannot suffer a failure of a node without loss of service.</li>
+			</ul>
+			<p>The following<a id="_idIndexMarker286"/> are <a id="_idIndexMarker287"/>the <strong class="bold">hardware requirements</strong>:</p>
+			<ul>
+				<li>Servers(s): 3 physical/virtual servers</li>
+				<li>CPU: 4 cores per server</li>
+				<li>Memory: 4-8GB per server</li>
+			</ul>
+			<h3>Medium clusters</h3>
+			<p>In this<a id="_idIndexMarker288"/> design, we<a id="_idIndexMarker289"/> will be deploying the standard RKE cluster where we have migrated the core management services for Kubernetes to their nodes. This is done because as clusters grow in size, protecting the management services for Kubernetes becomes even more critical. This design tries to balance HA with cost. This is done by having etcd and the control plane share the same nodes but with the change of moving the worker roles to their own set nodes. This design works for 2 to 10 worker node clusters.</p>
+			<div>
+				<div id="_idContainer024" class="IMG---Figure">
+					<img src="image/B18053_04_005.jpg" alt="Figure 4.5 – RKE cluster with separate nodes for management services&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.5 – RKE cluster with separate nodes for management services</p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/02_medium_cluster/README.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/02_medium_cluster/README.md</a></p>
+			<p>Example <a id="_idIndexMarker290"/>config: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/02_medium_cluster/cluster.yaml">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/02_medium_cluster/cluster.yaml</a></p>
+			<p>The <strong class="bold">pros</strong> of a medium <a id="_idIndexMarker291"/>cluster are listed as follows:</p>
+			<ul>
+				<li>Full HA – you can lose any one of the management nodes (etcd and control plane) in the cluster and still have complete cluster management.</li>
+				<li>User workloads and management services run on different nodes, stopping runaway applications from taking down the cluster.</li>
+				<li>Due to the scalable limitations of etcd, having more than five etcd nodes causes a decrease in performance. So it is normally recommended to scale the design vertically instead of horizontally.</li>
+				<li>More than one worker node can fail without loss of service, assuming you have enough CPU and memory available on the remaining workers.</li>
+				<li>No required downtime during patching and upgrades. Please see Rancher's zero downtime<a id="_idIndexMarker292"/> documentation for more details at <a href="https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/">https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/</a>.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are listed <a id="_idIndexMarker293"/>as follows:</p>
+			<ul>
+				<li>An external load balancer or a round-robin DNS record is needed for external application access.</li>
+				<li>Only <strong class="source-inline">N+1</strong> of availability, so during maintenance tasks, you cannot suffer a failure of a node without loss of service at the management plane (etcd and control plane).</li>
+				<li>Additional complexity when creating nodes as you might need to size management nodes differently than worker nodes.</li>
+			</ul>
+			<p>The following<a id="_idIndexMarker294"/> are the <strong class="bold">hardware requirements</strong> for etcd and the control plane:</p>
+			<ul>
+				<li>Servers(s): 3 physical/virtual servers</li>
+				<li>CPU: 8 cores per server</li>
+				<li>Memory: 8-16 GB<p class="callout-heading">Note</p><p class="callout">Worker node sizing should be based on your workload and its requirements.</p></li>
+			</ul>
+			<h3>Large clusters</h3>
+			<p>In this <a id="_idIndexMarker295"/>design, we're<a id="_idIndexMarker296"/> expanding on the design for a medium cluster but breaking up etcd and the control plane and then changing the node sizing and node count.</p>
+			<div>
+				<div id="_idContainer025" class="IMG---Figure">
+					<img src="image/B18053_04_006.jpg" alt="Figure 4.6 – RKE cluster with separate nodes for etcd and control plane&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.6 – RKE cluster with separate nodes for etcd and control plane</p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke/03_large_cluster/README.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke/03_large_cluster/README.md</a></p>
+			<p>Example config: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke/03_large_cluster/cluster.yaml">https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke/03_large_cluster/cluster.yaml</a></p>
+			<p>The <strong class="bold">pros</strong> of large clusters <a id="_idIndexMarker297"/>are listed as follows:</p>
+			<ul>
+				<li>Full HA – you can lose any two management nodes (etcd and control plane) in the cluster and still have complete cluster management.</li>
+				<li>User workloads and management services run on different nodes, stopping runaway applications from taking down the cluster.</li>
+				<li>Due to the scalable limitations of etcd because having more than five etcd nodes causes slowness. So it is normally recommended to as etcd to design to scale vertically instead of horizontally.</li>
+				<li>The control plane isn't designed to scale by adding more nodes because kube-apiserver is active on all nodes, but each node has a caching layer to increase performance so scaling horizontally makes the caching less efficient.</li>
+				<li><strong class="source-inline">N+2</strong> of availability, so during maintenance tasks, you can suffer a failure of a node without loss of service at the management plane (etcd and control plane).</li>
+				<li>More than one worker node can fail without loss of service, assuming you have enough CPU and memory available on the remaining workers.</li>
+				<li>No required<a id="_idIndexMarker298"/> downtime during patching and upgrades. Please see Rancher's zero downtime documentation for more details at <a href="https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/">https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/</a>.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are listed <a id="_idIndexMarker299"/>as follows:</p>
+			<ul>
+				<li>An external load balancer or a round-robin DNS record is needed for external application access.</li>
+				<li>The controllers in the control plane are not scalable, with only one controller being the leader at a time.</li>
+				<li>Additional complexity when creating nodes as you might need to size management nodes differently than worker nodes.</li>
+			</ul>
+			<p>The<a id="_idIndexMarker300"/> following <a id="_idIndexMarker301"/>are the <strong class="bold">hardware requirements</strong>:</p>
+			<ul>
+				<li><strong class="bold">etcd plane</strong>:<ul><li>Servers(s): 5 physical/virtual servers.</li><li>CPU: 8-16 cores per server.</li><li>Memory: 32-64 GB per server for the management plane.</li><li>Storage: NVME storage is recommended.</li></ul></li>
+				<li><strong class="bold">Control plane</strong>:<ul><li>Servers(s): 4 physical/virtual servers.</li><li>CPU: 8-16 cores per server.</li><li>Memory: 32-64 GB per server for the management plane. Note: It is recommended for the control plane node to match the size of etcd nodes as a<a id="_idIndexMarker302"/> starting<a id="_idIndexMarker303"/> point.<p class="callout-heading">Note </p><p class="callout">Worker node sizing should be based on your workload and its requirements.</p></li></ul></li>
+			</ul>
+			<h2 id="_idParaDest-64"><a id="_idTextAnchor063"/>RKE2 clusters</h2>
+			<p>The following<a id="_idIndexMarker304"/> are design recommendations for RKE2 clusters.</p>
+			<h3>Single-node clusters</h3>
+			<p>In this <a id="_idIndexMarker305"/>design, we will be deploying an RKE2 cluster <a id="_idIndexMarker306"/>on a single node with all roles.</p>
+			<div>
+				<div id="_idContainer026" class="IMG---Figure">
+					<img src="image/B18053_04_007.jpg" alt="Figure 4.7 – Single-node RKE2&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.7 – Single-node RKE2</p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke2/00_single_node_cluster/README.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke2/00_single_node_cluster/README.md</a></p>
+			<p>The <strong class="bold">pros</strong> are <a id="_idIndexMarker307"/>as follows:</p>
+			<ul>
+				<li>Simple to set up.</li>
+				<li>Fast and easy to create.</li>
+				<li>No external load balancer needed.</li>
+				<li>Great for CI/CD pipeline jobs that need a Kubernetes cluster to test their deployments with, after which the cluster will be destroyed.</li>
+				<li>Great for sandbox testing where HA and scale are not needed.</li>
+				<li>Can be installed on a developer's laptop environments where resources are minimal.</li>
+				<li>A single-node RKE2 cluster can be converted to an HA cluster at a later date.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are <a id="_idIndexMarker308"/>as follows:</p>
+			<ul>
+				<li>No HA.</li>
+				<li>Downtime is required during patching and upgrades.</li>
+				<li>Can encourage bad application behavior by using the server's IP or hostname for the application endpoint instead of VIP or CNAME.</li>
+				<li>Many Kubernetes components get their HA features from the cluster itself, so a lot of the components won't be able to handle failures as cleanly as they would in an HA cluster.</li>
+				<li>User applications share the same nodes as management services, meaning that a runaway application can take down the cluster.</li>
+			</ul>
+			<p>The<a id="_idIndexMarker309"/> following are the <strong class="bold">hardware requirements</strong>:</p>
+			<ul>
+				<li>Servers(s): 1 physical/virtual server</li>
+				<li>CPU: 2 cores</li>
+				<li>Memory: 4 GB</li>
+			</ul>
+			<h3>Small three-node clusters</h3>
+			<p>In this design, we<a id="_idIndexMarker310"/> will be deploying the<a id="_idIndexMarker311"/> smallest RKE2 cluster with full HA, a three-node cluster with all nodes having all roles.</p>
+			<div>
+				<div id="_idContainer027" class="IMG---Figure">
+					<img src="image/B18053_04_008.jpg" alt="Figure 4.8 – Three-node RKE2 cluster with HA&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.8 – Three-node RKE2 cluster with HA</p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/01_small_cluster/README.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/01_small_cluster/README.md</a></p>
+			<p>Example commands: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/01_small_cluster/commands.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/01_small_cluster/commands.md</a></p>
+			<p>The <strong class="bold">pros</strong> are <a id="_idIndexMarker312"/>as follows:</p>
+			<ul>
+				<li>Full HA – you can lose any node in the cluster and still have full cluster and application availability.</li>
+				<li>Simple to manage as all nodes have the same roles, so all nodes are the same.</li>
+				<li>No required downtime during patching and upgrades. Please see Rancher's zero downtime documentation for more details at <a href="https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/">https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/</a>.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are<a id="_idIndexMarker313"/> as follows:</p>
+			<ul>
+				<li>An external load balancer or a round-robin DNS record is needed for external application access and RKE2 management.</li>
+				<li>User applications share the same nodes as management services, meaning that a runaway application can take down the cluster.</li>
+				<li>Only <strong class="source-inline">N+1</strong> of availability, so during maintenance tasks, you cannot suffer a failure of a node<a id="_idIndexMarker314"/> without loss of service.</li>
+			</ul>
+			<p>The following <a id="_idIndexMarker315"/>are the <strong class="bold">hardware requirements</strong>:</p>
+			<ul>
+				<li>Servers(s): 3 physical/virtual servers</li>
+				<li>CPU: 2-4 cores per server</li>
+				<li>Memory: 4-8 GB per server</li>
+			</ul>
+			<h3>Medium clusters</h3>
+			<p>In this design, we <a id="_idIndexMarker316"/>will be deploying the standard RKE2 cluster<a id="_idIndexMarker317"/> where we have migrated the core management services for Kubernetes to their own nodes. This is done because as clusters grow in size, protecting the management services for Kubernetes becomes even more critical. This design tries to balance HA with cost. This is done by having the master role on its own nodes with the worker roles on their own nodes. This design works for 2 to 10 worker node clusters.</p>
+			<div>
+				<div id="_idContainer028" class="IMG---Figure">
+					<img src="image/B18053_04_009.jpg" alt="Figure 4.9 – RKE2 cluster with separate nodes for management services&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.9 – RKE2 cluster with separate nodes for management services</p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke2/02_medium_cluster/README.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/raw/main/ch04/standard_designs/rke2/02_medium_cluster/README.md</a></p>
+			<p>Example <a id="_idIndexMarker318"/>commands: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/02_medium_cluster/commands.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/02_medium_cluster/commands.md</a></p>
+			<p>The <strong class="bold">pros</strong> are <a id="_idIndexMarker319"/>as follows:</p>
+			<ul>
+				<li>Full HA – you can lose any one of the master nodes in the cluster and still have complete cluster management.</li>
+				<li>User workloads and management services run on different nodes, stopping runaway applications from taking down the cluster.</li>
+				<li>Due to the scalable limitations of etcd, having more than five etcd nodes causes a decrease in performance. So it is normally recommended to scale the design vertically instead of horizontally.</li>
+				<li>More than one worker node can fail without loss of service, assuming you have enough CPU and memory available on the remaining workers.</li>
+				<li>No required downtime during patching and upgrades. Please see Rancher's zero downtime<a id="_idIndexMarker320"/> documentation for more details at <a href="https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/">https://rancher.com/docs/rke/latest/en/upgrades/maintaining-availability/</a>.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are as <a id="_idIndexMarker321"/>follows:</p>
+			<ul>
+				<li>An external load balancer or a round-robin DNS record is needed for external application access and RKE2 management.</li>
+				<li>Only <strong class="source-inline">N+1</strong> of availability, so during maintenance tasks, you cannot suffer a failure of a node without loss of service at the management plane (etcd and control plane).</li>
+				<li>Additional complexity when creating nodes as you might need to size management nodes differently than worker nodes.</li>
+			</ul>
+			<p>The <a id="_idIndexMarker322"/>following are the <strong class="bold">hardware requirements</strong>:</p>
+			<ul>
+				<li>Master node:<ul><li>Servers(s): 3 physical/virtual servers</li><li>CPU: 4 cores per server</li><li>Memory: 8 GB<p class="callout-heading">Note</p><p class="callout">Worker node sizing should be based on your workload and its requirements.</p></li></ul></li>
+			</ul>
+			<h3>Large clusters</h3>
+			<p>For a larger <a id="_idIndexMarker323"/>cluster with RKE2, you are limited in your design because in an RKE2 cluster, etcd and control plane services are tied together and cannot be separated into different planes. The only real change that can be made is to increase the master node count from 3 to 5 then start increasing the size of the node. </p>
+			<h1 id="_idParaDest-65"><a id="_idTextAnchor064"/>Install steps (RKE)</h1>
+			<p>Once you<a id="_idIndexMarker324"/> have created <strong class="source-inline">cluster.yaml</strong>, you have RKE create a cluster for you. This is done by running the <strong class="source-inline">rke up --config cluster.yaml</strong> command. RKE will look for the <strong class="source-inline">cluster.rkestate file</strong>. If it cannot find that file, RKE will assume that you are creating a new cluster, which causes RKE to create a new root CA<a id="_idIndexMarker325"/> certificate called <strong class="bold">kube-ca</strong> along with all the other certificates needed in the cluster. RKE will verify that all are valid and rotate and create the certificates for the different Kubernetes components as required if the cluster already has certificates. RKE then verifies the dialer has access to all the nodes in the cluster. The dialer will create an SSH tunnel to each node and bind to the Docker socket file. RKE will then use a file-deployer container to push the certificates to each node in the <strong class="source-inline">/etc/kubernetes/ssl directory</strong>.</p>
+			<p>RKE will then check if any etcd nodes are being added or removed from the cluster. Suppose RKE detects that the downtime settings for etcd are currently violated. By default, RKE only allows one etcd node to be down. RKE then handles the process of removing etcd nodes by stopping the etcd container and removing the etcd member from the etcd leader. RKE will then take care of adding any new etcd nodes to the cluster. It is important to note that this process is designed to be slow and safe – RKE will only do one etcd node at a time and take an etcd snapshot before changing each node.</p>
+			<p>Once the etcd plane has been completed successfully, RKE will take care of starting the controlplane. This process includes kube-apiserver, kube-controller-manager, and kube-scheduler. RKE will start each component on each control plane node one at a time. RKE will test that its health check endpoint is available for each component, which for most components is <strong class="source-inline">/healthz</strong>. It is vital to note RKE follows the same process as the etcd plane of verifying the max unavailable settings are not currently violated. Suppose the settings become violated during this process. RKE will stop and fail with an error.</p>
+			<p>Next, RKE will handle creating the worker plane. This process is different than the etcd and control plane because it's designed to be done in parallel. This is mainly done for larger clusters where you might have hundreds of worker nodes in the cluster. So, by default, RKE will process 10% of the worker nodes at once. For the existing node, RKE will cordon the node to prevent changes to the node. It is important to note that the application pods continue to run during this process, with the only impact being that the CNI provider might need to be restarted. The effect is like unplugging the NIC from the node for a few seconds before plugging it back in. This can affect applications that use long-lived connections that need to be held open. This is typically seen with applications that use database connection pooling, where the application will create several database connections then keep them open. Depending on the application, these connections might <a id="_idIndexMarker326"/>not reconnect automatically and may need to be restarted.</p>
+			<h1 id="_idParaDest-66"><a id="_idTextAnchor065"/>Install steps (RKE2)</h1>
+			<p>RKE2 handles <a id="_idIndexMarker327"/>the process of cluster creation very differently compared to RKE1. With RKE2, the first master node in the cluster is unique because it handles bootstrapping the cluster. The bootstrap process creates a root CA certificate, and if the cluster token has not been set, RKE2 will handle creating one. Then RKE2 will initialize the etcd cluster. Finally, RKE2 will create the etcd encryption key based on the cluster token. RKE2 then stores the cluster state in a unique bootstrap key pair in etcd called <strong class="source-inline">bootstrap</strong>. This bootstrap data includes the Kubernetes certificates, private keys, and the etcd encryption keys. Once the cluster has been bootstrapped, the additional master nodes can join the cluster using the Kubernetes API endpoint to connect to the first node in the cluster. The RKE2 will use the cluster token to authenticate and decrypt the bootstrap data. Finally, once all the master nodes have been created, the same process is done for the worker nodes, with the only difference being the <strong class="source-inline">INSTALL_RKE2_TYPE="agent"</strong> install option, which tells RKE2 to configure this node as a worker node.</p>
+			<p>The following are some example commands for creating a standard three master node cluster with worker nodes. More details about these commands can be found at <a href="https://docs.rke2.io/install/ha/">https://docs.rke2.io/install/ha/</a>.</p>
+			<pre class="source-code"># 1st master node</pre>
+			<pre class="source-code">curl -sfL https://get.rke2.io | sh -</pre>
+			<pre class="source-code">mkdir -p /etc/rancher/rke2/</pre>
+			<pre class="source-code">cat &lt;&lt; EOF &gt; /etc/rancher/rke2/config.yaml</pre>
+			<pre class="source-code">kube-apiserver-arg: "kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname"</pre>
+			<pre class="source-code">tls-san:</pre>
+			<pre class="source-code"> - mgmt01.support.tools</pre>
+			<pre class="source-code"> - mgmt02.support.tools</pre>
+			<pre class="source-code"> - mgmt03.support.tools</pre>
+			<pre class="source-code"> - rke2-vip.support.tools</pre>
+			<pre class="source-code">node-taint:</pre>
+			<pre class="source-code"> - "CriticalAddonsOnly=true:NoExecute"</pre>
+			<pre class="source-code">EOF</pre>
+			<pre class="source-code">systemctl enable rke2-server.service</pre>
+			<pre class="source-code">systemctl start rke2-server.service</pre>
+			<p>This preceding code handles bootstrapping the first node in the cluster along with setting up the SAN certificate<a id="_idIndexMarker328"/> for the Kubernetes API endpoint and the node taint to prevent user workloads from running on this server.</p>
+			<pre class="source-code"># Capture the node token from the first node</pre>
+			<pre class="source-code">cat /var/lib/rancher/rke2/server/node-token`</pre>
+			<p>We need this token in the preceding code block in order for the other nodes to join the cluster.</p>
+			<pre class="source-code"># 2nd, 3rd master nodes</pre>
+			<pre class="source-code">curl -sfL https://get.rke2.io | sh -</pre>
+			<pre class="source-code">mkdir -p /etc/rancher/rke2/</pre>
+			<pre class="source-code">cat &lt;&lt; EOF &gt; /etc/rancher/rke2/config.yaml</pre>
+			<pre class="source-code">kube-apiserver-arg: "kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname"</pre>
+			<pre class="source-code">tls-san:</pre>
+			<pre class="source-code"> - mgmt01.support.tools</pre>
+			<pre class="source-code"> - mgmt02.support.tools</pre>
+			<pre class="source-code"> - mgmt03.support.tools</pre>
+			<pre class="source-code"> - rke2-vip.support.tools</pre>
+			<pre class="source-code">node-taint:</pre>
+			<pre class="source-code"> - "CriticalAddonsOnly=true:NoExecute"</pre>
+			<pre class="source-code">server: https://&lt;&lt;Cluster DNS record&gt;&gt;:9345</pre>
+			<pre class="source-code">token: &lt;&lt;Node Token goes here&gt;&gt;</pre>
+			<pre class="source-code">EOF</pre>
+			<pre class="source-code">systemctl enable rke2-server.service</pre>
+			<pre class="source-code">systemctl start rke2-server.service</pre>
+			<p>This preceding code handles<a id="_idIndexMarker329"/> joining the additional master nodes to the existing cluster.</p>
+			<pre class="source-code"># Worker nodes</pre>
+			<pre class="source-code">curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="agent" sh -</pre>
+			<pre class="source-code">mkdir -p /etc/rancher/rke2/</pre>
+			<pre class="source-code">cat &lt;&lt; EOF &gt; /etc/rancher/rke2/config.yaml</pre>
+			<pre class="source-code">server: https://&lt;&lt;Cluster DNS record&gt;&gt;:9345</pre>
+			<pre class="source-code">token: &lt;&lt;Node Token goes here&gt;&gt;</pre>
+			<pre class="source-code">EOF</pre>
+			<pre class="source-code">systemctl enable rke2-agent.service</pre>
+			<pre class="source-code">systemctl start rke2-agent.service</pre>
+			<p>This preceding code then handles joining the worker nodes to the cluster we just built. </p>
+			<p>Example commands: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/02_medium_cluster/commands.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke2/02_medium_cluster/commands.md</a></p>
+			<p>Now that we have successfully created the cluster, the next step will be to prepare an external load balancer to act as a frontend endpoint for the cluster. In the next section, we'll be configuring HAProxy in both HTTP and TCP mode. These settings are fairly standard, and you<a id="_idIndexMarker330"/> should be able to use them as a template for other load balancer technologies, for example, F5 or A10. </p>
+			<h1 id="_idParaDest-67"><a id="_idTextAnchor066"/>Configuring an external load balancer (HAProxy)</h1>
+			<p>With RKE/RKE2 clusters, you<a id="_idIndexMarker331"/> will get an ingress-nginx-controller. This is a daemonset that, by default, runs on all worker nodes. And by default, nginx will listen on ports <strong class="source-inline">80</strong> and <strong class="source-inline">443</strong>. Nginx will then act as a layer 7 (HTTP/HTTPS mode) load balancer for applications hosted inside the Kubernetes cluster. This is great for load balancing applications inside the cluster, but the issue you run into is how you provide redundancy across nodes. The simplest way is to create a <strong class="bold">DNS A</strong> record with all the worker nodes' IP addresses in the cluster and just use round-robin DNS to load balance between the nodes and handle fault-tolerance. The downside is round-robin DNS can be very slow to update, and you must rely on the clients operating the failover. In the real world, this process can be very unreliable. To solve this issue, we're going to place an HAProxy server in front of the cluster. This process would be very similar for other load balancers, such as A10, F5, nginx, and so on. Next, we're going to cover two different ways for configuring HAProxy.</p>
+			<h2 id="_idParaDest-68"><a id="_idTextAnchor067"/>TCP mode</h2>
+			<p>This mode is <a id="_idIndexMarker332"/>only responsible for transferring data at <a id="_idIndexMarker333"/>the transport protocol layer, and in this case, we're only looking at TCP/80 and TCP/443. HAProxy is not terminating the connection, so things such as host-based routing and SSL are not available. Because of this, TCP mode is sometimes called <em class="italic">Layer 4</em> load balancing because it's just passing traffic. So, in this case, we will have a frontend <strong class="bold">Virtual IP Address (VIP</strong>) that <a id="_idIndexMarker334"/>does a one-to-one mapping for the TCP ports. It is important to note that by default, TCP mode doesn't have any session management enabled. It is normal to allow sticky sessions in TCP mode using source IP matching. This can be needed for applications that use server-based session management.</p>
+			<div>
+				<div id="_idContainer029" class="IMG---Figure">
+					<img src="image/B18053_04_010.jpg" alt="Figure 4.10 – HAProxy example design &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.10 – HAProxy example design </p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/diagrams/tcp_mode.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/diagrams/tcp_mode.md</a></p>
+			<p>Here's a <a id="_idIndexMarker335"/>sample <a id="_idIndexMarker336"/>configuration:</p>
+			<div>
+				<div id="_idContainer030" class="IMG---Figure">
+					<img src="image/B18053_04_011.jpg" alt="Figure 4.11 – Example HAProxy config when in TCP mode&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.11 – Example HAProxy config when in TCP mode</p>
+			<p>Full config: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/config/tcp.cfg">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/config/tcp.cfg</a></p>
+			<p>Note that in<a id="_idIndexMarker337"/> this example config, I have the two<a id="_idIndexMarker338"/> additional endpoints exposed in HAProxy, the first being the Prometheus metrics endpoint, which allows a Prometheus server to scrape HAProxy for metrics. Please see <a href="https://www.haproxy.com/blog/haproxy-exposes-a-prometheus-metrics-endpoint/">https://www.haproxy.com/blog/haproxy-exposes-a-prometheus-metrics-endpoint/</a> for more details. </p>
+			<p>The second is the <strong class="source-inline">stats</strong> endpoint, enabling you to view the current status of the frontend and backend sections. This can be very helpful when troubleshooting an issue. Please see <a href="https://www.haproxy.com/blog/exploring-the-haproxy-stats-page/">https://www.haproxy.com/blog/exploring-the-haproxy-stats-page/</a> for more details. It is important to note that these endpoints should be protected by a basic user <a id="_idIndexMarker339"/>login <a id="_idIndexMarker340"/>page and firewall rules.</p>
+			<h2 id="_idParaDest-69"><a id="_idTextAnchor068"/>HTTP/HTTPS mode</h2>
+			<p>This mode<a id="_idIndexMarker341"/> is responsible for terminating<a id="_idIndexMarker342"/> the HTTP and SSL connection. Because of this, HAProxy can modify the request or make routing decisions. For example, <strong class="source-inline">dev.example.com</strong> can be routed to the dev RKE cluster, with <strong class="source-inline">prod.example.com</strong> being routed to the production RKE cluster even though they share the same VIP.</p>
+			<div>
+				<div id="_idContainer031" class="IMG---Figure">
+					<img src="image/B18053_04_012.jpg" alt="Figure 4.12 – Example HAProxy config when in HTTP mode&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.12 – Example HAProxy config when in HTTP mode</p>
+			<p>Diagram: <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/diagrams/http_mode.md">https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/haproxy/diagrams/http_mode.md</a></p>
+			<p>For environments where you don't want an external load balancer, MetalLB is an alternative option, and in the next section, we'll cover installing and configuring MetalLB in the<a id="_idIndexMarker343"/> simplest form, which is in<a id="_idIndexMarker344"/> Layer2 mode.</p>
+			<h1 id="_idParaDest-70"><a id="_idTextAnchor069"/>Configuring MetalLB</h1>
+			<p>MetalLB replaces <a id="_idIndexMarker345"/>the need for an external load balancer. It does this by announcing external IP<a id="_idIndexMarker346"/> addresses using a <strong class="bold">VIP</strong> or <strong class="bold">Border Gateway Protocol (BGP</strong>), then<a id="_idIndexMarker347"/> using port mapping to forward the traffic to the Kubernetes service. Each service exposed by MetalLB has its own IP address, which is pulled from a pool of IP addresses defined in the ConfigMap. MetalLB uses a daemonset<a id="_idIndexMarker348"/> called <strong class="bold">speaker</strong> to handle assigning the IP address on nodes, with the controller handling the orchestration. For more details about how this process works, please see<a id="_idIndexMarker349"/> the MetalLB documentation at <a href="https://metallb.universe.tf/concepts/">https://metallb.universe.tf/concepts/</a>.</p>
+			<h2 id="_idParaDest-71"><a id="_idTextAnchor070"/>Installation</h2>
+			<p>The following<a id="_idIndexMarker350"/> steps will install MetalLB's controller and its speaker. More details about this process can be found at <a href="https://metallb.universe.tf/installation/">https://metallb.universe.tf/installation/</a>:</p>
+			<p class="source-code">kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.10.3/manifests/namespace.yaml</p>
+			<p class="source-code">kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.10.3/manifests/metallb.yaml</p>
+			<h2 id="_idParaDest-72"><a id="_idTextAnchor071"/>Configuration</h2>
+			<p>In this step, we'll <a id="_idIndexMarker351"/>define the IP address pool. More details about this process can be found at <a href="https://metallb.universe.tf/configuration/">https://metallb.universe.tf/configuration/</a>.</p>
+			<p>Create a configmap with the following values:</p>
+			<p class="source-code">apiVersion: v1</p>
+			<p class="source-code">kind: ConfigMap</p>
+			<p class="source-code">metadata:</p>
+			<p class="source-code">  namespace: metallb-system</p>
+			<p class="source-code">  name: config</p>
+			<p class="source-code">data:</p>
+			<p class="source-code">  config: |</p>
+			<p class="source-code">    address-pools:</p>
+			<p class="source-code">    - name: default</p>
+			<p class="source-code">      protocol: layer2</p>
+			<p class="source-code">      addresses:</p>
+			<p class="source-code">      - 192.168.1.240-192.168.1.250</p>
+			<p>Finally, to add a MetalLB IP to a cluster service, simply add the following annotation to the service <a id="_idIndexMarker352"/>definition. More details about this process can be found at <a href="https://metallb.universe.tf/usage/">https://metallb.universe.tf/usage/</a>:</p>
+			<p class="source-code">  annotations:</p>
+			<p class="source-code">    metallb.universe.tf/address-pool: default</p>
+			<h1 id="_idParaDest-73"><a id="_idTextAnchor072"/>Summary</h1>
+			<p>In this chapter, we learned about RKE, RKE2, and RancherD, including how each of these tools works. We then went over the requirements and limitations of each tool. We covered the rules of architecting RKE and RKE2 clusters, including some example configs and the pros and cons of each solution. We finally went into detail about the steps for creating clusters using the configs we made earlier. We then ended the chapter by covering how to install and configure HAProxy and MetalLB as a load balancer for both RKE and RKE2 clusters. After completing this chapter, you should be able to design a solution that meets your environment needs, then deploy the cluster types. Also, by understanding how each of the clusters operate, you should be able to troubleshoot most basic issues. </p>
+			<p>In the next chapter, we will cover how to deploy Rancher on a hosted cluster and some of the limitations and rules that need to be followed.</p>
+		</div>
+	</body></html>

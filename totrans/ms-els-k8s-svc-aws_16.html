@@ -1,0 +1,966 @@
+<html><head></head><body>
+		<div id="_idContainer131">
+			<h1 id="_idParaDest-229" class="chapter-number"><a id="_idTextAnchor232"/>16</h1>
+			<h1 id="_idParaDest-230"><a id="_idTextAnchor233"/>Working with a Service Mesh</h1>
+			<p>So far in this book, we have looked at how we can use AWS and K8s network controls such as security groups and network policies to control access to and from applications. A <strong class="bold">service mesh</strong> allows you to <a id="_idIndexMarker793"/>control application-to-application traffic communication in a more granular and consistent way as well as providing better visibility of that traffic and providing additional capabilities such <span class="No-Break">as encryption.</span></p>
+			<p>As teams build larger, microservices-based ecosystems consisting of tens or thousands of services in EKS, controlling and instrumenting these services becomes a full-time job. Using a service mesh simplifies this and means that all services can be managed in a consistent way without the need for each development team to modify their code. In this chapter, we will dive <a id="_idIndexMarker794"/>into more details on how a service mesh works, using <strong class="bold">AWS App Mesh</strong> as an example. Specifically, we will cover <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>Exploring a service mesh and <span class="No-Break">its benefits</span></li>
+				<li>Installing AWS App Mesh Controller in <span class="No-Break">a cluster</span></li>
+				<li>How to integrate your application with <span class="No-Break">App Mesh</span></li>
+				<li>Using AWS Cloud Map <span class="No-Break">with EKS</span></li>
+				<li>Troubleshooting the <span class="No-Break">Envoy proxy</span></li>
+			</ul>
+			<h1 id="_idParaDest-231"><a id="_idTextAnchor234"/>Technical requirements</h1>
+			<p>You should have a familiarity with YAML, AWS IAM, and EKS architecture. Before getting started with this chapter, please ensure <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>You have network connectivity to your EKS cluster <span class="No-Break">API endpoint</span></li>
+				<li>The AWS CLI, Docker, and <strong class="source-inline">kubectl</strong> binary is installed on <span class="No-Break">your workstation</span></li>
+				<li>You have a basic understanding of AWS and <span class="No-Break">K8s networking</span></li>
+			</ul>
+			<p>This chapter builds on a lot of the concepts already discussed in this book, so you are advised to read the previous <span class="No-Break">chapters first.</span></p>
+			<h1 id="_idParaDest-232"><a id="_idTextAnchor235"/>Exploring a service mesh and its benefits</h1>
+			<p>In <a href="B18129_07.xhtml#_idTextAnchor107"><span class="No-Break"><em class="italic">Chapter 7</em></span></a>, we reviewed what a security group is and how it can be used to control access to <a id="_idIndexMarker795"/>worker nodes (and the Pods running on them) using simple P-based rules (source/destination IP address, source/destination ports, and protocol type) in the VPC. In <a href="B18129_09.xhtml#_idTextAnchor135"><span class="No-Break"><em class="italic">Chapter 9</em></span></a>, we looked at using K8s network policies to control intra-cluster traffic using K8s namespaces <span class="No-Break">and labels.</span></p>
+			<p>The challenge <a id="_idIndexMarker796"/>with both these approaches is they are relatively static, so as the application topology changes, the applications scale in or out. For example, IP addresses can change and this means changes to the configuration are needed. Also, as you deploy more services, the operational burden of ensuring the configurations are correct, deploying them across multiple clusters, and monitoring their operation becomes increasingly complex <span class="No-Break">and difficult.</span></p>
+			<p>A service mesh resolves these issues by replacing multiple control points and configurations with a control plane, which can deploy policy changes in a consistent manner across different namespaces/Pods (the data plane), dynamically respond to changes in the application topology, and collect and expose network traffic telemetry. Most service meshes will also expose their capabilities through an API. The following diagram illustrates the general architecture of a <span class="No-Break">service mesh:</span></p>
+			<div>
+				<div id="_idContainer122" class="IMG---Figure">
+					<img src="image/B18129_16_01.jpg" alt="Figure 16.1 – General service mesh architecture"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.1 – General service mesh architecture</p>
+			<p>Now let’s explore some of the different data plane options you <span class="No-Break">can choose.</span></p>
+			<h2 id="_idParaDest-233"><a id="_idTextAnchor236"/>Understanding different data plane solution options</h2>
+			<p>There are several options you can choose when selecting how you implement the service mesh <a id="_idIndexMarker797"/>data plane, which provides consistent <a id="_idIndexMarker798"/>control across different namespaces, Pods, and so on. These are <span class="No-Break">as follows:</span></p>
+			<ul>
+				<li>Use an external DNS service to provide service <span class="No-Break">discovery only</span></li>
+				<li>Use Linux <a id="_idIndexMarker799"/>kernel technology such as <strong class="bold">enhanced Berkeley packet filter</strong> (<strong class="bold">eBFP</strong>) to provide traffic control <span class="No-Break">and visibility</span></li>
+				<li>Use a sidecar container that controls all the network traffic and provides <span class="No-Break">telemetry data</span></li>
+			</ul>
+			<p>These different data plane options are illustrated in the <span class="No-Break">following diagram:</span></p>
+			<div>
+				<div id="_idContainer123" class="IMG---Figure">
+					<img src="image/B18129_16_02.jpg" alt="Figure 16.2 – Service mesh data plane options"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.2 – Service mesh data plane options</p>
+			<p>Let’s look at each of these data plane options in <span class="No-Break">more detail.</span></p>
+			<h3>Exploring service discovery with DNS</h3>
+			<p>The simplest <a id="_idIndexMarker800"/>type of mesh simply provides service discovery. This allows Pods running on an EKS cluster to locate external services running on other clusters, in other AWS accounts/VPCs, or on-premises. This is typically achieved using <strong class="source-inline">coredns</strong> and configuring it to forward to an external DNS service. The external DNS service can also be used to register cluster services so that external users can locate a K8s cluster. This can be achieved using <strong class="source-inline">external-dns</strong>, a K8s add-on that can synchronize Kubernetes resources with an external DNS service. This add-on <a id="_idIndexMarker801"/>integrates with both <strong class="bold">Route 53</strong>, which is a standard <a id="_idIndexMarker802"/>AWS DNS service, and <strong class="bold">Cloud Map</strong>, which is a cloud service discovery tool. Later on, in the <em class="italic">Using AWS Cloud Map with EKS</em> section, we will look at how we can integrate Cloud Map with EKS to provide a simple service discovery solution. This kind of mesh doesn’t support any kind of traffic control or telemetry but is useful when you need to connect the K8s service with AWS or <span class="No-Break">on-premises services.</span></p>
+			<h3>Exploring kernel-based service meshes</h3>
+			<p>The key to providing traffic control or telemetry is to implement network filters, which can control <a id="_idIndexMarker803"/>and log traffic flows. In K8s today, this is typically done using <strong class="source-inline">iptables</strong> controlled through <strong class="source-inline">kube-proxy</strong>. As K8s resources are deployed (Pods, Deployments, and Services), <strong class="source-inline">kube-proxy</strong> will write the necessary <strong class="source-inline">iptables</strong> (or IPVS) to allow traffic to flow in and out of the cluster and rewrite the packets with the correct NAT (<span class="No-Break">translated) addresses.</span></p>
+			<p>The challenge with <strong class="source-inline">iptables</strong> is that they were designed when network speeds were relatively slow. So they can be slow if you implement a large ruleset as they need recreating when changes are made and need linear evaluation. In a large EKS cluster, you might have 5000+ standard <strong class="source-inline">iptables</strong> rules that are mostly the same and this can add latency. If you <a id="_idIndexMarker804"/>then add in complex application rules, you can seriously impact the <span class="No-Break">network stack.</span></p>
+			<p><strong class="bold">Berkeley Packet Filters</strong> (<strong class="bold">BPF</strong>) or <strong class="bold">enhanced BPF</strong> (<strong class="bold">eBPF</strong>) can be used as a replacement for <strong class="source-inline">iptables</strong>, which is <a id="_idIndexMarker805"/>much more performant and flexible. eBPF allows you to run user code in the Linux kernel without changing kernel parameters and is used a lot for firewalls and deep packet inspection appliances. As it is more performant, it is used more and more in service mesh design and with newer Kubernetes CNI implementations to support the deployment of filtering rules that support an application's network <span class="No-Break">connectivity requirements.</span></p>
+			<p>We won’t discuss eBPF-based service meshes in any more detail in this book as it’s still an emergent area, but it’s worth considering when assessing <span class="No-Break">service meshes.</span></p>
+			<h3>Exploring sidecar-based service meshes</h3>
+			<p>The most common service mesh data plane pattern is the use of a sidecar container, which <a id="_idIndexMarker806"/>is deployed in the same Pod as the application container and acts as a proxy controlling inbound and outbound traffic under the supervision of the service mesh control plane. The advantage of this approach is that application network rules are localized to the Pod and don’t have an impact on the kernel and the sidecar can be used to support enhanced capabilities such as traffic encryption (<span class="No-Break">mutual TLS).</span></p>
+			<p>The sidecar proxy can be a custom image but most service meshes use a common proxy. <strong class="bold">Envoy</strong> (<a href="https://www.envoyproxy.io/">https://www.envoyproxy.io/</a>) is a very <a id="_idIndexMarker807"/>common choice and supports HTTP/HTTPv2 proxies, TLS encryption, load-balancing, and observability (traffic telemetry). Let’s look at this pattern in more detail in the next section by examining AWS <span class="No-Break">App Mesh.</span></p>
+			<h1 id="_idParaDest-234"><a id="_idTextAnchor237"/>Understanding AWS App Mesh</h1>
+			<p>There are many different service mesh implementations. We will focus on AWS App Mesh as it is <a id="_idIndexMarker808"/>a fully managed service, but bear in mind other meshes such as Istio, Linkerd, and Gloo are available (take a look at <a href="https://layer5.io/service-mesh-landscape">https://layer5.io/service-mesh-landscape</a> if you want a community view). AWS App Mesh provides consistent network controls across Amazon EKS, AWS Fargate, Amazon ECS, Amazon EC2, and Kubernetes on EC2 using a sidecar data plane based on the Envoy proxy. We will focus on the EKS usage but bear in mind one of the major reasons for using AWS App Mesh is its ability to provide traffic control and visibility across applications deployed across a variety of different compute services <span class="No-Break">in AWS.</span></p>
+			<p>AWS App Mesh implements a number of different constructs to control and monitor application traffic. The main one is the mesh itself. You can have multiple meshes in an account and each represents a logical network boundary for all the applications/services to reside within. Generally, you would use a single mesh to <em class="italic">group</em> lots of related services that make calls on one another and act as a single ecosystem. The mesh construct is the first thing that needs to be created. The following diagram illustrates the main constructs in AWS <span class="No-Break">App Mesh:</span></p>
+			<div>
+				<div id="_idContainer124" class="IMG---Figure">
+					<img src="image/B18129_16_03.jpg" alt="Figure 16.3 – AWS App Mesh virtual constructs"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.3 – AWS App Mesh virtual constructs</p>
+			<p>Once a mesh <a id="_idIndexMarker809"/>is created, you will need to create at least two more constructs per <span class="No-Break">K8s Deployment:</span></p>
+			<ul>
+				<li>A <strong class="bold">virtual Node</strong> is required <a id="_idIndexMarker810"/>and represents an abstraction of your K8s Deployment/Service. It is used to link your K8s resources and the mesh constructs using the service discovery method used in <span class="No-Break">your definition.</span></li>
+				<li>A <strong class="bold">virtual Service</strong> is required <a id="_idIndexMarker811"/>and can point to either a virtual node or a virtual router and is used by other services in the mesh to connect to the <span class="No-Break">K8s service.</span></li>
+			</ul>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">A really important point to note is that any consumers of the service mesh will use the virtual service to access the underlying K8s Service and so the name defined in the virtual service <strong class="source-inline">awsName</strong> key has to be resolvable to an IP address (it doesn’t matter what IP address it is). If all your services run in the cluster, then you can create a dummy service so the native <strong class="source-inline">CoreDNS</strong> service will return a cluster service IP address, which will then be translated by the Envoy sidecar when the client/consumer makes an IP request. If you services that run on other compute platforms in AWS (EC2, for example), then you will need to integrate into a common external DNS in order to locate the <span class="No-Break">EKS services.</span></p>
+			<p>AWS App Mesh also supports two more <span class="No-Break">optional constructs:</span></p>
+			<ul>
+				<li> A <strong class="bold">virtual router</strong>, which can <a id="_idIndexMarker812"/>be used to route traffic <a id="_idIndexMarker813"/>between servicesand is useful for things such as blue/green deployments. This type of construct will be discussed when we start <span class="No-Break">deploying services.</span></li>
+				<li>A <strong class="bold">virtual gateway</strong>, which <a id="_idIndexMarker814"/>can be used like a K8s Ingress <a id="_idIndexMarker815"/>to route and control north/south traffic. This type of construct will be discussed when we start <span class="No-Break">deploying services.</span></li>
+			</ul>
+			<p>Now that we understand the basic constructs, let’s look at how we configure a cluster to work with AWS <span class="No-Break">App Mesh.</span></p>
+			<h1 id="_idParaDest-235"><a id="_idTextAnchor238"/>Installing AWS App Mesh Controller in a cluster</h1>
+			<p>We will use <a id="_idIndexMarker816"/>AWS App Mesh Controller for K8s (<a href="https://github.com/aws/aws-app-mesh-controller-for-k8s">https://github.com/aws/aws-app-mesh-controller-for-k8s</a>), which allows us to create App Mesh <a id="_idIndexMarker817"/>resources through a <strong class="bold">K8s manifest</strong>, as well as to automatically inject the Envoy proxy container into a Pod. The starting point is to create the namespace, IAM role, and service account needed for the controller Pods. The commands are <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+$ kubectl create ns appmesh-system
+$ eksctl create iamserviceaccount --cluster myipv4cluster --namespace appmesh-system --name appmesh-controller --attach-policy-arn  arn:aws:iam::aws:policy/AWSCloudMapFullAccess,arn:aws:iam::aws:policy/AWSAppMeshFullAccess --override-existing-serviceaccounts --approve
+…..
+454 created serviceaccount "appmesh-system/appmesh-controller"</pre>
+			<p>You will notice that as well as providing the <strong class="source-inline">AWSAppMeshFullAccess</strong> role, we also provide <strong class="source-inline">AWSCloudMapFullAccess</strong>, which will be discussed in the <em class="italic">Using AWS Cloud Map with EKS</em> section. Now we have the prerequisites in place, we can install the controller <a id="_idIndexMarker818"/>and verify it's running using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ helm install appmesh-controller eks/appmesh-controller --namespace appmesh-system --set region=eu-central-1 --set serviceAccount.create=false --set serviceAccount.name=appmesh-controller
+…..
+AWS App Mesh controller installed!
+$ kubectl -n appmesh-system get all
+NAME  READY   STATUS    RESTARTS   AGE
+pod/appmesh-controller-xx   1/1     Running   0          105s
+NAME TYPE    CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+service/appmesh-controller-webhook-service   ClusterIP   10.100.20.50   &lt;none&gt;        443/TCP   105s
+NAME  READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/appmesh-controller   1/1     1  1   105s
+NAME  DESIRED CURRENT   READY   AGE
+replicaset.apps/appmesh-controller-xx   1   1  1       105s
+$ kubectl get crds | grep appmesh
+….
+virtualgateways.appmesh.k8s.aws 2022-12-20T21:45:42Z
+virtualnodes.appmesh.k8s.aws    2022-12-20T21:45:42Z
+virtualrouters.appmesh.k8s.aws  2022-12-20T21:45:42Z
+virtualservices.appmesh.k8s.aws 2022-12-20T21:45:42Z</pre>
+			<p>We should now create the mesh, which will act as the logical boundary for the network traffic for any services contained in the mesh. The following K8s manifest will create a simple mesh called <strong class="source-inline">webapp</strong> in the current <span class="No-Break">cluster region:</span></p>
+			<pre class="source-code">
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: Mesh
+metadata:
+  name: webapp
+spec:
+  namespaceSelector:
+    matchLabels:
+      mesh: webapp</pre>
+			<p>The final step is to attach the <strong class="source-inline">AWSAppMeshEnvoyAccess</strong> policy to the worker node’s role so <a id="_idIndexMarker819"/>that all Envoy containers can make calls to the App Mesh API. You can do this for each deployment and create an IRSA for each namespace. But in this book, we will just update <span class="No-Break">the nodes.</span></p>
+			<p>Now that we have the mesh and worker nodes configured, let’s see how we can deploy our services and configure the relevant App <span class="No-Break">Mesh constructs.</span></p>
+			<h1 id="_idParaDest-236"><a id="_idTextAnchor239"/>Integrating your application with AWS App Mesh</h1>
+			<p>In this section, we will build on a lot of the details shown in the previous chapters to build and <a id="_idIndexMarker820"/>deploy an application using standard Kubernetes resources and then modify it to use AWS App Mesh constructs to control and monitor traffic. This application traffic can be considered in two dimensions: traffic coming from the consumers/users/internet, sometimes referred to as north/south traffic, and traffic coming from other services/applications in the cluster or ecosystem, referred to as east/west traffic. The following diagram illustrates <span class="No-Break">these concepts:</span></p>
+			<div>
+				<div id="_idContainer125" class="IMG---Figure">
+					<img src="image/B18129_16_04.jpg" alt="Figure 16.4 – Typical service mesh control"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.4 – Typical service mesh control</p>
+			<p>North/south traffic will normally need some sort of authentication/authorization. The endpoints for <a id="_idIndexMarker821"/>this traffic will normally be handled by <em class="italic">frontend</em> services, which provide a lot of the presentation logic and will aggregate or orchestrate requests across multiple backend services. East/west traffic normally comes from other systems (machine-to-machine) and endpoints are provided by <em class="italic">backend</em> services, which will tend to authorize requests and provide business data for a specific domain such as orders, accounts, and <span class="No-Break">so on.</span></p>
+			<p>Most service meshes focus on securing, controlling, and monitoring east/west traffic, with north/west traffic being handled by standard K8s services such as a K8s Ingress. However, as these meshes have evolved, they have also begun to handle more north/west traffic replacing <span class="No-Break">these services.</span></p>
+			<p>In the following section, we will deploy a simple frontend/backend application with a K8s Ingress (an AWS ALB) and then modify the backend to use AWS App Mesh (east/west traffic), replace the frontend with a virtual gateway (north/south), and take a high-level look at traffic monitoring <span class="No-Break">and observability.</span></p>
+			<h2 id="_idParaDest-237"><a id="_idTextAnchor240"/>Deploying our standard application</h2>
+			<p>We are going to use two <a id="_idIndexMarker822"/>Pods based on <strong class="bold">Python</strong> and <strong class="bold">FastAPI</strong>, but you can use <a id="_idIndexMarker823"/>any framework to act as your HTTP services. We will also use a third Pod, which <a id="_idIndexMarker824"/>will act as our service consumer (east/west traffic) and can make API requests (using <strong class="source-inline">curl</strong>) to our HTTP services. The <a id="_idIndexMarker825"/>application design and Python snippets are shown in the following figure. In the initial deployment, we will just assume blue and green represent <span class="No-Break">different services:</span></p>
+			<div>
+				<div id="_idContainer126" class="IMG---Figure">
+					<img src="image/B18129_16_05.jpg" alt="Figure 16.5 – Sample application"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.5 – Sample application</p>
+			<p>We will start by deploying the <span class="No-Break">green service.</span></p>
+			<h3>Deploying the green service</h3>
+			<p>The service <a id="_idIndexMarker826"/>consists of a deployment of <a id="_idIndexMarker827"/>two Python/FastAPI Pods, which expose two paths on port <strong class="source-inline">8081</strong>; a GET <strong class="source-inline">/id</strong> path, which simply returns an <strong class="source-inline">{"id" : "green"}</strong> message; and a GET <strong class="source-inline">/query</strong> path, which will simply return a <strong class="source-inline">{"message" : "hello from </strong><span class="No-Break"><strong class="source-inline">green"}</strong></span><span class="No-Break"> message:</span></p>
+			<ol>
+				<li>Let’s first create the namespace for these resources. The following manifest will create the resources shown in <span class="No-Break"><em class="italic">Figure 16</em></span><em class="italic">.5</em> in a separate namespace, <strong class="source-inline">green</strong>, which doesn’t have the mesh <span class="No-Break">labels applied:</span><pre class="source-code">
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: green
+  labels:
+    name: green</pre></li>
+				<li>Now we <a id="_idIndexMarker828"/>create a <strong class="source-inline">Deployment</strong> that uses <a id="_idIndexMarker829"/>the frontend code that has been containerized and pushed to a private ECR repository (please review the relevant instructions and artifacts in <a href="B18129_11.xhtml#_idTextAnchor162"><span class="No-Break"><em class="italic">Chapter 11</em></span></a><span class="No-Break">):</span><pre class="source-code">
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: green
+  name: green-v1
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: green-v1
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: green-v1
+    spec:
+      containers:
+      - image: 112233.dkr.ecr…/green:0.0.1
+        imagePullPolicy: Always
+        name: backend
+        ports:
+        - containerPort: 8081</pre></li>
+			</ol>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">The Python/FastAPI code used in the green and blue container images is shown in <span class="No-Break"><em class="italic">Figure 16</em></span><em class="italic">.5</em> but any web server will do for the purposes of <span class="No-Break">this exercise.</span></p>
+			<ol>
+				<li value="3">Next, we <a id="_idIndexMarker830"/>create a <strong class="source-inline">ClusterIP</strong> service, which will be used to access the green service inside <span class="No-Break">the cluster:</span><pre class="source-code">
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: green
+  name: green-v1
+  labels:
+    version: v1
+spec:
+  ports:
+    - port: 8081
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: green-v1</pre></li>
+				<li>Now, using <a id="_idIndexMarker831"/>the following command, we can <a id="_idIndexMarker832"/>see that we have a K8s service so that other K8s Pods or Services can locate and <span class="No-Break">use it:</span><pre class="source-code">
+<strong class="bold">$ kubectl get svc -n green</strong>
+<strong class="bold">NAME  TYPE   CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE</strong>
+<strong class="bold">green-v1  ClusterIP   10.100.192.178   &lt;none&gt;  8081/TCP   8h</strong></pre></li>
+			</ol>
+			<p>Now that we have a green service, let’s deploy the blue service in the <span class="No-Break">following section.</span></p>
+			<h3>Deploying the blue service</h3>
+			<p>The blue service <a id="_idIndexMarker833"/>follows a model similar to that of the green service <a id="_idIndexMarker834"/>and consists of a deployment of two Python/FastAPI containers that expose two paths on port <strong class="source-inline">8080</strong>; a GET <strong class="source-inline">/id</strong> path, which simply returns an <strong class="source-inline">{"id" : "blue"}</strong> message; and a GET <strong class="source-inline">/query</strong> path, which will respond with a <strong class="source-inline">{"message" : "hello from blue"}</strong> message. The service has a <strong class="source-inline">ClusterIP</strong> service, which is available only inside <span class="No-Break">the cluster:</span></p>
+			<ol>
+				<li>Let’s create the blue namespace for our application using the following manifest, which doesn’t have the mesh <span class="No-Break">labels applied:</span><pre class="source-code">
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: blue
+  labels:
+    name: blue</pre></li>
+				<li>Now we <a id="_idIndexMarker835"/>create the <strong class="source-inline">Deployment</strong> that references the backend <a id="_idIndexMarker836"/>container <span class="No-Break">on ECR:</span><pre class="source-code">
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: blue
+  name: blue-v1
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: blue-v1
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: blue-v1
+    spec:
+      containers:
+      - image: 112233.dkr.ecr…blue:0.0.1
+        imagePullPolicy: Always
+        name: blue-v1
+        ports:
+        - containerPort: 8080</pre></li>
+			</ol>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">The Python/FastAPI code used in the green and blue container images is shown in <span class="No-Break"><em class="italic">Figure 16</em></span><em class="italic">.5</em> but any web server will do for the purposes of <span class="No-Break">this exercise.</span></p>
+			<ol>
+				<li value="3">Finally, we create <a id="_idIndexMarker837"/>the service, <strong class="source-inline">ClusterIP</strong>, which will <a id="_idIndexMarker838"/>create the necessary cluster DNS entry to access the Service from within <span class="No-Break">the cluster:</span><pre class="source-code">
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: blue
+  name: blue-v1
+  labels:
+    version: v1
+spec:
+  ports:
+    - port: 8080
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: blue-v1</pre></li>
+				<li>Using the following command, we can see that we have a K8s service so that other K8s services/Pods can locate and <span class="No-Break">use it:</span><pre class="source-code">
+<strong class="bold">$ kubectl get svc -n blue</strong>
+<strong class="bold">NAME   TYPE   CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE</strong>
+<strong class="bold">blue-v1   ClusterIP   10.100.223.120   &lt;none&gt; 8080/TCP   8h</strong></pre></li>
+			</ol>
+			<p>Finally, we will <a id="_idIndexMarker839"/>deploy the consumer service and test our connectivity <a id="_idIndexMarker840"/>to the blue and green services using all native, <span class="No-Break">non-mesh resources.</span></p>
+			<h3>Deploying the consumer service</h3>
+			<p>Finally, we will <a id="_idIndexMarker841"/>deploy the consumer <a id="_idIndexMarker842"/>service, which consists of a single Pod that supports the <span class="No-Break"><strong class="source-inline">curl</strong></span><span class="No-Break"> command:</span></p>
+			<ol>
+				<li>Using the following manifest will create the resources shown in <span class="No-Break"><em class="italic">Figure 16</em></span><em class="italic">.5</em> in a separate namespace, <strong class="source-inline">consumer</strong>, which doesn’t have the mesh <span class="No-Break">labels applied:</span><pre class="source-code">
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: consumer
+  labels:
+    name: consumer</pre></li>
+				<li>Now we create the <strong class="source-inline">Deployment</strong> that references the <strong class="source-inline">alpine/curl</strong> container pulled from a public Docker <span class="No-Break">Hub repo:</span><pre class="source-code">
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: consumer
+  name: consumer
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consumer
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: consumer
+    spec:
+      containers:
+      - image: <strong class="bold">alpine/curl</strong>
+        command:
+        - sleep
+        - "36000"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 22
+        name: consumer
+      restartPolicy: Always</pre></li>
+				<li>We can <a id="_idIndexMarker843"/>check whether the Pod is <a id="_idIndexMarker844"/>deployed with the <span class="No-Break">following command:</span><pre class="source-code">
+<strong class="bold">$ kubectl get po -n consumer</strong>
+<strong class="bold">NAME                    READY   STATUS    RESTARTS   AGE</strong>
+<strong class="bold">consumer-123   1/1     Running   0          13s</strong></pre></li>
+				<li>All done! We can now connect to our consumer Pod and test whether we can connect to the relevant K8s services using the <span class="No-Break">following commands:</span><pre class="source-code">
+<strong class="bold">$ kubectl exec -it -n consumer consumer-123 – sh</strong>
+<strong class="bold">/ # curl </strong>http://green<strong class="bold">-v1.green:8081/id</strong>
+<strong class="bold">{"id":"green"}</strong>
+<strong class="bold">/ # curl </strong>http://green<strong class="bold">-v1.green:8081/query</strong>
+<strong class="bold">{"message":"hello from green"}</strong>
+<strong class="bold">/ # curl </strong>http://blue<strong class="bold">-v1.blue:8080/id</strong>
+<strong class="bold">{"id":"blue"}</strong>
+<strong class="bold">/ # curl </strong>http://blue<strong class="bold">-v1.blue:8080/query</strong>
+<strong class="bold">{"message":"hello from blue"}</strong></pre></li>
+			</ol>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Please note we have used the shortened service notation, <strong class="source-inline">&lt;scv-name&gt;.namespace</strong>, to call the K8s services we created in <span class="No-Break">each namespace.</span></p>
+			<p>Now we have <a id="_idIndexMarker845"/>a working set of services, we will add the basic <a id="_idIndexMarker846"/>mesh components and test again but this time using the service mesh <span class="No-Break">virtual services.</span></p>
+			<h2 id="_idParaDest-238"><a id="_idTextAnchor241"/>Adding the basic AWS App Mesh components</h2>
+			<p>The first thing we need to do is label the <strong class="source-inline">blue</strong>, <strong class="source-inline">green</strong>, and <strong class="source-inline">consumer</strong> namespaces to identify which <a id="_idIndexMarker847"/>mesh to use and confirm we want to inject the Envoy sidecar container into all the Pods that get deployed into those namespaces automatically. The following commands illustrate how we do this for the <span class="No-Break">sample application:</span></p>
+			<pre class="console">
+$ kubectl label namespace consumer mesh=webapp
+$ kubectl label namespace consumer appmesh.k8s.aws/sidecarInjectorWebhook=enabled
+$ kubectl label namespace blue mesh=webapp
+$ kubectl label namespace blue appmesh.k8s.aws/sidecarInjectorWebhook=enabled
+$ kubectl label namespace green mesh=webapp
+$ kubectl label namespace green appmesh.k8s.aws/sidecarInjectorWebhook=enabled</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Typically, the namespace label will be created when the namespace is created; we are only doing it now to illustrate these concepts in <span class="No-Break">the book.</span></p>
+			<p>The next step <a id="_idIndexMarker848"/>is to deploy the App Mesh <strong class="source-inline">VirtualNode</strong>, which is required for us to redeploy the application. This must be done for every K8s deployment that needs to use the mesh as it will allow the Envoy proxy to configure itself correctly. In this section, we first show the configuration for the green and blue services; the consumer service will be configured last as it references <span class="No-Break">both services.</span></p>
+			<p>The green <strong class="source-inline">VirtualNode</strong> manifest is shown in the following snippet and references the <strong class="source-inline">green-v1</strong> K8s service we created as part of the basic application deployment. It also creates a basic health check using the <strong class="source-inline">/id</strong> path, defines DNS as the service discovery protocol for the underlying resources, and uses the fully qualified name of the <span class="No-Break">K8s service:</span></p>
+			<pre class="source-code">
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+  name: green-v1
+  namespace: green
+spec:
+  podSelector:
+    matchLabels:
+      <strong class="bold">app.kubernetes.io/name: green-v1</strong>
+  listeners:
+    - portMapping:
+        port: <strong class="bold">8081</strong>
+        protocol: http
+      healthCheck:
+        protocol: http
+        path: '/id'
+        healthyThreshold: 2
+        unhealthyThreshold: 2
+        timeoutMillis: 2000
+        intervalMillis: 5000
+  serviceDiscovery:
+    dns:
+      hostname: <strong class="bold">green-v1.green.svc.cluster.local</strong></pre>
+			<p>The blue <strong class="source-inline">VirtualNode</strong> manifest <a id="_idIndexMarker849"/>is shown in the following snippet and references the <strong class="source-inline">blue-v1</strong> K8s service but is configured in the same way as the <span class="No-Break">green </span><span class="No-Break"><strong class="source-inline">VirtualNode</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+  name: blue-v1
+  namespace: blue
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: <strong class="bold">blue-v1</strong>
+  listeners:
+    - portMapping:
+        port: <strong class="bold">8080</strong>
+        protocol: http
+      healthCheck:
+        protocol: http
+        path: '/id'
+        healthyThreshold: 2
+        unhealthyThreshold: 2
+        timeoutMillis: 2000
+        intervalMillis: 5000
+  serviceDiscovery:
+    dns:
+      hostname: <strong class="bold">blue-v1.blue.svc.cluster.local</strong></pre>
+			<p>We can now <a id="_idIndexMarker850"/>check whether the virtual nodes are deployed in your cluster and have also been registered in the AWS App Mesh API using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl get virtualnode --all-namespaces
+NAMESPACE   NAME  ARN                AGE
+blue  blue-v1    arn:aws:appmesh:eu-central-1:112233:mesh/webapp/virtualNode/blue-v1_blue     2m50s
+green       green-v1   arn:aws:appmesh:eu-central-1:112233:mesh/webapp/virtualNode/green-v1_green   103s
+$ aws appmesh list-virtual-nodes --mesh-name webapp
+{
+    "virtualNodes": [
+        {
+….
+            "virtualNodeName": "blue-v1_blue",
+….
+        },
+        {
+….
+            "virtualNodeName": "green-v1_green",
+…..}]}</pre>
+			<p class="callout-heading">Note</p>
+			<p class="callout">It’s always worth checking the resources are fully deployed into the mesh using the AWS CLI as sometimes the resource is deployed in K8s but is not correctly configured so it isn’t present in the <span class="No-Break">mesh API.</span></p>
+			<p>The actual <a id="_idIndexMarker851"/>Deployment and Pods haven’t changed yet, so if you list the Pods in either of the namespaces, you will see the original Pods. We can now restart the Deployment using the <strong class="source-inline">kubectl rollout</strong> command and we will see the container count increase for the Pods in the <strong class="source-inline">blue</strong> and <strong class="source-inline">green</strong> namespaces. An example of the commands used for the <strong class="source-inline">blue</strong> namespace is <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+$ kubectl get po -n blue
+NAME                      READY   STATUS    RESTARTS   AGE
+blue-v1-684cc59d8-5kczs   1/1     Running   0          23h
+blue-v1-684cc59d8-nfvf9   1/1     Running   0          23h
+$ kubectl rollout restart deployment blue-v1 -n blue
+deployment.apps/blue-v1 restarted
+$ kubectl get po -n blue
+NAME                       READY   STATUS    RESTARTS   AGE
+blue-v1-6bdfb49995-8789s   2/2     Running   0          8s
+blue-v1-6bdfb49995-zzsw4   2/2     Running   0          10s</pre>
+			<p>The final step <a id="_idIndexMarker852"/>is to add the <strong class="source-inline">VirtualService</strong> resources for blue and green Pods as, currently, while the Envoy proxy has been injected and configured with the <strong class="source-inline">VirtualNode</strong> configuration, the service is not resolvable in the mesh. As shown in the following manifest, <strong class="source-inline">VirtualService</strong> for the <strong class="source-inline">blue</strong> service uses the service name <strong class="source-inline">blue</strong> but will map directly to the <strong class="source-inline">blue-v1</strong> virtualNode we created previously in the <span class="No-Break"><strong class="source-inline">blue</strong></span><span class="No-Break"> namespace:</span></p>
+			<pre class="source-code">
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualService
+metadata:
+  name: blue
+  namespace: blue
+spec:
+  awsName: <strong class="bold">blue.blue.svc.cluster.local</strong>
+  provider:
+    virtualNode:
+      virtualNodeRef:
+<strong class="bold">        name: blue-v1</strong>
+<strong class="bold">        namespace: blue</strong></pre>
+			<p>If you remember, in the <em class="italic">Understanding AWS App Mesh</em> section, we said that the <strong class="source-inline">awsName</strong> needed to be resolvable through DNS. As this service runs fully in K8s, we can add a dummy <a id="_idIndexMarker853"/>K8s Service called <strong class="source-inline">blue</strong> in the <strong class="source-inline">blue</strong> namespace to be able to resolve the <strong class="source-inline">blue.blue.svc.cluster.local</strong> service name using the <span class="No-Break">following manifest:</span></p>
+			<pre class="source-code">
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blue
+  namespace: blue
+  labels:
+    app.kubernetes.io/name: blue
+spec:
+  ports:
+  - port: 8080
+    name: http</pre>
+			<p class="callout-heading">`Note</p>
+			<p class="callout">Remember, while the DNS lookup will return the cluster IP address associated with the <strong class="source-inline">blue</strong> service, the Envoy proxy will modify the traffic to allow it to communicate with the underlying <span class="No-Break"><strong class="source-inline">blue-v1</strong></span><span class="No-Break"> service.</span></p>
+			<p>Once we have deployed the <strong class="source-inline">VirtualServices</strong> and dummy K8s services to both namespaces, we can review the configuration using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl get virtualservice --all-namespaces
+NAMESPACE   NAME    ARN                             AGE
+blue   blue    arn:aws:appmesh:eu-central-1:112233:mesh/webapp/virtualService/blue.blue.svc.cluster.local     37s
+green       green   arn:aws:appmesh:eu-central-1:112233:mesh/webapp/virtualService/green.green.svc.cluster.local   25s
+$ kubectl get svc --all-namespaces
+NAMESPACE    NAME     TYPE  CLUSTER-IP       ..
+blue  blue     ClusterIP   10.100.217.243   &lt;none&gt;  8080/TCP .
+blue  blue-v1  ClusterIP   10.100.50.46     &lt;none&gt;  8080/TCP .
+green green    ClusterIP   10.100.100.13    &lt;none&gt;  8081/TCP .
+green green-v1 ClusterIP   10.100.51.214    &lt;none&gt;  8081/TCP .
+….</pre>
+			<p>We can also <a id="_idIndexMarker854"/>view the virtual services that have been created using the <strong class="source-inline">aws appmesh list-virtual-services</strong> command or the console, an example of which is shown in the <span class="No-Break">following figure:</span></p>
+			<div>
+				<div id="_idContainer127" class="IMG---Figure">
+					<img src="image/B18129_16_06.jpg" alt="Figure 16.6 – Console view of mesh virtual services for K8s services"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.6 – Console view of mesh virtual services for K8s services</p>
+			<p>We have all the resources defined now for the blue and green services. We can now add the <strong class="source-inline">VirtualNode</strong> for the consumer and test connectivity to the mesh services. The manifest for the consumer <strong class="source-inline">VirtualNode</strong> is shown in the following snippet and is similar to the definitions used for the blue and green services; however, it contains a backend key <a id="_idIndexMarker855"/>that allows it to communicate with the <strong class="source-inline">blue</strong> and <strong class="source-inline">green</strong> services we created in the <em class="italic">Deploying a standard application</em> section (which is why we do <span class="No-Break">this last):</span></p>
+			<pre class="source-code">
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+  name: consumer
+  namespace: consumer
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: consumer
+  listeners:
+    - portMapping:
+        port: 8082
+        protocol: http
+  backends:
+    - virtualService:
+        virtualServiceRef:
+          <strong class="bold">namespace: blue</strong>
+<strong class="bold">                     name: blue</strong>
+    - virtualService:
+        virtualServiceRef:
+                    <strong class="bold">namespace: green</strong>
+<strong class="bold">                   name: green</strong>
+  serviceDiscovery:
+    dns:
+      hostname: consumer.consumer.svc.cluster.local</pre>
+			<p>Once we <a id="_idIndexMarker856"/>have deployed the <strong class="source-inline">VirtualNode</strong> configuration, we can redeploy the consumer deployment and check the resulting resources using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl rollout restart deployment consumer  -n consumer
+deployment.apps/consumer restarted
+$ kubectl get po -n consumer
+NAME          READY   STATUS    RESTARTS   AGE
+consumer-1122. 2/2     Running   0          105s
+$ aws appmesh describe-virtual-node --virtual-node-name consumer_consumer --mesh-name webapp
+{
+    "virtualNode": {
+        "status": {
+            "status": "ACTIVE"
+….}</pre>
+			<p>We can now <strong class="source-inline">exec</strong> into our consumer Pod and test our App Mesh services using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl exec -it -n consumer consumer-1122  -- sh
+Defaulted container "consumer" out of: consumer, envoy, proxyinit (init)
+/ # curl -s http://blue.blue.svc.cluster.local:8080/id
+{"id":"blue"}
+/ # curl -s http://green.green.svc.cluster.local:8081/id
+{"id":"green"}</pre>
+			<p>You may <a id="_idIndexMarker857"/>notice that as this is now a multi-container Pod, the <strong class="source-inline">exec</strong> command has defaulted to the app container, in this case, <strong class="source-inline">consumer</strong>, but you also see the <strong class="source-inline">envoy</strong> and the <strong class="source-inline">init</strong> containers (<strong class="source-inline">proxyinit</strong>) that were injected into the original Pod definition. We also now use the fully qualified App Mesh service names, for example, <strong class="source-inline">blue.blue.svc.cluster.local</strong> rather than the K8s service names, such <span class="No-Break">as </span><span class="No-Break"><strong class="source-inline">blue-v1</strong></span><span class="No-Break">.</span></p>
+			<p>We have now deployed the mesh and integrated it into our application. The only thing that changed from an application perspective was the service name we used in the <strong class="source-inline">curl</strong> command. It’s still quite a bit of work, so in the next section, we will look at how a virtual router can simplify <span class="No-Break">blue/green deployments.</span></p>
+			<h2 id="_idParaDest-239"><a id="_idTextAnchor242"/>Using a virtual router in AWS App Mesh</h2>
+			<p>In this example, we are now going to assume that the blue and green services are now different <a id="_idIndexMarker858"/>versions of the same service (blue/green deployment). We will create a new service, <strong class="source-inline">myapp</strong>, which represents the application, and then put a virtual router in between the existing two virtual nodes and initially just send all the traffic to the green version. The following diagram <span class="No-Break">illustrates this:</span></p>
+			<div>
+				<div id="_idContainer128" class="IMG---Figure">
+					<img src="image/B18129_16_07.jpg" alt="Figure 16.7 – Adding a virtual router to our service"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.7 – Adding a virtual router to our service</p>
+			<p>The first thing we need to do is create the new <strong class="source-inline">VirtualRouter</strong>. The following manifest creates <a id="_idIndexMarker859"/>a router and a single route to map against the <strong class="source-inline">/id</strong> path and listen on TCP port <strong class="source-inline">8085</strong>. The <strong class="source-inline">weight</strong> key is used to define the weight/percentage of traffic that flows to a given <strong class="source-inline">VirtualNode</strong>. In the following example, we send everything to the <span class="No-Break"><strong class="source-inline">green-v1</strong></span><span class="No-Break"> </span><span class="No-Break"><strong class="source-inline">VirtualNode</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualRouter
+metadata:
+  name: app-router
+  namespace: consumer
+spec:
+  listeners:
+    - portMapping:
+        port: <strong class="bold">8085</strong>
+        protocol: http
+  routes:
+    - name: app-route
+      httpRoute:
+        match:
+          prefix: <strong class="bold">/id</strong>
+        action:
+          weightedTargets:
+            - virtualNodeRef:
+                name: green-v1
+                namespace: green
+              weight: <strong class="bold">100</strong>
+              port: 8081
+            - virtualNodeRef:
+                name: blue-v1
+                namespace: blue
+              weight: <strong class="bold">0</strong>
+              port: 8080</pre>
+			<p>We also <a id="_idIndexMarker860"/>need to add the <strong class="source-inline">myapp</strong> virtual service and dummy K8s service (for DNS resolution); the following sample manifest creates both and references the <strong class="source-inline">VirtualRouter</strong> we created previously instead of <span class="No-Break">a </span><span class="No-Break"><strong class="source-inline">VirtualNode</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualService
+metadata:
+  name: myapp
+  namespace: consumer
+spec:
+  awsName: <strong class="bold">myapp.consumer.svc.cluster.local</strong>
+  provider:
+    <strong class="bold">virtualRouter</strong>:
+      virtualRouterRef:
+        name: <strong class="bold">app-router</strong>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: <strong class="bold">myapp</strong>
+  namespace: <strong class="bold">consumer</strong>
+  labels:
+    app.kubernetes.io/name: consumer
+spec:
+  ports:
+  - port: 8085
+    name: http</pre>
+			<p>Once we <a id="_idIndexMarker861"/>have deployed these resources, we need to adjust the consumer <strong class="source-inline">VirtualNode</strong> specification to allow access to this new service by adding a new backend configuration, as shown in <span class="No-Break">the following:</span></p>
+			<pre class="source-code">
+backends:
+    - virtualService:
+        virtualServiceRef:
+          namespace: blue
+          name: blue
+    - virtualService:
+        virtualServiceRef:
+          namespace: green
+          name: green
+    - virtualService:
+        virtualServiceRef:
+          name: <strong class="bold">myapp</strong></pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">As the <strong class="source-inline">myapp</strong> service is in the same namespace as the <strong class="source-inline">consumer</strong>, we don’t need to add the <strong class="source-inline">namespace</strong> key, but you might want to add it <span class="No-Break">for clarity.</span></p>
+			<p>With all this deployed, we can now <strong class="source-inline">exec</strong> into our <strong class="source-inline">consumer</strong> and test our new services using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl exec -it -n consumer consumer-1122  -- sh
+Defaulted container "consumer" out of: consumer, envoy, proxyinit (init)
+/ # curl -s http://myapp.consumer.svc.cluster.local:8085/id
+{"id":"green"}
+/ # curl -s http://myapp.consumer.svc.cluster.local:8085/id
+{"id":"green"}</pre>
+			<p>If we now <a id="_idIndexMarker862"/>adjust the weights in our <strong class="source-inline">VirtualRouter</strong> <strong class="source-inline">routes</strong> configuration, to distribute evenly over the <strong class="source-inline">blue</strong> and <strong class="source-inline">green</strong> services, we can shift traffic from the <strong class="source-inline">green</strong> service to the <strong class="source-inline">blue</strong> service, as shown in the <span class="No-Break">following snippet:</span></p>
+			<pre class="source-code">
+routes:
+    - name: app-route
+      httpRoute:
+        match:
+          prefix: <strong class="bold">/id</strong>
+        action:
+          weightedTargets:
+            - virtualNodeRef:
+                name: green-v1
+                namespace: green
+              weight: <strong class="bold">50</strong>
+              port: 8081
+            - virtualNodeRef:
+                name: blue-v1
+                namespace: blue
+              weight: <strong class="bold">50</strong>
+              port: 8080</pre>
+			<p>Running the <a id="_idIndexMarker863"/>same <strong class="source-inline">curl</strong> command will now result in responses from both the <strong class="source-inline">blue</strong> and <span class="No-Break"><strong class="source-inline">green</strong></span><span class="No-Break"> services:</span></p>
+			<pre class="console">
+/ # curl -s http://myapp.consumer.svc.cluster.local:8085/id
+{"id":"green"}
+/ # curl -s http://myapp.consumer.svc.cluster.local:8085/id
+{"id":"blue"}
+/ # curl -s http://myapp.consumer.svc.cluster.local:8085/id
+{"id":"green"}
+/ # curl -s http://myapp.consumer.svc.cluster.local:8085/id
+{"id":"blue"}</pre>
+			<p>Again, the only change to the application here is the URL/service being used, and Envoy and AWS App Mesh take care of all the <em class="italic">magic</em>. We have focused only on east/west traffic so far; in the next section, we will look at how we can expose this service through a virtual gateway outside <span class="No-Break">the cluster.</span></p>
+			<h2 id="_idParaDest-240"><a id="_idTextAnchor243"/>Using a virtual gateway in AWS App Mesh</h2>
+			<p><strong class="source-inline">VirtualGateway</strong> is used to expose services running inside the mesh, and accessible to services <a id="_idIndexMarker864"/>outside the mesh that don’t have access to the App Mesh control plane using a configured Envoy proxy. It does this by deploying <a id="_idIndexMarker865"/>standalone Envoy proxies and an AWS <strong class="bold">network load balancer</strong> (<strong class="bold">NLB</strong>). The standalone proxies terminate the NLB traffic and then use <em class="italic">Gateway Routes</em> to pass traffic to the relevant <strong class="source-inline">VirtualService</strong>, which in turn then passes traffic to either a <strong class="source-inline">VirtualRouter</strong> or directly to a <strong class="source-inline">VirtualNode</strong>. We will extend our <strong class="source-inline">myapp</strong> service to be accessible via the internet via a <strong class="source-inline">VirtualGateway</strong>. The following diagram <span class="No-Break">illustrates this:</span></p>
+			<div>
+				<div id="_idContainer129" class="IMG---Figure">
+					<img src="image/B18129_16_08.jpg" alt="Figure 16.8 – Virtual gateway deployment"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.8 – Virtual gateway deployment</p>
+			<p>The first thing we need to do is create and label the <strong class="source-inline">internet</strong> namespace, which will host our Ingress <a id="_idIndexMarker866"/>gateway and load balancer. We do this as we are hosting the Envoy proxy in standalone mode so we don’t want to use a namespace that will try and inject an Envoy proxy on top of a standalone Envoy proxy. The following commands illustrate how you can <span class="No-Break">do this:</span></p>
+			<pre class="console">
+$ kubectl create namespace internet
+$ kubectl label namespace internet gateway=in-gw
+$ kubectl label namespace internet mesh=webapp</pre>
+			<p>We can then go ahead and create the <strong class="source-inline">VirtualGateway</strong> that listens on port <strong class="source-inline">8088</strong> in the internet namespace we just created using the <span class="No-Break">following manifest:</span></p>
+			<pre class="source-code">
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualGateway
+metadata:
+  name: in-gw
+  namespace: internet
+spec:
+  namespaceSelector:
+    matchLabels:
+      gateway: in-gw
+  podSelector:
+    matchLabels:
+      app: in-gw
+  listeners:
+    - portMapping:
+        port: <strong class="bold">8088</strong>
+        protocol: http</pre>
+			<p>We can <a id="_idIndexMarker867"/>now create a <strong class="bold">gateway route</strong> pointing to our <strong class="source-inline">myapp</strong> <strong class="source-inline">VirtualService</strong> in the <strong class="source-inline">consumer</strong> namespace using the <span class="No-Break">following manifest:</span></p>
+			<pre class="source-code">
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: GatewayRoute
+metadata:
+  name: myapp-route
+  namespace: <strong class="bold">internet</strong>
+spec:
+  httpRoute:
+    match:
+      prefix: <strong class="bold">"/"</strong>
+    action:
+      target:
+        virtualService:
+          virtualServiceRef:
+            name: <strong class="bold">myapp</strong>
+            port: <strong class="bold">8085</strong>
+            namespace: <strong class="bold">consumer</strong></pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">We will use the default prefix, <strong class="source-inline">/</strong>, which captures all traffic and sends it to the <span class="No-Break"><strong class="source-inline">myapp</strong></span><span class="No-Break"> </span><span class="No-Break"><strong class="source-inline">VirtualService</strong></span><span class="No-Break">.</span></p>
+			<p>Using the <a id="_idIndexMarker868"/>following commands, we can now get the ARN of the <strong class="source-inline">VirtualGateway</strong> we created as we need this information when we deploy the standalone <span class="No-Break">Envoy proxies:</span></p>
+			<pre class="console">
+$ kubectl get virtualgateway --all-namespaces
+NAMESPACE   NAME          ARN                   AGE
+internet    in-gw   <strong class="bold">arn:aws:appmesh:eu-central-1:112233:mesh/webapp/virtualGateway/in-gw_internet</strong>   7m37s</pre>
+			<p>We can now deploy the standalone Envoy proxies into the <strong class="source-inline">internet</strong> namespace. In the following sample manifest, we create two replicas using the AWS Envoy image and inject the ARN of the <strong class="source-inline">VirtualGateway</strong> that we listed in the previous step, using the <strong class="source-inline">APPMESH_RESOURCE_ARN</strong> <span class="No-Break">environment variable:</span></p>
+			<pre class="source-code">
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <strong class="bold">in-gw</strong>
+  namespace: internet
+spec:
+  replicas: <strong class="bold">2</strong>
+  selector:
+    matchLabels:
+      app: in-gw
+  template:
+    metadata:
+      labels:
+        app: in-gw
+    spec:
+      containers:
+        - name: envoy
+          image: 840364872350.dkr.ecr.eu-central-1.amazonaws.com/aws-appmesh-envoy:v1.24.0.0-prod
+          env:
+          - name: APPMESH_RESOURCE_ARN
+            value: "<strong class="bold">arn:aws:appmesh:eu-central-1:112233:mesh/webapp/virtualGateway/in-gw_internet</strong>"
+          - name: ENVOY_LOG_LEVEL
+            value: "<strong class="bold">debug</strong>"
+          ports:
+            - containerPort: 8088</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">We set the <a id="_idIndexMarker869"/>Envoy logging level to <strong class="source-inline">debug</strong> for information only; this should not be left for any production workloads as it results in very large logs and should be reset to <strong class="source-inline">info</strong> once any troubleshooting is complete. The image used comes from the public <strong class="source-inline">appmesh</strong> repository, which <a id="_idIndexMarker870"/>you can access <span class="No-Break">at </span><a href="https://gallery.ecr.aws/appmesh/aws-appmesh-envoy"><span class="No-Break">https://gallery.ecr.aws/appmesh/aws-appmesh-envoy</span></a><span class="No-Break">.</span></p>
+			<p>Finally, we create <a id="_idIndexMarker871"/>an NLB-based service to expose the Envoy proxies to the internet. This will use an IP-based scheme and expose port <strong class="source-inline">80</strong> on the load balancer, which will map to port <strong class="source-inline">8088</strong> using the IP addresses of the Pods in the target group to route traffic to each <span class="No-Break">Envoy Pod:</span></p>
+			<pre class="source-code">
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: in-gw
+  namespace: internet
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: <strong class="bold">ip</strong>
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+spec:
+  ports:
+    - port: <strong class="bold">80</strong>
+      targetPort: <strong class="bold">8088</strong>
+      protocol: TCP
+  type: LoadBalancer
+  loadBalancerClass: service.k8s.aws/nlb
+  selector:
+    app: <strong class="bold">in-gw</strong></pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">While this service exposes the Envoy proxies to the internet, we could have also configured the service to use an internal NLB (or ALB if it’s an HTTP/HTTPS service), which means that other non-mesh resources could access the mesh services but only on the AWS network or a connected <span class="No-Break">private network.</span></p>
+			<p>We can now <a id="_idIndexMarker872"/>test that our <strong class="source-inline">myapp</strong> service is exposed through the <strong class="source-inline">VirtualGateway</strong> by retrieving the URL of the NLB we just created using the <strong class="source-inline">kubectl get svc</strong> command and then using <strong class="source-inline">curl</strong> to get the K8s service ID using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl get svc -n internet
+NAME TYPE  CLUSTER-IP     EXTERNAL-IP     PORT(S)        AGE
+in-gw   LoadBalancer   10.100.12.98   <strong class="bold">k8s-internet-ingw-1122.elb.eu-central-1.amazonaws.com</strong>   80:30644/TCP   53m
+$ curl -s http://k8s-internet-ingw-1122.elb.eu-central-1.amazonaws.com/id
+{"id":"blue"}
+$ curl -s http://k8s-internet-ingw-1122.elb.eu-central-1.amazonaws.com/id
+{"id":"green"}</pre>
+			<p>Now we have seen how to expose our AWS App Mesh <strong class="source-inline">VirtualService</strong> to the internet using a <strong class="source-inline">VirtualGateway</strong> resource. Next, we will review how we can use AWS Cloud Map, an external DNS service, to perform service discovery with AWS <span class="No-Break">App Mesh.</span></p>
+			<h1 id="_idParaDest-241"><a id="_idTextAnchor244"/>Using AWS Cloud Map with EKS</h1>
+			<p>AWS Cloud Map is a cloud resource discovery tool so, unlike App Mesh, it has no traffic control or <a id="_idIndexMarker873"/>observability features. It simply allows consumers to discover cloud services (not just <span class="No-Break">EKS-based ones).</span></p>
+			<p>Cloud Map <a id="_idIndexMarker874"/>operates in namespaces so the first thing we will do is create a new namespace called <strong class="source-inline">myapp.prod.eu</strong>, which we will use later. We can use the following AWS CLI commands to register and validate whether we have created <span class="No-Break">the namespace:</span></p>
+			<pre class="console">
+$ aws servicediscovery create-private-dns-namespace --name prod.eu --description 'european production private DNS namespace' --vpc vpc-0614a71963e68bc86
+{
+    "OperationId": "pqrexzv7e5tn7wq64wiph6ztyb4c5ut3-5k7jsu2f"
+}
+$ aws servicediscovery get-operation  --operation-id pqrexzv7e5tn7wq64wiph6ztyb4c5ut3-5k7jsu2f
+{
+    "Operation": {
+        "Status": "<strong class="bold">SUCCESS</strong>",
+        "CreateDate": 1672566290.293,
+        "Id": "pqrexzv7e5tn7wq64wiph6ztyb4c5ut3-5k7jsu2f",
+        "UpdateDate": 1672566327.657,
+        "Type": "CREATE_NAMESPACE",
+        "Targets": {
+            "NAMESPACE": "ns-pj3fxdidxmcgax7e"
+        }
+    }
+}}</pre>
+			<p>We can now create the <strong class="source-inline">myapp</strong> service using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ aws servicediscovery create-service   --name myapp   --description 'Discovery service for the myapp service'   --namespace-id ns-pj3fxdidxmcgax7e   --dns-config 'RoutingPolicy=MULTIVALUE,DnsRecords=[{Type=A,TTL=300}]'   --health-check-custom-config FailureThreshold=1
+{"Service": {
+        "Description": "Discovery service for the myapp service",
+        ……..
+        "NamespaceId": "ns-pj3fxdidxmcgax7e",
+        "Arn": "arn:aws:servicediscovery:eu-central-1:076637564853:service/srv-kc6c4f2mqt2buibx",
+        "Name": "myapp"
+    }</pre>
+			<p>To register <a id="_idIndexMarker875"/>our Pods, we now need to adjust our <strong class="source-inline">VirtualNode</strong> definition to <a id="_idIndexMarker876"/>use Cloud Map. In the previous <strong class="source-inline">blue-v1</strong> service, we used the K8s DNS name and had to create a K8s service to register the domain; refer to the <span class="No-Break">following snippet:</span></p>
+			<pre class="source-code">
+serviceDiscovery:
+    dns:
+      hostname: blue-v1.blue.svc.cluster.local</pre>
+			<p>We can now adjust this to reference the Cloud Map namespace and service as shown in the following snippet and redeploy the <span class="No-Break">virtual node:</span></p>
+			<pre class="source-code">
+serviceDiscovery:
+    awsCloudMap:
+      namespaceName: prod.eu
+      serviceName: myapp</pre>
+			<p>We can now validate that the <strong class="source-inline">blue-v1</strong> Pods have registered their IPs with our Cloud Map <strong class="source-inline">myapp</strong> service using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl get po -n blue -o wide
+NAME  READY   STATUS    RESTARTS   AGE     IP      …..
+blue-v1-12   2/2     Running   0  7m35s   <strong class="bold">192.168.88.141</strong>   …
+blue-v1-22   2/2     Running   0  7m35s   192.168.42.137   …
+$ $ aws servicediscovery list-instances --service-id srv-kc6c4f2mqt2buibx
+{
+    "Instances": [
+        {
+            "Attributes": {
+                "AWS_INSTANCE_IPV4": "<strong class="bold">192.168.42.137</strong>",
+                "AWS_INIT_HEALTH_STATUS": "HEALTHY",
+                ….},
+        {
+            "Attributes": {
+                "AWS_INSTANCE_IPV4": "<strong class="bold">192.168.88.141</strong>",
+                "AWS_INIT_HEALTH_STATUS": "HEALTHY",
+                ….}]}</pre>
+			<p>As we have <a id="_idIndexMarker877"/>connected our <strong class="source-inline">prod.eu</strong> namespace to <a id="_idIndexMarker878"/>our VPC, any node that has access to the VPC resolver can also resolve this name, as shown in the following sample from one of the EC2 <span class="No-Break">worker nodes:</span></p>
+			<pre class="console">
+sh-4.2$ dig myapp.prod.eu
+&lt;&lt;&gt;&gt; DiG 9.11.4-P2-RedHat-9.11.4-26.P2.amzn2.5.2 &lt;&lt;&gt;&gt; myapp.prod.eu
+………
+;myapp.prod.eu.                 IN      A
+;; ANSWER SECTION:
+myapp.prod.eu.          300     IN      A       192.168.88.141
+myapp.prod.eu.          300     IN      A       192.168.42.137
+…..</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">As we now are no longer using CoreDNS in K8s, anything that references the <strong class="source-inline">VirtualNode</strong> must now be modified to use the Cloud Map DNS entry. This includes any <strong class="source-inline">VirtualRouter</strong> <span class="No-Break">and/or </span><span class="No-Break"><strong class="source-inline">VirtualService</strong></span><span class="No-Break">.</span></p>
+			<p>Now that <a id="_idIndexMarker879"/>we have reviewed how to use Cloud Map with <a id="_idIndexMarker880"/>App Mesh, let’s round the chapter off with a quick look at how you troubleshoot the <span class="No-Break">Envoy proxy.</span></p>
+			<h1 id="_idParaDest-242"><a id="_idTextAnchor245"/>Troubleshooting the Envoy proxy</h1>
+			<p>As you can see, the Envoy proxy plays an integral role in AWS App Mesh. So being able to troubleshoot it <a id="_idIndexMarker881"/>is a critical skill. By default, Envoy logging is set to informational and while we are debugging, the first thing to do is to increase this <span class="No-Break">logging level.</span></p>
+			<p>If you have control over the Pod, then you can adjust the <strong class="source-inline">ENVOY_LOG_LEVEL</strong> variable as we did when we deployed the <strong class="source-inline">VirtualGateway</strong> for the <em class="italic">myapp</em> services, as shown in the following <span class="No-Break">manifest snippet:</span></p>
+			<pre class="source-code">
+          env:
+          - name: ENVOY_LOG_LEVEL
+            value: <strong class="bold">"debug"</strong></pre>
+			<p>Those Pods that are injected into a namespace come with the Envoy admin port <strong class="source-inline">9901</strong> enabled so we can use the <strong class="source-inline">kubectl port-forward</strong> command to map a local port to the admin port. The following command is an example of connecting to a Pod in the <span class="No-Break"><strong class="source-inline">green</strong></span><span class="No-Break"> namespace:</span></p>
+			<pre class="console">
+$ kubectl port-forward -n green green-v1-cf45dcc99-fbdh7   8080:9901</pre>
+			<p>We will use <strong class="bold">Cloud9</strong>, which is <a id="_idIndexMarker882"/>an integrated AWS development environment to connect <a id="_idIndexMarker883"/>the web browser to the <strong class="bold">Envoy Proxy admin</strong>. The following screenshot shows the <span class="No-Break">home screen:</span></p>
+			<div>
+				<div id="_idContainer130" class="IMG---Figure">
+					<img src="image/B18129_16_09.jpg" alt="Figure 16.9 – Envoy admin home page in the Cloud9 IDE"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 16.9 – Envoy admin home page in the Cloud9 IDE</p>
+			<p>While there is a lot of interesting data on the home page, we want to change the logging level so we get more detailed logging. We can do this through the port-forwarding connection we just set up using the following commands and then use the <strong class="source-inline">kubectl logs</strong> command to <strong class="source-inline">get</strong> or <strong class="source-inline">–follow</strong> the logs as they <span class="No-Break">get written:</span></p>
+			<pre class="console">
+$ curl -X POST http://localhost:8080/logging
+active loggers:
+  admin: info
+  alternate_protocols_cache: info
+$ curl -X POST http://localhost:8080/logging?level=debug
+active loggers:
+  admin: debug
+  alternate_protocols_cache: debug
+….
+$ kubectl logs -n green green-v1-cf45dcc99-fbdh7 envoy</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Remember to specify the <strong class="source-inline">envoy</strong> container in the <span class="No-Break">preceding command.</span></p>
+			<p>Typical Envoy <a id="_idIndexMarker884"/>proxy problems include <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>Backend, <strong class="source-inline">VirtualGateway</strong>, or <strong class="source-inline">VirtualRouter</strong> route configurations are not correct so the Envoy proxy cannot see the <span class="No-Break">URL request</span></li>
+				<li>Envoy doesn’t have AWS credentials or cannot connect to AWS App Mesh regional endpoints due to VPC <span class="No-Break">networking issues</span></li>
+				<li>The service DNS resolution is not configured either using the K8s dummy service or <span class="No-Break">external DNS</span></li>
+				<li>Envoy cannot connect to the App Mesh control plane to get <span class="No-Break">dynamic configuration</span></li>
+			</ul>
+			<p>Logging in <strong class="source-inline">envoy</strong> is verbose, so when you change it from informational to debug, you will see a lot of messages. The following table describes some expected messages that you should look for to determine whether <strong class="source-inline">envoy</strong> is <span class="No-Break">working correctly.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">This is not an <a id="_idIndexMarker885"/>exhaustive list but just common problems you’ll encounter with <span class="No-Break">App Mesh.</span></p>
+			<table id="table001-7" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<thead>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Message</strong></span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><span class="No-Break"><strong class="bold">Description</strong></span></p>
+						</td>
+					</tr>
+				</thead>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>[2023-x][34][debug][router] [source/common/router/router.cc:470] [C1988][S225897133909764297] cluster ‘cds_ingress_webapp_green-v1_green_http_8081’ match for <span class="No-Break"><em class="italic">URL ‘/id’</em></span></p>
+							<p>[2023-x][34][debug][router] [source/common/router/router.cc:673] [C1988][S225897133909764297] router <span class="No-Break">decoding headers:</span></p>
+							<p>‘:<span class="No-Break">authority’, </span><span class="No-Break"><em class="italic">‘green-v1.green.svc.cluster.local</em></span><span class="No-Break">:8081’</span></p>
+							<p>‘:<span class="No-Break">path’, ‘/id’</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>This message shows Envoy is receiving a request to the <strong class="source-inline">/id</strong> path on the <strong class="source-inline">green-v1</strong> service <span class="No-Break">port </span><span class="No-Break"><strong class="source-inline">8081</strong></span><span class="No-Break">.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>[2023-x][17][debug][config] [./source/common/config/grpc_stream.h:62] Establishing new gRPC bidi stream to <em class="italic">appmesh-envoy-management.eu-central-1.amazonaws.com</em>:443 for rpc StreamAggregatedResources(stream .envoy.service.discovery.v3.DiscoveryRequest) returns (<span class="No-Break">stream .envoy.service.discovery.v3.DiscoveryResponse);</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>This message shows the Envoy proxy connecting to the <strong class="source-inline">appmesh</strong> <span class="No-Break">regional endpoints.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>2023-x][25][debug][aws] [source/extensions/common/aws/credentials_provider_impl.cc:161] <em class="italic">Obtained</em> following AWS credentials from the EC2MetadataService: AWS_ACCESS_KEY_ID=****, <span class="No-Break">AWS_SECRET_ACCESS_KEY=*****, AWS_SESSION_TOKEN=*****</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>This message shows the Pod getting its credentials to interact with the <span class="No-Break">AWS API.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>[2023-x][17][debug][dns] [source/extensions/network/dns_resolver/cares/dns_impl.cc:275] dns resolution for <em class="italic">green-v1.green.svc.cluster.local</em> completed with <span class="No-Break">status 0</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>This message shows the Envoy proxy successfully resolving the DNS name of the local <span class="No-Break">K8s service.</span></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p>[2023-x][1][debug] [AppNet Agent] Envoy connectivity check status <span class="No-Break">200, {“stats”:[{“name”:”control_plane.connected_state”,”value”:1}]}</span></p>
+							<p>[2023-01-01 12:21:35.455][1][debug] [AppNet Agent] Control Plane connection state changed <span class="No-Break">to: CONNECTED</span></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>This shows the Envoy proxy connecting to the <strong class="source-inline">appmesh</strong> control plane to get the <span class="No-Break">dynamic configuration.</span></p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 14.1 – Useful Envoy proxy debug messages</p>
+			<p>Let’s now <a id="_idIndexMarker886"/>revisit the key learning points from <span class="No-Break">this chapter.</span></p>
+			<h1 id="_idParaDest-243"><a id="_idTextAnchor246"/>Summary</h1>
+			<p>In this chapter, we learned what a service mesh is and how it works and then we explored the details of what AWS App Mesh is and looked at some of the services it provides. We initially focused on how we can manage east/west traffic using a simple consumer and two web services in our example. After we deployed the application using native K8s services, we then configured our mesh and added <strong class="source-inline">VirtualNode</strong> and <strong class="source-inline">VirtualService</strong>, which allowed traffic to be managed by Envoy sidecar containers that were automatically injected and configured into our <span class="No-Break">application </span><span class="No-Break">Pods.</span></p>
+			<p>We then used <strong class="source-inline">VirtualRouter</strong> to load-balance between green and blue services representing different versions of the same service supporting a blue/green deployment strategy and minimizing rollout disruption. We added <strong class="source-inline">VirtualGateway</strong>, which allowed us to expose our application outside of the EKS cluster using an NLB and standalone <span class="No-Break">Envoy proxies.</span></p>
+			<p>Finally, we looked at how you can integrate AWS Cloud Map, an external DNS service, into App Mesh to allow service discovery outside of the cluster and remove the need to use K8s dummy services. We also looked at how to troubleshoot Envoy proxies by increasing the logging level and looked at common issues and messages you should look for. You should now be able to describe some of the features of AWS App Mesh and configure it to work with your existing K8s and <span class="No-Break">AWS CloudMap.</span></p>
+			<p>In the next chapter, we will look at how you can monitor your EKS cluster using AWS and third-party and open <span class="No-Break">source tools.</span></p>
+			<h1 id="_idParaDest-244"><a id="_idTextAnchor247"/>Further reading</h1>
+			<ul>
+				<li>Understanding how external DNS works with AWS Cloud <span class="No-Break">Map: </span><a href="https://github.com/kubernetes-sigs/external-dns/blob/master/docs/tutorials/aws-sd.md"><span class="No-Break">https://github.com/kubernetes-sigs/external-dns/blob/master/docs/tutorials/aws-sd.md</span></a></li>
+				<li>Understanding Envoy and how it’s <span class="No-Break">used: </span><a href="https://www.envoyproxy.io/"><span class="No-Break">https://www.envoyproxy.io/</span></a></li>
+				<li>Understanding the service mesh <span class="No-Break">landscape: </span><a href="https://layer5.io/service-mesh-landscape"><span class="No-Break">https://layer5.io/service-mesh-landscape</span></a></li>
+				<li>Troubleshooting AWS App <span class="No-Break">Mesh: </span><a href="https://docs.aws.amazon.com/app-mesh/latest/userguide/troubleshooting.html"><span class="No-Break">https://docs.aws.amazon.com/app-mesh/latest/userguide/troubleshooting.html</span></a></li>
+			</ul>
+		</div>
+	
+
+		<div id="_idContainer132" class="Content">
+			<h1 id="_idParaDest-245"><a id="_idTextAnchor248"/>Part 4: Advanced EKS Service Mesh and Scaling</h1>
+		</div>
+		<div id="_idContainer133">
+			<p>Congratulations! Now you are in the final stretch of your journey to mastering EKS. In the second last part, we will introduce the service mesh and how it can be integrated into EKS. Additionally, we will further explore advanced practices, covering observability, monitoring, and scaling strategies for your workload, Pods, and node groups. Finally, by the end of this part, you will have gained knowledge of automation tools and learned how to implement CI/CD practices to streamline your deployment activities <span class="No-Break">on EKS.</span></p>
+			<p>This section contains the <span class="No-Break">following chapters:</span></p>
+			<ul>
+				<li><a href="B18129_17.xhtml#_idTextAnchor249"><em class="italic">Chapter 17</em></a>, <em class="italic">EKS Observability</em></li>
+				<li><a href="B18129_18.xhtml#_idTextAnchor264"><em class="italic">Chapter 18</em></a>, <em class="italic">Scaling Your EKS Cluster</em></li>
+				<li><a href="B18129_19.xhtml#_idTextAnchor313"><em class="italic">Chapter 19</em></a>, <em class="italic">Developing on EKS</em></li>
+			</ul>
+		</div>
+		<div>
+			<div id="_idContainer134">
+			</div>
+		</div>
+		<div>
+			<div id="_idContainer135" class="Basic-Graphics-Frame">
+			</div>
+		</div>
+		<div>
+			<div id="_idContainer136">
+			</div>
+		</div>
+	</body></html>

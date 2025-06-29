@@ -1,0 +1,443 @@
+<html><head></head><body>
+		<div id="_idContainer113">
+			<h1 id="_idParaDest-208" class="chapter-number"><a id="_idTextAnchor255"/>11</h1>
+			<h1 id="_idParaDest-209"><a id="_idTextAnchor256"/>Using Helm with the Operator Framework</h1>
+			<p>One of the advantages of using Helm is the ability to declaratively define an application’s desired state. With Helm, the desired state is managed with templates and Helm values, which, when provided using the <strong class="source-inline">install</strong> or <strong class="source-inline">upgrade</strong> commands, apply the values to synchronize the live state in a Kubernetes cluster. In previous chapters, this was performed by invoking those commands manually. Most recently, in <a href="B17979_10.xhtml#_idTextAnchor241"><span class="No-Break"><em class="italic">Chapter 10</em></span></a>, <em class="italic">Automating Helm with CD and GitOps</em>, we used Argo CD as a method of state synchronization.</p>
+			<p>Another way changes can be synchronized to a Kubernetes cluster is to use a controller that checks periodically that the desired state matches the current configuration in the environment. If the state does not match, the application can automatically modify the environment to match the desired state. This controller is the foundation of applications and is referred to as a <strong class="bold">Kubernetes operator</strong>.</p>
+			<p>In this chapter, we will create a Helm-based operator that helps ensure that the desired state always matches the live state of the cluster. If it does not, the operator will execute the appropriate Helm commands to reconcile the state of the environment.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Understanding Kubernetes operators</li>
+				<li>Understanding the Guestbook operator control loop</li>
+				<li>Using Helm to manage operators, <strong class="bold">Custom Resource Definitions</strong> (<strong class="bold">CRDs</strong>), and <strong class="bold">Custom Resources</strong> (<strong class="bold">CRs</strong>)</li>
+				<li>Cleaning up</li>
+			</ul>
+			<h1 id="_idParaDest-210"><a id="_idTextAnchor257"/>Technical requirements</h1>
+			<p>For this chapter, you will need to have the following technologies installed on your local machine:</p>
+			<ul>
+				<li>minikube</li>
+				<li>Helm</li>
+				<li>kubectl</li>
+			</ul>
+			<p>In addition to these tools, you should find the Packt repository containing resources associated with the examples on GitHub at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm</a>. This repository will be referenced throughout this chapter.</p>
+			<h1 id="_idParaDest-211"><a id="_idTextAnchor258"/>Understanding Kubernetes operators</h1>
+			<p>One of<a id="_idIndexMarker606"/> the fundamental principles of Kubernetes is that the current state of resources within the cluster matches the desired state, a process known as the <strong class="bold">control loop</strong>. The<a id="_idIndexMarker607"/> control loop is an ongoing, non-terminating pattern of monitoring the state of the cluster through the use of controllers. Kubernetes includes numerous controllers that are native to the platform, with examples ranging from admission controllers that intercept requests made to the API server to replication controllers that ensure the configuration of pod replicas.</p>
+			<p>As interest in Kubernetes began to grow, the combination of providing users with the ability to extend the capabilities of the platform, as well as a way to provide more intelligence around managing the life cycle of applications, led to the creation of a couple of important features to support Kubernetes development. First, the introduction of CRDs enabled users the ability to extend the default Kubernetes API in order to create and register new types of resources. Registering a new CRD creates a new resource path on the Kubernetes API server. For example, registering a new CRD for an object type called <strong class="bold">Guestbook</strong> provides <a id="_idIndexMarker608"/>the capabilities to interact with the Guestbook resource through the Kubernetes API server. When using the Kubernetes CLI, <strong class="source-inline">kubectl get Guestbook</strong> can now be used to view all Guestbook objects that are currently available. With this new capability realized, developers could now create controllers of their own to monitor these types of CRs and manage the lifecycle of applications through the use of CRDs.</p>
+			<p>Another <a id="_idIndexMarker609"/>major feature that helped to shape the developer experience in Kubernetes included advances in the types of applications deployed to Kubernetes. Instead of small and simple applications, more complex and stateful applications were being deployed more frequently. Typically, these types of advanced applications require a higher level of management and maintenance, such as <em class="italic">day 2</em> activities including backups, restorations, and upgrades. These tasks extend beyond the typical types of controllers that are found natively in Kubernetes, as deep knowledge related to the application being managed must be embedded within. This pattern of using a CR to manage applications and their components is known as the <strong class="bold">Operator</strong> pattern. First coined by <a id="_idIndexMarker610"/>the software company <strong class="bold">CoreOS</strong> in 2016, operators aim to capture the knowledge that a human operator would have for managing the lifecycle of an application. Operators are packaged as normal containerized applications, deployed within pods, that react on changes to the API against CRs.</p>
+			<p>Operators are commonly written using a framework <a id="_idIndexMarker611"/>called <strong class="bold">kubebuilder</strong>, which contains features that simplify the creation of CRs and the interaction with a Kubernetes environment. Several additional frameworks have since been created to further extend the capabilities to support operator development. One such popular toolkit is the <strong class="bold">Operator Framework</strong>, which <a id="_idIndexMarker612"/>provides end users with the ability to create operators using one of the following three technologies:</p>
+			<ul>
+				<li><strong class="bold">Go</strong></li>
+				<li><strong class="bold">Ansible</strong></li>
+				<li><strong class="bold">Helm</strong></li>
+			</ul>
+			<p>Go-based operators leverage the Go programming language to implement control loop logic. Ansible-based operators leverage the Ansible CLI tool and Ansible playbooks to manage the state of resources. Ansible is a popular open source configuration management tool.</p>
+			<p>In this chapter, we will focus on Helm-based operators. Helm operators base their control loop logic on Helm charts and a subset of features provided by the Helm CLI. As a result, they represent an easy way for Helm users to implement their own operators.</p>
+			<p>With an understanding of operators, let’s continue by creating our own operator using Helm.</p>
+			<h1 id="_idParaDest-212"><a id="_idTextAnchor259"/>Understanding the Guestbook operator control loop</h1>
+			<p>In this chapter, we will write a <a id="_idIndexMarker613"/>Helm-based operator that will be used to install the Guestbook Helm chart. This chart can be found in the Packt repository at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/tree/main/helm-charts/charts/guestbook">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/tree/main/helm-charts/charts/guestbook</a>.</p>
+			<p>The following diagram demonstrates how the Guestbook operator will function once it has been deployed:</p>
+			<div>
+				<div id="_idContainer111" class="IMG---Figure">
+					<img src="image/Figure_11.01_B17979.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.1 – The Guestbook operator control loop</p>
+			<p>The<a id="_idIndexMarker614"/> Guestbook operator constantly watches for the creation, deletion, or modification of Guestbook CRs. When a Guestbook CR is created, the operator will install the Guestbook Helm chart, and when the CR is modified, it upgrades the release accordingly so that the state of the cluster matches the desired intent as defined by the CR. Similarly, when the CR is deleted, the operator uninstalls the release.</p>
+			<p>With an understanding of how the operator’s control loop will function, let’s set up an environment where the operator can be built and deployed.</p>
+			<h2 id="_idParaDest-213"><a id="_idTextAnchor260"/>Preparing a local development environment</h2>
+			<p>In order to create a<a id="_idIndexMarker615"/> Helm operator, you will need the following CLI tools at a minimum:</p>
+			<ul>
+				<li><strong class="source-inline">operator-sdk</strong></li>
+				<li>A container management tool, such as <strong class="source-inline">docker</strong>, <strong class="source-inline">podman</strong>, or <strong class="source-inline">buildah</strong></li>
+			</ul>
+			<p>The <strong class="source-inline">operator-sdk</strong> CLI is a toolkit used to help develop Kubernetes operators. It contains inherent logic to simplify the operator development process. Under the hood, <strong class="source-inline">operator-sdk</strong> requires a container management tool that it can use to build the operator image. The supported container management tools are <strong class="source-inline">docker</strong>, <strong class="source-inline">podman</strong>, and <strong class="source-inline">buildah</strong>.</p>
+			<p>Installing the <strong class="source-inline">operator-sdk</strong> CLI is easy, as you can simply download a release from GitHub at <a href="https://github.com/operator-framework/operator-sdk/releases">https://github.com/operator-framework/operator-sdk/releases</a>. However, the process used to install <strong class="source-inline">docker</strong>, <strong class="source-inline">podman</strong>, or <strong class="source-inline">buildah</strong> varies greatly depending on your operating system; not to mention, Windows users will not be able to use the <strong class="source-inline">operator-sdk</strong> toolkit natively.</p>
+			<p>Fortunately, the minikube <strong class="bold">Virtual Machine</strong> (<strong class="bold">VM</strong>) can be leveraged as a working environment for developers regardless of the host operating system since minikube is a Linux VM that also contains the Docker CLI. In this section, we will install the <strong class="source-inline">operator-sdk</strong> toolkit onto minikube and use the minikube VM as an environment to create the operator.</p>
+			<p>First, start the minikube VM:</p>
+			<p class="source-code">$ minikube start</p>
+			<p>Once the VM has started, proceed by following these steps:</p>
+			<ol>
+				<li>Access the VM by running the <strong class="source-inline">minikube ssh</strong> command:<p class="source-code"><strong class="bold">$ minikube ssh</strong></p></li>
+				<li>Once inside the VM, you need to download the <strong class="source-inline">operator-sdk</strong> CLI. This can be accomplished using the <strong class="source-inline">curl</strong> command. Note that the <strong class="source-inline">operator-sdk</strong> version used during writing was version <strong class="source-inline">v1.20.0</strong>.</li>
+			</ol>
+			<p>To download this version of the <strong class="source-inline">operator-sdk</strong> CLI, run the following command:</p>
+			<p class="source-code"><strong class="bold">$ curl –o operator-sdk –L https://github.com/operator-framework/operator-sdk/releases/download/v1.20.0/operator-sdk_linux_amd64</strong></p>
+			<ol>
+				<li value="3">Once downloaded, you will need to change the permission of the <strong class="source-inline">operator-sdk</strong> binary to be user-executable. Run the <strong class="source-inline">chmod</strong> command to make this modification:<p class="source-code"><strong class="bold">$ chmod u+x operator-sdk</strong></p></li>
+				<li>Next, move<a id="_idIndexMarker616"/> the <strong class="source-inline">operator-sdk</strong> binary to a location managed by the <strong class="source-inline">PATH</strong> variable, such as <strong class="source-inline">/usr/local/bin</strong>. Because this operation requires root privileges, you will need to run the <strong class="source-inline">mv</strong> command using <strong class="source-inline">sudo</strong>:<p class="source-code"><strong class="bold">$ sudo mv operator-sdk /usr/local/bin</strong></p></li>
+				<li>Finally, verify your <strong class="source-inline">operator-sdk</strong> installation by running the <strong class="source-inline">operator-sdk version</strong> command:<p class="source-code"><strong class="bold">$ operator-sdk version</strong></p><p class="source-code"><strong class="bold">operator-sdk version: "v1.20.0", commit: "deb3531ae20a5805b7ee30b71f13792b80bd49b1", kubernetes version: "1.23", go version: "go1.17.9", GOOS: "linux", GOARCH: "amd64"</strong></p></li>
+				<li>As an additional step, you should also clone the Packt repository in your minikube VM since we will need it later to build our Helm operator. Run the following commands to install <strong class="source-inline">git</strong> and clone the repository in your VM (notice that we will also install <strong class="source-inline">make</strong>, which is necessary for building our operator image later):<p class="source-code"><strong class="bold">$ sudo apt update</strong></p><p class="source-code"><strong class="bold">$ sudo apt install git make</strong></p><p class="source-code"><strong class="bold">$ git clone https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm.git</strong></p></li>
+			</ol>
+			<p>Now that you <a id="_idIndexMarker617"/>have a local development environment created in the minikube VM, let’s begin writing the Guestbook operator. Note that an example of the operator code is located in the Packt repository at <a href="https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/tree/main/chapter11/guestbook-operator">https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm/tree/main/chapter11/guestbook-operator</a>.</p>
+			<h2 id="_idParaDest-214"><a id="_idTextAnchor261"/>Scaffolding the operator file structure</h2>
+			<p>Similar to Helm charts<a id="_idIndexMarker618"/> themselves, Helm operators built by the <strong class="source-inline">operator-sdk</strong> binary have a specific file structure that must be adhered to. The file structure is explained in the following table:</p>
+			<table id="table001-9" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="bold">File/folder</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="bold">Definition</strong></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">Dockerfile</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Used to build the operator image</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">Makefile</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Provides a convenient set of targets for building the operator image and deploying it to Kubernetes</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">PROJECT</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Provides <strong class="source-inline">operator-sdk</strong> metadata</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains Kubernetes resource manifests for CRDs, CRs, and the operator instance</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">helm-charts/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains the Helm charts that the operator is in charge of installing</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">watches.yaml</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Defines the CRs that the operator is in charge of monitoring</p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 11.1 – The operator-sdk file structure</p>
+			<p>This file<a id="_idIndexMarker619"/> structure can be easily created using the <strong class="source-inline">operator-sdk init</strong> and <strong class="source-inline">operator-sdk create api</strong> commands. Let’s walk through this process to create a <strong class="source-inline">Guestbook</strong> kind of a custom API version, <strong class="source-inline">demo.example.com/v1alpha1</strong>:</p>
+			<ol>
+				<li value="1">First, create a new folder for the operator and <strong class="source-inline">cd</strong> inside the newly created directory:<p class="source-code"><strong class="bold">$ mkdir guestbook-operator</strong></p><p class="source-code"><strong class="bold">$ cd guestbook-operator</strong></p></li>
+				<li>Next, use the <strong class="source-inline">operator-sdk init</strong> command to initialize the project:<p class="source-code"><strong class="bold">$ operator-sdk init --plugins helm --domain example.com</strong></p></li>
+			</ol>
+			<p>Notice the usage of the <strong class="source-inline">--plugins helm</strong> parameter. This specifies that our project is a Helm operator and provides the necessary project scaffolding. The <strong class="source-inline">–domain example.com</strong> parameter specifies the Kubernetes API group that will be used for the CR. However, the command has not yet created the Guestbook CRD and control loop logic. This will be handled in the next step.</p>
+			<ol>
+				<li value="3">Run the <strong class="source-inline">operator-sdk create api</strong> command to create the Guestbook CRD and associated manifests:<p class="source-code"><strong class="bold">$ operator-sdk create api --group demo --version v1alpha1 --kind Guestbook --helm-chart ../Managing-Kubernetes-Resources-using-Helm/helm-charts/charts/guestbook</strong></p></li>
+			</ol>
+			<p>You might see a<a id="_idIndexMarker620"/> warning about RBAC rules, but this can safely be ignored for this example. In practice, you should always ensure that the RBAC rules follow the principle of least privilege.</p>
+			<p>With the Guestbook operator successfully scaffolded, let’s build the operator and push it to a container registry, where we will later pull the image for deployment.</p>
+			<h2 id="_idParaDest-215"><a id="_idTextAnchor262"/>Building the operator image</h2>
+			<p>One of the files <a id="_idIndexMarker621"/>generated by <strong class="source-inline">operator-sdk</strong> was <strong class="source-inline">Makefile</strong>, which contains targets for building your operator image and pushing it to a container registry. However, before we can build our image, we need to have access to a container registry.</p>
+			<p>In <a href="B17979_08.xhtml#_idTextAnchor210"><span class="No-Break"><em class="italic">Chapter 8</em></span></a>, <em class="italic">Publishing to a Helm Chart Repository</em>, we used the GitHub container registry located at <strong class="source-inline">ghcr.io</strong> to publish images. We will use the same registry for publishing our Guestbook operator. </p>
+			<p>In order to publish to <strong class="source-inline">ghcr.io</strong>, you need to<a id="_idIndexMarker622"/> have first created a <strong class="bold">Personal Access Token</strong> (<strong class="bold">PAT</strong>). If you have already created one in <a href="B17979_08.xhtml#_idTextAnchor210"><span class="No-Break"><em class="italic">Chapter 8</em></span></a>, <em class="italic">Publishing to a Helm Chart Repository</em>, you do not need to create a new one (unless it has expired or you have misplaced the token). </p>
+			<p>However, if you do need to create a PAT, you can follow these steps:</p>
+			<ol>
+				<li value="1">Log into GitHub. Once you are logged in, from the upper-right corner of the page, select your profile picture and click on <strong class="bold">Settings</strong> from the drop-down menu.</li>
+				<li>Click on <strong class="bold">Developer Settings</strong> and select <strong class="bold">Personal Account Token</strong>.</li>
+				<li>Click on the <strong class="bold">Generate New Token</strong> button to initiate the token creation process.</li>
+				<li>Enter a unique name for the token, such as <strong class="source-inline">Learn Helm</strong>.</li>
+				<li>Select the date the token will expire. It is a recommended practice to specify an expiration date as it follows security best practices.</li>
+				<li>Select the scopes (permissions) granted to the token. The following scopes are required for managing content within the container registry:<ol><li><strong class="source-inline">read:packages</strong></li><li><strong class="source-inline">write:packages</strong></li><li><strong class="source-inline">delete:packages</strong></li></ol></li>
+				<li>Click on the <strong class="bold">Generate Token</strong> button to create the token.</li>
+			</ol>
+			<p>Be sure to copy the token before navigating away from the page. If you navigate away from the page before noting the content of the token, it can be regenerated at any time. However, the previously specified value will no longer be valid.</p>
+			<p>Once you have <a id="_idIndexMarker623"/>created your PAT and copied the access token, you can log into the <strong class="source-inline">ghcr.io</strong> registry from within your minikube VM by using the <strong class="source-inline">docker login</strong> command. For the <strong class="source-inline">Username</strong> prompt, provide your GitHub username, and for <strong class="source-inline">Password</strong>, paste the PAT token:</p>
+			<p class="source-code">$ docker login ghcr.io</p>
+			<p class="source-code">Username: &lt;user&gt;</p>
+			<p class="source-code">Password: &lt;Paste your PAT token here&gt;</p>
+			<p>Once you have logged into the registry, you can continue by building and deploying your operator image. To do this, we can use the <strong class="source-inline">make</strong> utility to run different Makefile targets:</p>
+			<ol>
+				<li value="1">First, we need to define the image name. The Makefile defaults the image name to <strong class="source-inline">controller:latest</strong>. We can give a more descriptive name by setting the <strong class="source-inline">IMG</strong> environment variable:<p class="source-code"><strong class="bold">$ export IMG=ghcr.io/&lt;GITHUB_USERNAME&gt;/guestbook-operator:1.0.0</strong></p></li>
+			</ol>
+			<p>Be sure to substitute your GitHub username when setting the <strong class="source-inline">IMG</strong> variable.</p>
+			<ol>
+				<li value="2">Next, we can begin the image build using the <strong class="source-inline">docker-build</strong> Makefile target:<p class="source-code"><strong class="bold">$ make docker-build</strong></p></li>
+			</ol>
+			<p>If the build is successful, you will see the <strong class="source-inline">Successfully tagged</strong> message followed by the container image name and tag. Additionally, you can use the <strong class="source-inline">docker images</strong> command to verify the image was created:</p>
+			<p class="source-code"><strong class="bold">$ docker images</strong></p>
+			<p class="source-code"><strong class="bold">REPOSITORY                                 TAG</strong></p>
+			<p class="source-code"><strong class="bold">Ghcr.io/&lt;GITHUB_USERNAME&gt;/guestbook-operator          1.0.0</strong></p>
+			<ol>
+				<li value="3">Finally, we can push our image using the <strong class="source-inline">docker-push</strong> target:<p class="source-code"><strong class="bold">$ make docker-push</strong></p><p class="source-code"><strong class="bold">. . .</strong></p><p class="source-code"><strong class="bold">1.0.0: digest: sha256:1f73c8f37afea7c7f4eabaa741d5505880b 5f1bda4de4fad15862acd7d16fb23 size: 1779</strong></p></li>
+			</ol>
+			<p>By default, your<a id="_idIndexMarker624"/> image will be private after you successfully push to <strong class="source-inline">ghcr.io</strong>. To avoid requiring the need for specifying a Kubernetes pull secret to access the image, we can update the image settings to make the image publicly available.</p>
+			<p>First, in GitHub, select your profile picture from the upper-right corner of the page, and choose <strong class="bold">Your Profile</strong>. On the next screen, select the <strong class="bold">Packages</strong> tab at the top of the page. After selecting the <strong class="bold">Packages</strong> tab, you should be able to see the <strong class="source-inline">guestbook-operator</strong> image (the guestbook image from <a href="B17979_08.xhtml#_idTextAnchor210"><span class="No-Break"><em class="italic">Chapter 8</em></span></a>, <em class="italic">Publishing to a Helm Chart Repository</em>, is visible in the screenshot, too):</p>
+			<div>
+				<div id="_idContainer112" class="IMG---Figure">
+					<img src="image/Figure_11.02_B17979.jpg" alt="Figure 11.2 – The GitHub Packages page&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.2 – The GitHub Packages page</p>
+			<p>Next, select<a id="_idIndexMarker625"/> the <strong class="source-inline">guestbook-operator</strong> package. On the far right of the screen, select <strong class="bold">Package Settings</strong>, then update the <strong class="bold">Change Visibility</strong> setting to <strong class="bold">Public</strong>.</p>
+			<p>If you were able to update your image’s visibility to <strong class="bold">Public</strong>, then you have successfully pushed your image and can now access it without requiring credentials. Let’s continue by deploying your operator to Kubernetes.</p>
+			<h2 id="_idParaDest-216"><a id="_idTextAnchor263"/>Deploying the Guestbook operator</h2>
+			<p>Similar to building the <a id="_idIndexMarker626"/>operator, the deployment of our Guestbook operator can be performed using a set of Makefile targets. The Makefile generated by <strong class="source-inline">operator-sdk</strong> contains four targets related to the installation or removal of the operator:</p>
+			<ul>
+				<li><strong class="source-inline">install</strong>: This installs CRDs onto the Kubernetes cluster. This target adds the Guestbook API to the cluster.</li>
+				<li><strong class="source-inline">uninstall</strong>: This uninstalls CRDs from the Kubernetes cluster. This target removes the Guestbook API from the cluster.</li>
+				<li><strong class="source-inline">deploy</strong>: This installs CRDs and deploys the Guestbook operator to the Kubernetes cluster. We’ll use this target later for the deployment.</li>
+				<li><strong class="source-inline">undeploy</strong>: This undeploys (or removes) the CRDs and Guestbook operator instance from the Kubernetes cluster.</li>
+			</ul>
+			<p>Under the hood, each <a id="_idIndexMarker627"/>target uses <strong class="source-inline">kubectl</strong> and a configuration management tool <a id="_idIndexMarker628"/>called <strong class="bold">kustomize</strong> to generate and apply manifests located under the <strong class="source-inline">config</strong> folder. Kustomize is a tool that, at a high level, uses <strong class="source-inline">kustomization.yaml</strong> files that specify the Kubernetes manifests that will be applied. Also, it adds patches and common configurations to each manifest, such as the target namespace and resource names. </p>
+			<p>The contents of the <strong class="source-inline">config</strong> folder contents are shown in the following table:</p>
+			<table id="table002-6" class="No-Table-Style _idGenTablePara-1">
+				<colgroup>
+					<col/>
+					<col/>
+				</colgroup>
+				<tbody>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="bold">Folder</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p><strong class="bold">Definition</strong></p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/crd/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains the CRDs for extending the Kubernetes API. For our Guestbook operator, there is only one CRD.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/default/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains a parent <strong class="source-inline">kustomization.yaml</strong> file for applying CRD, RBAC, and operator (also referred to as <em class="italic">manager</em>) resources.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/manager/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains a deployment resource for creating the operator (or <strong class="source-inline">manage</strong>r) instance.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/manifests/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>A superset of the <strong class="source-inline">config/default/</strong> folder. Here, <strong class="source-inline">config/manifests</strong> applies CRD, RBAC, and operator resources, but it also applies an example Guestbook CR and a <em class="italic">scorecard</em>, which is used for testing the operator.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/prometheus/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains a Prometheus <strong class="source-inline">ServiceMonitor</strong> resource for tracking metrics. This is disabled by default but can be enabled in the <strong class="source-inline">kustomization.yaml</strong> file located under <strong class="source-inline">config/default/</strong>.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/rbac/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains <strong class="source-inline">Role</strong>, <strong class="source-inline">RoleBinding</strong>, and <strong class="source-inline">ServiceAccount</strong> resources. These grant the operator permission to manage Guestbook resources. They also create Guestbook editor and viewer roles for users throughout the Kubernetes cluster.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/samples/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains an example Guestbook manifest.</p>
+						</td>
+					</tr>
+					<tr class="No-Table-Style">
+						<td class="No-Table-Style">
+							<p><strong class="source-inline">config/scorecard/</strong></p>
+						</td>
+						<td class="No-Table-Style">
+							<p>Contains manifests for testing the operator. They are unused by default.</p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.4 – The contents of the config folder</p>
+			<p>When we <a id="_idIndexMarker629"/>run the <strong class="source-inline">make</strong> deploy command, Kustomize targets the <strong class="source-inline">kustomization.yaml</strong> file from <strong class="source-inline">config/default/</strong> to apply resources from the <strong class="source-inline">config/crd/</strong>, <strong class="source-inline">config/manager/</strong>, and <strong class="source-inline">config/rbac/</strong> directories. Then, when the operator is installed, we will apply the Guestbook CR, which is located at <strong class="source-inline">config/samples/demo_v1alpha1_guestbook.yaml</strong>. Let’s take a look at a snippet from the <strong class="source-inline">demo_v1alpha1_guestbook.yaml</strong> file:</p>
+			<pre class="source-code">
+apiVersion: demo.example.com/v1alpha1
+kind: Guestbook
+metadata:
+  name: guestbook-sample
+spec:
+  # Default values copied from &lt;project_dir&gt;/helm-charts/guestbook/values.yaml
+  affinity: {}
+  autoscaling:
+    enabled: false
+    maxReplicas: 100
+    minReplicas: 1
+    targetCPUUtilizationPercentage: 80
+  env:
+  - name: GET_HOSTS_FROM
+    value: env
+  - name: REDIS_LEADER_SERVICE_HOST
+    value: redis-master
+  - name: REDIS_FOLLOWER_SERVICE_HOST
+    value: redis-replicas
+  fullnameOverride: ""
+  image:
+    pullPolicy: IfNotPresent
+    repository: gcr.io/google_samples/gb-frontend
+    tag: ""</pre>
+			<p>Does the preceding <a id="_idIndexMarker630"/>YAML look familiar? Each of the entries under the <strong class="source-inline">spec</strong> stanza reference default values from the Guestbook chart’s <strong class="source-inline">values.yaml</strong> file. This is how values are provided when using a Helm operator. Rather than providing a <strong class="source-inline">values.yaml</strong> file, users write values in the Guestbook CR. Then, when the resource is applied, the operator consumes the values and deploys the application accordingly.</p>
+			<p>With a basic <a id="_idIndexMarker631"/>understanding of the operator’s <strong class="source-inline">config/</strong> folder and <strong class="source-inline">Makefile</strong> targets, let’s deploy the Guestbook operator by following these steps:</p>
+			<ol>
+				<li value="1">In order to deploy the Guestbook operator, we need to be authenticated to the Kubernetes cluster. Because the minikube VM does not have <strong class="source-inline">kubectl</strong> installed, nor <strong class="source-inline">kubeconfig</strong>, which we can use for authentication, it will be simpler to deploy the operator from your host machine. </li>
+			</ol>
+			<p>Exit the minikube VM by running the following command:</p>
+			<p class="source-code"><strong class="bold">$ exit</strong></p>
+			<ol>
+				<li value="2">The resources we created in the minikube VM are also located in the Packt repository under the <strong class="source-inline">chapter11/guestbook-operator/</strong> folder. You can clone this repository and navigate to the <strong class="source-inline">guestbook-operator</strong> folder by running the following commands:<p class="source-code"><strong class="bold">$ git clone https://github.com/PacktPublishing/Managing-Kubernetes-Resources-using-Helm.git</strong></p><p class="source-code"><strong class="bold">$ cd Managing-Kubernetes-Resources-using-Helm/chapter11/guestbook-operator</strong></p></li>
+			</ol>
+			<p>The files from the Packt repository are the same as the ones you created in the minikube VM with one exception. As you might recall from previous chapters, the Guestbook Helm chart contains hooks for backing up and restoring the Redis database. These hooks require the operator to have permission to manage the <strong class="source-inline">Job</strong> and <strong class="source-inline">PersistentVolumeClaim</strong> resources. Because the role generated by <strong class="source-inline">operator-sdk</strong> does not include these resources, we added them at the end of the role definition located at <strong class="source-inline">chapter11/guestbook-operator/config/rbac/role.yaml</strong>. Here are the permissions that we added:</p>
+			<p class="source-code">- apiGroups:</p>
+			<p class="source-code">  - ""</p>
+			<p class="source-code">  resources:</p>
+			<p class="source-code">  - persistentvolumeclaims</p>
+			<p class="source-code">  verbs:</p>
+			<p class="source-code">  - create</p>
+			<p class="source-code">  - delete</p>
+			<p class="source-code">  - get</p>
+			<p class="source-code">  - list</p>
+			<p class="source-code">  - patch</p>
+			<p class="source-code">  - update</p>
+			<p class="source-code">  - watch</p>
+			<p class="source-code">- apiGroups:</p>
+			<p class="source-code">  - batch</p>
+			<p class="source-code">  resources:</p>
+			<p class="source-code">  - jobs</p>
+			<p class="source-code">  verbs:</p>
+			<p class="source-code">  - create</p>
+			<p class="source-code">  - delete</p>
+			<p class="source-code">  - get</p>
+			<p class="source-code">  - list</p>
+			<p class="source-code">  - patch</p>
+			<p class="source-code">  - update</p>
+			<p class="source-code">  - watch</p>
+			<ol>
+				<li value="3">Next, we will use the <strong class="source-inline">make</strong> command <a id="_idIndexMarker632"/>to deploy the Guestbook CRD and operator to the Kubernetes cluster. Note that Windows users might need to install <strong class="source-inline">make</strong> first, which can be done by using the Chocolatey package manager:<p class="source-code"><strong class="bold">$ choco install make</strong></p></li>
+			</ol>
+			<p>Proceed with the operator deployment by setting the <strong class="source-inline">IMG</strong> environment variable and running the following <strong class="source-inline">make</strong> command:</p>
+			<p class="source-code"><strong class="bold">$ export IMG=ghcr.io/&lt;GITHUB_USERNAME&gt;/guestbook-operator:1.0.0</strong></p>
+			<p class="source-code"><strong class="bold">$ make deploy</strong></p>
+			<ol>
+				<li value="4">The operator <a id="_idIndexMarker633"/>was installed in a namespace called <strong class="source-inline">guestbook-operator-system</strong>. Verify that the pod was deployed successfully in this namespace:<p class="source-code"><strong class="bold">$ kubectl get pods –n guestbook-operator-system</strong></p><p class="source-code"><strong class="bold">NAME                                       READY   STATUS</strong></p><p class="source-code"><strong class="bold">guestbook-operator-controller-manager...   2/2     Running</strong></p></li>
+			</ol>
+			<p>Now that the operator has been deployed, let’s use it to install the Guestbook Helm chart.</p>
+			<h2 id="_idParaDest-217"><a id="_idTextAnchor264"/>Deploying the Guestbook application</h2>
+			<p>When using Helm<a id="_idIndexMarker634"/> normally as a standalone CLI tool, you would install a Helm chart by running the <strong class="source-inline">helm install</strong> command. With a Helm operator, you can install a Helm chart by creating a CR.</p>
+			<p>First, create a new namespace for our deployment:</p>
+			<p class="source-code">$ kubectl create namespace chapter11</p>
+			<p>Then, using the CR located in the Packt repository at <strong class="source-inline">chapter11/guestbook-operator/config/samples/demo_v1alpha1_guestbook.yaml</strong>, install the Guestbook Helm chart:</p>
+			<p class="source-code">$ kubectl apply –f chapter11/guestbook-operator/config/samples/demo_v1alpha1_guestbook.yaml -n chapter11</p>
+			<p>Once the installation is complete, you’ll see each pod in the ready state:</p>
+			<p class="source-code">$ kubectl get pods –n chapter11</p>
+			<p class="source-code">NAME                                READY   STATUS</p>
+			<p class="source-code">guestbook-sample-76d48ccddb-dfrkr   1/1     Running</p>
+			<p class="source-code">redis-master-0                      1/1     Running</p>
+			<p class="source-code">redis-replicas-0                    1/1     Running</p>
+			<p class="source-code">redis-replicas-1                    1/1     Running</p>
+			<p class="source-code">redis-replicas-2                    1/1     Running</p>
+			<p>When you created<a id="_idIndexMarker635"/> the CR, the operator executed the <strong class="source-inline">helm install</strong> command against the Guestbook Helm chart. You can confirm the release was created by running <strong class="source-inline">helm list</strong>:</p>
+			<p class="source-code">$ helm list –n chapter11</p>
+			<p class="source-code">NAME               NAMESPACE   REVISION</p>
+			<p class="source-code">guestbook-sample   chapter11   1</p>
+			<p>Upgrades are performed by reapplying the CR with a different set of values. A modified CR is located in the Packt repository at <strong class="source-inline">chapter11/guestbook-operator/config/samples/upgrade-example.yaml</strong>. In this file, the <strong class="source-inline">replicaCount</strong> value has been changed to <strong class="source-inline">2</strong>, as opposed to <strong class="source-inline">1</strong> in the original CR.</p>
+			<p>Apply the updated CR by running the following command:</p>
+			<p class="source-code">$ kubectl apply –f chapter11/guestbook-operator/config/samples/upgrade-example.yaml -n chapter11</p>
+			<p>This modification of the Guestbook CR causes the operator to trigger <strong class="source-inline">helm upgrade</strong> against the <strong class="source-inline">guestbook-sample</strong> release. As you might recall from <a href="B17979_07.xhtml#_idTextAnchor196"><span class="No-Break"><em class="italic">Chapter 7</em></span></a>, <em class="italic">Helm Lifecycle Hooks</em>, the Guestbook chart contains an upgrade hook that initiates a Redis backup. If you watch the pods in the <strong class="source-inline">chapter11</strong> namespace after modifying the CR, you will see the backup job begin, and then you will shortly see two Guestbook pods appear. You will also notice that the revision number of the release increased to <strong class="source-inline">2</strong>:</p>
+			<p class="source-code">$ helm list –n chapter11</p>
+			<p class="source-code">NAME               NAMESPACE   REVISION</p>
+			<p class="source-code">guestbook-sample   chapter11   2</p>
+			<p>Although the revision number increased to <strong class="source-inline">2</strong>, as of writing, one limitation of Helm operators is that you cannot initiate a rollback to a previous version as you can do when using the CLI. If you attempt to run <strong class="source-inline">helm history</strong> against the <strong class="source-inline">guestbook-sample</strong> release, you will notice that only the current revision is available in the release history:</p>
+			<p class="source-code">$ helm history guestbook-sample –n chapter11</p>
+			<p class="source-code">REVISION   UPDATED                   STATUS     CHART        </p>
+			<p class="source-code">2          Sun May 8 22:44:41 2022   deployed   guestbook-0.1.0</p>
+			<p>This is an important <a id="_idIndexMarker636"/>difference between using Helm regularly with the CLI and using Helm as an operator. Because the release history is not retained, Helm operators do not allow you to perform explicit rollbacks. However, <strong class="source-inline">helm rollback</strong> will be run implicitly in situations where upgrades fail. This would also trigger any rollback hooks that might be defined in the chart.</p>
+			<p>Although Helm operators do not retain the release history, one area where they excel is in synchronizing the desired and live states of an application. This is because the operator constantly watches the state of the Kubernetes environment and ensures that the application is always configured to match the CR. In other words, if one of the Guestbook application’s resources has been modified, the operator will immediately revert the change to synchronize it with the configuration defined within the CR. You can see this in action by modifying one of the live resources. As an example, we will change the Guestbook deployment’s replica count from <strong class="source-inline">2</strong> to <strong class="source-inline">3</strong> and watch the operator revert this change back to <strong class="source-inline">2</strong> immediately to resync the state to match the CR. Run the following <strong class="source-inline">kubectl patch</strong> command to change the replica count on the deployment from <strong class="source-inline">2</strong> to <strong class="source-inline">3</strong>:</p>
+			<p class="source-code">$ kubectl patch deployment guestbook-sample –p '{"spec":{"replicas":3}}' -n chapter11</p>
+			<p>Normally, this would create an additional Guestbook pod replica. However, because the Guestbook CR currently defines only <strong class="source-inline">2</strong> replicas, the operator quickly changes the replica count back to <strong class="source-inline">2</strong> and terminates the additional pod that was created. If you actually wanted to increase the replica count to <strong class="source-inline">3</strong>, you would need to update the <strong class="source-inline">replicaCount</strong> value on the CR. This process provides the advantage of ensuring the desired state matches the live state at all times.</p>
+			<p>Uninstalling releases created by the Helm operator is as simple as removing the CR. Delete the <strong class="source-inline">guestbook-sample</strong> CR to uninstall the release:</p>
+			<p class="source-code">$ kubectl delete –f chapter11/guestbook-operator/config/samples/demo_v1alpha1_guestbook.yaml -n chapter11</p>
+			<p>You can also remove the Guestbook operator and its resources since we will not need them in the next section. You can do this by running another <strong class="source-inline">make</strong> command:</p>
+			<p class="source-code">$ make undeploy</p>
+			<p>In general, you should always make sure that you delete the CR first before deleting the operator. If you delete the operator before the CR, then the operator will not be able to automatically run <strong class="source-inline">helm uninstall</strong>, and you would have to run it manually from the command <a id="_idIndexMarker637"/>line.</p>
+			<p>Over the course of this chapter, you created a Helm operator and learned how to install a Helm chart using an operator-based approach. In the next section, we will continue our discussion on operators by investigating how they can be managed using Helm.</p>
+			<h1 id="_idParaDest-218"><a id="_idTextAnchor265"/>Using Helm to manage operators, CRDs, and CRs</h1>
+			<p>In this chapter, we <a id="_idIndexMarker638"/>installed the Guestbook operator and CRD by using the <strong class="source-inline">Makefile</strong> instance generated by <strong class="source-inline">operator-sdk</strong>. Then, we installed a Guestbook CR using <strong class="source-inline">kubectl apply</strong>. While this is an acceptable way of creating these resources, we <a id="_idIndexMarker639"/>could also install the operator, CRD, and CR by using Helm charts to provide a <a id="_idIndexMarker640"/>more repeatable solution for installing and managing an operator.</p>
+			<p>Helm allows you to create CRDs by adding them to a directory called <strong class="source-inline">crds/</strong> in your Helm chart. Helm creates CRDs before any of the other resources defined under the <strong class="source-inline">templates/</strong> folder, making it simpler to install applications such as operators that depend on CRDs.</p>
+			<p>The following file structure depicts a Helm chart that could be used to install the Guestbook operator:</p>
+			<pre class="source-code">
+guestbook-operator/
+  Chart.yaml
+  crds/
+    guestbooks_crd.yaml
+  templates/
+    deployment.yaml
+    role_binding.yaml
+    role.yaml
+    service_account.yaml
+  values.yaml</pre>
+			<p>Upon installation, this Helm chart will first install the Guestbook CRD. If the CRD is already present in the cluster, it <a id="_idIndexMarker641"/>will skip the CRD creation and go straight into installing the templates. Note that while CRDs can be convenient to include in a Helm chart, there are a couple of limitations to be aware of. First, Helm does not allow CRDs to<a id="_idIndexMarker642"/> contain any Go templating, so CRDs do not benefit from parameterization as opposed to typical resources. Also, CRDs cannot be upgraded, rolled back, or<a id="_idIndexMarker643"/> deleted. Finally, including CRDs in your chart would require the user to have elevated cluster-level privileges within the Kubernetes cluster. Often, it is administrators who perform operator installations, so this is likely to be an acceptable approach.</p>
+			<p>The Helm chart that we described earlier could be used to install the Guestbook operator, but this is only half of the equation, as end users must still be able to create CRs that deploy the Guestbook application. To address this limitation, you could create a separate Helm chart that is used for templating a Guestbook CR. An example layout for this type of Helm chart is shown in the following file structure:</p>
+			<pre class="source-code">
+guestbook/
+  Chart.yaml
+  templates/
+    Guestbook.yaml
+  values.yaml</pre>
+			<p>Unlike CRDs, CRs underneath the <strong class="source-inline">templates/</strong> folder benefit from Go templating and lifecycle management, as do all other resources. This methodology provides the most value when the CR contains complex fields or when other resources must be installed alongside the CR. You would also be able to manage the lifecycle of your CR with this method, and you would also be able to maintain a history of revisions.</p>
+			<p>However, users <a id="_idIndexMarker644"/>would need to be given permission to install Guestbook CRs, since <a id="_idIndexMarker645"/>this permission would not be included in Kubernetes by default. These <a id="_idIndexMarker646"/>permissions can be easily added by applying the <strong class="source-inline">guestbook_editor_role.yaml</strong> file under the operator’s <strong class="source-inline">config/rbac/</strong> folder. Then, you can create a <strong class="source-inline">RoleBinding</strong> resource to assign the editor role to the appropriate users or groups.</p>
+			<p>Now that you have an understanding of how operators, CRDs, and CRs can be managed with Helm, let’s close out the chapter by cleaning up the Kubernetes environment.</p>
+			<h1 id="_idParaDest-219"><a id="_idTextAnchor266"/>Cleaning up</h1>
+			<p>First, delete the <strong class="source-inline">chapter11</strong> namespace:</p>
+			<p class="source-code">$ kubectl delete namespace chapter11</p>
+			<p>Finally, run the <strong class="source-inline">minikube stop</strong> command to stop your minikube VM.</p>
+			<h1 id="_idParaDest-220"><a id="_idTextAnchor267"/>Summary</h1>
+			<p>Operators are important for ensuring that the desired state always matches the live state. Such a feat allows users to more easily maintain a source of truth for resource configuration. Users can leverage a Helm operator to provide this type of resource reconciliation, and it is easy to get started because it uses Helm charts as its deployment mechanism. When a CR is created, the Helm operator installs the associated Helm chart to create a new release. Subsequent upgrades are performed when the CR is modified, and the release is uninstalled when the CR has been deleted.</p>
+			<p>To manage the operator, cluster administrators can create a separate Helm chart for creating the operator’s resources and CRDs. Also, end users can create a separate Helm chart for creating CRs and other related resources.</p>
+			<p>In the next chapter, we will discuss best practices and topics around security within the Helm ecosystem.</p>
+			<h1 id="_idParaDest-221"><a id="_idTextAnchor268"/>Further reading</h1>
+			<ul>
+				<li>To learn more about operators and their origins, check out the Kubernetes documentation at <a href="https://kubernetes.io/docs/concepts/extend-kubernetes/operator/">https://kubernetes.io/docs/concepts/extend-kubernetes/operator/</a>.</li>
+				<li>To discover other operators that have been developed throughout the community, check out <em class="italic">OperatorHub</em> at <a href="https://operatorhub.io">https://operatorhub.io</a> or the <em class="italic">Operators</em> section of <em class="italic">ArtifactHub</em> at <a href="https://artifacthub.io">https://artifacthub.io</a>.</li>
+			</ul>
+			<h1 id="_idParaDest-222"><a id="_idTextAnchor269"/>Questions</h1>
+			<ol>
+				<li value="1">What is an operator? How does an operator work at a high level?</li>
+				<li>What is the difference between installing a Helm chart with the Helm CLI versus a Helm operator?</li>
+				<li>What toolkit can you use to create Helm operators?</li>
+				<li>How does the <strong class="source-inline">install</strong>, <strong class="source-inline">upgrade</strong>, <strong class="source-inline">rollback</strong>, and <strong class="source-inline">uninstall</strong> hooks function with a Helm operator?</li>
+				<li>What is the purpose of the <strong class="source-inline">crds/</strong> folder in a Helm chart?</li>
+			</ol>
+		</div>
+	</body></html>

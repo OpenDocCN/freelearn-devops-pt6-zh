@@ -1,0 +1,586 @@
+<html><head></head><body>
+		<div id="_idContainer078">
+			<h1 id="_idParaDest-135" class="chapter-number"><a id="_idTextAnchor135"/>9</h1>
+			<h1 id="_idParaDest-136"><a id="_idTextAnchor136"/>Advanced Networking with EKS</h1>
+			<p>In previous chapters, we reviewed standard AWS and EKS networking (<a href="B18129_07.xhtml#_idTextAnchor107"><span class="No-Break"><em class="italic">Chapter 7</em></span></a>). However, there are certain situations where you will need to use some of the more advanced networking features we will describe in <span class="No-Break">this chapter.</span></p>
+			<p>This chapter looks at use cases such as how you can manage Pod address exhaustion with <strong class="bold">Internet Protocol version 6</strong> (<strong class="bold">IPv6</strong>) and how you can enforce Layer 3 network controls <a id="_idIndexMarker386"/>for Pod traffic using network policies. We also <a id="_idIndexMarker387"/>look at how you can use different <strong class="bold">complex network-based information systems</strong> (<strong class="bold">CNIs</strong>) in EKS to support <a id="_idIndexMarker388"/>multiple Pod network interfaces using the Multus CNI and how you can support overlay networks for encryption and network acceleration, such as the <strong class="bold">Data Plane Development Kit</strong> (<strong class="bold">DPDK</strong>) or <strong class="bold">Extended BerkeleyPacket Filter</strong> (<strong class="bold">eBPF</strong>). These are complex topics, and the aim of this chapter <a id="_idIndexMarker389"/>is to provide the base knowledge for a cluster administrator to be able to assess whether these solutions need to be configured and the impact they will have on the <span class="No-Break">EKS deployment.</span></p>
+			<p>Specifically, we will cover the following topics in <span class="No-Break">this chapter:</span></p>
+			<ul>
+				<li>Using IPv6 in your <span class="No-Break">EKS cluster</span></li>
+				<li>Installing and using Calico <span class="No-Break">network policies</span></li>
+				<li>Choosing and using different CNIs <span class="No-Break">in EKS</span></li>
+			</ul>
+			<h1 id="_idParaDest-137"><a id="_idTextAnchor137"/>Technical requirements</h1>
+			<p>You should be familiar with YAML, basic networking, and EKS architecture. Before getting started with this chapter, please ensure that you have the following <span class="No-Break">in place:</span></p>
+			<ul>
+				<li>Network connectivity to your EKS <span class="No-Break">API endpoint</span></li>
+				<li>The AWS CLI and the <strong class="source-inline">kubectl</strong> binary are installed on <span class="No-Break">your workstation</span></li>
+				<li>A basic understanding of IPv6 addressing <span class="No-Break">and usage</span></li>
+				<li>A good understanding of <strong class="bold">virtual private cloud</strong> (<strong class="bold">VPC</strong>) networking and how to create network objects such as <strong class="bold">elastic network interfaces</strong> (<strong class="bold">ENIs</strong>), and <span class="No-Break">so on</span></li>
+			</ul>
+			<h1 id="_idParaDest-138"><a id="_idTextAnchor138"/>Using IPv6 in your EKS cluster</h1>
+			<p>IPv6 has some <a id="_idIndexMarker390"/>distinct advantages <a id="_idIndexMarker391"/>over IPv4, namely, it provides a <a id="_idIndexMarker392"/>much larger address space (this includes public IP addresses), reduces some latency by removing <strong class="bold">Network Address Translation</strong> (<strong class="bold">NAT</strong>) hops, and can simplify the overall <a id="_idIndexMarker393"/>routing network configuration. It does have some limitations (not only for EKS but other AWS services as well) so care must be taken when adopting IPv6. Please review <a href="https://aws.amazon.com/vpc/ipv6/">https://aws.amazon.com/vpc/ipv6/</a> and <a href="https://docs.aws.amazon.com/eks/latest/userguide/cni-ipv6.html">https://docs.aws.amazon.com/eks/latest/userguide/cni-ipv6.html</a> before implementing it <span class="No-Break">in production.</span></p>
+			<p>IPv6 cannot currently be enabled on an existing cluster, so the first thing we need to do is create a new cluster with the IPv6 address family, which is at least running Kubernetes 1.21. We will use <strong class="source-inline">eksctl</strong> with the following configuration <span class="No-Break">file, </span><span class="No-Break"><strong class="source-inline">myipv6cluster.yaml</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+---
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: myipv6cluster
+  region: "eu-central-1"
+  version: "1.21"
+kubernetesNetworkConfig:
+<strong class="bold">  ipFamily: IPv6</strong>
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+iam:
+  withOIDC: true
+managedNodeGroups:
+  - name: ipv6mng
+    instanceType: t3.medium</pre>
+			<p>We can <a id="_idIndexMarker394"/>then run the following <strong class="source-inline">eksctl</strong> command <a id="_idIndexMarker395"/>to create and deploy <span class="No-Break">the cluster:</span></p>
+			<pre class="console">
+$ eksctl create cluster -f myipv6cluster.yaml</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">This process may take 15–25 minutes <span class="No-Break">to complete.</span></p>
+			<p>As we <a id="_idIndexMarker396"/>haven’t specified an existing VPC, <strong class="source-inline">eksctl</strong> will create one for us and assign it an additional IPv6 <strong class="bold">Classless Inter-Domain Routing</strong> (<strong class="bold">CIDR</strong>) range from the Amazon pool (every VPC needs an IPv4 CIDR range), <span class="No-Break">illustrated next:</span></p>
+			<div>
+				<div id="_idContainer069" class="IMG---Figure">
+					<img src="image/B18129_09_01.jpg" alt="Figure 9.1 – eksctl VPC"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.1 – eksctl VPC</p>
+			<p>If we look at the subnets assigned to this VPC, we can see <strong class="source-inline">eksctl</strong> has created six subnets, three <a id="_idIndexMarker397"/>public, and three <a id="_idIndexMarker398"/>private (two per <strong class="bold">Availability Zone</strong> (<strong class="bold">AZ</strong>)) subnets. It has also <a id="_idIndexMarker399"/>allocated an IPv4 (required) CIDR range and an IPv6 CIDR range from the main ranges allocated to <span class="No-Break">the VPC:</span></p>
+			<div>
+				<div id="_idContainer070" class="IMG---Figure">
+					<img src="image/B18129_09_02.jpg" alt="Figure 9.2 – eksctl IPv4/v6 subnets"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.2 – eksctl IPv4/v6 subnets</p>
+			<p>The cluster will be created with the two worker nodes (on the public subnets by default). Each worker node has both an IPv4 and IPv6 IP address, as IPv4 is required by <span class="No-Break">the VPC:</span></p>
+			<pre class="console">
+$ kubectl get nodes -o wide</pre>
+			<p>This will output something similar to <span class="No-Break">the following:</span></p>
+			<pre class="source-code">
+NAME  STATUS   ROLES    AGE   VERSION  INTERNAL-IP EXTERNAL-IP
+ip-192-168-3-11.eu-central-1.compute.internal Ready &lt;none&gt;   27h   v1.21.12-eks-5308cf7   <strong class="bold">2a05:d014:ec6:2f00:4e36:b47b:c13f:cb1f   52.58.98.70</strong>
+ip-192-168-90-100.eu-central-1.compute.internal   Ready    &lt;none&gt;   27h   v1.21.12-eks-5308cf7   <strong class="bold">2a05:d014:ec6:2f02:2d4c:d5df:4eb5:cb86   18.195.1.196</strong></pre>
+			<p>IPv6 prefix assignment occurs on each worker node at startup. A single <strong class="source-inline">IPv6 /80</strong> prefix is assigned (the <strong class="source-inline">/80 =&gt; ~10^14</strong> addresses) per worker node ENI and is big enough to support large clusters with millions of Pods although the current Kubernetes recommendation is no more than 110 Pods <span class="No-Break">per host.</span></p>
+			<p>You can <a id="_idIndexMarker400"/>see the prefix assignment <a id="_idIndexMarker401"/>by looking at the EC2 instance and clicking on the network tab. In the following example, a <strong class="source-inline">2a05:d014:ec6:2f00:8207::/80</strong> prefix has been assigned, and no IPv4 prefix <span class="No-Break">is assigned:</span></p>
+			<div>
+				<div id="_idContainer071" class="IMG---Figure">
+					<img src="image/B18129_09_03.jpg" alt="Figure 9.3 – I﻿Pv6 prefix assignment"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.3 – IPv6 prefix assignment</p>
+			<p>Once you have enabled IPv6 at the cluster level, you can’t assign IPv4 addresses to your Pods; only IPv6 addresses can be assigned as EKS doesn’t currently support Pods with both an IPv4 and IPv6 address (as they do with worker nodes). However, if we use the <strong class="source-inline">kubectl get pods</strong> command to list the system Pods in the <strong class="source-inline">kube-system</strong> namespace, we can see that the Pods are assigned <span class="No-Break">IPv6 addresses:</span></p>
+			<pre class="console">
+$ kubectl get pods -n kube-system -o wide
+NAME     READY   STATUS    RESTARTS   AGE   IP   …
+aws-node-qvqpx  1/1     Running   0   15h   <strong class="bold">2a05:d014:ec6:2f00:4e36:b47b:c13f:cc1f</strong>
+aws-node-wkr9g  1/1     Running   1   15h   <strong class="bold">2a05:d014:ec6:2f02:2d4c:d5df:4eb5:c686</strong>
+coredns-745979c988-7qqmr 1/1 Running   0   15h   <strong class="bold">2a05:d014:ec6:2f00:8207::</strong>
+coredns-745979c988-hzxx8 1/1 Running   0   15h   <strong class="bold">2a05:d014:ec6:2f00:8207::1</strong>
+kube-proxy-2rh47        1/1 Running   0   15h   <strong class="bold">2a05:d014:ec6:2f02:2d4c:d5df:4eb5:c686</strong>
+kube-proxy-vwzp9     1/1 Running   0   15h   <strong class="bold">2a05:d014:ec6:2f00:4e36:b47b:c13f:cc1f</strong></pre>
+			<p>We can deploy a simple web app using the deployment <strong class="source-inline">.yaml</strong> files from <a href="B18129_04.xhtml#_idTextAnchor067"><span class="No-Break"><em class="italic">Chapter 4</em></span></a>, <em class="italic">Running Your First Application on EKS</em>. If we look at the resulting Pods, we can see they also have an IPv6 address. An example output is <span class="No-Break">shown next:</span></p>
+			<pre class="console">
+NAME    READY   STATUS    RESTARTS   AGE
+simple-web-99b67d675-4t68q   1/1     Running   0          11s   <strong class="bold">2a05:d014:ec6:2f00:8207::2</strong>
+simple-web-99b67d675-vl6hk   1/1     Running   0          11s   <strong class="bold">2a05:d014:ec6:2f02:b49c::</strong></pre>
+			<p>We’ve looked at <a id="_idIndexMarker402"/>how to create a cluster <a id="_idIndexMarker403"/>with an IPv6 IP address family and how to deploy Pods. However, there are some basic differences in how the Pods can communicate in and outside the VPC with IPv6. The next sections describe these networking scenarios in more detail, focusing on how traffic <span class="No-Break">is routed.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Security group configuration is needed to <em class="italic">allow</em> traffic as a minimum. Therefore, we will only discuss the VPC routing table configuration in the <span class="No-Break">next section.</span></p>
+			<h2 id="_idParaDest-139"><a id="_idTextAnchor139"/>Pod to external IPv6 address</h2>
+			<p>An IPv6 address <a id="_idIndexMarker404"/>is so large they are globally unique, so no NAT is <a id="_idIndexMarker405"/>performed. Any Pods running on worker nodes in public subnets, which are assigned an IP address from a prefix in the subnet, will <a id="_idIndexMarker406"/>be able to route directly to the internet through an <strong class="bold">internet gateway</strong> (<strong class="bold">IGW</strong>) without any address translation. This also means that they are accessible <a id="_idIndexMarker407"/>from the internet (access is controlled through security groups). If the <a id="_idIndexMarker408"/>subnet is private, an <strong class="bold">egress-only IGW</strong> (<strong class="bold">EIGW</strong>) can be used to provide <a id="_idIndexMarker409"/>access to external IPv6 addresses but not allow any direct inbound IPv6 traffic (unlike the <span class="No-Break">regular IGW).</span></p>
+			<h2 id="_idParaDest-140"><a id="_idTextAnchor140"/>VPC routing</h2>
+			<p>As any IPv6 Pod always uses its IPv6 address as its source IP address, standard Kubernetes service discovery and routing mechanisms and VPC routing tables can be used to reach another Pod. Any intra-VPC IPv6 traffic is not source NATed (unlike IPv4 by default), so the destination Pod always sees the source Pod’s <em class="italic">real VPC</em> <span class="No-Break">IPv6 address.</span></p>
+			<p>As a Pod only has <a id="_idIndexMarker410"/>an IPv6 stack, it can only communicate with other elements running an IPv6 stack that have entries in the VPC routing tables. This includes <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>Other Pods with <span class="No-Break">IPv6 addresses</span></li>
+				<li>An EC2 host with an IPv6 address (single or <span class="No-Break">dual stack)</span></li>
+				<li>ASW services that support IPv6 endpoints (refer <span class="No-Break">to </span><a href="https://docs.aws.amazon.com/general/latest/gr/aws-ipv6-support.html"><span class="No-Break">https://docs.aws.amazon.com/general/latest/gr/aws-ipv6-support.html</span></a><span class="No-Break">)</span></li>
+			</ul>
+			<p>To communicate with IPv4 endpoints, a translation service is required; this can be achieved in a number <span class="No-Break">of ways:</span></p>
+			<ul>
+				<li>Using a host-local <span class="No-Break">CNI plugin</span></li>
+				<li>Using NAT64 (AWS <span class="No-Break">NAT Gateway)</span></li>
+				<li>Using DNS64 (AWS <span class="No-Break">Route 53)</span></li>
+			</ul>
+			<p>We will review these options in <span class="No-Break">detail next.</span></p>
+			<h3>Using host-local CNI plugin</h3>
+			<p>The approach, still used today, is <a id="_idIndexMarker411"/>to extend the VPC CNI to support <a id="_idIndexMarker412"/>an internal IPV4 address range, <strong class="source-inline">169.254.172.0/22</strong>, allocated to every worker node and used to create a secondary IPv4 interface in each Pod. This configuration is included in the IPv6 cluster we created and can be viewed by SSHing into a worker node and running the <strong class="source-inline">cat /etc/cni/net.d/10-aws.conflist</strong> command <span class="No-Break">as </span><span class="No-Break"><em class="italic">root</em></span><span class="No-Break">.</span></p>
+			<p>As this IPv4 <strong class="source-inline">169.254.172.0/22</strong> range is not visible in the VPC and is reused by each worker node, all IPv4 egress traffic is <strong class="bold">source NAT</strong>ed (<strong class="bold">SNAT</strong>) to the IPv4 ENI allocated to the worker <a id="_idIndexMarker413"/>node; otherwise, there will be IP address conflicts. The following diagram illustrates <span class="No-Break">this solution:</span></p>
+			<div>
+				<div id="_idContainer072" class="IMG---Figure">
+					<img src="image/B18129_09_04.jpg" alt="Figure 9.4 – host-local solution"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.4 – host-local solution</p>
+			<p>To see how <a id="_idIndexMarker414"/>this works, let’s create a new container <a id="_idIndexMarker415"/>and shell into it using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl run -i --tty busybox --image=busybox --restart=Never -- sh</pre>
+			<p>Once in the container shell, you can see the secondary interface and route tables in the container with the <strong class="source-inline">iptables</strong> and <strong class="source-inline">netstat</strong> commands. This will output something similar to the block <span class="No-Break">shown here:</span></p>
+			<pre class="console">
+<strong class="bold">$ ifconfig</strong>
+eth0
+Link encap:Ethernet  HWaddr AA:1D:5F:F0:B6:C7
+inet6 addr: 2a05:d014:ec6:2f02:b49c::2/128 Scope:Global
+……
+<strong class="bold">v4if0</strong>
+Link encap:Ethernet  HWaddr 5A:FE:0E:46:EC:D9
+inet addr:<strong class="bold">169.254.172.4</strong>  Bcast:169.254.175.255  Mask:255.255.252.0
+<strong class="bold">$ netstat -rn</strong>
+Kernel IP routing table
+Destination     Gateway         Genmask         … Iface
+0.0.0.0         169.254.172.1   0.0.0.0         … v4if0
+169.254.172.0   169.254.172.1   255.255.252.0   … v4if0
+169.254.172.1   0.0.0.0         255.255.255.255 … v4if0</pre>
+			<p>This means when a Pod <a id="_idIndexMarker416"/>tries to communicate with <a id="_idIndexMarker417"/>an IPv4 address, it will use the <strong class="source-inline">v4if0</strong> interface, which will SNATed to the Host IPv4 ENI. We will now look at some enhancements that AWS has announced in 2021 that can simplify this configuration and remove the need for the <span class="No-Break">host SNAT.</span></p>
+			<h3>Using DNS64 with AWS Route 53</h3>
+			<p>Each VPC has its <a id="_idIndexMarker418"/>own DNS resolver built into the <a id="_idIndexMarker419"/>subnet (normally residing at the second IP address of the subnet CIDR). Normally this resolves on IPv4 DNS requests, but you can now add DNS64 to the subnet, and it applies to all the AWS resources within <span class="No-Break">that subnet.</span></p>
+			<p>With DNS64, the AWS Route 53 Resolver looks up the DNS entry based on the client request and, based on the response, does one of the two <span class="No-Break">following things:</span></p>
+			<ul>
+				<li>If the DNS <a id="_idIndexMarker420"/>response contains an <a id="_idIndexMarker421"/>IPv6 address, the resolver responds to the <a id="_idIndexMarker422"/>client with the IPV6 address, and then the client establishes an IPv6 networking session directly using the <span class="No-Break">IPv6 address.</span></li>
+				<li>If there is no IPv6 address in the response, only an IPv4 address, then the Resolver responds to the client by adding the well-known <strong class="source-inline">/96</strong> prefix, defined in <strong class="source-inline">RFC6052 </strong>(<strong class="source-inline">64:ff9b::/96</strong>), to the IPv4 address in the record to enable it to work with NAT64 (<span class="No-Break">described next).</span></li>
+			</ul>
+			<p>This diagram <span class="No-Break">illustrates this:</span></p>
+			<div>
+				<div id="_idContainer073" class="IMG---Figure">
+					<img src="image/B18129_09_05.jpg" alt="Figure 9.5 – DNS64 on your VPC"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.5 – DNS64 on your VPC</p>
+			<p>Let’s look at how the well-known <strong class="source-inline">64:ff9b::/96</strong> prefix is used to communicate with the <span class="No-Break">IPv4 endpoint.</span></p>
+			<h3>Using NAT64 with a NATGW</h3>
+			<p>In <a href="B18129_07.xhtml#_idTextAnchor107"><span class="No-Break"><em class="italic">Chapter 7</em></span></a>, <em class="italic">Networking in EKS</em>, we <a id="_idIndexMarker423"/>discussed how a <strong class="bold">NAT Gateway</strong> (<strong class="bold">NATGW</strong>) could <a id="_idIndexMarker424"/>be used to allow <a id="_idIndexMarker425"/>outbound network access from private subnets. It does this by mapping private addresses (IPv4) to a public IP address assigned to <span class="No-Break">the NATGW.</span></p>
+			<p>NAT64 is automatically available on any existing or new NATGW. Once you have enabled DNS64 for the subnet and added a route for the <strong class="source-inline">64:ff9b::/96</strong> prefix to the NATGW, the following <span class="No-Break">steps happen:</span></p>
+			<ol>
+				<li>As described previously, if there is no matching IPv6 record, the VPC DNS resolver will respond with the IPv4 address and the <strong class="source-inline">RFC6052</strong> prefix, which is used by the client to establish an IPv6 session. The VPC routing table will send the traffic to the NAT64 gateway, which translates the IPv6 packets to IPv4 by replacing the IPv6 (Pod) address with the NATGW <span class="No-Break">IPV4 address.</span></li>
+				<li>The NAT64 gateway forwards the IPv4 packets to the destination using the route table associated with <span class="No-Break">its subnet.</span></li>
+				<li>The IPv4 destination sends back IPv4 response packets to the NATGW. The response IPv4 <a id="_idIndexMarker426"/>packets are translated back <a id="_idIndexMarker427"/>to IPv6 by the NATGW by replacing its IP (destination IPv4) with the Pod’s IPv6 address and prepending <strong class="source-inline">64:ff9b::/96</strong> to the source IPv4 address. The packet then flows to the Pod following the local route statement in the <span class="No-Break">route table:</span></li>
+			</ol>
+			<div>
+				<div id="_idContainer074" class="IMG---Figure">
+					<img src="image/B18129_09_06.jpg" alt="Figure 9.6 – NAT64 on your VPC"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.6 – NAT64 on your VPC</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Don’t forget to delete your IPv6 cluster using the <strong class="source-inline">eksctl delete cluster myipv6cluster</strong> command unless you want to use it for the <span class="No-Break">next sections.</span></p>
+			<p>Now let’s look at <a id="_idIndexMarker428"/>how we can control traffic inside the <a id="_idIndexMarker429"/>cluster using <span class="No-Break">network policies.</span></p>
+			<h1 id="_idParaDest-141"><a id="_idTextAnchor141"/>Installing and using Calico network policies</h1>
+			<p>By default, all Pods in all namespaces in a cluster can communicate with each other. This might be <a id="_idIndexMarker430"/>desirable, but, in many cases, you want to <a id="_idIndexMarker431"/>take a <em class="italic">least privilege</em> approach to network access. Fortunately, Kubernetes provides network policies to restrict access between Pods (west-to-east communication). A network policy operates at Layer 3 and Layer 4 of the OSI model and, as such, is equivalent to a traditional on-premises firewall or AWS security group. More details can be found <span class="No-Break">at </span><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/"><span class="No-Break">https://kubernetes.io/docs/concepts/services-networking/network-policies/</span></a><span class="No-Break">.</span></p>
+			<p>The EKS VPC CNI doesn’t support network policies, so a network plugin or different CNI is required. In this <a id="_idIndexMarker432"/>section, we use the <strong class="bold">Calico</strong> (<a href="https://www.projectcalico.org/">https://www.projectcalico.org/</a>) policy engine, which is the simplest way to add network policies while still using the AWS VPC CNI. We will create a new IPv4 cluster using <strong class="source-inline">eksctl</strong> with the following configuration <span class="No-Break">file, </span><span class="No-Break"><strong class="source-inline">myipv4cluster.yaml</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+---
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: myipv4cluster
+  region: "eu-central-1"
+  version: "1.19"
+kubernetesNetworkConfig:
+<strong class="bold">  ipFamily: IPv4</strong>
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+iam:
+  withOIDC: true
+managedNodeGroups:
+  - name: ipv4mng
+    instanceType: t3.medium</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">We noticed some challenges with getting this solution working with IPv6 clusters and the newer Tigera Operator, so care should be taken when <span class="No-Break">using either.</span></p>
+			<p>We can then <a id="_idIndexMarker433"/>run the following <strong class="source-inline">eksctl</strong> command to create <a id="_idIndexMarker434"/>and deploy <span class="No-Break">the cluster:</span></p>
+			<pre class="console">
+$ eksctl create cluster -f myipv4cluster.yaml</pre>
+			<p>Once the cluster is active, add the cluster to your local admin machine <span class="No-Break">if needed:</span></p>
+			<pre class="console">
+$ aws eks update-kubeconfig --name myipv4cluster</pre>
+			<p>Then add <strong class="source-inline">calico-operator</strong> to the cluster using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl apply -f https://raw.githubusercontent.com/aws/amazon-vpc-cni-k8s/master/config/master/calico-operator.yaml</pre>
+			<p>We can then configure the Calico plugin using <strong class="source-inline">kubectl</strong> to deploy the <strong class="source-inline">calico-install.yaml</strong> <span class="No-Break">configuration file:</span></p>
+			<pre class="source-code">
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+  annotations:
+    "helm.sh/hook": post-install
+spec:
+  cni:
+    type: AmazonVPC</pre>
+			<p>We can verify that the plugin is installed using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl get tigerastatus/calico
+NAME     AVAILABLE   PROGRESSING   DEGRADED   SINCE
+calico   True        False         False      11m</pre>
+			<p>We have all <a id="_idIndexMarker435"/>the prerequisites to support network policies, let’s <a id="_idIndexMarker436"/>now deploy two simple deployments using the <strong class="source-inline">simple-deployments.yaml</strong> manifest. This section of the file will create the <span class="No-Break">two namespaces:</span></p>
+			<pre class="source-code">
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: deploy1
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: deploy2</pre>
+			<p>The following code section will create the deployment, <strong class="source-inline">deploy1</strong>, in the <span class="No-Break"><strong class="source-inline">deploy1</strong></span><span class="No-Break"> namespace:</span></p>
+			<pre class="source-code">
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deploy1
+  namespace: deploy1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deploy1
+  template:
+    metadata:
+      labels:
+        app: deploy1
+    spec:
+      containers:
+        - name: busybox
+          image: busybox
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'echo Running ; sleep 3600']</pre>
+			<p>The next code <a id="_idIndexMarker437"/>section will create the second deployment, <strong class="source-inline">deploy2</strong>, in <a id="_idIndexMarker438"/>the <span class="No-Break"><strong class="source-inline">deploy2</strong></span><span class="No-Break"> namespace:</span></p>
+			<pre class="source-code">
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deploy2
+  namespace: deploy2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deploy2
+  template:
+    metadata:
+      labels:
+        app: deploy2
+    spec:
+      containers:
+        - name: busybox
+          image: busybox
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'echo Running ; sleep 3600']</pre>
+			<p>Once the deployment <a id="_idIndexMarker439"/>completes, make a note of the IP address of <a id="_idIndexMarker440"/>the Pod in the <strong class="source-inline">deploy1</strong> namespace using the following command (in the example, it <span class="No-Break">is </span><span class="No-Break"><strong class="source-inline">192.168.42.16</strong></span><span class="No-Break">):</span></p>
+			<pre class="console">
+$ kubectl get po -o wide -n deploy1
+NAME  READY   STATUS    RESTARTS   AGE   IP    …
+deploy1-111  1/1  Running   0 69s   192.168.42.16 ….</pre>
+			<p>You can now shell into the Pod in the <strong class="source-inline">deploy2</strong> namespace using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl exec --stdin --tty &lt;pod-name&gt; -n deploy2 -- sh</pre>
+			<p>If you run the following command in the shell, it will succeed (change the IP address to the one for the Pod in the <span class="No-Break"><strong class="source-inline">deploy1</strong></span><span class="No-Break"> namespace):</span></p>
+			<pre class="console">
+$ ping -c 5 192.168.42.16
+PING 192.168.42.16 (192.168.42.16): 56 data bytes
+64 bytes from 192.168.42.16: seq=0 ttl=254 time=0.110 ms
+…..</pre>
+			<p>Once the ping has finished, we can deploy the <strong class="source-inline">deny-all.yaml</strong> network policy, which denies all outbound traffic (egress) of the <span class="No-Break"><strong class="source-inline">deploy2</strong></span><span class="No-Break"> namespace:</span></p>
+			<pre class="source-code">
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: deploy2
+spec:
+  podSelector:
+    matchLabels: {}
+  policyTypes:
+  - Egress</pre>
+			<p>If you run <a id="_idIndexMarker441"/>the following command in the <strong class="source-inline">deploy2</strong> Pod <a id="_idIndexMarker442"/>namespace, it will <em class="italic">fail</em> due to the <span class="No-Break">network policy:</span></p>
+			<pre class="console">
+$ ping -c 5 192.168.42.16
+PING 192.168.42.16 (192.168.42.16): 56 data bytes</pre>
+			<p>We’ve now seen how to extend EKS using the Calico policy engine to support network policies. In the next section, let’s look at how we can make more changes to the CNI and even replace <span class="No-Break">it completely.</span></p>
+			<h1 id="_idParaDest-142"><a id="_idTextAnchor142"/>Choosing and using different CNIs in EKS</h1>
+			<p>We have seen <a id="_idIndexMarker443"/>how AWS CNI integrates with the VPC to offer <strong class="bold">IP address management</strong> (<strong class="bold">IPAM</strong>) services and the <a id="_idIndexMarker444"/>creation and management of the Pod <a id="_idIndexMarker445"/>network interface. The following <a id="_idIndexMarker446"/>are some of the reasons why you might want to <a id="_idIndexMarker447"/>replace the default AWS <span class="No-Break">VPC CNI:</span></p>
+			<ul>
+				<li>If you want to have multiple <span class="No-Break">Pod interfaces</span></li>
+				<li>If you want to use an overlay network <span class="No-Break">for encryption</span></li>
+				<li>If you want to use network acceleration, such as DPDK <span class="No-Break">or eBPF</span></li>
+			</ul>
+			<p>As the EKS control plane is managed by AWS, there are a limited number of CNIs supported today; please refer to <a href="https://docs.aws.amazon.com/eks/latest/userguide/alternate-cni-plugins.html">https://docs.aws.amazon.com/eks/latest/userguide/alternate-cni-plugins.html</a> for the most <span class="No-Break">up-to-date list.</span></p>
+			<p>The most important decision you need to make is whether you can extend the existing VPC CNI as we did with Calico but continue to use the VPC CNI to manage IP addresses and Pod interfaces. This is referred to as CNI plugin chaining, where a primary CNI is enhanced with additional capabilities. Therefore, if we look at the default CNI configuration file on an <strong class="source-inline">/etc/cni/net.d/10-aws.conflist</strong> EC2 host, we can see three plugins are enabled <span class="No-Break">by default:</span></p>
+			<pre class="source-code">
+{"cniVersion": "0.4.0",
+  "name": "aws-cni",
+  "disableCheck": true,
+  "plugins": [
+    {
+      "name": <strong class="bold">"aws-cni",</strong>
+      "type": "aws-cni",
+…
+<strong class="bold">pluginLogFile": "/var/log/aws-routed-eni/plugin.log",</strong>
+…},
+    {
+      "name": <strong class="bold">"egress-v4-cni",</strong>
+      "type": "egress-v4-cni",
+      …},
+    {
+      "type": <strong class="bold">"portmap"</strong>,
+      "capabilities": {"portMappings": true},
+      "snat": true }]</pre>
+			<p>Kubernetes will call the <strong class="source-inline">aws-cni</strong> plugin first as it’s listed first when it wants to add or remove a Pod <a id="_idIndexMarker448"/>network interface. It will then call the next plugin in <a id="_idIndexMarker449"/>the chain; in the default case, this is <strong class="source-inline">egress-v4-cni</strong> (which is the IPv4 host-local allocator discussed in the <em class="italic">Using IPv6 in your EKS cluster</em> section), passing it <a id="_idIndexMarker450"/>the command and the parameters passed <a id="_idIndexMarker451"/>to the first CNI plugin plus the result from the last plugin and so on until the chain is complete. This allows different functions to be configured by the CNI plugins, so in the default case in EKS, the first plugin configures the Pod interface and provides a VPC routable IP address. The second is used to do the IPv6-to-IPv4 conversion or <span class="No-Break">source NAT.</span></p>
+			<p>Let’s look at how <a id="_idIndexMarker452"/>we can use Multus, one of the supported EKS CNIs, to have <a id="_idIndexMarker453"/>multiple Pod network interfaces without losing VPC connectivity. In this case, Multus <a id="_idIndexMarker454"/>will act as a <em class="italic">meta plugin</em> and call <a id="_idIndexMarker455"/>other CNIs to do the <span class="No-Break">Pod networking.</span></p>
+			<p>This is very useful as we don’t have to replace the standard VPC-CNI, so IP addressing and routing is set up in the VPC using the VPC API by the AWS CNI. We can use Multus to create a second Pod interface that could be used as a management interface or to exchange heartbeat information if the Pods want to act as <span class="No-Break">a cluster.</span></p>
+			<h2 id="_idParaDest-143"><a id="_idTextAnchor143"/>Configuring multiple network interfaces for Pods</h2>
+			<p>As you can <a id="_idIndexMarker456"/>see from the following <a id="_idIndexMarker457"/>diagram, we normally attach other ENIs to the worker nodes to be managed by Multus, whereas the primary (master) EC2 interface is always managed by the <span class="No-Break">VPC CNI:</span></p>
+			<div>
+				<div id="_idContainer075" class="IMG---Figure">
+					<img src="image/B18129_09_07.jpg" alt="Figure 9.7 – Multus CNI integration with EKS"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.7 – Multus CNI integration with EKS</p>
+			<p>The first thing we should do is install Multus on the cluster we used for the network policies using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl apply -f https://raw.githubusercontent.com/aws/amazon-vpc-cni-k8s/master/config/multus/v3.7.2-eksbuild.1/aws-k8s-multus.yaml</pre>
+			<p>This will create a <strong class="source-inline">kube-multus-ds</strong> DaemonSet that runs across your worker nodes in this case, <strong class="source-inline">2</strong>. This can be viewed using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl get ds kube-multus-ds -n kube-system
+NAME             DESIRED   CURRENT   READY   …
+kube-multus-ds   2         2         2       …</pre>
+			<p>If we look in the host’s <strong class="source-inline">/etc/cni/net.d/</strong> CNI configuration directory, we see there is a new <strong class="source-inline">00-multus.conf</strong> configuration file. This file will be used first by Kubernetes as it starts with a lower numeric <span class="No-Break">value (</span><span class="No-Break"><strong class="source-inline">00</strong></span><span class="No-Break">).</span></p>
+			<p>Looking in more <a id="_idIndexMarker458"/>detail at the new CNI <a id="_idIndexMarker459"/>configuration file, we can see Multus is now the primary CNI (defined by the <strong class="source-inline">type</strong> keyword). It also used the <strong class="source-inline">delegates</strong> keyword to call other CNIs; in this case, just the AWS VPC CNI, which behaves as it did before as the plugin list is the same. The following output shows a truncated view of the new configuration file that, with the exception of the initial block, is the same as the default AWS <span class="No-Break">VPC CNI:</span></p>
+			<pre class="source-code">
+{
+<strong class="bold">      "cniVersion": "0.3.1",</strong>
+<strong class="bold">      "name": "multus-cni-network",</strong>
+<strong class="bold">      "type": "multus",</strong>
+<strong class="bold">      "capabilities": {</strong>
+<strong class="bold">           "portMappings": true},</strong>
+<strong class="bold">…</strong>
+<strong class="bold">      "delegates": [{</strong>
+           "cniVersion": "0.4.0",
+           "name": "aws-cni",
+           "disableCheck": true,
+            "plugins": [{
+                "name": "aws-cni",
+                "type": "aws-cni",
+                 ….
+           }, {
+                "name": "egress-v4-cni",
+                "type": "egress-v4-cni",
+               …
+           }, {
+                "type": "portmap",
+…
+                 },
+                 "snat": true }]}]}</pre>
+			<p>If you remember, when we used <strong class="source-inline">eksctl</strong> to create our cluster, it also created a VPC and some private subnets, examples are shown next. We will use these to host the <span class="No-Break">Multus-managed ENIs:</span></p>
+			<div>
+				<div id="_idContainer076" class="IMG---Figure">
+					<img src="image/B18129_09_08.jpg" alt="Figure 9.8 – Private subnets created by eksctl"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.8 – Private subnets created by eksctl</p>
+			<p>There is <a id="_idIndexMarker460"/>some network <em class="italic">plumbing</em> we need to <a id="_idIndexMarker461"/>do before Multus works properly after we have enabled it in the cluster. We will need to do <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>Create some ENIs for Multus to use, tagging them so EKS <span class="No-Break">ignores them</span></li>
+				<li>Attach them to our worker nodes and sort out the IP address allocation and routing so the VPC can route traffic to and from the Pod’s <span class="No-Break">secondary interface</span></li>
+			</ul>
+			<h3>Creating the Multus ENIs</h3>
+			<p>The first thing <a id="_idIndexMarker462"/>we need to do is create ENIs in the various private subnets. The CloudFormation script shown next provides an example of how to do it programmatically, but you can do it other ways. You should pay special attention to the tags; we explicitly state the cluster and zone (availability) that the interface is connected to and the fact it should <em class="italic">not be managed</em> by the EKS control plane. We also create a security group, as this is a mandatory parameter for <span class="No-Break">an ENI:</span></p>
+			<pre class="source-code">
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+   multusSec:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+         GroupDescription: Multus security group
+         GroupName: multus
+         VpcId: <strong class="bold">&lt;MYVPC&gt;</strong></pre>
+			<p>In the following section, we create the first ENI in the <span class="No-Break">first subnet:</span></p>
+			<pre class="source-code">
+   private1:
+      Type: AWS::EC2::NetworkInterface
+      Properties:
+         Description: Interface 1 in az-a.
+         Tags:
+          - Key: multus
+            Value: true
+          - Key: Zone
+            Value: <strong class="bold">&lt;AZ-a&gt;</strong>
+          - Key:  node.k8s.amazonaws.com/no_manage
+            Value: true
+          - Key: cluster
+            Value: <strong class="bold">&lt;myclustername&gt;</strong>
+         SourceDestCheck: 'false'
+         GroupSet:
+         - !Ref multusSec
+         SubnetId: <strong class="bold">&lt;private subnet ID&gt;</strong></pre>
+			<p>In the <a id="_idIndexMarker463"/>next section, we create the second ENI in the <span class="No-Break">second subnet:</span></p>
+			<pre class="source-code">
+   private2:
+      Type: AWS::EC2::NetworkInterface
+      Properties:
+         Description: Interface 1 in az-b.
+         Tags:
+          - Key: multus
+            Value: true
+          - Key: Zone
+            Value: <strong class="bold">&lt;AZ-b&gt;</strong>
+          - Key:  node.k8s.amazonaws.com/no_manage
+            Value: true
+          - Key: cluster
+            Value: <strong class="bold">&lt;myclustername&gt;</strong>
+         SourceDestCheck: 'false'
+         GroupSet:
+         - !Ref multusSec
+         SubnetId: <strong class="bold">&lt;private subnet ID&gt;</strong></pre>
+			<p>In the final section, we create the last ENI in the <span class="No-Break">third subnet:</span></p>
+			<pre class="source-code">
+   private3:
+      Type: AWS::EC2::NetworkInterface
+      Properties:
+         Description: Interface 1 in az-c.
+         Tags:
+          - Key: multus
+            Value: true
+          - Key: Zone
+            Value: <strong class="bold">&lt;AZ-c&gt;</strong>
+          - Key:  node.k8s.amazonaws.com/no_manage
+            Value: true
+          - Key: cluster
+            Value: <strong class="bold">&lt;myclustername&gt;</strong>
+         SourceDestCheck: 'false'
+         GroupSet:
+         - !Ref multusSec
+         SubnetId: <strong class="bold">&lt;private subnet ID&gt;</strong></pre>
+			<p>Successfully <a id="_idIndexMarker464"/>deploying this script should result in three new interfaces being created; an example is <span class="No-Break">shown here:</span></p>
+			<div>
+				<div id="_idContainer077" class="IMG---Figure">
+					<img src="image/B18129_09_09.jpg" alt="Figure 9.9 – New ENIs for Multus"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 9.9 – New ENIs for Multus</p>
+			<h3>Attaching the ENIs to your worker nodes and configuring VPC routing</h3>
+			<p>You will now <a id="_idIndexMarker465"/>need to attach the interfaces to the worker nodes that your EC2 instances are using. You can <a id="_idIndexMarker466"/>do this through the console by selecting the worker node and selecting <strong class="bold">Actions</strong> | <strong class="bold">Networking</strong> | <strong class="bold">Attach network interface</strong>, or you can attach them automatically (more on <span class="No-Break">this later).</span></p>
+			<p>As we have only created one interface by AZ, you will only see the interface that corresponds to the AZ the instance is in. This will create a new Ethernet interface on your worker nodes with an address assigned from the private subnets. You can review the configuration by connecting to the host and running the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ ifconfig -a</pre>
+			<p>This will output something similar to the block shown next, where we can see a second ENI (<strong class="source-inline">eth1</strong> in this example), but depending on how many interfaces are already allocated to the worker node, the interface number <span class="No-Break">may vary:</span></p>
+			<pre class="source-code">
+<strong class="bold">eth0</strong>: flags=4163&lt;UP,BROADCAST,RUNNING,MULTICAST&gt;  mtu 9001
+inet 192.168.27.63  netmask 255.255.224.0  broadcast 192.168.31.255
+…..
+<strong class="bold">eth1</strong>: flags=4098&lt;BROADCAST,MULTICAST&gt;  mtu 1500
+ether 02:4f:d3:c2:fb:0e  txqueuelen 1000  (Ethernet)
+……
+<strong class="bold">lo</strong>: flags=73&lt;UP,LOOPBACK,RUNNING&gt;  mtu 65536
+inet 127.0.0.1  netmask 255.0.0.0
+….</pre>
+			<p>As the interface name could vary per worker node, we need to normalize them so we can rename them using the <strong class="source-inline">ip link</strong> command. Again this can be done per host using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ sudo ip link set eth1 name multus</pre>
+			<p>This may <a id="_idIndexMarker467"/>seem like a <a id="_idIndexMarker468"/>lot of work so far, but we still have to solve the major issue of how we route traffic to and from this secondary interface. Multus uses <strong class="source-inline">NetworkAttachmentDefinition</strong> to define the network used by the <span class="No-Break">secondary interface:</span></p>
+			<pre class="source-code">
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: <strong class="bold">NetworkAttachmentDefinition</strong>
+metadata:
+  name: ipvlan-private-a
+spec:
+  config: '{
+      "cniVersion": "0.3.0",
+      "type": "ipvlan",
+      "master": "multus",
+      "mode": "l3",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "192.168.96.0/19",
+        "rangeStart": "192.168.96.20",
+        "rangeEnd": "192.168.96.40",
+        "gateway": "192.168.96.1"
+      }
+    }'</pre>
+			<p><strong class="source-inline">NetworkAttachmentDefinition</strong> is referenced in the Pod or Deployment; an example is shown next. The Pod will have a second interface attached by Multus with an IP address allocated between <strong class="source-inline">192.168.96.20</strong> and <strong class="source-inline">192.168.96.40</strong>, as defined in the <strong class="source-inline">config</strong> section of the <strong class="source-inline">NetworkAttachmentDefinition</strong> file, <span class="No-Break">shown previously.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">The range used here is just a subset of the subnet CIDR that will be used <span class="No-Break">by Multus.</span></p>
+			<p>We will <a id="_idIndexMarker469"/>use the <strong class="source-inline">nodeSelector</strong> tag to <a id="_idIndexMarker470"/>allocate an IP address based on the AZ defined <span class="No-Break">in </span><span class="No-Break"><strong class="source-inline">NetworkAttachmentDefinition</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multus-pod
+  annotations:
+      k8s.v1.cni.cncf.io/networks: <strong class="bold">ipvlan-private-a</strong>
+spec:
+  nodeSelector:
+    topology.kubernetes.io/zone: <strong class="bold">eu-central-1a</strong>
+  containers:
+        - name: busybox
+          image: busybox
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'echo Container 1 is Running ; sleep 3600']</pre>
+			<p>If you run the following command, you can see the Pod is hosted on the worker node that is hosted in the <span class="No-Break"><strong class="source-inline">eu-central-1a</strong></span><span class="No-Break"> AZ:</span></p>
+			<pre class="console">
+$ kubectl get pod -o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name</pre>
+			<p>If we shell into the Pod using the following commands, you can see the Pod has <span class="No-Break">two interfaces:</span></p>
+			<pre class="console">
+$ kubectl exec --stdin --tty multus-pod  -- sh
+# ip addr
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+3: eth0@if23: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 9001 qdisc noqueue
+    link/ether 96:f4:8f:ef:82:92 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.14.60/32 scope global eth0
+4: net1@if15: &lt;BROADCAST,MULTICAST,NOARP,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue
+    link/ether 02:4f:d3:c2:fb:0e brd ff:ff:ff:ff:ff:ff
+    inet 192.168.96.20/19 brd 192.168.127.255 scope global net1</pre>
+			<p>Now to the <a id="_idIndexMarker471"/>meat of the <a id="_idIndexMarker472"/>problem! A VPC is a Layer 3 networking construct, everything needs an IP address to communicate, and the VPC maintains routes to all IP addresses/ranges in route tables. The VPC also maintains MAC address mapping to map IP addresses to the right ENI to make sure traffic keys to the <span class="No-Break">right interfaces.</span></p>
+			<p>This all works as the IP addresses are requested from the VPC. But in the case of Multus, it is assigning the IP address, and as it is creating an ipvlan-based interface, the MAC address is actually the one assigned to the Multus interface (<strong class="source-inline">eth2</strong> in <strong class="source-inline">NetworkAttachmentDefinition</strong>). So, the VPC doesn’t know that the IP addresses have been allocated or which ENI it needs to map them to. You need to associate the IP address assigned to the Pod with the Multus ENI using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ aws ec2 assign-private-ip-addresses --network-interface-id &lt;multus ENI-ID&gt; --private-ip-addresses 192.168.96.30</pre>
+			<p>There are a few ways you can automate some <span class="No-Break">of this:</span></p>
+			<ul>
+				<li>The AWS-managed repository, <a href="https://github.com/aws-samples/eks-automated-ipmgmt-multus-pods">https://github.com/aws-samples/eks-automated-ipmgmt-multus-pods</a>, suggests using either an <strong class="source-inline">init</strong> container or a sidecar to make calls to the <strong class="source-inline">AssignPrivateIpAddresses</strong> EC2 API (or the equivalent IPv6 <span class="No-Break">API call)</span></li>
+				<li>There’s a great blog by Joe Alford, <a href="https://joealford.medium.com/deploying-multus-into-amazons-eks-42269146f421">https://joealford.medium.com/deploying-multus-into-amazons-eks-42269146f421</a>, that looks to address some of the shortcomings of the AWS scripts, which <span class="No-Break">we recommend</span></li>
+				<li>Roll your own <a id="_idIndexMarker473"/>solution using tools such as AWS Lambda and auto-scaling events to <a id="_idIndexMarker474"/>create, attach interfaces, and configure prefixes that can be used by <span class="No-Break">a deployment</span></li>
+			</ul>
+			<p>Deploying these solutions is outside the scope of this book, but hopefully, you can see that the VPC CNI is the simplest way to get native AWS networking in your cluster, both for IPv4 <span class="No-Break">and IPv6.</span></p>
+			<p>A different CNI may still be required if you want to do <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>Use an overlay network based on IPsec, VXLAN, or IP <span class="No-Break">in IP</span></li>
+				<li>Support enhanced networking use cases such as source IP address preservation, direct server return, and low latency networking <span class="No-Break">using eBPF</span></li>
+				<li>Support <a id="_idIndexMarker475"/>for Windows <strong class="bold">Host Networking </strong><span class="No-Break"><strong class="bold">Services</strong></span><span class="No-Break"> (</span><span class="No-Break"><strong class="bold">HNS</strong></span><span class="No-Break">)</span></li>
+				<li><span class="No-Break">BGP Integration</span></li>
+			</ul>
+			<p>One of the major reasons for using another CNI, VPC address exhaustion, is still a use case, but prefix addressing, discussed in <a href="B18129_07.xhtml#_idTextAnchor107"><span class="No-Break"><em class="italic">Chapter 7</em></span></a>, <em class="italic">Networking in EKS</em>, solves this issue as long as you can allocate prefixes to interfaces. If you truly don’t have VPC addresses, then this <a id="_idIndexMarker476"/>still could be <a id="_idIndexMarker477"/>a reason to use <span class="No-Break">another CNI.</span></p>
+			<p>In this section, we looked at how you can extend and replace the VPC CNI. We’ll now revisit the key learning points from <span class="No-Break">this chapter.</span></p>
+			<h1 id="_idParaDest-144"><a id="_idTextAnchor144"/>Summary</h1>
+			<p>We started by describing how IPv6 can be configured in a new cluster to provide almost limitless IP addresses that don’t require NATing. We also discussed that IPv6 does have limits in terms of what it can communicate with and how techniques such as the host-local plugin, DNS64, and NAT64 can be used to provide IPv6 to <span class="No-Break">IPv4 translation.</span></p>
+			<p>We then looked at how the Calico policy engine can be used to enhance the capabilities of EKS by providing IPv4 L3/L4 network policies (just like a traditional firewall) that can be used to limit access between Pods and external <span class="No-Break">IP addresses.</span></p>
+			<p>Finally, we looked at how a CNI works with plugins and chaining and using Multus as an example, how the AWS VPC CNI can be replaced and the advantages that brings, but also the complexity it can add. We also briefly discussed that there are some valid use cases where a different CNI will be required but that the one that used to be the main driver, VPC IP exhaustion, can now be solved using <span class="No-Break">prefix addresses.</span></p>
+			<p>In the next chapter, we will look at the overall process of upgrading your cluster and build on some of the concepts discussed in the <span class="No-Break">previous chapters.</span></p>
+			<h1 id="_idParaDest-145"><a id="_idTextAnchor145"/>Further reading</h1>
+			<ul>
+				<li>Configuring Multus <span class="No-Break">CNI: </span><a href="https://aws.amazon.com/blogs/containers/amazon-eks-now-supports-multus-cni/"><span class="No-Break">https://aws.amazon.com/blogs/containers/amazon-eks-now-supports-multus-cni/</span></a></li>
+				<li>CNI <span class="No-Break">Chaining: </span><a href="https://karampok.me/posts/chained-plugins-cni/"><span class="No-Break">https://karampok.me/posts/chained-plugins-cni/</span></a></li>
+				<li>IPv6 on <span class="No-Break">AWS: </span><a href="https://aws.amazon.com/vpc/ipv6/"><span class="No-Break">https://aws.amazon.com/vpc/ipv6/</span></a></li>
+			</ul>
+		</div>
+	</body></html>

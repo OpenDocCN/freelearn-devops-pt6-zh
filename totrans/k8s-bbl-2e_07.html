@@ -1,0 +1,851 @@
+<html><head></head><body>
+  <div class="Basic-Text-Frame" id="_idContainer144">
+    <h1 class="chapterNumber">7</h1>
+    <h1 class="chapterTitle" id="_idParaDest-256">Configuring Your Pods Using ConfigMaps and Secrets</h1>
+    <p class="normal">The previous chapters introduced you to launching application containers using Kubernetes. You now know that whenever you need to launch a container on Kubernetes, you will need to do so using Pods. This was the key concept for you to understand and assimilate. Kubernetes is a complex system managed through a RESTful API. The core component handling this is the Kubernetes API server, which provides the primary interface to interact with the cluster. When users create Kubernetes objects, such as Pods, through this API, the system responds by provisioning the necessary resources on cluster nodes. Among these resources, a Pod stands out, as its creation on a Kubernetes node leads to the instantiation of application containers.</p>
+    <p class="normal">In this chapter, we’ll learn about two new Kubernetes objects: <strong class="keyWord">ConfigMaps</strong> and <strong class="keyWord">Secrets</strong>. Kubernetes leverages ConfigMaps<a id="_idIndexMarker590"/> and Secrets to decouple application configuration from the code itself. These objects provide a mechanism to manage configuration values independently, enhancing application portability and security. ConfigMaps store non-sensitive data as key-value pairs, while<a id="_idIndexMarker591"/> Secrets handle sensitive information like passwords or API keys. Both can be injected into Pods as environment variables or mounted as volumes, allowing applications to dynamically access configuration without hardcoding values. By separating configuration from an application, you create more flexible, resilient, and secure deployments within the Kubernetes ecosystem.</p>
+    <p class="normal">The following are the main topics that we’re going to cover in this chapter:</p>
+    <ul>
+      <li class="bulletList">Understanding what ConfigMaps and Secrets are</li>
+      <li class="bulletList">Configuring your Pods using ConfigMaps</li>
+      <li class="bulletList">Managing sensitive configuration with the Secret object</li>
+    </ul>
+    <h1 class="heading-1" id="_idParaDest-257">Technical requirements</h1>
+    <p class="normal">For this chapter, you will need the following:</p>
+    <ul>
+      <li class="bulletList">A working Kubernetes cluster (local or cloud-based, although this is not important)</li>
+      <li class="bulletList">A working <code class="inlineCode">kubectl</code> CLI configured to communicate with the Kubernetes cluster</li>
+    </ul>
+    <p class="normal">You can get these two prerequisites by following <em class="chapterRef">Chapter 2</em>, <em class="italic">Kubernetes Architecture – From Container Images to Running Pods</em>, and <em class="chapterRef">Chapter 3</em>, <em class="italic">Installing Your First Kubernetes Cluster</em>, to get a working Kubernetes cluster and a properly configured <code class="inlineCode">kubectl</code> client, respectively.</p>
+    <p class="normal">You can download the latest code samples for this chapter from the official GitHub repository: <a href="https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter07"><span class="url">https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter07</span></a>.</p>
+    <h1 class="heading-1" id="_idParaDest-258">Understanding what ConfigMaps and Secrets are</h1>
+    <p class="normal">Kubernetes environments are dynamic and constantly changing. This makes managing application configurations a complex challenge. Traditional methods often fall short in keeping up with the rapid pace of cloud-native development.</p>
+    <p class="normal">To address this, Kubernetes<a id="_idIndexMarker592"/> provides ConfigMaps and Secrets, specialized ways to handle different types of <a id="_idIndexMarker593"/>configuration data. By separating configuration from the application code, these resources significantly improve application portability, security, and manageability.</p>
+    <p class="normal">In the following sections, we’ll dive into the details of ConfigMaps and Secrets, exploring how they work and how to best utilize them in your Kubernetes deployments.</p>
+    <h2 class="heading-2" id="_idParaDest-259">Decoupling your application and your configuration</h2>
+    <p class="normal">Containers are immutable <a id="_idIndexMarker594"/>by nature, meaning they cannot be changed once created. This presents a challenge when managing configuration. Embedding configuration within a container image requires rebuilding the entire image for every configuration change, a time-consuming and inefficient process. Relying solely on environment variables or command-line arguments for configuration can also be cumbersome, especially for complex setups, and doesn’t guarantee persistence across container restarts. These limitations highlight the need for a more effective configuration management strategy in Kubernetes.</p>
+    <p class="normal">When we use Kubernetes, we want our applications to be as portable as possible. A good way to achieve this is to decouple the application from its configuration. Back in the old days, configuration and application were the same thing; since the application code was designed to work only on one environment, configuration values were often bundled within the application code itself, so the configuration and application code were tightly coupled.</p>
+    <p class="normal">Having both application code and configuration values treated as the same thing reduces the portability of an application. Now, things have changed a lot, and we must be able to update the application configuration because we want to make our application as portable as possible, enabling us to deploy applications in multiple environments flawlessly.</p>
+    <p class="normal">Consider the following problem:</p>
+    <ol>
+      <li class="numberedList" value="1">You deploy a Java application to the development environment for testing.</li>
+      <li class="numberedList">After the tests, the app is ready for production, and you need to deploy it. However, the MySQL endpoint for production is different from the one in development.</li>
+    </ol>
+    <p class="normal">There are two<a id="_idIndexMarker595"/> possibilities here:</p>
+    <ul>
+      <li class="bulletList">The configuration and application code are not decoupled, and the MySQL is hardcoded and bundled within the application code; you are stuck and need to rebuild the whole app after editing the application code.</li>
+      <li class="bulletList">The configuration and application code are decoupled. That’s good news for you, as you can simply override the MySQL endpoint as you deploy it to production.</li>
+    </ul>
+    <p class="normal">That’s the key to the concept of portability – the application code should be independent of the infrastructure it is running on. The best way to achieve this is to decouple the application code from its configuration.</p>
+    <p class="normal">In the following image, we have a common application container image and different configurations for the different environments.</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_07_01.png"/></figure>
+    <p class="packt_figref">Figure 7.1: Application configuration decoupled</p>
+    <p class="normal">Let’s look at some <a id="_idIndexMarker596"/>typical examples of the types of configuration values you should decouple from an app:</p>
+    <ul>
+      <li class="bulletList">API keys to access an Amazon S3 bucket</li>
+      <li class="bulletList">The password of the MySQL server used by your application</li>
+      <li class="bulletList">The endpoint of a Redis cluster used by your application</li>
+      <li class="bulletList">Pre-computed values such as JWT token private keys</li>
+    </ul>
+    <p class="normal">All of these values are likely to change from one environment to another, and the applications that are launched in your Pods should be able to load a different configuration, depending on the environment they are launched on. This is why we will seek to systematically maintain a barrier between our applications and the configurations they consume. Doing this allows us to treat them as two completely different entities in our Kubernetes cluster. The best way to achieve this is by considering our application and its configurations as two different entities.</p>
+    <p class="normal">This is why Kubernetes suggests using the ConfigMaps<a id="_idIndexMarker597"/> and<a id="_idIndexMarker598"/> Secrets objects, which are designed to carry your configuration data. Then, you will need to attach these ConfigMaps and Secrets when you create your Pods.</p>
+    <div class="note">
+      <p class="normal">Please avoid including your configuration values as part of your container images, such as Docker images. Your Dockerfile (or Containerfile for Podman) should build your application but not configure it. By including the container configuration at build time, you create a strong relationship between your application and how it’s configured, which reduces the portability of your container to different environments.</p>
+    </div>
+    <p class="normal">ConfigMaps are meant to hold non-sensitive configuration values, whereas Secrets are globally the same but are meant to hold sensitive configuration values, such as database passwords, API keys, and so on.</p>
+    <p class="normal">So, you can imagine a ConfigMap and Secret for each environment and for each application, which will contain the parameters that the application needs to function in a specific context and environment. The key point is that ConfigMaps and Secrets serve as storage mechanisms for key/value pairs, for configuration data within a Kubernetes cluster. These key/value pairs can contain plain values called <code class="inlineCode">literals</code> or full configuration files, such as <code class="inlineCode">YAML</code>, <code class="inlineCode">TOML</code>, and so on. Then, on Pod creation, you can pick the name of a ConfigMap or a Secret and link it to your Pod so that the configuration values are exposed to the containers running into it.</p>
+    <p class="normal">You always proceed in this order to guarantee that the configuration data is available when the Pod starts:</p>
+    <ol>
+      <li class="numberedList" value="1">Create a ConfigMap or a Secret with the configuration values.</li>
+      <li class="numberedList">Create a Pod referencing the ConfigMap or Secret.</li>
+    </ol>
+    <p class="normal">By adopting this approach, you enhance your application’s portability and maintainability, aligning with common DevOps best practices.</p>
+    <p class="normal">Now that we’ve explained why it is important to decouple application code and configuration values, it is time to explain why and how to achieve this in a Kubernetes-friendly way.</p>
+    <h2 class="heading-2" id="_idParaDest-260">Understanding how Pods consume ConfigMaps and Secrets</h2>
+    <p class="normal">Before diving into the specifics of ConfigMaps and Secrets, let’s examine traditional methods of managing configuration<a id="_idIndexMarker599"/> in containerized environments. Outside of Kubernetes, modern containerized applications consume their configuration in multiple ways:</p>
+    <ul>
+      <li class="bulletList">As OS environment variables</li>
+      <li class="bulletList">As configuration files</li>
+      <li class="bulletList">Command-line arguments</li>
+      <li class="bulletList">API access</li>
+    </ul>
+    <p class="normal">This is because overriding an environment variable is super-easy with Docker or Podman, and all programming languages offer functions to easily read environment variables. Configuration files can easily be shared and mounted as volumes between containers.</p>
+    <div class="note">
+      <p class="normal">IMPORTANT</p>
+      <p class="normal">While ConfigMaps and Secrets are the primary methods for managing configuration in Kubernetes, there are alternative approaches. Command-line arguments can be used to pass configuration directly to containers, but this method is less flexible and secure than ConfigMaps and Secrets. Directly accessing the Kubernetes API to fetch configuration is generally discouraged, due to security risks and added complexity.</p>
+    </div>
+    <p class="normal">Back in the Kubernetes world, ConfigMaps and Secrets follow these two methods. Once created in your Kubernetes cluster, ConfigMaps can be consumed in one of two ways:</p>
+    <ul>
+      <li class="bulletList">Included as environment variables in the container running in your Pods</li>
+      <li class="bulletList">Mounted as Kubernetes volumes, just like any other volume</li>
+    </ul>
+    <p class="normal">You can choose to inject one value from a ConfigMap or a Secret as an environment variable, or inject all the values from a ConfigMap or a Secret as environment variables.</p>
+    <div class="note">
+      <p class="normal">IMPORTANT</p>
+      <p class="normal">Using environment variables to expose Secrets is strongly discouraged due to potential security risks and the possibility of value truncation. Consider using the volume approach with file-based Secrets to leverage kubelet caching for dynamic updates and improved security.</p>
+    </div>
+    <p class="normal">ConfigMap and Secrets can also behave as volume mounts. When you mount a ConfigMap as a volume, you can inject all the values it contains in a directory into your container. If you store the full configuration files in your ConfigMap, using this feature to override a configuration directory becomes incredibly easy.</p>
+    <p class="normal">After this introduction to ConfigMap and Secrets, you should now understand why they are so important when it comes to configuring an application. Mastering them is crucial if you intend to work with Kubernetes cleanly and solidly. As we mentioned earlier in this chapter, ConfigMaps are used to store <em class="italic">unsecured</em> configuration values, whereas Secrets are used for more sensitive configuration data, such as hashes or database passwords.</p>
+    <p class="normal">The following table shows the high-level differences between ConfigMaps<a id="_idIndexMarker600"/> and Secrets<a id="_idIndexMarker601"/> in Kubernetes.</p>
+    <table class="table-container" id="table001-3">
+      <tbody>
+        <tr>
+          <td class="table-cell">
+            <p class="normal"><strong class="keyWord">Feature</strong></p>
+          </td>
+          <td class="table-cell">
+            <p class="normal"><strong class="keyWord">ConfigMaps</strong></p>
+          </td>
+          <td class="table-cell">
+            <p class="normal"><strong class="keyWord">Secrets</strong></p>
+          </td>
+        </tr>
+        <tr>
+          <td class="table-cell">
+            <p class="normal">Purpose</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Store non-sensitive configuration data</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Store sensitive information</p>
+          </td>
+        </tr>
+        <tr>
+          <td class="table-cell">
+            <p class="normal">Data format</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Plain text</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Base64-encoded</p>
+          </td>
+        </tr>
+        <tr>
+          <td class="table-cell">
+            <p class="normal">Security</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Less secure</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">More secure</p>
+          </td>
+        </tr>
+        <tr>
+          <td class="table-cell">
+            <p class="normal">Common use cases</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Application configuration, environment variables, and command-line arguments</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Passwords, API keys, SSH keys, and TLS certificates</p>
+          </td>
+        </tr>
+        <tr>
+          <td class="table-cell">
+            <p class="normal">Handling sensitive data</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Not recommended</p>
+          </td>
+          <td class="table-cell">
+            <p class="normal">Strongly recommended</p>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="packt_figref">Table 7.1: Differences between ConfigMaps and Secrets</p>
+    <p class="normal">Since the ConfigMaps and Secrets don’t behave the same, let’s look at them separately. First, we are going to discover how ConfigMaps work. We will discover Secrets after.</p>
+    <h1 class="heading-1" id="_idParaDest-261">Configuring your Pods using ConfigMaps</h1>
+    <p class="normal">In this section, we will learn how to list, create, delete, and read ConfigMaps. Also, we’ll learn how to attach them to our Pods so that their values are injected into the Pods, in the form of environment variables or volumes.</p>
+    <p class="normal">In the following sections, we will learn how to list, create, and manage ConfigMaps in Kubernetes.</p>
+    <h2 class="heading-2" id="_idParaDest-262">Listing ConfigMaps</h2>
+    <p class="normal">Listing the<a id="_idIndexMarker602"/> ConfigMaps that were created in your cluster is fairly straightforward and can be accomplished using <code class="inlineCode">kubectl</code>, just like any other object in Kubernetes. You can do this by using the full resource name, which is <code class="inlineCode">configmaps</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get configmaps
+</code></pre>
+    <p class="normal">Alternatively, you can use the shorter alias, which is <code class="inlineCode">cm</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get cm
+</code></pre>
+    <p class="normal">Both of these commands have the same effect. When executed, <code class="inlineCode">kubectl</code> might display a few default ConfigMaps or issue an error, stating that no ConfigMaps were found. This discrepancy arises because certain cloud services generate default ConfigMaps for internal processes, while others do not. The presence or absence of these default ConfigMaps depends on the environment in which your Kubernetes cluster is deployed.</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span> kubectl get configmaps -A
+NAMESPACE         NAME                                                   DATA   AGE
+default           kube-root-ca.crt                                       1      23d
+kube-node-lease   kube-root-ca.crt                                       1      23d
+kube-public       cluster-info                                           1      23d
+kube-public       kube-root-ca.crt                                       1      23d
+...&lt;removed for brevity&gt;...
+</code></pre>
+    <p class="normal">As you can see in the preceding output, there are multiple ConfigMaps in the default namespace and Kubernetes-managed namespaces, which are created during the cluster deployment. Now, let’s learn how to create a new ConfigMap in the next section.</p>
+    <h2 class="heading-2" id="_idParaDest-263">Creating a ConfigMap</h2>
+    <p class="normal">Like other <a id="_idIndexMarker603"/>Kubernetes objects, ConfigMaps can be created imperatively or declaratively. You can decide to create an empty ConfigMap and then add values to it or create a ConfigMap directly with initial values. The following command will create an empty ConfigMap, called <code class="inlineCode">my-first-configmap</code>, via the imperative method:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create configmap my-first-configmap
+configmap/my-first-configmap created
+</code></pre>
+    <p class="normal">Once this command has been executed, you can type the <code class="inlineCode">kubectl get cm</code> command once again to see your new <code class="inlineCode">configmap</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get cm
+NAME                 DATA   AGE
+my-first-configmap   0      42s
+</code></pre>
+    <p class="normal">Now, we are going to create a new empty ConfigMap, but this time, we are going to create it with the declarative method. This way, we’ll have to create a YAML file and apply it through <code class="inlineCode">kubectl</code>.</p>
+    <p class="normal">The following content should be placed in a file called <code class="inlineCode">~/my-second-configmap.yaml</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># ~/my-second-configmap.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ConfigMap</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">my-second-configmap</span>
+</code></pre>
+    <p class="normal">Once this file<a id="_idIndexMarker604"/> has been created, you can apply it to your Kubernetes cluster using the <code class="inlineCode">kubectl apply -f</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f ~/my-second-configmap.yaml
+configmap/my-second-configmap created
+</code></pre>
+    <p class="normal">You can type the <code class="inlineCode">kubectl get cm</code> command once more to see your new <code class="inlineCode">configmap</code> added next to the one you created earlier:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span> kubectl get cm
+NAME                  DATA   AGE
+kube-root-ca.crt      1      23d
+my-first-configmap    0      5s
+my-second-configmap   0      2s
+</code></pre>
+    <p class="normal">Please note that the output of the <code class="inlineCode">kubectl get cm</code> command also returns the number of keys that each ConfigMap contains in the <code class="inlineCode">DATA</code> column. For now, it’s zero, but in the following<a id="_idIndexMarker605"/> examples, you’ll see that we can fill a <code class="inlineCode">configmap</code> when it’s created, so <code class="inlineCode">DATA</code> will reflect the number of keys we put in <code class="inlineCode">configmap</code>.</p>
+    <h2 class="heading-2" id="_idParaDest-264">Creating a ConfigMap from literal values</h2>
+    <p class="normal">Having an empty<a id="_idIndexMarker606"/> ConfigMap is quite useless, so let’s <a id="_idIndexMarker607"/>learn how to create a ConfigMap with values inside it. Let’s do this imperatively: adding the <code class="inlineCode">–from-literal</code> flag to the <code class="inlineCode">kubectl create cm</code> command.</p>
+    <p class="normal">Here, we are going to create a ConfigMap called <code class="inlineCode">my-third-configmap</code>, with a key named <code class="inlineCode">color</code> and its value set to <code class="inlineCode">blue</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create cm my-third-configmap --from-literal=color=blue
+configmap/my-third-configmap created
+</code></pre>
+    <p class="normal">Also, be aware that you can create a ConfigMap with multiple parameters; you just need to add as much configuration data as you want to <code class="inlineCode">configmap</code> by chaining as many from-literals as you need in your command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create cm my-fourth-configmap --from-literal=color=blue --from-literal=version=1 --from-literal=environment=prod
+configmap/my-fourth-configmap created
+</code></pre>
+    <p class="normal">Here, we create a ConfigMap with three configuration values inside it. Now, you can list your ConfigMaps once more using this command. You should see the few additional ones you just created.</p>
+    <p class="normal">Please note that the <code class="inlineCode">DATA</code> column in the return of <code class="inlineCode">kubectl get cm</code> now reflects the number of configuration values inside each <code class="inlineCode">configmap</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get cm
+NAME                  DATA   AGE
+my-first-configmap    0      9m30s
+<span class="code-highlight"><strong class="hljs-slc">my-fourth-configmap   3      6m23s</strong></span>
+my-second-configmap   0      8m2s
+my-third-configmap    1      7m9s
+</code></pre>
+    <p class="normal">We can also see the details of the ConfigMap (or any other objects) by displaying a well-formatted output in the YAML or JSON format, as follows.</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-string">$</span> <span class="hljs-string">kubectl</span> <span class="hljs-string">get</span> <span class="hljs-string">cm</span> <span class="hljs-string">my-fourth-configmap</span> <span class="hljs-string">-o</span> <span class="hljs-string">yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">data:</span>
+  <span class="hljs-attr">color:</span> <span class="hljs-string">blue</span>
+  <span class="hljs-attr">environment:</span> <span class="hljs-string">prod</span>
+  <span class="hljs-attr">version:</span> <span class="hljs-string">"1"</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ConfigMap</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">creationTimestamp:</span> <span class="hljs-string">"2024-08-10T06:20:49Z"</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">my-fourth-configmap</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">default</span>
+  <span class="hljs-attr">resourceVersion:</span> <span class="hljs-string">"25647"</span>
+  <span class="hljs-attr">uid:</span> <span class="hljs-string">3c8477dc-f3fe-4d69-b66a-403679a88450</span>
+</code></pre>
+    <p class="normal">This approach also facilitates<a id="_idIndexMarker608"/> object backup in the YAML or JSON formats, aligning <a id="_idIndexMarker609"/>with <strong class="keyWord">Configuration as Code</strong> (<strong class="keyWord">CaC</strong>) and <strong class="keyWord">Infrastructure as Code</strong> (<strong class="keyWord">IaC</strong>) best practices.</p>
+    <p class="normal">Now, it is also<a id="_idIndexMarker610"/> possible to create the same ConfigMap<a id="_idIndexMarker611"/> declaratively. Here is the declarative YAML configuration file that is ready to be applied against the cluster. Please note the new data YAML key, which contains all the configuration values:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># ~/my-fifth-configmap.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ConfigMap</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">my-fifth-configmap</span>
+<span class="hljs-attr">data:</span>
+  <span class="hljs-attr">color:</span> <span class="hljs-string">"blue"</span>
+  <span class="hljs-attr">version:</span> <span class="hljs-string">"1"</span>
+  <span class="hljs-attr">environment:</span> <span class="hljs-string">"prod"</span>
+</code></pre>
+    <p class="normal">Once you have created the file, you can create the ConfigMap using the <code class="inlineCode">kubectl apply</code> command, as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f my-fifth-configmap.yaml
+configmap/my-fifth-configmap created
+</code></pre>
+    <p class="normal">A new ConfigMap object will be created based on the <code class="inlineCode">my-fifth-configmap.yam</code>l file, which includes your data as per the YAML definition.</p>
+    <p class="normal">Now, let’s learn how to store entire configuration files inside a ConfigMap in the next section of this chapter.</p>
+    <h2 class="heading-2" id="_idParaDest-265">Storing entire configuration files in a ConfigMap</h2>
+    <p class="normal">As we<a id="_idIndexMarker612"/> mentioned earlier, it’s also possible to store complete files inside a ConfigMap – you are not restricted to literal values. The trick is to give the path of a file stored in your filesystem to the <code class="inlineCode">kubectl</code> command line. The content of the file will then be taken by <code class="inlineCode">kubectl</code> and used to populate a parameter in <code class="inlineCode">configmap</code>.</p>
+    <p class="normal">Having the content of a configuration file stored in a ConfigMap is super-useful because you’ll be able to mount your ConfigMaps in your Pods, just like you can do with volumes.</p>
+    <p class="normal">The good news is that you can mix literal values and files inside a ConfigMap. Literal values are meant to be short strings, whereas files are just treated as longer strings; they are not two different data types.</p>
+    <p class="normal">We have already seen such a sample ConfigMap in <em class="chapterRef">Chapter 5</em>, in the <em class="italic">Sidecar multi-container Pod – an example</em> section, where we stored the Fluentd configuration content inside a ConfigMap as file content.</p>
+    <p class="normal">Here, a sixth ConfigMap is created with a literal value, just like it was previously, but now, we are also going to store the content of a file in it.</p>
+    <p class="normal">Let’s create a file called <code class="inlineCode">configfile.txt</code> in the <code class="inlineCode">$HOME/configfile.txt</code> location with arbitrary content:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">echo</span> <span class="hljs-con-string">"I'm just a dummy config file"</span> &gt;&gt; <span class="hljs-con-variable">$HOME</span>/configfile.txt
+</code></pre>
+    <p class="normal">Here, that configuration file has the <code class="inlineCode">.txt</code> extension, but it could be a <code class="inlineCode">.yaml</code>, <code class="inlineCode">.toml</code>, <code class="inlineCode">.rb</code>, or any other configuration format that your application can use.</p>
+    <p class="normal">Now, we need to import that file into a ConfigMap, so let’s create a brand-new ConfigMap to demonstrate this. You can do this using the <code class="inlineCode">--from-file</code> flag, which can be used together with the <code class="inlineCode">--from-literal</code> flag in the same command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create cm my-sixth-configmap --from-literal=color=yellow --from-file=<span class="hljs-con-variable">$HOME</span>/configfile.txt
+configmap/my-sixth-configmap created
+</code></pre>
+    <p class="normal">Let’s run the <code class="inlineCode">kubectl get cm</code> command once more to make sure that our sixth <code class="inlineCode">configmap</code> is created. The command will show that it contains two configuration values – in our case, the one created from a literal and the other one created from the content of a file:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get cm my-sixth-configmap
+NAME                  DATA   AGE
+my-sixth-configmap    2      38s
+</code></pre>
+    <p class="normal">As you can see, <code class="inlineCode">my-sixth-configmap</code> contains two pieces of data: the literal and the file.</p>
+    <p class="normal">Now, let’s create a seventh ConfigMap. Just like the sixth one, it’s going to contain a literal and a file, but this time, we’re going to create it declaratively.</p>
+    <p class="normal">The YAML format allows you to use multiple lines with the | symbol. We’re using this syntax as part of our declaration file:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># ~/my-seventh-configmap.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ConfigMap</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">my-seventh-configmap</span>
+<span class="hljs-attr">data:</span>
+  <span class="hljs-attr">color:</span> <span class="hljs-string">"green"</span>
+  <span class="hljs-attr">configfile.txt:</span> <span class="hljs-string">|</span>
+    <span class="hljs-string">I'm</span> <span class="hljs-string">another</span> <span class="hljs-string">configuration</span> <span class="hljs-string">file.</span>
+</code></pre>
+    <p class="normal">Let’s apply this YAML file to create our <code class="inlineCode">configmap</code> with the <code class="inlineCode">kubectl apply</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f my-seventh-configmap.yaml
+configmap/my-seventh-configmap created
+</code></pre>
+    <p class="normal">Let’s list the<a id="_idIndexMarker613"/> ConfigMaps in our cluster using <code class="inlineCode">kubectl get cm</code> to make sure our seventh <code class="inlineCode">configmap</code> has been created and contains two values. So let’s run the <code class="inlineCode">kubectl get cm</code> command once more:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get configmap/my-seventh-configmap
+NAME                   DATA   AGE
+my-seventh-configmap   2      36s
+</code></pre>
+    <p class="normal">Now, let’s discover the last possible way to create a ConfigMap – that is, from an <code class="inlineCode">env</code> file.</p>
+    <h2 class="heading-2" id="_idParaDest-266">Creating a ConfigMap from an env file</h2>
+    <p class="normal">As <a id="_idIndexMarker614"/>you might guess, you can create a ConfigMap from an <code class="inlineCode">env</code> file <a id="_idIndexMarker615"/>imperatively using the <code class="inlineCode">--from-env-file</code> flag.</p>
+    <p class="normal">An <code class="inlineCode">env</code> file is a <code class="inlineCode">key=value</code> format file where each key is separated by a line break. This is a configuration format that’s used by some applications, so Kubernetes introduced a way to generate a ConfigMap from an existing <code class="inlineCode">env</code> file. This is especially useful if you have an already existing application that you want to migrate into Kubernetes.</p>
+    <p class="normal">Here is a typical <code class="inlineCode">env</code> file:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># ~/my-env-file.env</span>
+<span class="hljs-string">hello=world</span>
+<span class="hljs-string">color=blue</span>
+<span class="hljs-string">release=1.0</span>
+<span class="hljs-string">production=true</span>
+</code></pre>
+    <p class="normal">By convention, <code class="inlineCode">env</code> files are named <code class="inlineCode">.env</code>, but it’s not mandatory. So long as the file is formatted correctly, Kubernetes will be able to generate a ConfigMap based on the parameters.</p>
+    <p class="normal">You can use the following command to import the configuration in the <code class="inlineCode">env</code> file as a ConfigMap into your Kubernetes cluster:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create cm my-eight-configmap --from-env-file my-env-file.env
+configmap/my-eight-configmap created
+</code></pre>
+    <p class="normal">Lastly, let’s list the ConfigMaps in our cluster to check that our new ConfigMap was created with three configuration values:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get cm my-eight-configmap
+NAME                 DATA   AGE
+my-eight-configmap   4      7s
+</code></pre>
+    <p class="normal">As you can see, the new <code class="inlineCode">configmap</code> is now available in the cluster, and it was created with the three parameters that were present in the <code class="inlineCode">env</code> file. That’s a solid way to import your <code class="inlineCode">env</code> files into Kubernetes ConfigMaps.</p>
+    <div class="note">
+      <p class="normal">Remember that <code class="inlineCode">ConfigMaps</code> are not meant to contain sensitive values. Data in ConfigMaps are not encoded, and that’s why you can view them with just a <code class="inlineCode">kubectl describe cm</code> command. For anything that requires privacy, you’ll have to use the <code class="inlineCode">Secret</code> object and not the <code class="inlineCode">ConfigMap</code> one. It’s important to note that while <code class="inlineCode">Secrets</code> themselves are not inherently encrypted by default, they are stored in the base64 format, offering a basic level of obfuscation. Additionally, with<a id="_idIndexMarker616"/> Kubernetes versions 1.27 and later, you can leverage Kubernetes <strong class="keyWord">Key Management System</strong> (<strong class="keyWord">KMS</strong>) plugin providers to encrypt data within both Secrets and ConfigMaps. This provides a more robust security layer for sensitive information.</p>
+    </div>
+    <p class="normal">Now, let’s discover how to read the values inside a ConfigMap.</p>
+    <h2 class="heading-2" id="_idParaDest-267">Reading values inside a ConfigMap</h2>
+    <p class="normal">So far, we’ve only listed the<a id="_idIndexMarker617"/> ConfigMaps to see the number of keys in them. Let’s take this a little bit further: you can read actual data inside a ConfigMap, not just count the number of ConfigMaps. This is useful if you want to debug a ConfigMap or if you’re not confident about what kind of data is stored in them.</p>
+    <p class="normal">The data in a ConfigMap is not meant to be sensitive, so you can read and retrieve it easily from <code class="inlineCode">kubectl</code>; it will be displayed in the terminal’s output.</p>
+    <p class="normal">You can read the value in a ConfigMap with the <code class="inlineCode">kubectl describe</code> command. We will run this command against the <code class="inlineCode">my-fourth-configmap</code> ConfigMap, since it’s the one that contains the most data. The output is quite big, but as you can see, the two pieces of configuration data are displayed clearly:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe cm my-fourth-configmap
+Name:         my-fourth-configmap
+Namespace:    default
+Labels:       &lt;none&gt;
+Annotations:  &lt;none&gt;
+Data
+====
+color:
+----
+blue
+environment:
+----
+prod
+version:
+----
+1
+BinaryData
+====
+Events:  &lt;none&gt;
+</code></pre>
+    <p class="normal">The <code class="inlineCode">kubectl describe cm</code> command returns these kinds of results. Expect to receive results similar to this one and not results in a computer-friendly format, such as JSON or YAML.</p>
+    <p class="normal">As the data is <a id="_idIndexMarker618"/>displayed clearly in the terminal output, keep in mind that any user of the Kubernetes cluster (with access to this ConfigMap) will be able to retrieve this data directly by typing the <code class="inlineCode">kubectl describe cm</code> command, so be careful to not store any sensitive value in a ConfigMap.</p>
+    <p class="normal">Now, let’s discover how we can inject ConfigMap data into running Pods as environment variables.</p>
+    <h2 class="heading-2" id="_idParaDest-268">Linking ConfigMaps as environment variables</h2>
+    <p class="normal">In this section, we’re <a id="_idIndexMarker619"/>going to bring our ConfigMaps to life <a id="_idIndexMarker620"/>by linking them to Pods. First, we will focus on injecting ConfigMaps as environment variables. Here, we want the environment variables of a container within a Pod to come from the values of a ConfigMap.</p>
+    <p class="normal">You can do this in two different ways:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Injecting one or more given values in a given ConfigMap</strong>: You can set the value of an environment variable based on the parameters contained in one or multiple ConfigMaps.</li>
+      <li class="bulletList"><strong class="keyWord">Injecting all the values contained in a given ConfigMap</strong>: You take one ConfigMap and inject all the values it contains into an environment at once. This way is good if you are creating one ConfigMap per Pod specification or application so that each app has a ConfigMap ready to be deployed.</li>
+    </ul>
+    <div class="note">
+      <p class="normal">Please note that it’s impossible to link a ConfigMap to a Pod with the <code class="inlineCode">kubectl</code> <code class="inlineCode">imperative</code> method. The reason is that it’s impossible to create a Pod referencing a ConfigMap directly from the <code class="inlineCode">kubectl run</code> command. You will have to write declarative YAML files to use your ConfigMaps in your Pods.</p>
+    </div>
+    <p class="normal">Earlier in this <a id="_idIndexMarker621"/>chapter, we created a ConfigMap <a id="_idIndexMarker622"/>called <code class="inlineCode">my-third-configmap</code> that contains a parameter called <code class="inlineCode">color</code>, with a value of <code class="inlineCode">blue</code>. In this example, we will create a Pod with the <code class="inlineCode">quay.io/iamgini/my-flask-app:1.0</code> image, and we will link <code class="inlineCode">my-third-configmap</code> to the Pod so that the flask application container is created with an environment variable called <code class="inlineCode">COLOR</code>, with a value set to <code class="inlineCode">blue</code>, according to what we have in the ConfigMap. Here is the YAML manifest to achieve that. Pay attention to the <code class="inlineCode">env:</code> key in the <code class="inlineCode">container</code> spec:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># flask-pod-with-configmap.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">flask-pod-with-configmap</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">my-flask-app</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">flask-with-configmap</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">quay.io/iamgini/my-flask-app:1.0</span>
+      <span class="hljs-attr">env:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">COLOR</span> <span class="hljs-comment"># Any other name works here.</span>
+          <span class="hljs-attr">valueFrom:</span>
+            <span class="hljs-attr">configMapKeyRef:</span>
+              <span class="hljs-attr">name:</span> <span class="hljs-string">my-third-configmap</span>
+              <span class="hljs-attr">key:</span> <span class="hljs-string">color</span>
+</code></pre>
+    <p class="normal">Now, we can create this Pod using the <code class="inlineCode">kubectl apply</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f flask-pod-with-configmap.yaml
+pod/flask-pod-with-configmap created
+<span class="hljs-con-meta">$ </span>kubectl get pod
+NAME                       READY   STATUS    RESTARTS   AGE
+flask-pod-with-configmap   1/1     Running   0          5s
+</code></pre>
+    <p class="normal">Now that our application Pod has been created, let’s launch the <code class="inlineCode">env</code> command inside the container to list all the environment variables that are available in the container. As you may have guessed, we will issue the <code class="inlineCode">env</code> Linux command in this specific container by calling the <code class="inlineCode">kubectl exec</code> command. Here is the command and the output to expect:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl <span class="hljs-con-built_in">exec</span> pods/flask-pod-with-configmap -- <span class="hljs-con-built_in">env</span>
+PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOSTNAME=flask-pod-with-configmap
+<span class="code-highlight"><strong class="hljs-slc">COLOR=blue</strong></span>
+KUBERNETES_PORT_443_TCP=tcp://10.96.0.1:443
+...&lt;removed for brevity&gt;...
+</code></pre>
+    <p class="normal">You should see the <code class="inlineCode">COLOR</code> environment variable in the output if your ConfigMap has been linked to your Pod correctly.</p>
+    <p class="normal">You can also check the application deployed by exposing the Pod using a service, as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl expose pod flask-pod-with-configmap --port=8081 --target-port=5000 --<span class="hljs-con-built_in">type</span>=NodePort
+</code></pre>
+    <p class="normal">Let’s test the application over a browser using the <code class="inlineCode">kubectl port-forward</code> method.</p>
+    <p class="normal">You can start a<a id="_idIndexMarker623"/> <code class="inlineCode">port-forward</code> to test the <a id="_idIndexMarker624"/>application, as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl port-forward flask-pod-with-configmap 20000:5000
+Forwarding from 127.0.0.1:20000 -&gt; 5000
+Forwarding from [::1]:20000 -&gt; 5000
+</code></pre>
+    <h2 class="heading-2" id="_idParaDest-269">Using kubectl port-forward</h2>
+    <p class="normal"><code class="inlineCode">kubectl port-forward</code> creates a <a id="_idIndexMarker625"/>secure tunnel between your local machine and a specific Pod within a Kubernetes cluster. This allows you to access and interact with applications running inside the Pod as if they were running locally. It’s a valuable tool for debugging, testing, and development, providing direct access to services without external exposure.</p>
+    <p class="normal">In the preceding code snippet, we forward the local port <code class="inlineCode">20000</code> to the target port <code class="inlineCode">5000</code> temporarily. You can now access the application in your local browser using the address <code class="inlineCode">127.0.0.1:20000</code>.</p>
+    <div class="packt_tip">
+      <p class="normal">While NodePort services are designed for external access, they can also be used in minikube environments. To access your application externally in this case, use the <code class="inlineCode">minikube service</code> command to get the NodePort and corresponding IP address. For instance, the minikube service <code class="inlineCode">--url flask-pod-with-configmap</code> might output <code class="inlineCode">http://192.168.49.2:31997</code>, allowing you to access your Flask application at this URL.</p>
+    </div>
+    <p class="normal">Now, you can access the flask application over a web browser and can see the background with a BLUE color, as it was configured in the ConfigMap as <code class="inlineCode">COLOR=blue</code>. You can change the value of <code class="inlineCode">COLOR</code> in the ConfigMap and recreate the <code class="inlineCode">flask-pod-with-configmap</code> Pod to see the changes.</p>
+    <p class="normal">We will learn more about Kubernetes services and DNS in <em class="chapterRef">Chapter 8</em>, <em class="italic">Exposing Your Pods with Services</em>.</p>
+    <p class="normal">Please note that the <code class="inlineCode">kubectl port-forward</code> will continue serving the forward until you end the command (e.g., by pressing the <em class="keystroke">Ctrl + C</em> keys).</p>
+    <p class="normal">Now, we are going to discover the second way of injecting ConfigMaps as environment variables.</p>
+    <p class="normal">In this demo, we will <a id="_idIndexMarker626"/>link another ConfigMap, the one called <code class="inlineCode">my-fourth-configmap</code>. This time, we don’t want to retrieve a single value in this ConfigMap but all the values inside of it instead. Here is the updated YAML Pod manifest. This time, we don’t use individual <code class="inlineCode">env</code> keys but an <code class="inlineCode">envFrom</code> key in our <code class="inlineCode">container</code> spec instead:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># flask-pod-with-configmap-all.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">flask-pod-with-configmap-all</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">flask-with-configmap</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">quay.io/iamgini/my-flask-app:1.0</span>
+      <span class="hljs-attr">envFrom:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">configMapRef:</span>
+            <span class="hljs-attr">name:</span> <span class="hljs-string">my-fourth-configmap</span>
+</code></pre>
+    <p class="normal">Once the manifest file is ready, you can recreate the NGINX Pod:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f flask-pod-with-configmap-all.yaml
+pod/ flask-pod-with-configmap-all created
+</code></pre>
+    <p class="normal">Now, let’s run the <code class="inlineCode">env</code> command once more in the <code class="inlineCode">nginx</code> container, using the <code class="inlineCode">kubectl exec</code> command to list the environment variables:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl <span class="hljs-con-built_in">exec</span> pods/flask-pod-with-configmap-all -- <span class="hljs-con-built_in">env</span>
+PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOSTNAME=flask-pod-with-configmap-all
+environment=prod
+version=1
+color=blue
+KUBERNETES_PORT_443_TCP_PORT=443
+KUBERNETES_PORT_443_TCP_ADDR=10.96.0.1
+...&lt;removed for brevity&gt;...
+</code></pre>
+    <p class="normal">Note that the <a id="_idIndexMarker627"/>three parameters <code class="inlineCode">– color</code>, <code class="inlineCode">version</code>, and <code class="inlineCode">environment</code> – that were declared in the <code class="inlineCode">my-fourth-configmap</code> have been set as environment variables in the container, but this time, you don’t have control over how the environment variables are named in the container. Their names are directly inherited from the parameter key names in the ConfigMap.</p>
+    <p class="normal">Now, it’s time to learn how to mount a ConfigMap as a volume in a container.</p>
+    <h2 class="heading-2" id="_idParaDest-270">Mounting a ConfigMap as a volume mount</h2>
+    <p class="normal">Earlier <a id="_idIndexMarker628"/>in this chapter, we created two ConfigMaps<a id="_idIndexMarker629"/> that store dummy configuration files. <code class="inlineCode">kubectl</code> allows you to mount a ConfigMap inside a Pod as a volume. This is especially useful when the ConfigMap contains the content of a file that you want to inject into a container’s filesystem.</p>
+    <p class="normal">Just like when we inject environment variables, we need to do this imperatively using a YAML manifest file. Here, we are going to mount a ConfigMap called <code class="inlineCode">my-sixth-configmap</code> as a volume mount to a new Pod, <code class="inlineCode">flask-pod-with-configmap-volume</code>, as follows:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># flask-pod-with-configmap-volume.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">flask-pod-with-configmap-volume</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">flask-with-configmap-volume</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">quay.io/iamgini/my-flask-app:1.0</span>
+      <span class="hljs-attr">volumeMounts:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">configuration-volume</span> <span class="hljs-comment"># match the volume name</span>
+          <span class="hljs-attr">mountPath:</span> <span class="hljs-string">/etc/conf</span>
+  <span class="hljs-attr">volumes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">configuration-volume</span>
+      <span class="hljs-attr">configMap:</span>
+        <span class="hljs-attr">name:</span> <span class="hljs-string">my-sixth-configmap</span> <span class="hljs-comment"># Configmap name goes here</span>
+</code></pre>
+    <p class="normal">Here, we have declared a volume named <code class="inlineCode">configuration volume</code> at the same level as the containers, and we have told Kubernetes that this volume was built from a ConfigMap. The referenced ConfigMap (here, <code class="inlineCode">my-sixth-configmap</code>) must be present in the cluster when we apply this file. Then, at the container level, we mounted the volume we declared earlier on <code class="inlineCode">path /etc/conf:</code>. The parameter in the ConfigMap should be present at the specified location.</p>
+    <p class="normal">Let’s apply<a id="_idIndexMarker630"/> this file to create a new ConfigMap, with <a id="_idIndexMarker631"/>the volume attached to our cluster:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f flask-pod-with-configmap-volume.yaml
+pod/flask-pod-with-configmap-volume created
+</code></pre>
+    <p class="normal">Run the <code class="inlineCode">ls</code> command in the container to make sure that the directory has been mounted:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span> kubectl <span class="hljs-con-built_in">exec</span> pods/flask-pod-with-configmap-volume -- <span class="hljs-con-built_in">ls</span> /etc/conf
+color
+configfile.txt
+</code></pre>
+    <p class="normal">Here, the directory has been successfully mounted, and both parameters that were created in the ConfigMap are available in the directory as plain files.</p>
+    <p class="normal">Let’s run the <code class="inlineCode">cat</code> command to make sure that both files hold the correct values:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl <span class="hljs-con-built_in">exec</span> pods/flask-pod-with-configmap-volume -- <span class="hljs-con-built_in">cat</span> /etc/conf/color
+yellow
+<span class="hljs-con-meta">$ </span>kubectl <span class="hljs-con-built_in">exec</span> pods/flask-pod-with-configmap-volume -- <span class="hljs-con-built_in">cat</span> /etc/conf/configfile.txt
+I'm just a dummy config file
+</code></pre>
+    <p class="normal">Good! Both files<a id="_idIndexMarker632"/> contain the values that were declared earlier<a id="_idIndexMarker633"/> when we created the ConfigMap! For example, you could store a virtual host NGINX configuration file and have it mounted to the proper directory, allowing NGINX to serve your website based on the configuration values hosted in a ConfigMap. That’s how you can override the default configuration and cleanly manage your app in Kubernetes. Now, you have a really strong and consistent interface to manage and configure the containers running in Kubernetes.</p>
+    <p class="normal">Next, we will learn how to delete and update a ConfigMap.</p>
+    <h2 class="heading-2" id="_idParaDest-271">Deleting a ConfigMap</h2>
+    <p class="normal">Deleting a<a id="_idIndexMarker634"/> ConfigMap is very easy. However, be aware that you can delete a ConfigMap even if its values are used by a container. Once the Pod has been launched, it’s independent of the <code class="inlineCode">configmap</code> object:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl delete cm my-first-configmap
+configmap "my-first-configmap" deleted
+</code></pre>
+    <p class="normal">Regardless of whether the ConfigMap’s values are used by the container, it will be deleted as soon as this command is entered. Note that the ConfigMap cannot be recovered, so please think twice before removing a ConfigMap you have created imperatively, since you won’t be able to recreate it. Unlike declaratively created ConfigMaps, its content is not stored in any YAML file. But as we learned earlier, it is possible to collect the content of such resources in the YAML format by formatting the <code class="inlineCode">kubectl get </code>commands – for example, <code class="inlineCode">kubectl get cm &lt;configmap-name&gt; -o YAML &gt; my-first-configmap.yaml</code>.</p>
+    <p class="normal">Also, we recommend that you are careful when removing your ConfigMaps, especially if you delete ConfigMaps that are used by running Pods. If your Pod were to crash, you wouldn’t be able to relaunch it without updating the manifest file; the Pods would look for the missing ConfigMap you deleted.</p>
+    <p class="normal">Let’s test this scenario with the <code class="inlineCode">my-sixth-configmap</code> ConfigMap; delete the ConfigMap resource as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl delete cm my-sixth-configmap
+configmap "my-sixth-configmap" deleted
+</code></pre>
+    <p class="normal">Now, try relaunching the <code class="inlineCode">flask-pod-with-configmap-volume</code> Pod (or recreate the Pod) to see the problem:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f flask-pod-with-configmap-volume.yaml
+pod/flask-pod-with-configmap-volume created
+<span class="hljs-con-meta">$ </span>kubectl get pod
+NAME                              READY   STATUS              RESTARTS   AGE
+flask-pod-with-configmap-volume   0/1     ContainerCreating   0          61s
+</code></pre>
+    <p class="normal">You will see the Pod is in <code class="inlineCode">ContainerCreating</code> and not in a <code class="inlineCode">Running</code> state. Let’s check the details of the <a id="_idIndexMarker635"/>Pod as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe pod flask-pod-with-configmap-volume
+Name:             flask-pod-with-configmap-volume
+Namespace:        default
+...&lt;removed for brevity&gt;...
+Events:
+  Type     Reason       Age               From               Message
+  ----     ------       ----              ----               -------
+  Normal   Scheduled    71s               default-scheduler  Successfully assigned default/flask-pod-with-configmap-volume to minikube-m03
+  <span class="code-highlight"><strong class="hljs-slc">Warning  FailedMount  7s (x8 over 71s)  kubelet            MountVolume.SetUp failed for volume "configuration-volume" : configmap "my-sixth-configmap" not found</strong></span>
+</code></pre>
+    <p class="normal">The error in the previous code snippet clearly says that the required ConfigMap is missing and unable to mount the Volume; hence, the Pod is still in the <code class="inlineCode">ContainerCreating</code> state.</p>
+    <h2 class="heading-2" id="_idParaDest-272">Updating a ConfigMap</h2>
+    <p class="normal">There are two<a id="_idIndexMarker636"/> primary methods to update a ConfigMap in Kubernetes. The first involves using the <code class="inlineCode">kubectl apply</code> command with a modified ConfigMap definition file. This approach is ideal for version control and collaborative environments. Simply make the necessary changes to your ConfigMap YAML file and apply the updates using <code class="inlineCode">kubectl apply</code>.</p>
+    <p class="normal">Alternatively, you can directly edit an existing ConfigMap using the <code class="inlineCode">kubectl edit</code> command. This provides an interactive way to modify the ConfigMap’s contents. However, be cautious when using this<a id="_idIndexMarker637"/> method, as it doesn’t involve version control.</p>
+    <h2 class="heading-2" id="_idParaDest-273">Immutable ConfigMaps</h2>
+    <p class="normal">Kubernetes <a id="_idIndexMarker638"/>offers a feature called Immutable ConfigMaps to<a id="_idIndexMarker639"/> prevent accidental or intentional modifications to ConfigMap data. By marking a ConfigMap as immutable, you ensure that its contents remain unchanged.</p>
+    <p class="normal">This feature is particularly beneficial for clusters heavily reliant on ConfigMaps, as it safeguards against configuration errors causing application disruptions. Additionally, it enhances cluster performance by reducing the load on the <code class="inlineCode">kube-apiserver</code>.</p>
+    <p class="normal">To create an immutable ConfigMap, simply set the immutable field to <code class="inlineCode">true</code> within the ConfigMap definition, as follows:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># immutable-configmap.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ConfigMap</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">immutable-configmap</span>
+<span class="hljs-attr">data:</span>
+  <span class="hljs-attr">color:</span> <span class="hljs-string">"blue"</span>
+  <span class="hljs-attr">version:</span> <span class="hljs-string">"1.0"</span>
+  <span class="hljs-attr">environment:</span> <span class="hljs-string">"</span><span class="hljs-string">prod"</span>
+<span class="hljs-attr">immutable:</span> <span class="hljs-literal">true</span>
+</code></pre>
+    <p class="normal">Once marked immutable, you cannot modify the ConfigMap’s data. If changes are necessary, you must delete the existing ConfigMap and create a new one. It’s essential to recreate any Pods referencing the deleted ConfigMap to maintain the correct configuration.</p>
+    <p class="normal">In the next section of this chapter, we will learn about Kubernetes Secrets.</p>
+    <h1 class="heading-1" id="_idParaDest-274">Managing sensitive configuration with the Secret object</h1>
+    <p class="normal">The Secret object is a <a id="_idIndexMarker640"/>resource that allows you to configure applications running on Kubernetes. Secrets are extremely similar to ConfigMaps and they can be used together. The difference is that Secrets are encoded and intended to store sensitive data such as passwords, tokens, or private API keys, while ConfigMaps are intended to host non-sensitive configuration data. Other than that, Secrets and ConfigMaps mostly behave the same.</p>
+    <p class="normal">To ensure the protection of sensitive information stored in Kubernetes Secrets, adhere to the following best practices:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Limit access</strong>: Utilize <strong class="keyWord">Role-Based Access Control</strong> (<strong class="keyWord">RBAC</strong>) to restrict access to Secrets based on user<a id="_idIndexMarker641"/> roles and permissions. Grant only necessary privileges to individuals or services.</li>
+      <li class="bulletList"><strong class="keyWord">Avoid hardcoding secrets</strong>: Never embed Secrets directly within your application code or configuration files.</li>
+      <li class="bulletList"><strong class="keyWord">Rotate secrets regularly</strong>: Implement a regular rotation schedule for Secrets to mitigate the risk of unauthorized access.</li>
+      <li class="bulletList"><strong class="keyWord">Consider external secret management</strong>: For advanced security requirements, explore dedicated secret management solutions like HashiCorp Vault or AWS Secrets Manager.</li>
+      <li class="bulletList"><strong class="keyWord">Leverage encryption</strong>: Utilize KMS plugins to encrypt Secrets data at rest, providing an additional layer of protection.</li>
+      <li class="bulletList"><strong class="keyWord">Monitor and audit</strong>: Regularly review access logs and audit trails to detect suspicious activity and potential security breaches.</li>
+      <li class="bulletList"><strong class="keyWord">Educate your team</strong>: Foster a security-conscious culture by providing training on the best practices for handling and managing Secrets.</li>
+    </ul>
+    <div class="note">
+      <p class="normal">While Secrets are used to store sensitive information and their data is encoded in base64, this encoding alone does not guarantee strong security. Base64 is a reversible encoding format, meaning that the original data can be recovered easily. For robust protection of sensitive information, consider additional security measures, such as encryption at rest using KMS plugins or external secret management solutions.</p>
+    </div>
+    <p class="normal">While<a id="_idIndexMarker642"/> Secrets are primarily used to store sensitive data, Kubernetes offers additional security measures. With the introduction of the <strong class="keyWord">Key Management Service</strong> (<strong class="keyWord">KMS</strong>) plugin providers, you can now encrypt data within both Secrets and ConfigMaps. This provides an extra layer of protection for sensitive information stored in ConfigMaps, making them more secure.</p>
+    <p class="normal">By utilizing KMS encryption for ConfigMaps, you can safeguard sensitive configuration data without resorting to Secrets. This approach simplifies configuration management while maintaining a high level of security.</p>
+    <div class="note">
+      <p class="normal">Even with KMS encryption, it’s essential to carefully consider the sensitivity of the data stored in ConfigMaps. For highly confidential information, Secrets remain the recommended option.</p>
+    </div>
+    <p class="normal">Refer to the documentation (<a href="https://kubernetes.io/docs/tasks/administer-cluster/kms-provider/"><span class="url">https://kubernetes.io/docs/tasks/administer-cluster/kms-provider/</span></a>) to learn more about the<a id="_idIndexMarker643"/> KMS provider for data encryption.</p>
+    <p class="normal">Let’s start by discovering how to list the Secrets that are available in your Kubernetes cluster.</p>
+    <h2 class="heading-2" id="_idParaDest-275">Listing Secrets</h2>
+    <p class="normal">Like any other Kubernete<a id="_idIndexMarker644"/>s resource, you can list secrets using the <code class="inlineCode">kubectl get</code> command. The resource identifier is a Secret here:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get secret -A
+</code></pre>
+    <p class="normal">Just like with ConfigMaps, the <code class="inlineCode">DATA</code> column tells you the number of sensitive parameters that have been hashed and saved in your <code class="inlineCode">secret</code>. When executed, <code class="inlineCode">kubectl</code> might display a few default Secrets or issue an error, stating that no resources were found. This discrepancy arises because certain cloud services generate default Secrets for internal processes, while others do not. The presence or absence of these default ConfigMaps depends on the environment in which your Kubernetes cluster is deployed.</p>
+    <h2 class="heading-2" id="_idParaDest-276">Creating a Secret imperatively with --from-literal</h2>
+    <p class="normal">You can create a <a id="_idIndexMarker645"/>Secret imperatively or declaratively – both methods are supported by Kubernetes. Let’s start by discovering how to create a Secret imperatively. Here, we want to store a database password, <code class="inlineCode">my-db-password</code>, in a Secret object in our Kubernetes cluster. You can achieve that imperatively with <code class="inlineCode">kubectl</code> by adding the <code class="inlineCode">--from-literal</code> flag to the <code class="inlineCode">kubectl create secret</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create secret generic my-first-secret --from-literal=<span class="hljs-con-string">'db_password=my-db-password'</span>
+</code></pre>
+    <p class="normal">Now, run the <code class="inlineCode">kubectl get secrets</code> command to retrieve the list of Secrets in your Kubernetes cluster. The new Secret should be displayed:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get secrets
+NAME              TYPE     DATA   AGE
+my-first-secret   Opaque   1      37s
+</code></pre>
+    <p class="normal">Let’s see the details of the Secret using the YAML output format, as shown below:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get secrets my-first-secret -o yaml
+apiVersion: v1
+data:
+  db_password: bXktZGItcGFzc3dvcmQ=
+kind: Secret
+metadata:
+  creationTimestamp: "2024-08-10T13:13:32Z"
+  name: my-first-secret
+  namespace: default
+  resourceVersion: "36719"
+  uid: 7ccf5120-d1c5-4874-ba4b-894274fd27e6
+type: Opaque
+</code></pre>
+    <p class="normal">You will see <code class="inlineCode">data</code> with the <code class="inlineCode">db_password: bXktZGItcGFzc3dvcmQ= line</code>, where the password is <a id="_idIndexMarker646"/>stored in an encoded format.</p>
+    <p class="normal">Now, let’s figure out how to create a Secret declaratively.</p>
+    <h2 class="heading-2" id="_idParaDest-277">Creating a Secret declaratively with a YAML file</h2>
+    <p class="normal">Secrets can be <a id="_idIndexMarker647"/>created declaratively using YAML files. While it’s possible to manually encode secret values as base64 for the <code class="inlineCode">data</code> field, Kubernetes provides a more convenient approach. The <code class="inlineCode">stringData </code>field allows you to specify secret values as plain text strings. Kubernetes automatically encodes these values into the base64 format when creating the Secret. This method simplifies the process and helps prevent accidental exposure of sensitive data in plain text configuration files.</p>
+    <div class="note">
+      <p class="normal">Note: While base64 encoding offers basic obfuscation, it’s essential to remember that it’s not a strong encryption method. For heightened security, consider using KMS plugins or external secret management solutions.</p>
+    </div>
+    <p class="normal">When you use <code class="inlineCode">--from-literal</code>, Kubernetes will encode your strings in base64 itself, but when you create a Secret from a YAML manifest file, you will have to handle this step yourself.</p>
+    <p class="normal">So let’s start by converting the <code class="inlineCode">my-db-password</code> string into <code class="inlineCode">base64</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">echo</span> -n <span class="hljs-con-string">'my-db-password'</span> | <span class="hljs-con-built_in">base64</span>
+bXktZGItcGFzc3dvcmQ=
+</code></pre>
+    <p class="normal"><code class="inlineCode">bXktZGItcGFzc3dvcmQ=</code> is the <code class="inlineCode">base64</code> representation of the <code class="inlineCode">my-db-password</code> string, and that’s what we will need to write in our YAML file. Here is the content of the YAML file to create the Secret object properly:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta"># </span>~/secret-from-file.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-second-secret
+type: Opaque
+data:
+    db_password: bXktZGItcGFzc3dvcmQ=
+</code></pre>
+    <p class="normal">Once this file has been stored on your system, you can create the <code class="inlineCode">secret</code> using the <code class="inlineCode">kubectl apply</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f ~/secret-from-file.yaml
+</code></pre>
+    <p class="normal">We can make <a id="_idIndexMarker648"/>sure that the <code class="inlineCode">secret</code> has been created properly by listing the secrets, with details, in our Kubernetes cluster:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get secret my-second-secret -o yaml
+apiVersion: v1
+data:
+  db_password: bXktZGItcGFzc3dvcmQ=
+kind: Secret
+...&lt;removed for brevity&gt;...
+type: Opaque
+</code></pre>
+    <p class="normal">Now, let’s create the same Secret with <code class="inlineCode">stringData</code> so that we do not need to encode it manually. Create a new YAML file as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta"># </span>~/secret-from-file-stringData.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-secret-stringdata
+type: Opaque
+stringData:
+  db_password: my-db-password
+</code></pre>
+    <p class="normal">Note the password in plain text instead of encoded text.</p>
+    <p class="normal">Create the Secret from the file as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con">kubectl apply -f secret-from-file-stringData.yaml
+secret/my-secret-stringdata created
+</code></pre>
+    <p class="normal">Verify the secret <a id="_idIndexMarker649"/>content and compare it with the Secret <code class="inlineCode">my-second-secret</code> to see the encoded content:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get secrets my-secret-stringdata -o yaml
+apiVersion: v1
+data:
+  db_password: bXktZGItcGFzc3dvcmQ=
+kind: Secret
+...&lt;removed for brevity&gt;...
+  name: my-secret-stringdata
+  namespace: default
+  resourceVersion: "37229"
+  uid: 5078124b-7318-44df-a2da-a30ea5088e3f
+type: Opaque
+</code></pre>
+    <p class="normal">You will notice that the <code class="inlineCode">stringData</code> is already encoded and stored under the <code class="inlineCode">data</code> section.</p>
+    <p class="normal">Now, let’s discover another Kubernetes feature: the ability to create a Secret with values from a file.</p>
+    <h2 class="heading-2" id="_idParaDest-278">Creating a Secret with content from a file</h2>
+    <p class="normal">We can create a <a id="_idIndexMarker650"/>Secret with values from a file, the same as we did with ConfigMaps. We start by creating a file that will contain our secret value. Let’s say that we have to store a password in a file and import it as a Secret object in Kubernetes:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">echo</span> -n <span class="hljs-con-string">'mypassword'</span> &gt; ./password.txt
+</code></pre>
+    <p class="normal">After running this command, we have a file called <code class="inlineCode">password.txt</code> that contains a string called <code class="inlineCode">mypassword</code>, which is supposed to be our Secret value. The <code class="inlineCode">-n</code> flag is used here to ensure that <code class="inlineCode">password.txt</code> does not contain any extra blank lines at the end of the text.</p>
+    <p class="normal">Now, let’s run the <code class="inlineCode">kubectl create secret</code> command by passing the location of <code class="inlineCode">password.txt</code> to the <code class="inlineCode">--from-file</code> flag. This will result in a new <code class="inlineCode">secret</code>, containing a <code class="inlineCode">base64</code> representation of the <code class="inlineCode">mypassword</code> string being created:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create secret generic mypassword --from-file=./password.txt
+secret/mypassword created
+</code></pre>
+    <p class="normal">This new <code class="inlineCode">secret</code> is <a id="_idIndexMarker651"/>now available in your Kubernetes cluster! Now, let’s learn how to read a Kubernetes Secret.</p>
+    <h2 class="heading-2" id="_idParaDest-279">Reading a Secret</h2>
+    <p class="normal">As observed, Secrets<a id="_idIndexMarker652"/> are supposed to host sensitive data, and, as such, the <code class="inlineCode">kubectl</code> output won’t show you the secret decoded data to ensure confidentiality. You’ll simply have to decode it yourself to understand. Why is this confidentiality maintained? Let’s take a look:</p>
+    <ul>
+      <li class="bulletList">To prevent the secret from being accidentally opened by someone who shouldn’t be able to open it.</li>
+      <li class="bulletList">To prevent the secret from being displayed as part of a terminal output, which could result in it being logged somewhere.</li>
+    </ul>
+    <div class="note">
+      <p class="normal">While base64 encoding obfuscates secret data, it doesn’t provide strong encryption. Any user with API access to the Kubernetes cluster can retrieve and decode a Secret. To protect sensitive information, implement RBAC to restrict access to Secrets based on user roles and permissions. By carefully defining RBAC rules, you can limit who can view, modify, or delete Secrets, enhancing the overall security of your cluster.</p>
+    </div>
+    <p class="normal">Because of these securities, you simply won’t be able to retrieve the actual content of a secret, but you can still grab information about its size, and so on.</p>
+    <p class="normal">You can do this using the <code class="inlineCode">kubectl describe</code> command, just like we did earlier for ConfigMaps. As we mentioned previously, ConfigMaps and Secrets are very similar; they almost behave the same:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe secret/mypassword
+Name:         mypassword
+Namespace:    default
+Labels:       &lt;none&gt;
+Annotations:  &lt;none&gt;
+Type:  Opaque
+Data
+====
+password.txt:  10 bytes
+</code></pre>
+    <p class="normal">Do not get <a id="_idIndexMarker653"/>confused if your output is a little different than this one. If you receive something similar, it means that the new secret is available in your Kubernetes cluster and that you successfully retrieved its data!</p>
+    <p class="normal">However, also remember that the encoded data can be visible using the <code class="inlineCode">kubectl</code> and YAML output format, as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get secret my-second-secret -o yaml
+apiVersion: v1
+data:
+  db_password: bXktZGItcGFzc3dvcmQ=
+kind: Secret
+metadata:
+  creationTimestamp: "2024-02-13T04:15:56Z"
+  name: my-second-secret
+  namespace: default
+  resourceVersion: "90372"
+  uid: 94b7b529-baed-4844-8097-f6c2a001fa7b
+type: Opaque
+</code></pre>
+    <p class="normal">And anyone with access to this Secret can decode the data, as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span> <span class="hljs-con-built_in">echo</span> <span class="hljs-con-string">'bXktZGItcGFzc3dvcmQ='</span> | <span class="hljs-con-built_in">base64</span> --decode
+my-db-password
+</code></pre>
+    <div class="note">
+      <p class="normal">IMPORTANT</p>
+      <p class="normal">Base64 encoding is not encryption; it is simply a way to represent binary data in ASCII characters. While it makes the data look less readable, it’s not encryption. Anyone with the knowledge and tools can easily decode it back to plain text. To safeguard Secrets effectively, combine base64 encoding with additional security controls like RBAC and encryption, or consider using external secret management solutions.</p>
+    </div>
+    <p class="normal">Now that we’ve explored the creation and management of Secrets, let’s delve into how to make this sensitive information accessible to our applications within Pods.</p>
+    <h2 class="heading-2" id="_idParaDest-280">Consuming a Secret as an environment variable</h2>
+    <p class="normal">We’ve seen how we can inject the<a id="_idIndexMarker654"/> values of a ConfigMap into a Pod in<a id="_idIndexMarker655"/> the form of environment variables, and we can do the same with Secrets. Returning to the example with our NGINX container, we are going to retrieve the <code class="inlineCode">db_password</code> value of the <code class="inlineCode">my-first-secret</code> Secret and inject it as an environment variable into the Pod. Here is the YAML manifest. Again, everything occurs under the <code class="inlineCode">env:</code> key:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># flask-pod-with-secret.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">flask-pod-with-secret</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">flask-with-secret</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">flask-with-secret</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">quay.io/iamgini/my-flask-app:1.0</span>
+      <span class="hljs-attr">env:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">PASSWORD_ENV_VAR</span> <span class="hljs-comment"># Name of env variable</span>
+          <span class="hljs-attr">valueFrom:</span>
+            <span class="hljs-attr">secretKeyRef:</span>
+              <span class="hljs-attr">name:</span> <span class="hljs-string">my-first-secret</span> <span class="hljs-comment"># Name of secret object</span>
+              <span class="hljs-attr">key:</span> <span class="hljs-string">db_password</span> <span class="hljs-comment"># Name of key in secret object</span>
+</code></pre>
+    <p class="normal">Now, you can apply this file using the <code class="inlineCode">kubectl apply</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f flask-pod-with-secret.yaml
+</code></pre>
+    <p class="normal">Now, run the <code class="inlineCode">env</code> command to list the environment variables in your container:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span> kubectl <span class="hljs-con-built_in">exec</span> pods/flask-pod-with-secret -- <span class="hljs-con-built_in">env</span>
+PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOSTNAME=flask-pod-with-secret
+<span class="code-highlight"><strong class="hljs-slc">PASSWORD_ENV_VAR=my-db-password</strong></span>
+KUBERNETES_SERVICE_PORT=443
+...&lt;removed for brevity&gt;...
+</code></pre>
+    <p class="normal">As you can see, the <code class="inlineCode">my-db-password</code> string is available as the environment variable <code class="inlineCode">PASSWORD_ENV_VAR</code>.</p>
+    <p class="normal">Another way to find out details about a Secret is by using the <code class="inlineCode">envFrom</code> YAML key. When using this key, you’ll read all the values from a Secret and get them as environment variables in the Pod all at once. It works the same as for the ConfigMap object.</p>
+    <div class="note">
+      <p class="normal">For a Pod to start successfully, the referenced Secret must exist unless explicitly marked as optional within the Pod definition. Ensure that the Secret is created before deploying Pods that depend on it.</p>
+    </div>
+    <p class="normal">Create a <a id="_idIndexMarker656"/>Secret first by using the following YAML <a id="_idIndexMarker657"/>with the <code class="inlineCode">envFrom</code> sample:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># secret-from-file-database.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Secret</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">appdb-secret</span>
+<span class="hljs-attr">type:</span> <span class="hljs-string">Opaque</span>
+<span class="hljs-attr">stringData:</span>
+  <span class="hljs-attr">db_user:</span> <span class="hljs-string">appadmin</span>
+  <span class="hljs-attr">db_password:</span> <span class="hljs-string">appdbpassword</span>
+</code></pre>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f secret-from-file-database.yaml
+secret/appdb-secret created
+</code></pre>
+    <p class="normal">Here is the preceding example of a Pod but updated with an <code class="inlineCode">envFrom</code> key:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># flask-pod-with-secret-all.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">flask-pod-with-secret-all</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">flask-with-secret</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">flask-with-secret</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">quay.io/iamgini/my-flask-app:1.0</span>
+      <span class="hljs-attr">envFrom:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">secretRef:</span>
+            <span class="hljs-attr">name:</span> <span class="hljs-string">appdb-secret</span> <span class="hljs-comment"># Name of the secret object</span>
+</code></pre>
+    <p class="normal">Create the Pod using the <code class="inlineCode">kubectl apply</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f flask-pod-with-secret-all.yaml
+pod/flask-pod-with-secret-all created
+</code></pre>
+    <p class="normal">Using this, all the keys in the Secret object will be used as environment variables within the Pod. Let us verify the environment variables inside the Pod to ensure that the variables <a id="_idIndexMarker658"/>from the Secret object are loaded <a id="_idIndexMarker659"/>properly:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl <span class="hljs-con-built_in">exec</span> pods/flask-pod-with-secret-all -- <span class="hljs-con-built_in">env</span> |grep -i app
+db_user=appadmin
+db_password=appdbpassword
+</code></pre>
+    <div class="note">
+      <p class="normal">Note that if a key name cannot be used as an environment variable name, then it will be simply ignored!</p>
+    </div>
+    <p class="normal">Now, let’s learn how to consume a secret as a volume mount in the next section.</p>
+    <h2 class="heading-2" id="_idParaDest-281">Consuming a Secret as a volume mount</h2>
+    <p class="normal">You can mount<a id="_idIndexMarker660"/> Secrets as a volume for your Pods, but you<a id="_idIndexMarker661"/> can only do so declaratively. So you’ll have to write YAML files to do this successfully.</p>
+    <p class="normal">You must start from a YAML manifest file that will create a Pod. Here is a YAML file that mounts a Secret called <code class="inlineCode">mypassword</code> in the <code class="inlineCode">/etc/passwords-mounted-path</code> location:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># flask-pod-with-secret-volume.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">flask-pod-with-secret-volume</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">flask-with-secret-volume</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">flask-with-secret</span>
+      <span class="hljs-attr">image:</span> <span class="hljs-string">quay.io/iamgini/my-flask-app:1.0</span>
+      <span class="hljs-attr">volumeMounts:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">mysecret-volume</span>
+          <span class="hljs-attr">mountPath:</span> <span class="hljs-string">'/etc/password-mounted-path'</span>
+          <span class="hljs-attr">readOnly:</span> <span class="hljs-literal">true</span>  <span class="hljs-comment"># Setting readOnly to true to prevent writes to the secret</span>
+  <span class="hljs-attr">volumes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">mysecret-volume</span>
+      <span class="hljs-attr">secret:</span>
+        <span class="hljs-attr">secretName:</span> <span class="hljs-string">my-second-secret</span> <span class="hljs-comment"># Secret name goes here</span>
+</code></pre>
+    <p class="normal">Once you have <a id="_idIndexMarker662"/>created this file on your filesystem, you can <a id="_idIndexMarker663"/>apply the YAML file using <code class="inlineCode">kubectl</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f flask-pod-with-secret-volume.yaml
+</code></pre>
+    <p class="normal">Please make sure that the <code class="inlineCode">my-second-secret</code> exists before you attempt to create the Secret.</p>
+    <p class="normal">Finally, you can run a command inside <code class="inlineCode">flask-with-secret</code>, using the <code class="inlineCode">kubectl exec</code> command, to check if the volume containing the Secret was set up correctly:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl <span class="hljs-con-built_in">exec</span> pods/flask-pod-with-secret-volume --  <span class="hljs-con-built_in">cat</span> /etc/password-mounted-path/db_password
+my-db-password
+</code></pre>
+    <p class="normal">As you can see, the <code class="inlineCode">my-db-password</code> string is displayed correctly; the Secret was correctly mounted as a volume!</p>
+    <p class="normal">Now that we have learned how to create a Secret in Kubernetes and use it with a Pod in multiple methods, let’s learn how to delete and update Secrets in the next section.</p>
+    <h2 class="heading-2" id="_idParaDest-282">Deleting a Secret</h2>
+    <p class="normal">Deleting a secret <a id="_idIndexMarker664"/>is very simple and can be done via the <code class="inlineCode">kubectl delete</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl delete secret my-first-secret
+secret "my-first-secret" deleted
+</code></pre>
+    <p class="normal">Now, let’s learn how to update an existing secret in a Kubernetes cluster.</p>
+    <h2 class="heading-2" id="_idParaDest-283">Updating a Secret</h2>
+    <p class="normal">To update a Secret <a id="_idIndexMarker665"/>in Kubernetes, you can use the <code class="inlineCode">kubectl apply</code> command with a modified Secret definition or by using the <code class="inlineCode">kubectl edit</code> command.</p>
+    <p class="normal">Kubernetes Secrets provide a secure way to store and manage sensitive information like passwords, API keys, and certificates. Unlike ConfigMaps, Secrets are encoded to protect data confidentiality. This section explored how to create Secrets both imperatively and declaratively using YAML. You learned how to inject Secrets into Pods using environment variables and volume mounts, enabling applications to access sensitive data without exposing it in plain text.</p>
+    <h1 class="heading-1" id="_idParaDest-284">Summary</h1>
+    <p class="normal">This chapter delved into the fundamental concepts of managing configuration within Kubernetes. We explored the critical distinction between ConfigMaps and Secrets, understanding their respective roles in handling non-sensitive and sensitive data. By effectively utilizing these Kubernetes resources, you can significantly enhance application portability and security.</p>
+    <p class="normal">We learned how to create and manage both ConfigMaps and Secrets, employing both imperative and declarative approaches. You discovered how to inject configuration data into Pods using environment variables and volume mounts, ensuring seamless access to application settings.</p>
+    <p class="normal">To protect sensitive information, we emphasized the importance of implementing robust security measures beyond base64 encoding. By combining RBAC, encryption, and external secret management solutions, you can significantly strengthen the security posture of your Kubernetes environment.</p>
+    <p class="normal">By mastering the concepts presented in this chapter, you’ll be well-equipped to build resilient and secure Kubernetes applications that are decoupled from their configuration, promoting flexibility and maintainability. In the next chapter, we will continue discovering Kubernetes by tackling another central concept of Kubernetes, which is Services. Services are Kubernetes objects that allow you to expose your Pods to not only each other but also the internet. This is a very important network concept for Kubernetes, and mastering it is essential to use the orchestrator correctly. Fortunately, mastering Services is not very complicated, and the next chapter will explain how to achieve this. You will learn how to associate the ports of a container with the ports of the worker node it is running on, and also how to associate a static IP with your Pods so that they can always be reached at the same address by other Pods in the cluster.</p>
+    <h1 class="heading-1" id="_idParaDest-285">Further reading</h1>
+    <ul>
+      <li class="bulletList">ConfigMaps: <a href="https://kubernetes.io/docs/concepts/configuration/configmap/"><span class="url">https://kubernetes.io/docs/concepts/configuration/configmap/</span></a></li>
+      <li class="bulletList">Configure a Pod to Use a ConfigMap: <a href="https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/"><span class="url">https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/</span></a></li>
+      <li class="bulletList">Managing Secrets using kubectl: <a href="https://kubernetes.io/docs/tasks/configmap-secret/managing-secret-using-kubectl/"><span class="url">https://kubernetes.io/docs/tasks/configmap-secret/managing-secret-using-kubectl/</span></a></li>
+      <li class="bulletList">Managing Secrets using Configuration File: <a href="https://kubernetes.io/docs/tasks/configmap-secret/managing-secret-using-config-file/"><span class="url">https://kubernetes.io/docs/tasks/configmap-secret/managing-secret-using-config-file/</span></a></li>
+      <li class="bulletList">Using a KMS provider for data encryption: <a href="https://kubernetes.io/docs/tasks/administer-cluster/kms-provider/"><span class="url">https://kubernetes.io/docs/tasks/administer-cluster/kms-provider/</span></a></li>
+      <li class="bulletList">The security aspect of Secrets as well as compliance and DevOps practices: Kubernetes Secrets Handbook: Design, implement, and maintain production-grade Kubernetes Secrets management solutions: <a href="https://www.amazon.com/Kubernetes-Secrets-Handbook-production-grade-management/dp/180512322X/"><span class="url">https://www.amazon.com/Kubernetes-Secrets-Handbook-production-grade-management/dp/180512322X/</span></a></li>
+    </ul>
+    <h1 class="heading-1" id="_idParaDest-286">Join our community on Discord</h1>
+    <p class="normal">Join our community’s Discord space for discussions with the authors and other readers:</p>
+    <p class="normal"><a href="https://packt.link/cloudanddevops"><span class="url">https://packt.link/cloudanddevops</span></a></p>
+    <p class="normal"><img alt="" src="image/QR_Code119001106479081656.png"/></p>
+  </div>
+</body></html>

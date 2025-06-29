@@ -1,0 +1,186 @@
+<html><head></head><body>
+		<div id="_idContainer056">
+			<h1 id="_idParaDest-95" class="chapter-number"><a id="_idTextAnchor095"/>6</h1>
+			<h1 id="_idParaDest-96"><a id="_idTextAnchor096"/>Securing and Accessing Clusters on EKS</h1>
+			<p>This chapter will introduce the general concepts for authentication and authorization in Kubernetes, and will also discuss the differences between these concepts and <strong class="bold">Elastic Kubernetes Service</strong> (<strong class="bold">EKS</strong>). We will also look at how to configure EKS and client tools to <span class="No-Break">securely communicate.</span></p>
+			<p>Authentication verifies the identity of a user or service, and authorization manages what they can do. In this chapter, we will review the mechanism used in EKS to implement authentication and authorization so you to use them to build secure clusters. Specifically, we will cover the <span class="No-Break">following topics:</span></p>
+			<ul>
+				<li>Understanding key <span class="No-Break">Kubernetes concepts</span></li>
+				<li>Configuring EKS <span class="No-Break">cluster access</span></li>
+			</ul>
+			<h1 id="_idParaDest-97"><a id="_idTextAnchor097"/>Understanding key Kubernetes concepts</h1>
+			<p>Kubernetes clusters <a id="_idIndexMarker245"/>have two categories of users: service accounts managed by Kubernetes, and normal users (administrators, developers, etc.). <strong class="bold">Kubernetes</strong> (<strong class="bold">K8s</strong>) is extensible by design and supports multiple authentication plugins. We will focus on the most common one, client certificates, while discussing generic user authentication/authorization <span class="No-Break">in Kubernetes.</span></p>
+			<p>Using the client certificates’ plugin, users are considered authenticated when they furnish a valid certificate signed by the <a id="_idIndexMarker246"/>cluster’s <strong class="bold">certificate </strong><span class="No-Break"><strong class="bold">authority</strong></span><span class="No-Break"> (</span><span class="No-Break"><strong class="bold">CA</strong></span><span class="No-Break">).</span></p>
+			<p>With a valid certificate, Kubernetes determines the username from the common name field in the <strong class="bold">Subject</strong> of the certificate (e.g., <strong class="source-inline">/CN=bob</strong>) while the group information is provided in the <strong class="bold">Organization</strong> field (e.g., <strong class="source-inline">/O=dev</strong>). From this point onwards, the <strong class="bold">role-based access control</strong> (<strong class="bold">RBAC</strong>) sub-system<a id="_idIndexMarker247"/> will determine whether the user is authorized to perform a particular operation on <span class="No-Break">a resource.</span></p>
+			<p>The following diagram illustrates this concept. Please note that service accounts will be discussed in <a href="B18129_13.xhtml#_idTextAnchor193"><span class="No-Break"><em class="italic">Chapter 13</em></span></a>, <em class="italic">Using IAM for Granting Access </em><span class="No-Break"><em class="italic">to Applications</em></span><span class="No-Break">.</span></p>
+			<div>
+				<div id="_idContainer053" class="IMG---Figure">
+					<img src="image/B18129_06_01.jpg" alt="Figure 6.1 – Standard Kubernetes RBAC sub-system"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.1 – Standard Kubernetes RBAC sub-system</p>
+			<p>In order to generate<a id="_idIndexMarker248"/> the certificate for a normal user, you need to generate a PKI private key and CSR using an operating system tool such as OpenSSL (see the following example) and then export the CSR request in base64 encoding for signing by the <span class="No-Break">cluster CA:</span></p>
+			<pre class="console">
+$ openssl genrsa -out myuser.key 2048
+$ openssl req -new -key myuser.key -out myuser.csr
+$ cat myuser.csr | base64 | tr -d "\n"</pre>
+			<p>The resulting encoded string can be submitted to the K8s cluster for signing using the <strong class="source-inline">CertificateSigningRequest</strong> kind. An example is <span class="No-Break">shown here:</span></p>
+			<pre class="source-code">
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: myuser
+spec:
+  request: &lt;BASE64.csr&gt;
+  signerName: kubernetes.io/kube-apiserver-client
+  expirationSeconds: 86400  # one day
+  usages:
+  - client auth</pre>
+			<p>Now that we understand how standard K8s <a id="_idIndexMarker249"/>authentication works, let’s move on to how it works in EKS <span class="No-Break">by default.</span></p>
+			<h2 id="_idParaDest-98"><a id="_idTextAnchor098"/>Understanding the default EKS authentication method</h2>
+			<p>Managing <a id="_idIndexMarker250"/>users, groups, and certificates<a id="_idIndexMarker251"/> for one or more K8s clusters can be an operational challenge. Thankfully, EKS offloads this by default to the<a id="_idIndexMarker252"/> AWS <strong class="bold">Identity and Access Management</strong> (<strong class="bold">IAM</strong>) service. IAM is a globally distributed service that allows you to create users and groups, as well as assign AWS permissions including the AWS <span class="No-Break">EKS API.</span></p>
+			<p>By default, when you create an EKS cluster, the IAM entity that creates that cluster is automatically granted <strong class="source-inline">system:masters</strong> permissions, effectively making it the system administrator role for the EKS cluster. This means that without additional configuration, the IAM identity used for cluster creation is the only identity that can perform any functions on the <span class="No-Break">EKS cluster.</span></p>
+			<p>This is a typical error when starting out with EKS, as a CI/CD pipeline may be used to create your cluster, but its IAM identity is different to that of the regular users. Therefore, when they go to interact with the cluster, they have no K8s privileges. The EKS cluster comes pre-integrated with AWS IAM. The following diagram illustrates how the user and the EKS cluster interact with the <span class="No-Break">IAM service.</span></p>
+			<div>
+				<div id="_idContainer054" class="IMG---Figure">
+					<img src="image/B18129_06_02.jpg" alt="Figure 6.2 – EKS authentication flow"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.2 – EKS authentication flow</p>
+			<p>We will now <a id="_idIndexMarker253"/>discuss in detail each of the <a id="_idIndexMarker254"/>steps in the EKS authentication flow shown in <span class="No-Break"><em class="italic">Figure 6</em></span><span class="No-Break"><em class="italic">.2</em></span><span class="No-Break">:</span></p>
+			<p>0.	The starting point is for the client to retrieve the cluster configuration and update your <strong class="bold">kubeconfig</strong> file with <a id="_idIndexMarker255"/>the clusters’ TLS certificate and context. The <strong class="source-inline">update-kubeconfig</strong> CLI command is the simplest way to do this and will use the <strong class="source-inline">DescribeCluster</strong> API operation. Any user using this API call must have an IAM identity and the privilege to use this API to automatically update the config file. An example is shown here for the cluster <span class="No-Break">called </span><span class="No-Break"><strong class="source-inline">mycluster</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+<strong class="bold">$ aws eks update-kubeconfig --name mycluster</strong></pre>
+			<ol>
+				<li value="1">A bearer token now needs to be generated and used in each EKS API (<strong class="bold">kubectl</strong>) request. This is based on the kubeconfig context and can be fetched manually using the <strong class="source-inline">get-token</strong> CLI command or automatically using the AWS <span class="No-Break">IAM Authenticator:</span><pre class="source-code">
+<strong class="bold">$ aws eks get-token --cluster-name mycluster</strong></pre></li>
+				<li>The bearer token is added to the request either manually (on the <strong class="source-inline">kubectl</strong> command line for example) or automatically by the IAM <span class="No-Break">authenticator/</span><span class="No-Break"><strong class="source-inline">kubectl</strong></span><span class="No-Break"> command.</span></li>
+				<li>This <a id="_idIndexMarker256"/>bearer token is now validated against the AWS IAM service using a token—<strong class="source-inline">authentication-webhook</strong>—which is being used by the IAM authenticator service in EKS. If it is valid, then a request is passed to the K8s <span class="No-Break">RBAC sub-system.</span></li>
+				<li>The<a id="_idIndexMarker257"/> set of permissions granted by IAM policies associated with an authenticated IAM identity has no bearing EKS cluster permissions. The bridge between the IAM and RBAC sub-systems is the <strong class="source-inline">aws-auth</strong> ConfigMap that provides the mappings between IAM principals (roles/users/groups) and Kubernetes <span class="No-Break">subjects (users/groups).</span></li>
+				<li>The operation (in the case of authorization) is returned to the client, or alternatively they receive a "not <span class="No-Break">authorized" response.</span></li>
+			</ol>
+			<p>So far, we’ve discussed how user identities are authenticated. The next section describes how the request from an authenticated user <span class="No-Break">is authorized.</span></p>
+			<h2 id="_idParaDest-99"><a id="_idTextAnchor099"/>Configuring the aws-auth ConfigMap for authorization</h2>
+			<p>We will see <a id="_idIndexMarker258"/>how to configure and maintain the <strong class="source-inline">aws-auth</strong> ConfigMap later on in this section, but it’s important<a id="_idIndexMarker259"/> to understand that this ConfigMap manages the relationship between the AWS IAM identity, and the Kubernetes identity and permissions. Without a corresponding entry in the <strong class="source-inline">aws-auth</strong> ConfigMap, IAM users or groups won’t have any permissions to perform any K8s operations, regardless of what permissions are assigned through the IAM role <span class="No-Break">or policy.</span></p>
+			<p>EKS <a id="_idIndexMarker260"/>uses <strong class="bold">OpenID Connect</strong> (<strong class="bold">OIDC</strong>) identity providers as a method to authenticate/authorize users to your cluster. This means that each cluster is given a unique OIDC identity that can be used as a trusted entity in the AWS IAM policy. You can validate the identity of the cluster using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ aws eks describe-cluster --name my-cluster --query "cluster.identity.oidc.issuer" --output text</pre>
+			<p>OIDC identity <a id="_idIndexMarker261"/>providers can be used with AWS IAM or with other OIDC-compliant providers. This means you can manage users/passwords and permissions in a platform such as<a id="_idIndexMarker262"/> GitHub Enterprise or GitLab instead of AWS IAM, and use the OIDC provider to authenticate/authorize users. You can associate one OIDC identity provider to your cluster so you cannot use IAM and another <span class="No-Break">identity provider.</span></p>
+			<h2 id="_idParaDest-100"><a id="_idTextAnchor100"/>Accessing the cluster endpoint</h2>
+			<p>So far, we have<a id="_idIndexMarker263"/> talked about the ability to authenticate and authorize operations on an EKS cluster; however, to do so you will need to be able to communicate with the cluster’s endpoint over HTTPS. Once you’ve updated your <strong class="bold">kubeconfig</strong> file for a given cluster/context, you will have the DNS name (server) and TLS certificate (<strong class="source-inline">certificate-authority-data</strong>). How you access that endpoint will depend on how you have configured your EKS endpoint, either as public only, private only, <span class="No-Break">or both.</span></p>
+			<p>As discussed previously, EKS is a managed service, so the control plane (API/etcd) servers run in a VPC managed by AWS. The worker nodes (typically EC2) run in the customer’s VPC and communicate with the control plane using whatever IP address is returned through the DNS lookup of the server. The following diagram illustrates how the user accesses public or private <span class="No-Break">EKS endpoints:</span></p>
+			<div>
+				<div id="_idContainer055" class="IMG---Figure">
+					<img src="image/B18129_06_03.jpg" alt="Figure 6.3 – EKS endpoint access"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.3 – EKS endpoint access</p>
+			<p>The steps needed to access EKS endpoint, as shown in the preceding diagram, are <span class="No-Break">as follows:</span></p>
+			<ol>
+				<li>The initial requirement is to obtain the EKS cluster’s DNS name. In most user access scenarios, this step has already been done using the <strong class="source-inline">update-kubeconfig</strong> CLI command but when worker nodes are created, they will make a call to the AWS EKS API to get the cluster configuration and DNS information. At time of writing, the AWS EKS API is a public API only (no private endpoint) so all worker nodes need access to the public API through a NAT, internet, and/or <span class="No-Break">transit gateway.</span></li>
+				<li>For public <a id="_idIndexMarker264"/>endpoints, the DNS name resolves to a public <strong class="bold">Network Load Balancer</strong> (<strong class="bold">NLB</strong>) hosted in the AWS-managed VPC. This means all user and worker node communication goes through this public endpoint (although worker node traffic doesn’t leave the <span class="No-Break">AWS backbone).</span></li>
+				<li>For a private endpoint, the DNS name resolves to the private endpoint attached to the customer’s VPC (this uses a privately hosted Route 53 zone managed by AWS). More specifically, it resolves to a VPC private IP address, meaning it is only accessible in the VPC or through a private connection using a transit gateway, a VPN, and/or Direct Connect. In this case, the private connection between the customer’s VPC and the VPC managed by AWS is bidirectional, being used by the control plane and the <span class="No-Break">users/worker nodes.</span></li>
+			</ol>
+			<p>It is possible to enable both public and private endpoints, in which case users can access the K8s API through the public NLB, and also through the private endpoint. In this model, all API server/worker node communication occurs through the <span class="No-Break">private endpoint.</span></p>
+			<h1 id="_idParaDest-101"><a id="_idTextAnchor101"/>Configuring EKS cluster access</h1>
+			<p>In this section, we <a id="_idIndexMarker265"/>will look in more detail at the configuration of the two key files needed to securely access your cluster, <strong class="source-inline">kubeconfig</strong> and <strong class="source-inline">aws-auth</strong>, along with the use of IP controls to secure <span class="No-Break">EKS endpoints.</span></p>
+			<h2 id="_idParaDest-102"><a id="_idTextAnchor102"/>Configuring .kube/config</h2>
+			<p>The <strong class="bold">kubeconfig</strong> file is <a id="_idIndexMarker266"/>central to providing access to the cluster. The <strong class="source-inline">clusters</strong> list has an entry for each cluster you want to access, containing both the DNS name and the TLS certificate to allow communication to take place. These entries can be added manually or through the <strong class="source-inline">update-kubeconfig</strong> CLI command. The following is an example <span class="No-Break"><strong class="source-inline">kubeconfig</strong></span><span class="No-Break"> file:</span></p>
+			<pre class="source-code">
+clusters:
+- cluster:
+  certificate-authority-data: xx==
+  server: https://65787.gr7.eu-central-1.eks.amazonaws.com
+  name: arn:aws:eks:eu-central-1:111999:cluster/mycluster</pre>
+			<p>The <strong class="source-inline">context</strong> section in the <strong class="source-inline">kubeconfig</strong> file is used to group access parameters together for a client tool such as kubectl. You can have different contexts to access a single cluster. In the following example, we are grouping the <strong class="source-inline">myuser</strong> user and <strong class="source-inline">mycluster</strong> cluster together in the <span class="No-Break"><strong class="source-inline">mycontext</strong></span><span class="No-Break"> context:</span></p>
+			<pre class="source-code">
+contexts:
+- context:
+    cluster: arn:aws:eks:eu-central-1:111999:cluster/mycluster
+    user: arn:aws:eks:eu-central-1:111999:cluster/myuser
+    name: arn:aws:eks:eu-central-1:111999:cluster/mycontext</pre>
+			<p>Finally, the <strong class="source-inline">users</strong> section in the <strong class="source-inline">kubeconfig</strong> file holds the specific parameters for the user (associated with the context). In the following example, the user uses the <strong class="source-inline">aws eks get-token</strong> command to automatically provide the bearer token for authentication based on the IAM identity configured for the caller of the <strong class="source-inline">mycluster</strong> cluster, which<a id="_idIndexMarker267"/> is in the <strong class="source-inline">eu-central-1</strong> Region in <span class="No-Break">account </span><span class="No-Break"><strong class="source-inline">111999</strong></span><span class="No-Break">:</span></p>
+			<pre class="source-code">
+users:
+- name: arn:aws:eks:eu-central-1:111999:cluster/myuser
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1alpha1
+      args:
+      - --region
+      - eu-central-1
+      - eks
+      - get-token
+      - --cluster-name
+      - mycluster
+      command: aws</pre>
+			<p>Configuring your <strong class="source-inline">kubeconfig</strong> file is a critical part of establishing communication with the EKS cluster and the following commands can be used to validate/view <span class="No-Break">the configuration:</span></p>
+			<pre class="console">
+$ kubectl config view
+$ kubectl config view -o template --template='{{ index . "current-context" }}'</pre>
+			<p>So far, we’ve reviewed the way a K8s client, such as kubectl, can provide the identity of a user to the API servers. The next section reviews how that user’s identity is authorized using the <strong class="source-inline">aws-auth</strong> <span class="No-Break">Config Map.</span></p>
+			<h2 id="_idParaDest-103"><a id="_idTextAnchor103"/>Configuring the aws-auth Config Map</h2>
+			<p>A<a id="_idIndexMarker268"/> correctly configured client’s <strong class="source-inline">kubeconfig</strong> file provides the bearer token that allows EKS to identify and validate the user. Once their identity has been validated, the RBAC subsystem and <strong class="source-inline">aws-auth </strong>ConfigMap will then validate whether they have the correct permissions. We add users’ permissions via role details in the ConfigMap, under the <strong class="source-inline">data</strong> section. Each entry supports the <span class="No-Break">following parameters:</span></p>
+			<ul>
+				<li><strong class="source-inline">groups</strong>: A list of Kubernetes groups to which the role <span class="No-Break">is mapped.</span></li>
+				<li><strong class="source-inline">rolearn</strong>: The ARN of the IAM role associated with the user <span class="No-Break">bearer token.</span></li>
+				<li><strong class="source-inline">username</strong>: A username within Kubernetes to map to the IAM role. As discussed previously, this is something that is not used and need not be mapped to an <span class="No-Break">existing user.</span></li>
+			</ul>
+			<p>In the following example, the <strong class="source-inline">myIAMRole</strong> IAM role in account <strong class="source-inline">111999</strong> is mapped to the <strong class="source-inline">system:masters</strong> group and assigned the K8s username of <strong class="source-inline">creator-account</strong>. This is an example of the default configuration you will see in the <span class="No-Break"><strong class="source-inline">aws-auth</strong></span><span class="No-Break"> ConfigMap:</span></p>
+			<pre class="source-code">
+- groups:
+  - system:masters
+  rolearn: arn:aws:iam::111999:role/myIAMrole
+  username: creatorAccount</pre>
+			<p>You can modify the ConfigMap directly using either <strong class="source-inline">kubectl</strong> or an IAC tool such as <strong class="source-inline">eksctl</strong> <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+$ kubectl edit cm aws-auth -n kube-system
+eksctl create iamidentitymapping --cluster  mycluster --region=eu-central-1 --arn arn:aws:iam::111999:role/myIAMrole --group system:masters --username creatorAccount</pre>
+			<p>This approach is not advised as there is no version/change control. A better approach is to place the ConfigMap manifest into a Git repository and then use a CI/CD pipeline to push/pull changes. You can still use <strong class="source-inline">kubectl</strong> or <strong class="source-inline">eksctl</strong> to make the changes, but it’s done using a file under version control and managed through an audited pipeline that could have any number of build checks or tests. Typically, the following steps will be followed for the<a id="_idIndexMarker269"/> deployment of the EKS cluster and the incremental management <span class="No-Break">of ConfigMap:</span></p>
+			<ol>
+				<li>Deploy the EKS cluster using your preferred infrastructure-as-code tool <span class="No-Break">and/or pipeline.</span></li>
+				<li>Export the default <strong class="source-inline">aws-auth</strong> ConfigMap into a separate version-controlled repository/manifest with its own deployment pipeline. This can be done by running the <span class="No-Break">following command:</span><pre class="source-code">
+<strong class="bold">kubectl get cm aws-auth -n kube-system -o yaml &gt; xx.yaml</strong></pre></li>
+				<li>Leverage a suitable code review process, to add new groups/users and role mappings. Please note, the IAM role referenced in the configuration must exist, due to which it must be created first in the AWS <span class="No-Break">IAM service.</span></li>
+				<li>Update your cluster using a push (CI/CD) or pull (GitOps) method using the <span class="No-Break">following command:</span><pre class="source-code">
+<strong class="bold">kubectl patch configmap/aws-auth -n kube-system –patch "$(cat /tmp/xx.yml)"</strong></pre></li>
+				<li>Steps 3 and 4 need to be repeated on an ongoing basis as you add and delete users/groups to and from the <span class="No-Break"><strong class="source-inline">aws-auth</strong></span><span class="No-Break"> file.</span></li>
+			</ol>
+			<p>So far, we’ve discussed how users are authenticated/authorized when a request arrives at the K8s API server endpoint. In the next section, we consider how you can secure access to the <span class="No-Break">API endpoint.</span></p>
+			<h2 id="_idParaDest-104"><a id="_idTextAnchor104"/>Protecting EKS endpoints</h2>
+			<p>On the <a id="_idIndexMarker270"/>whole, it is generally better to use private EKS endpoints. While accessing any EKS endpoint requires a valid TLS certificate (if using client certificates) and the appropriate IAM/RBAC permissions, if these were compromised and you had a public endpoint, then your cluster would be accessible from anywhere in the world. If you need to use a public endpoint, then make sure to configure public access CIDR ranges to restrict which public IP addresses have access. In the following example, access to the <strong class="source-inline">mycluster</strong> public cluster has been restricted to a single <strong class="source-inline">/32</strong> <span class="No-Break">IP address:</span></p>
+			<pre class="console">
+$ aws eks describe-cluster --name mycluster
+{    "cluster": {
+…….
+            "endpointPublicAccess": true,
+            "publicAccessCidrs": ["203.0.113.5/32 "]}}</pre>
+			<p>The<a id="_idIndexMarker271"/> EKS API network interfaces are protected by a separate security group that provides stateful IP ingress protection. So, while EKS private endpoints can only be accessed from the VPC or connected private networks, the security groups associated with the API endpoint (shown as <strong class="source-inline">securityGroupIds</strong> in the following example) can be used as an additional control to restrict access to any specific <span class="No-Break">IP addresses:</span></p>
+			<pre class="console">
+$ aws eks describe-cluster --name mycluster
+{"cluster": {
+………..
+            "securityGroupIds": ["sg-5656576d"],
+            "clusterSecurityGroupId": "sg-5657657s"}}</pre>
+			<p>Please note that the API security groups are different from the <strong class="source-inline">clusterSecurityGroupId</strong> security group, which is used to protect <span class="No-Break">worker nodes.</span></p>
+			<p>With that, you have now understood or have at least gained familiarity with how EKS performs authentication and authorization and how to protect your API endpoints. We’ll now revisit the key learning points from <span class="No-Break">this chapter.</span></p>
+			<h1 id="_idParaDest-105"><a id="_idTextAnchor105"/>Summary</h1>
+			<p>In this chapter, we explored the basic concepts of authentication and authorization in native Kubernetes and how EKS differs. We described how EKS, by default, is integrated with AWS IAM and that a bearer code needs to be generated by a client tool such as <strong class="source-inline">kubectl</strong> in order for EKS to authenticate the user. This bearer code can be generated manually using the <strong class="source-inline">get-token</strong> CLI action or automatically using the <strong class="source-inline">kubeconfig</strong> file and will be submitted on every API request and be automatically validated <span class="No-Break">by EKS.</span></p>
+			<p>We also described how the <strong class="source-inline">aws-auth</strong> ConfigMap is used by the Kubernetes RBAC sub-system to accept or deny any API request. It is important to place this file under version control and manage changes using a CI/CD pipeline as, by default, only the cluster creator has permission to do anything on <span class="No-Break">the cluster.</span></p>
+			<p>Finally, we talked about how you can secure access to the API endpoints using IP whitelisting and/or security groups and how it is typically better to use <span class="No-Break">private clusters.</span></p>
+			<p>In the next chapter, we will discuss Kubernetes networking and how EKS can be configured to use an <strong class="bold">AWS Virtual Private </strong><span class="No-Break"><strong class="bold">Cloud</strong></span><span class="No-Break"> (</span><span class="No-Break"><strong class="bold">VPC</strong></span><span class="No-Break">).</span></p>
+			<h1 id="_idParaDest-106"><a id="_idTextAnchor106"/>Further readings</h1>
+			<ul>
+				<li>Overview of the AWS <span class="No-Break">IAM authenticator:</span></li>
+			</ul>
+			<p><a href="https://docs.aws.amazon.com/eks/latest/userguide/install-aws-iam-authenticator.html"><span class="No-Break">https://docs.aws.amazon.com/eks/latest/userguide/install-aws-iam-authenticator.html</span></a></p>
+			<ul>
+				<li>Overview of webhook authentication <span class="No-Break">in K8s:</span></li>
+			</ul>
+			<p><a href="https://kubernetes.io/docs/reference/access-authn-autWhz/authentication/#webhook-token-authentication"><span class="No-Break">https://kubernetes.io/docs/reference/access-authn-autWhz/authentication/#webhook-token-authentication</span></a></p>
+			<ul>
+				<li>Overview of the AWS OIDC <span class="No-Break">Provider Integration:</span></li>
+			</ul>
+			<p><a href="https://github.com/awsdocs/amazon-eks-user-guide/blob/master/doc_source/authenticate-oidc-identity-provider.md"><span class="No-Break">https://github.com/awsdocs/amazon-eks-user-guide/blob/master/doc_source/authenticate-oidc-identity-provider.md</span></a></p>
+		</div>
+	</body></html>

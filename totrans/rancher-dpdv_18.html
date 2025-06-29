@@ -1,0 +1,286 @@
+<html><head></head><body>
+		<div id="_idContainer099">
+			<h1 id="_idParaDest-225"><em class="italic"><a id="_idTextAnchor224"/>Chapter 14</em>: Load Balancer Configuration and SSL Certificates</h1>
+			<p>In this chapter, we'll be covering the very important task of how to publish our applications that are being hosted inside Kubernetes to the outside world using load balancers and ingress rules. We'll be going over the four main techniques: round-robin DNS, passive external load balancer, active external load balancer, and an integrated load balancer. We'll look at the pros and cons along with an example of each technique, and we'll dive into the best practices for each method. Finally, we will cover how to bring SSL certificates to your cluster. </p>
+			<p>In this chapter, we're going to cover the following main topics:</p>
+			<ul>
+				<li>Why do we need an external load balancer to support a Kubernetes cluster?</li>
+				<li>Rules for architecting a solution</li>
+				<li>Configuring F5 in TCP and HTTP mode</li>
+				<li>Configuring HAProxy in TCP and HTTP mode</li>
+				<li>Installing and configuring MetalLB</li>
+				<li>What is ingress in Kubernetes?</li>
+				<li>How to add an SSL certificate to an ingress</li>
+			</ul>
+			<h1 id="_idParaDest-226"><a id="_idTextAnchor225"/>Why do we need an external load balancer to support a Kubernetes cluster?</h1>
+			<p>After<a id="_idIndexMarker944"/> building a Kubernetes cluster and deploying<a id="_idIndexMarker945"/> your first application, the next question that comes up is how do my users access my application? In a traditional enterprise environment, we would deploy our application on a server and then create a DNS record and firewall rules to expose our application to the outside world. Of course, we want our applications<a id="_idIndexMarker946"/> to be <strong class="bold">high availability</strong> (<strong class="bold">HA</strong>), so we would usually deploy our application on multiple servers and then create a load balancer that would sit in front of our application's servers. We use a load balancer to <a id="_idIndexMarker947"/>distribute traffic across<a id="_idIndexMarker948"/> multiple servers and increase the availability of our application by allowing us to add and remove servers from the load balancer as needed.</p>
+			<p>For Kubernetes clusters, we still have this same problem. We need to deploy our applications across multiple nodes and provide a single point of contact, that is, a <strong class="bold">virtual IP</strong> (<strong class="bold">VIP</strong>) address <a id="_idIndexMarker949"/>for our application. Our end users will use it to connect to our application. There are, of course, a few different ways to solve this problem, and in the next section, we will dive into these solutions.</p>
+			<h1 id="_idParaDest-227"><a id="_idTextAnchor226"/>Rules for architecting a solution</h1>
+			<p>This section will cover the four main ways of exposing the applications hosted inside our Kubernetes cluster to the outside world.</p>
+			<h2 id="_idParaDest-228"><a id="_idTextAnchor227"/>Round-robin DNS </h2>
+			<p>The<a id="_idIndexMarker950"/> most<a id="_idIndexMarker951"/> straightforward load balancing technique is <strong class="bold">round-robin DNS</strong>, which creates a DNS record containing a list of IP addresses instead of just one. For example, let's say you had a three-node cluster with the nodes having IP addresses of <strong class="source-inline">1.1.1.1</strong>, <strong class="source-inline">2.2.2.2</strong>, and <strong class="source-inline">3.3.3.3</strong>, and you want to publish your application, <strong class="source-inline">hello-world.example.com</strong>. You would create three <strong class="source-inline">A</strong> records with the name <strong class="source-inline">hello-world.example.com</strong> with the IP address of each node. By doing this, when a client initially attempts to connect to your application, the client will make a DNS query to their DNS server, which will respond with a list of IP addresses. Most clients will simply attempt to connect to the first IP address in the list, and if that server fails to respond, it will try the following IP address until it runs out of IP addresses. It's essential to note that most DNS servers/providers only allow up to six IP addresses in response.</p>
+			<p>The following is an example of how requests from different end users follow into the cluster when using round-robin DNS:</p>
+			<div>
+				<div id="_idContainer083" class="IMG---Figure">
+					<img src="image/B18053_14_01.jpg" alt="Figure 14.1 – Round-robin DNS with a three-node example&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.1 – Round-robin DNS with a three-node example</p>
+			<p>Next, let's have a <a id="_idIndexMarker952"/>look at the list of pros and cons<a id="_idIndexMarker953"/> that this design offers.</p>
+			<p>The <strong class="bold">pros</strong> are as follows:</p>
+			<ul>
+				<li><strong class="bold">Simplicity</strong> – Round-robin DNS is<a id="_idIndexMarker954"/> by far the easiest way to load balance an application in your cluster because you already need to create a DNS record for your application, so it's not much work to add multiple IP addresses to that record.</li>
+				<li><strong class="bold">No additional servers/hardware needed</strong> – Because we are just using our DNS infrastructure to be our load balancer, you don't need additional servers/hardware in front of the cluster to balance the load for your cluster.</li>
+				<li><strong class="bold">Cost</strong> – Load balancers are not free; for example, a simple <strong class="bold">Elastic Load Balancing</strong> (<strong class="bold">ELB</strong>) service<a id="_idIndexMarker955"/> in AWS can cost around $16/month. Most DNS solutions (such as AWS Route53) are almost free ($0.04/month for 100k requests), and even providers such as CloudFlare are free; you just pay if you want more features.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are as<a id="_idIndexMarker956"/> follows:</p>
+			<ul>
+				<li><strong class="bold">Caching</strong> – DNS is designed to have multiple caching layers, including all the DNS servers between you and your client, and even your end users' machines have caching built-in. You only have control <a id="_idIndexMarker957"/>of the <strong class="bold">time-to-live</strong> (<strong class="bold">TTL</strong>), which tells the DNS server how long to cache a query before requesting a new one. This can help by setting it to as low as 1 second, but now you will put a considerable load on your DNS servers as you effectively turn off caching for that record.</li>
+				<li><strong class="bold">No actual load balancing</strong> – Round-robin DNS is merely just rotating the IP list each time the DNS server is queried. Because of this, factors such as server load, response times, or server uptime are not accounted for when routing traffic to<a id="_idIndexMarker958"/> different nodes. This means that if a server crashes or is overloaded, traffic will still be routed to that server until the clients stop trying to use that server and failover to another server. And for some clients, this can take up to 5 minutes to happen.</li>
+				<li><strong class="bold">Only hard failures count</strong> – DNS has no idea about the health of a server if a server has a failure, such as running out of disk space or having a connection problem to a database where the server is still up and responding to requests. So, the request is coming back to the client with 500 errors. The client will still keep using that server even though the next server in the list might be totally fine.</li>
+				<li><strong class="bold">Updating DNS when nodes change</strong> – Whenever a node is added or removed from the cluster, you must manually go into DNS and update all the DNS records<a id="_idIndexMarker959"/> for all the applications hosted on that cluster. This can be a significant issue when you start looking at autoscaling clusters. But, you can address this issue by using a service such as ExternalDNS to update DNS as the cluster changes over time dynamically. You can find out more about ExternalDNS by<a id="_idIndexMarker960"/> visiting the official documentation at <a href="https://github.com/kubernetes-sigs/external-dns">https://github.com/kubernetes-sigs/external-dns</a>.</li>
+				<li><strong class="bold">No security outside the cluster</strong> – Because we are just using DNS to route our traffic, we can't do more advanced features, such as forcing HTTPS, blocking SQL injection attacks, and blocking insecure cryptography.<p class="callout-heading">Note</p><p class="callout">Most large-scale applications use a type of round-robin DNS called <strong class="bold">global server load balancing</strong> (<strong class="bold">GSLB</strong>), which<a id="_idIndexMarker961"/> does bring intelligence into the DNS by doing health checks and responding to requests based on server load, response times, and location. But, this is typically done on top of a load balancing service to provide server-level redundancy, with GSLB providing data center-level redundancy.</p></li>
+			</ul>
+			<p>It is important to note that round-robin DNS is not recommended due to all the listed cons vastly outweighing the pros.</p>
+			<h2 id="_idParaDest-229"><a id="_idTextAnchor228"/>Passive external load balancer</h2>
+			<p>Sometimes <a id="_idIndexMarker962"/>called a <strong class="bold">dumb load balancer</strong>, in this<a id="_idIndexMarker963"/> setup, you create a <strong class="bold">Transmission Control Protocol</strong> (<strong class="bold">TCP</strong>) load balancer <a id="_idIndexMarker964"/>in front of the cluster. Now, this load balancer doesn't handle any high-level functions of your traffic, that is, routing based on hostname, SSL offloading, caching, and <strong class="bold">web application firewall</strong> (<strong class="bold">WAF</strong>). This<a id="_idIndexMarker965"/> is because anything higher than layer 4 in the OSI model is not<a id="_idIndexMarker966"/> handled by the load balancer and is provided by the Kubernetes cluster/application. Generally, you would create a node pool with all the worker nodes in this design. Then, you would make a VIP on the load balancer and map it to the node pool. </p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">We'll be covering an HAProxy example in the next section.</p>
+			<p>The following is an example of how end user traffic is routed through the load balancer and onto the nodes in the cluster:</p>
+			<div>
+				<div id="_idContainer084" class="IMG---Figure">
+					<img src="image/B18053_14_02.jpg" alt="Figure 14.2 – Example of a load balancer in TCP mode with three nodes &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.2 – Example of a load balancer in TCP mode with three nodes </p>
+			<p>Next, let's have a <a id="_idIndexMarker967"/>look at the list of pros and cons that this <a id="_idIndexMarker968"/>design offers.</p>
+			<p>The <strong class="bold">pros</strong> are as follows:</p>
+			<ul>
+				<li><strong class="bold">Low barrier of entry</strong> – Most<a id="_idIndexMarker969"/> on-premises and cloud environments already have load balancers in place to support other non-Kubernetes applications. So, requesting an additional VIP address and node pool to the existing load balancer can be very easy and add little to no cost to the project.</li>
+				<li><strong class="bold">Single point of contact of the cluster</strong> – Most enterprise load balancers support what's called <strong class="source-inline">port 0</strong> mode, which binds all the TCP/UDP ports on the load balancer to the nodes. This can be helpful when exposing non-HTTP applications using the node port. For example, you might publish a MySQL server on port <strong class="source-inline">31001</strong> on all nodes, which becomes available on the VIP using the same port.</li>
+				<li><strong class="bold">Simple ongoing maintenance</strong> – Once the VIP address and node pool have been created, there is no need to update certificates or site names on the load balancer as new <a id="_idIndexMarker970"/>applications are added and removed.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are as<a id="_idIndexMarker971"/> follows:</p>
+			<ul>
+				<li><strong class="bold">Source IP transparency</strong> – With the load balancer in TCP mode, it has two options when the load balancer forwards a request to the server. The first is to leave the source IP address (the end user's IP address) alone and just pass it along the server. The server will process the request and response because the source IP address is the client's IP address. The traffic will not flow back through the load balancer but will be sent directly to the client. This might be okay for some applications, but other applications, such as HTTP(S), MySQL, and SMTP, can have problems with the server's IP address changing during a request. </li>
+			</ul>
+			<p>The<a id="_idIndexMarker972"/> other option is what's called NAT mode, which turns the load balancer into the default gateway for the server so that when the request is being sent back to the client, the load balancer can grab the response packet and set the IP addresses back to their original values before sending it on the clients. This, of course, has the downside of your load balancer needing to be in every <strong class="bold">virtual local area network</strong> (<strong class="bold">VLAN</strong>) in <a id="_idIndexMarker973"/>your network. Also, East-to-West traffic, that is, traffic going from one node in the cluster to another node in the cluster (assuming they are on the same subnet), will not go back through the load balancer, thereby breaking the source IP address. This also means that all network traffic for the cluster will need to go through the load balancer, including OS patches, management software, and monitoring tools.</p>
+			<ul>
+				<li><strong class="bold">Each cluster needs its load balancer/VIP address</strong> – With the load balancer in TCP mode, we can't do any host-based routing; each cluster will need its node pool and VIP address. This, of course, costs you additional IP addresses, and most cloud-based load balancers do not support the addition of IP addresses, so you'll need to create a load balancer for each cluster, which will increase your costs.</li>
+				<li><strong class="bold">Limited security outside the cluster</strong> – We are just passing traffic between the end users and the cluster. We can't do more advanced features such as forcing<a id="_idIndexMarker974"/> HTTPS, blocking SQL injection attacks, and blocking insecure cryptography.</li>
+				<li><strong class="bold">Only basic health checks</strong> – With this mode, the load balancer only checks whether<a id="_idIndexMarker975"/> the port is open and responding but doesn't check whether the server is healthy.</li>
+			</ul>
+			<p>It is important to remember that there are a number of drawbacks to using a passive load balancer and it should really only be used if you can't use an active external load balancer, which we'll be covering in the next section.</p>
+			<h2 id="_idParaDest-230"><a id="_idTextAnchor229"/>Active external load balancer</h2>
+			<p>In this design, we<a id="_idIndexMarker976"/> build a passive external load balancer on top but add intelligence to the chain by moving from layer 4 to 7 instead of <a id="_idIndexMarker977"/>blindly forwarding traffic between the clients and servers. The load balancer acts as a virtual server that accepts the request and decodes it, including decrypting the SSL encryption, which allows the load balancer to make decisions on the request, such as routing to different servers/clusters based on the hostname of the request. For example, <strong class="source-inline">dev.example.com</strong> and <strong class="source-inline">staging.example.com</strong> share the same public IP address but are routed to two clusters. Or, you can enforce additional security software such as ModSecurity, which can block a wide range of attacks. In the following figure, you can see an example setup with end users' traffic flowing to the DNS A record, to the load balancer, and then finally to the nodes:</p>
+			<div>
+				<div id="_idContainer085" class="IMG---Figure">
+					<img src="image/B18053_14_03.jpg" alt="Figure 14.3 – Load balancer in HTTP mode with three nodes example&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.3 – Load balancer in HTTP mode with three nodes example</p>
+			<p>Next, let's <a id="_idIndexMarker978"/>have a look at the list of pros and cons that this design offers.</p>
+			<p>The <strong class="bold">pros</strong> are <a id="_idIndexMarker979"/>as follows:</p>
+			<ul>
+				<li><strong class="bold">Control</strong> – With the load balancer in HTTP/layer 7 mode, you have more control over the traffic because the load balancer is making a <em class="italic">man-in-the-middle attack</em> between the clients. The server allows the load balancer to inspect and modify the request as it sees fit.</li>
+				<li><strong class="bold">Wild card certificates</strong> – In this mode, we can have a single IP address that can be shared across many different applications. For example, <strong class="source-inline">www.example.com</strong> and <strong class="source-inline">api.example.com</strong> might be two separate applications, but they can share the same IP address and wildcard certificate, that is, <strong class="source-inline">*.example.com</strong>. We can even expand it more by using a multi-domain wildcard SSL, which allows us to have a certificate for <strong class="source-inline">*.example.com</strong>, <strong class="source-inline">*.example.net</strong>, and so on. All of these can save money and simplify management, as now we have one certificate for all the applications in one spot.</li>
+				<li><strong class="bold">Better health checks</strong> – In layer 7 mode, the load balancer runs tests such as sending an HTTP request to a known good endpoint to test and verify the server's health. For example, with an ingress-nginx controller, the load balancer can<a id="_idIndexMarker980"/> send an HTTP request to port <strong class="source-inline">80</strong> with the <strong class="source-inline">/healthz</strong> path, which only responds with <strong class="source-inline">200OK</strong> if the ingress is up and healthy. If a server is unhealthy, the chances of being gracefully removed from the load balancer are much better.</li>
+				<li><strong class="bold">No NAT or default gateway needed</strong> – Unlike in layer 4 mode, the traffic doesn't need to be force routed through the load balancer as the source IP address <a id="_idIndexMarker981"/>will always be the load balancer because the load balancer is repackaging the request. <p class="callout-heading">Note</p><p class="callout">Most load balancers support a feature called <strong class="source-inline">X-Forwarded-For</strong> headers, which adds a set of special headers to the HTTP(S) requests that tell the application what the actual IP addresses of the end user are without needing the load balancer to overwrite the source IP address, which can, of course, cause routing issues.</p></li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are as <a id="_idIndexMarker982"/>follows:</p>
+			<ul>
+				<li><strong class="bold">Additional configuration for new sites</strong> – Because the load balancer is SSL offloading, host-based routing, and more, we need to tell the load balancer about sites/applications that we are adding. If we have a certificate covering <strong class="source-inline">*.example.com</strong>, we add a new application called <strong class="source-inline">test.example.net</strong>. We have to make sure that our current SSL certificate and rules cover this new domain; if not, we need to update them. This is not usually an issue if all of your applications can be covered under wildcard rules such as <strong class="source-inline">*.example.com</strong>. But, if you are doing nested domains such as <strong class="source-inline">qa1.api.example.com</strong> and <strong class="source-inline">dev.docs.example.com</strong>, these two nested domains will not be covered by the <strong class="source-inline">*.example.com</strong> wildcard and will require multiple certificates or a multi-domain wildcard SSL that includes <strong class="source-inline">*.api.example.com</strong> and <strong class="source-inline">*.docs.example.com</strong>.</li>
+				<li><strong class="bold">End-to-end SSL requires more work</strong> – In layer 4 mode, we are doing the SSL offloading at the ingress-nginx controller level, meaning we only need an SSL certificate in one spot. But, if we move that SSL offloading to the load balancer, we need to decide whether we are okay downgrading to having non-SSL traffic between the load balancer and our cluster, which is the most straightforward option <a id="_idIndexMarker983"/>because we just route the backend request to port <strong class="source-inline">80</strong> and call it done. However, if we need to keep the traffic<a id="_idIndexMarker984"/> encrypted using SSL, we need to configure an SSL certificate at the ingress-nginx controller and the load balancer. We can now make it easy by default by using the built-in fake certificate with an ingress-nginx controller and configuring the load balancer to ignore the invalid certificate. It's important to review this with your security team to confirm acceptance.</li>
+				<li><strong class="bold">Speed</strong> – DNS and layer 4 are fast because they are simple. Most enterprise load balancers can do layer 4 using specialized chips rather than software, meaning they can operate at very high speeds. For example, A10's 7655S ADC can do 370 Gbps in layer 4 mode but drops to 145 Gbps in layer 7 with SSL. It is important to note that this gap is closing over time because of faster CPUs and better hardware integration.</li>
+			</ul>
+			<p>This approach should be used in environments where the process of updating and configuring the external load balancer is automated because the load balancer will need to be updated as applications are added to your clusters.</p>
+			<h2 id="_idParaDest-231"><a id="_idTextAnchor230"/>Integrated load balancer </h2>
+			<p>The <a id="_idIndexMarker985"/>previous solution lacked integration with the Kubernetes <a id="_idIndexMarker986"/>clusters management plane, meaning that the management of the cluster and its application is not connected directly to the management of the load balancer and its configuration. This is, of course, addressed by using the load balancer that supports Kubernetes natively. For example, in Amazon's EKS, you can deploy the <em class="italic">AWS Load Balancer Controller</em>, which connects the EKS cluster directly to Amazon's load balancer with the controller handling management of the load balancers as cluster objects. For example, you can create an ingress in your cluster, and the controller will detect this change and take care of provisioning the load balancer for you. It's important to note that most hosted Kubernetes clusters provide these kinds of solutions to integrate with their own hosted load <a id="_idIndexMarker987"/>balancers. For the on-premises environments, load balancers such as F5 have started providing Kubernetes integration solutions that help bridge that gap, including replacing the ingress-nginx controller altogether and having the <a id="_idIndexMarker988"/>load balancer join the cluster directly, giving it direct access to pods inside the cluster. In the following figure, you'll see that traffic flows from the end user to the DNS A record, then to the load balancer, which handles the layer 7 session management, and finally forwards the traffic to the backend nodes. However, the essential item here is the controller pod that pushes changes back to the load balancer to keep the cluster and the load balancer in sync.</p>
+			<div>
+				<div id="_idContainer086" class="IMG---Figure">
+					<img src="image/B18053_14_04.jpg" alt="Figure 14.4 – Integrated load balancer with three nodes example&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.4 – Integrated load balancer with three nodes example</p>
+			<p>Next, let's have a look at the list of pros and cons that this design offers.</p>
+			<p>The <strong class="bold">pros</strong> are <a id="_idIndexMarker989"/>as follows:</p>
+			<ul>
+				<li><strong class="bold">Simple ongoing management</strong> – We add a controller that sits between the cluster and the load balancer from a management layer. The two will now stay in lockstep with each other. There is no need for users to manually push out load balancers as application teams deploy and change their applications.</li>
+				<li><strong class="bold">Speed</strong> – Some load balancers replace the ingress-nginx controller with the load balancer, directly removing that additional overhead.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> are <a id="_idIndexMarker990"/>as follows:</p>
+			<ul>
+				<li><strong class="bold">Control</strong> – Application teams can now push changes to a production load balancer, meaning they could push an unsafe change such as disabling SSL without the networking/load balancer team seeing that change and stopping it.</li>
+				<li><strong class="bold">One app can break another</strong> – Some of the controllers, such as AWS's controller, by default, allow a user to create two different ingress rules for the same hostname, which could allow a bad actor to hijack the traffic from another application by creating an ingress in their namespace, such as the same hostname as the actual application. This can, of course, happen by accident, too. For example, the application team forgets to change the hostname on ingress and accidentally starts routing production traffic to the application's dev or QA instance. It is important to note that newer controllers are adding safeguards to prevent duplicate ingress.</li>
+			</ul>
+			<p>This is<a id="_idIndexMarker991"/> the preferred option if your environment supports it. It is important to note that in most cloud environments, this can increase your costs as they will create different load balancers for each application.</p>
+			<p>At this point, we should have a good idea of what kind of load balancer we want/need. In the next section, we'll be covering installing and configuring some of the most common load balancers.</p>
+			<h1 id="_idParaDest-232"><a id="_idTextAnchor231"/>Configuring F5 in TCP and HTTP mode</h1>
+			<p><strong class="bold">F5's BIG-IP</strong> (generally shortened to just <strong class="bold">F5</strong>) load <a id="_idIndexMarker992"/>balancer is popular for enterprise customers. Because of this, it is pretty common for Kubernetes clusters to use F5 as their external load balancer. This section will cover the two most common configurations, TCP and HTTP mode.</p>
+			<p>It is important to note that we will not be covering installing and configuring the F5 hardware/appliance for this section, as that would be out of scope for a Kubernetes/Rancher administrator. If you would like to learn more, I recommend reading F5's official documentation at <a href="https://www.f5.com/services/resources/deployment-guides">https://www.f5.com/services/resources/deployment-guides</a>. I would also recommend working with your networking/load balancer teams to customize the following setups to best match your environment.</p>
+			<h2 id="_idParaDest-233"><a id="_idTextAnchor232"/>TCP mode</h2>
+			<p>We will start <a id="_idIndexMarker993"/>by creating the server pool, which should contain your<a id="_idIndexMarker994"/> cluster's worker nodes:</p>
+			<ol>
+				<li>From the F5 web interface, go to <strong class="bold">Local Traffic</strong> | <strong class="bold">Pools</strong> | <strong class="bold">Pool List</strong> and click <strong class="bold">Create</strong>.</li>
+				<li>Give the pool a name. I usually name the pool the cluster name, followed by the port.</li>
+				<li>For the <strong class="bold">Health Monitors</strong> option, select <strong class="bold">http</strong>.</li>
+				<li>Go to the <strong class="bold">Resources</strong> section and enter the details for each worker in the cluster:<ul><li><strong class="bold">Node Name</strong>: Hostname of the node (this is just a label)</li><li><strong class="bold">Address</strong>: IP address of the node</li><li><strong class="bold">Service Port</strong>: <strong class="source-inline">80</strong></li><li><strong class="bold">Service</strong>: <strong class="bold">HTTP</strong></li></ul></li>
+				<li>Click <strong class="bold">Finish</strong> when done.</li>
+				<li>You'll want to repeat this process for port <strong class="source-inline">443</strong>.</li>
+			</ol>
+			<div>
+				<div id="_idContainer087" class="IMG---Figure">
+					<img src="image/B18053_14_05.jpg" alt="Figure 14.5 – F5 node pool configuration example&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.5 – F5 node pool configuration example</p>
+			<p>We also <a id="_idIndexMarker995"/>need <a id="_idIndexMarker996"/>to create the frontend, or what F5 calls the virtual server:</p>
+			<ol>
+				<li value="1">From the F5 web interface, go to the <strong class="bold">Local Traffic</strong> | <strong class="bold">Virtual Servers</strong> | <strong class="bold">Virtual Server List</strong> page and click <strong class="bold">Create</strong>.</li>
+				<li>Give the virtual server a name. I usually name it the same as the pool.</li>
+				<li>For the <strong class="bold">Type</strong> option, select <strong class="bold">Performance (Layer 4)</strong>.</li>
+				<li>You'll need to enter a VIP address assigned to the load balancer for the <strong class="bold">Destination Address/Mask</strong> field.</li>
+				<li>For the <strong class="bold">Service Port</strong> section, enter port <strong class="source-inline">80</strong> with a service type of <strong class="bold">HTTP</strong>.</li>
+				<li>The rest <a id="_idIndexMarker997"/>of the settings can be left to the default values, and you should click the <strong class="bold">Repeat</strong> button to create another virtual server, repeating <a id="_idIndexMarker998"/>the preceding steps but for port <strong class="source-inline">443</strong> and <strong class="bold">HTTPS</strong>.</li>
+			</ol>
+			<div>
+				<div id="_idContainer088" class="IMG---Figure">
+					<img src="image/B18053_14_06.jpg" alt="Figure 14.6 – F5 virtual server settings&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.6 – F5 virtual server settings</p>
+			<p>At this point, we<a id="_idIndexMarker999"/> need to link the frontend (virtual server) to the backend (pool):</p>
+			<ol>
+				<li value="1">Go to<a id="_idIndexMarker1000"/> the virtual server and click the <strong class="bold">Resources</strong> tab.</li>
+				<li>Set the <strong class="bold">Default Pool</strong> value to be the port <strong class="source-inline">80</strong> pool in the <strong class="bold">Load Balancing</strong> section, and click <strong class="bold">Update</strong> to apply the change.</li>
+				<li>Repeat this process for port <strong class="source-inline">443</strong>.</li>
+			</ol>
+			<div>
+				<div id="_idContainer089" class="IMG---Figure">
+					<img src="image/B18053_14_07.jpg" alt="Figure 14.7 – F5 Binding pool and virtual server together&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.7 – F5 Binding pool and virtual server together</p>
+			<p>At this point, you <a id="_idIndexMarker1001"/>should <a id="_idIndexMarker1002"/>be able to access your Kubernetes/Rancher cluster via the VIP address. It is imperative to remember that this is TCP mode, so F5 is just passing traffic, meaning the ingress controller needs to handle items such as SSL.</p>
+			<h2 id="_idParaDest-234"><a id="_idTextAnchor233"/>HTTP mode</h2>
+			<p>We'll follow<a id="_idIndexMarker1003"/> the same<a id="_idIndexMarker1004"/> steps for creating the pool as we covered in TCP mode for HTTP mode. The only changes that we need to make are in the virtual server:</p>
+			<ul>
+				<li>For the <strong class="bold">Virtual Server</strong> type, please select <strong class="bold">Performance (HTTP)</strong> instead of <strong class="bold">Performance (Layer 4)</strong> and click <strong class="bold">Finish</strong>.</li>
+				<li>Repeat this process for port <strong class="source-inline">443</strong>, but this time, select the server type as <strong class="bold">Standard</strong> and set <strong class="bold">SSL Profile (Client)</strong> to point to your SSL certificate.</li>
+			</ul>
+			<p>At this point, you should be able to access your cluster just like in TCP mode, but with the difference being that the load balancer handles SSL for you, and you won't have the source IP address issues that we talked about in the previous section.</p>
+			<p>In the next section, we will cover another popular load balancer software called HAProxy.</p>
+			<h1 id="_idParaDest-235"><a id="_idTextAnchor234"/>Configuring HAProxy to work with Kubernetes</h1>
+			<p>This section <a id="_idIndexMarker1005"/>will cover installing and configuring HAProxy for internal and external deployments. It is essential to note the examples listed in this section are <a id="_idIndexMarker1006"/>generalized to cover the most common environments. Still, you should understand that every environment and workload is different, which may require tuning and changes to the designs listed in this section. Also, in this section, we'll be using the Community Edition of HAProxy, but for users who want support and additional paid features, they do offer HAProxy Enterprise. You'll find <a id="_idIndexMarker1007"/>details of the difference at <a href="https://www.haproxy.com/products/community-vs-enterprise-edition/">https://www.haproxy.com/products/community-vs-enterprise-edition/</a>.</p>
+			<p>First, we will cover installing HAProxy on a standalone server(s) that is not a part of the Kubernetes clusters.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Before starting this process, we assume you already have the server(s) built, the latest patches applied, and your <strong class="source-inline">root/sudo</strong> access to the server(s). Also, as of writing, v2.5 is the current latest stable release. You should review release notes and version recommendations at the official <a id="_idIndexMarker1008"/>HAProxy community site at <a href="https://www.haproxy.org/">https://www.haproxy.org/</a>.</p>
+			<h2 id="_idParaDest-236"><a id="_idTextAnchor235"/>Installing HAProxy on Ubuntu/Debian systems</h2>
+			<p>For <a id="_idIndexMarker1009"/>Ubuntu and Debian-based systems, the HAProxy bundled in the default package repository lags behind the current release by a<a id="_idIndexMarker1010"/> minor version or two, but more importantly, can be missing significant security until the next major release. Because we are dealing with a load balancer that might be publicly accessible and will be a valuable target for attackers, we'll want to make sure that we are running the latest versions with the most up-to-date security patches. So, we are going to <a id="_idIndexMarker1011"/>use a <strong class="bold">Personal Package Archive</strong> (<strong class="bold">PPA</strong>) repository for this installation.</p>
+			<p>We need to generate our install steps by <a id="_idIndexMarker1012"/>going to <a href="https://haproxy.debian.net/">https://haproxy.debian.net/</a> and filling out the form. This will create two sets of commands, with the first set being to add the PPA repository and the second command installing HAProxy.</p>
+			<div>
+				<div id="_idContainer090" class="IMG---Figure">
+					<img src="image/B18053_14_08.jpg" alt="Figure 14.8 – PPA and Install wizard&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.8 – PPA and Install wizard</p>
+			<p>At this point, we <a id="_idIndexMarker1013"/>should have HAProxy <a id="_idIndexMarker1014"/>installed on our Ubuntu server. In the next section, we'll be covering the steps for Red Hat/CentOS servers.</p>
+			<h2 id="_idParaDest-237"><a id="_idTextAnchor236"/>Red Hat/CentOS </h2>
+			<p>Just like Ubuntu and Debian-based systems, the<a id="_idIndexMarker1015"/> HAProxy bundled in the default package repository lags behind the current release by a minor version or two, but more importantly, can be missing significant security until the next major release. Because of this, it usually is recommended to build HAProxy from the source steps, which can be found here:</p>
+			<ol>
+				<li value="1">Install the prerequisites to compile the binaries by running the following command:<p class="source-code">yum install gcc pcre-static pcre-devel -y`</p></li>
+				<li>Download the source code using the following command:<p class="source-code">cd /opt; wget https://www.haproxy.org/download/2.5/src/haproxy-2.5.4.tar.gz"</p><p class="callout-heading">NOTE</p><p class="callout">You should review the recommended versions before choosing a version.</p></li>
+				<li>Run the following commands to build and <a id="_idIndexMarker1016"/>install HAProxy:<p class="source-code">make clean</p><p class="source-code">make -j $(nproc) TARGET=linux-glibc USE_OPENSSL=1 USE_LUA=1 USE_PCRE=1 USE_SYSTEMD=1</p><p class="source-code">make install</p><p class="source-code">mkdir -p /etc/haproxy</p><p class="source-code">mkdir -p /var/lib/haproxy </p><p class="source-code">touch /var/lib/haproxy/stats</p></li>
+			</ol>
+			<p>At this point, we should have HAProxy installed, and now we need to create a config file for which we'll use the example listed in the following sections as a starting point.</p>
+			<h2 id="_idParaDest-238"><a id="_idTextAnchor237"/>TCP mode</h2>
+			<p>In this section, we'll be covering some example configuration files that can be used as a starting<a id="_idIndexMarker1017"/> point for <a id="_idIndexMarker1018"/>your environment for a TCP load balancer. It is important to note that this is the most basic configuration.</p>
+			<p>The full <a id="_idIndexMarker1019"/>configuration can be found at <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/main/ch14/example-configs/haproxy/tcp-mode.cfg">https://github.com/PacktPublishing/Rancher-Deep-Dive/main/ch14/example-configs/haproxy/tcp-mode.cfg</a>. But, the critical part is listed in the following example, which binds to the ports <strong class="source-inline">80</strong> and <strong class="source-inline">443</strong>, and just passes traffic to the<a id="_idIndexMarker1020"/> backend server nodes 01/02/03:</p>
+			<div>
+				<div id="_idContainer091" class="IMG---Figure">
+					<img src="image/B18053_14_09.jpg" alt="Figure 14.9 – HAProxy TCP mode&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.9 – HAProxy TCP mode</p>
+			<p>As we can see in the config file, we are creating a frontend and backend for both ports <strong class="source-inline">80</strong> and <strong class="source-inline">443</strong> with both configs in TCP mode, as we want the load balancer to pass traffic directly from the frontend port to the backend ports.</p>
+			<h2 id="_idParaDest-239"><a id="_idTextAnchor238"/>HTTP mode </h2>
+			<p>In this <a id="_idIndexMarker1021"/>section, we'll be covering some example <a id="_idIndexMarker1022"/>configuration files that can be used as a starting point for your environment for an HTTP load balancer.</p>
+			<p>The full configuration can be found at <a href="https://github.com/PacktPublishing/Rancher-Deep-Dive/main/ch14/example-configs/haproxy/http-mode.cfg">https://github.com/PacktPublishing/Rancher-Deep-Dive/main/ch14/example-configs/haproxy/http-mode.cfg</a>. The critical part in this config file is the fact that there is a single frontend for both <strong class="source-inline">80</strong> and <strong class="source-inline">443</strong> ports. Then, in the frontend, we define the SSL certificate, which is stored in <strong class="source-inline">/etc/haproxy/certs/star.example.com.pem</strong>. Then, following that, we have a set <a id="_idIndexMarker1023"/>of <strong class="bold">access control lists</strong> (<strong class="bold">ACLs</strong>) that allows us to route traffic to different clusters in this case. Non-production traffic goes to the <strong class="source-inline">rke-cluster-npd</strong> cluster, with the production traffic going to <strong class="source-inline">rke-cluster-prd</strong>. This configuration also includes an example backend configuration that is running SSL.</p>
+			<p>This is the frontend section of the configuration:</p>
+			<div>
+				<div id="_idContainer092" class="IMG---Figure">
+					<img src="image/B18053_14_10.jpg" alt="Figure 14.10 – HAProxy HTTP mode frontend&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.10 – HAProxy HTTP mode frontend</p>
+			<p>It is important to note that because we are using HTTP mode, we can have multiple clusters and applications sharing a single load balancer. As we can see in the preceding example, we have both <strong class="source-inline">dev.example.com</strong> pointing to the non-production cluster and <strong class="source-inline">example.com</strong> pointing to the production cluster. </p>
+			<p>These are the backend settings:</p>
+			<div>
+				<div id="_idContainer093" class="IMG---Figure">
+					<img src="image/B18053_14_11.jpg" alt="Figure 14.11 – HAProxy HTTP mode backend&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.11 – HAProxy HTTP mode backend</p>
+			<p>As you <a id="_idIndexMarker1024"/>can see, we are creating two different backends<a id="_idIndexMarker1025"/> with one for each cluster. We are also sending all backend traffic to port <strong class="source-inline">443</strong> (SSL) as the <strong class="source-inline">http-request redirect scheme https unless { ssl_fc }</strong> frontend rule handles redirecting all HTTP traffic to HTTPS.</p>
+			<p>At this point, we should have HAProxy up and running and be able to access applications that are hosted on our Kubernetes clusters. In the next section, we'll be covering MetalLB, which removes the need for a load balancer.</p>
+			<h1 id="_idParaDest-240"><a id="_idTextAnchor239"/>Installing and configuring MetalLB</h1>
+			<p>Of course, the <a id="_idIndexMarker1026"/>question always comes up – what if I don't want to deal with an external load balancer, but I still want my cluster to be highly available? This is<a id="_idIndexMarker1027"/> where a tool called MetalLB comes into the picture. MetalLB is a load balancer for Kubernetes clusters running on bare metal using standard routing protocols. The project is still in its infancy. It should be treated as a beta version. That is explained on the <em class="italic">Project Maturity</em> page located at <a href="https://metallb.universe.tf/concepts/maturity/">https://metallb.universe.tf/concepts/maturity/</a>.</p>
+			<p>MetalLB <a id="_idIndexMarker1028"/>can be <a id="_idIndexMarker1029"/>configured in two modes. The first <a id="_idIndexMarker1030"/>one we will cover is layer 2 mode, which is the most straightforward configuration, with <strong class="bold">Border Gateway Protocol</strong> (<strong class="bold">BGP</strong>) being the second mode, which is commonly being used by more advanced users/environments; for both modes, the installation steps are the same.</p>
+			<p>Run the following two commands to create the namespace and install the MetalLB controller:</p>
+			<pre class="source-code">kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/namespace.yaml</pre>
+			<pre class="source-code">kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/metallb.yaml</pre>
+			<p class="callout-heading">Note</p>
+			<p class="callout">You can find more details <a id="_idIndexMarker1031"/>about customizing this installation for non-Rancher clusters located at <a href="https://metallb.universe.tf/installation/">https://metallb.universe.tf/installation/</a>, including how to use the Helm chart.</p>
+			<p>For layer 2 mode, we <a id="_idIndexMarker1032"/>need to configure a range of IP addresses for MetalLB to use. It is important that this range is in the same subnet as the rest of your nodes.</p>
+			<p>Simply create the following configmap:</p>
+			<div>
+				<div id="_idContainer094" class="IMG---Figure">
+					<img src="image/B18053_14_12.jpg" alt="Figure 14.12 – MetalLB layer 2 configmap&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.12 – MetalLB layer 2 configmap</p>
+			<p>You can find the <a id="_idIndexMarker1033"/>following details of this configuration in the official documentation located at <a href="https://metallb.universe.tf/configuration/#layer-2-configuration">https://metallb.universe.tf/configuration/#layer-2-configuration</a>.</p>
+			<p>For BGP mode, we need a router that supports BGP that MetalLB can connect to, an <strong class="bold">autonomous system</strong> (<strong class="bold">AS</strong>) number<a id="_idIndexMarker1034"/> for MetalLB to use, and a network CIDR prefix for the cluster. The BGP configuration is also configured with a configmap; an example can be found in the following figure:</p>
+			<div>
+				<div id="_idContainer095" class="IMG---Figure">
+					<img src="image/B18053_14_13.jpg" alt="Figure 14.13 – MetalLB BGP configmap&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.13 – MetalLB BGP configmap</p>
+			<p>You can find the full details for this configuration in the official documentation located at <a href="https://metallb.universe.tf/configuration/#bgp-configuration">https://metallb.universe.tf/configuration/#bgp-configuration</a>.</p>
+			<p>At this point, we<a id="_idIndexMarker1035"/> should have MetalLB up and running. To use an IP address from MetalLB, we need to create a service record with the <strong class="source-inline">LoadBalancer</strong> type, at which point MetalLB takes care of the rest. You can find the full details at <a href="https://metallb.universe.tf/usage/">https://metallb.universe.tf/usage/</a>.</p>
+			<h1 id="_idParaDest-241"><a id="_idTextAnchor240"/>What is ingress in Kubernetes?</h1>
+			<p>A Kubernetes ingress is a<a id="_idIndexMarker1036"/> standard object that defines a set of rules for routing external traffic into a Kubernetes cluster. This includes setting the SSL certificate, name, or path-based routing to different pods. The ingress rules were designed <a id="_idIndexMarker1037"/>around HTTP and HTTPS traffic.</p>
+			<p>The following is an example config with the central area of the config being the <strong class="source-inline">rules</strong> section, which, in this example, is <strong class="source-inline">foo.bar.com</strong>. This rule directs the traffic to the <strong class="source-inline">server1</strong> service. It is important to note that the <strong class="source-inline">rules</strong> section is simple and very generic. This section must follow the Kubernetes standard. This allows you to swap out ingress controllers; for example, RKE1/2 comes with nginx by default, but you can choose to replace nginx with Traefik.</p>
+			<p>But, of <a id="_idIndexMarker1038"/>course, if you need to customize the ingress more than the <strong class="source-inline">rules</strong> section allows, you can use annotations; for example, adding <strong class="source-inline">nginx.ingress.kubernetes.io/ssl-redirect=true</strong> to an ingress nginx will direct all non-SSL traffic to the SSL port of that ingress. You can find all the annotations in<a id="_idIndexMarker1039"/> the official documentation at <a href="https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/">https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/</a>.</p>
+			<p>An example ingress config is as follows:</p>
+			<div>
+				<div id="_idContainer096" class="IMG---Figure">
+					<img src="image/B18053_14_14.jpg" alt="Figure 14.14 – Ingress example YAML&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.14 – Ingress example YAML</p>
+			<p>As you can see, we are defining an ingress for two hostnames, <strong class="source-inline">foo.bar.com</strong> and <strong class="source-inline">*.bar.com</strong>, with each hostname routing traffic to a different backend service, such as deployment. At <a id="_idIndexMarker1040"/>this point, we should have an ingress set up and be able to access the test application over HTTP. But, as we know, companies and browsers require sites to support SSL as they'll throw warning messages about being insecure. So, in the next section, we'll be covering how to add an SSL certificate to this ingress.</p>
+			<h1 id="_idParaDest-242"><a id="_idTextAnchor241"/>How to add an SSL certificate to an ingress</h1>
+			<p>To<a id="_idIndexMarker1041"/> use an SSL certificate with your ingress, you<a id="_idIndexMarker1042"/> must create a particular type of secret called <strong class="source-inline">kubernetes.io/tls</strong>, an example of which will be shown in a moment. It is important to note that values must encode in <strong class="source-inline">base64</strong> from the PEM format. You can let kubectl handle this for you by running the following command: </p>
+			<pre class="source-code">kubectl create secret tls test-tls --key="tls.key" --cert="tls.crt"</pre>
+			<p>It is recommended that you include the complete certificate chain in <strong class="source-inline">tls.crt</strong>. Also, this secret must be located in the same namespace as the ingress rule:</p>
+			<div>
+				<div id="_idContainer097" class="IMG---Figure">
+					<img src="image/B18053_14_15.jpg" alt="Figure 14.15 – TLS example YAML&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.15 – TLS example YAML</p>
+			<p>Once the secret has been created, you only need to add the following section to your ingress config, which includes the secret name and the hostnames that this secret covers. You can define multiple certificates and hosts for a single ingress rule, but typically, it's recommended to keep ingresses limited to a single application:</p>
+			<div>
+				<div id="_idContainer098" class="IMG---Figure">
+					<img src="image/B18053_14_16.jpg" alt="Figure 14.16 – Adding TLS to ingress&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 14.16 – Adding TLS to ingress</p>
+			<p>At this point, we should be able to publish our applications that are hosted inside our cluster to the<a id="_idIndexMarker1043"/> outside world using an ingress rule, while<a id="_idIndexMarker1044"/> providing SSL support for our application. </p>
+			<h1 id="_idParaDest-243"><a id="_idTextAnchor242"/>Summary</h1>
+			<p>This chapter went over the four main load balancer designs: round-robin DNS, passive external load balancer, active external load balancer, and an integrated load balancer. We then covered the pros and cons and some examples for each design, including making the most sense, at which point we dove into configuring a TCP and HTTP mode load balancer in an F5. We then went over the installation steps for creating an HAProxy server, including some example configs. We also covered some new software called MetalLB, which replaces a load balancer altogether. We then wrapped up the chapter by covering what an ingress is and how to make one. This is very important, as most applications that are hosted inside Kubernetes need to be published to the outside world and we need to do it in a highly available way. </p>
+			<p>In the next chapter, we'll be diving into troubleshooting Rancher and Kubernetes clusters, including how to fix some common issues and how to set up lab environments that you can use to practice recovering from these issues. </p>
+		</div>
+	</body></html>

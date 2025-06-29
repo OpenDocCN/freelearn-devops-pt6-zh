@@ -1,0 +1,298 @@
+<html><head></head><body>
+		<div id="_idContainer097">
+			<h1 id="_idParaDest-162" class="chapter-number"><a id="_idTextAnchor162"/>11</h1>
+			<h1 id="_idParaDest-163"><a id="_idTextAnchor163"/>Building Applications and Pushing Them to Amazon ECR</h1>
+			<p>A Kubernetes Pod consists of at least one container. These containers are stored in a public or private repository and pulled by a worker node when it receives a Pod specification and needs to deploy a container. This chapter looks at how you can use AWS <strong class="bold">Elastic Container Registry</strong> (<strong class="bold">ECR</strong>) to securely store container images using multiple repositories and allow EKS to use them when it <span class="No-Break">deploys Pods.</span></p>
+			<p>Specifically, we will cover the <span class="No-Break">following topics:</span></p>
+			<ul>
+				<li>Introducing <span class="No-Break">Amazon ECR</span></li>
+				<li>Understanding <span class="No-Break">repository authentication</span></li>
+				<li>Building and pushing a container image <span class="No-Break">to ECR</span></li>
+				<li>Using advanced <span class="No-Break">ECR features</span></li>
+				<li>Using an ECR image in your <span class="No-Break">EKS cluster</span></li>
+			</ul>
+			<h1 id="_idParaDest-164"><a id="_idTextAnchor164"/>Technical requirements</h1>
+			<p>The reader should have a familiarity with YAML, basic networking, and EKS architecture. Before getting started with this chapter, please ensure <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>You have network connectivity to your EKS cluster <span class="No-Break">API endpoint</span></li>
+				<li>The AWS CLI, Docker, and kubectl binary are installed on <span class="No-Break">your workstation</span></li>
+				<li>You have a basic understanding of Docker <span class="No-Break">and Dockerfiles</span></li>
+			</ul>
+			<h1 id="_idParaDest-165"><a id="_idTextAnchor165"/>Introducing Amazon ECR</h1>
+			<p>In <a href="B18129_01.xhtml#_idTextAnchor014"><span class="No-Break"><em class="italic">Chapter 1</em></span></a>, we talked <a id="_idIndexMarker518"/>about the general structure of a container and how it uses a union filesystem to create a layered image. This image format has become the <strong class="bold">Open Container Initiative</strong> (<strong class="bold">OCI</strong>) image specification, and various open source build <a id="_idIndexMarker519"/>tools such as Podman or BuildKit support <span class="No-Break">this format.</span></p>
+			<p>When you build an image using the <strong class="source-inline">docker build</strong> command, an image is created locally, which is fine for the local machine, but when you need to use that image in EKS or another Kubernetes distribution/service, you need to push it to a repository that can be accessed by other systems that make up your <span class="No-Break">EKS cluster.</span></p>
+			<p>If you browse Docker Hub at <a href="https://hub.docker.com/">https://hub.docker.com/</a> and log in, you can see multiple container images <a id="_idIndexMarker520"/>for Postgres, Redis, Python, and so on. Each image is tagged with a version tag such as 13.8 as well as potentially the latest tag, which will often (but not always) denote the latest version of a container image. Docker Hub is a public repository, which means it can be accessed from the internet. These are considered public repositories and can be accessed by anyone with a Docker <span class="No-Break">Hub ID.</span></p>
+			<p>ECR hosts multiple repositories that in turn host multiple versions of a container image (as well as other OCI-compliant artifacts) in the same way Docker Hub does, but access is controlled through IAM and repository controls that you control and are often used to host containers that contain private code <span class="No-Break">or configurations.</span></p>
+			<p>The easiest way to understand ECR is to create a repository. The next example shows a simple Terraform configuration that will create a private repository called <strong class="source-inline">myapp</strong> in the current <span class="No-Break">AWS account/region:</span></p>
+			<pre class="source-code">
+resource "aws_ecr_repository" "myapp" {
+  name                 = "myapp"
+  image_tag_mutability = "<strong class="bold">MUTABLE</strong>"
+  image_scanning_configuration {
+    scan_on_push = <strong class="bold">true }</strong>}
+output "repo-url" {
+  value = aws_ecr_repository.myapp.repository_url}</pre>
+			<p>Two key attributes in the ECR configuration are <strong class="source-inline">image_tag_mutability</strong> (which allows an image with an existing tag to upload, replacing the existing one) and <strong class="source-inline">scan_on_push</strong>, which will scan the image for basic vulnerabilities after it is <span class="No-Break">uploaded (pushed).</span></p>
+			<p>The Terraform code will output the newly created repository URL (for example, <strong class="source-inline">1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp</strong>), which we will use later to push a local image <span class="No-Break">to ECR.</span></p>
+			<p>ECR is charged based on the size of the images that are stored in the registry as well as any data transfer costs for data leaving AWS. For example, assuming you are storing a total of 60 GB of software images, you will be charged for storage at $0.10 per GB equaling a total of $6/month, but charged nothing for data transfer in. Any EKS cluster within the same region pulling the images will not be charged for data transfer out. So, the total cost will <span class="No-Break">equal $6/month.</span></p>
+			<p>In reality, your costs <a id="_idIndexMarker521"/>will probably be lower as there is a Free Tier discount in the first year for private repositories and some free storage and transfer-out limits as well. Please <a id="_idIndexMarker522"/>refer to <a href="https://aws.amazon.com/ecr/pricing/">https://aws.amazon.com/ecr/pricing/</a> for <span class="No-Break">more information.</span></p>
+			<p>Let’s look at how ECR provides secure access to <span class="No-Break">the repositories.</span></p>
+			<h1 id="_idParaDest-166"><a id="_idTextAnchor166"/>Understanding repository authentication</h1>
+			<p>As we discussed, ECR repositories <a id="_idIndexMarker523"/>can be private or public, and the security credentials you use to access these repositories will vary depending on the type of repository <span class="No-Break">you create.</span></p>
+			<h2 id="_idParaDest-167"><a id="_idTextAnchor167"/>Accessing ECR private repositories</h2>
+			<p>Access to private <a id="_idIndexMarker524"/>repositories is controlled through AWS IAM and repository permissions. If you are using the native AWS API, then you can use the standard Signature Version 4 signing process used by API clients such as the AWS CLI or the Python <span class="No-Break"><strong class="source-inline">boto3</strong></span><span class="No-Break"> library.</span></p>
+			<p>In this chapter, we will use Docker commands to interact with the ECR repository, so we need to convert the AWS access and secret keys into something Docker will understand. This is done with the <strong class="source-inline">aws ecr get-login-password</strong> command and passing the output into the <strong class="source-inline">docker login</strong> command. An example is <span class="No-Break">shown next:</span></p>
+			<pre class="console">
+$ aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin 1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp
+WARNING! Your password will be stored unencrypted in /home/ec2-user/.docker/config.json.
+……
+Login Succeeded</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Please note that credentials are valid for 12 hours, after which time the <strong class="source-inline">docker login</strong> command needs to <span class="No-Break">be rerun.</span></p>
+			<p>This now means Docker commands such as <strong class="source-inline">docker pull</strong> or <strong class="source-inline">docker push</strong> will have an authentication token that will allow them to interact with the ECR. In order to use the <strong class="source-inline">aws ecr get-login-password</strong> command, the user account being used must have the appropriate <span class="No-Break">IAM permissions.</span></p>
+			<p>The following <a id="_idIndexMarker525"/>IAM policy is the default one used by EKS worker nodes to both access and pull images, as well as retrieve an authorization token (<strong class="source-inline">GetAuthorizationToken</strong> is the underlying API call the <strong class="source-inline">get-login-password</strong> <span class="No-Break">command calls):</span></p>
+			<pre class="source-code">
+{ "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:BatchGetImage",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:GetAuthorizationToken"
+            ],
+            "Resource": "*"}]}</pre>
+			<p>As well as the IAM permissions, every registry has the ability to apply individual policies. Typically, an IAM role such as the one shown previously is used to give broad access to the ECR service, and <a id="_idIndexMarker526"/>repository policies are used to restrict access to specific repositories. For example, the following Terraform resource adds a policy that would allow account <strong class="source-inline">22334455</strong> to push images to <span class="No-Break">our repository:</span></p>
+			<pre class="source-code">
+resource "aws_ecr_repository_policy" "apppolicy" {
+  repository = aws_ecr_repository.myapp.name
+  policy = &lt;&lt;EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowCrossAccountPush",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::<strong class="bold">22334455</strong>:root"
+            },
+            "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:CompleteLayerUpload",
+                "ecr:InitiateLayerUpload",
+                "ecr:PutImage",
+                "ecr:UploadLayerPart"
+            ]}]}
+EOF
+}</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">There are also registry-wide permissions you can apply that are used to scope access to the replication and pull through cache features, which will be discussed later in <span class="No-Break">this chapter.</span></p>
+			<p class="callout">Also, note that <strong class="source-inline">aws_ecr_repository.myapp.name</strong> references the repository created previously and would need to be changed if you structure your Terraform repository or <span class="No-Break">code differently.</span></p>
+			<p class="callout">One final note—there <a id="_idIndexMarker527"/>is no real difference between private and <a id="_idIndexMarker528"/>public ECR repositories as they are managed and costed in the same way. The key difference is public repositories allow anonymous users to pull images from them and are visible on the Amazon ECR Public Gallery. This means anyone can pull images and, as repositories have a cost element based on data transfer, <em class="italic">anonymous users pulling your images will contribute to your </em><span class="No-Break"><em class="italic">overall bill</em></span><span class="No-Break">!</span></p>
+			<p class="callout">We will <a id="_idIndexMarker529"/>use private ECR repositories only for EKS, so please refer to <a href="https://docs.aws.amazon.com/AmazonECR/latest/public/what-is-ecr.html">https://docs.aws.amazon.com/AmazonECR/latest/public/what-is-ecr.html</a> if you want further information on <span class="No-Break">public repositories.</span></p>
+			<p>Now we <a id="_idIndexMarker530"/>understand how to authenticate with a private repository, let’s see how we build and push an image to our <span class="No-Break">ECR repository.</span></p>
+			<h1 id="_idParaDest-168"><a id="_idTextAnchor168"/>Building and pushing a container image to ECR</h1>
+			<p>If we consider <a id="_idIndexMarker531"/>a simple API using <a id="_idIndexMarker532"/>Python and FastAPI, shown <a id="_idIndexMarker533"/>next, we need to first package that up into a <a id="_idIndexMarker534"/>Docker image locally. We can then test if it is working locally before we push it to ECR. I’ve chosen Python and FastAPI as they <a id="_idIndexMarker535"/>are very simple to get <a id="_idIndexMarker536"/>up and running, but you <a id="_idIndexMarker537"/>can create the container using any language <a id="_idIndexMarker538"/><span class="No-Break">or framework.</span></p>
+			<p>The Python code in the <strong class="source-inline">main.py</strong> file is <span class="No-Break">shown next:</span></p>
+			<pre class="source-code">
+#!/usr/bin/env python3
+'''simple API server that returns Hello World'''
+from fastapi import FastAPI
+app = FastAPI()
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}</pre>
+			<p>We will also need a <strong class="source-inline">requirements.txt</strong> file, which will have the <span class="No-Break">following entries:</span></p>
+			<pre class="source-code">
+nyio==3.6.1
+click==8.1.3
+fastapi==0.83.0
+h11==0.13.0
+httptools==0.5.0
+idna==3.3
+importlib-metadata==4.12.0
+pydantic==1.10.2
+python-dotenv==0.21.0
+PyYAML==6.0
+sniffio==1.3.0
+starlette==0.19.1
+typing-extensions==4.3.0
+uvicorn==0.18.3
+uvloop==0.16.0
+watchfiles==0.17.0
+websockets==10.3
+zipp==3.8.1</pre>
+			<p>We will <a id="_idIndexMarker539"/>use a simple Dockerfile (shown next) that creates an image using a non-root user, installs the necessary <a id="_idIndexMarker540"/>libraries through <strong class="source-inline">pip</strong> (in this case, FastAPI and Uvicorn), and <a id="_idIndexMarker541"/>then runs the <a id="_idIndexMarker542"/>server using the Docker <span class="No-Break"><strong class="source-inline">CMD</strong></span><span class="No-Break"> key:</span></p>
+			<pre class="source-code">
+FROM python:3.9
+RUN pip install --upgrade pip
+RUN adduser worker
+USER worker
+WORKDIR /home/worker
+ENV PATH="/home/worker/.local/bin:${PATH}"
+COPY ./requirements.txt /home/worker/requirements.txt
+RUN pip install --no-cache-dir --upgrade -r /home/worker/requirements.txt
+COPY ./main.py /home/worker/main.py
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]</pre>
+			<p>We can then build and run the container using the following <span class="No-Break">Docker commands:</span></p>
+			<pre class="console">
+$ docker build -t myapi:0.0.1 .
+$ docker run -p 8080:8080 --rm myapi:0.0.1
+……
+INFO:     Uvicorn running on http://0.0.0.0:8080
+INFO:     Application startup complete.</pre>
+			<p>You now be able to curl <strong class="source-inline">http://127.0.0.1:8080</strong> to get a reply or <strong class="source-inline">http://127.0.0.1:8080/docs</strong> to get the API definition. Now that we have a working <a id="_idIndexMarker543"/>application, we can <a id="_idIndexMarker544"/>use the following <a id="_idIndexMarker545"/>commands to log in, tag, and push the image to <a id="_idIndexMarker546"/>our ECR repository we created in the <span class="No-Break">previous section:</span></p>
+			<pre class="console">
+$ aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin 1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp
+WARNING! Your password will be stored unencrypted in /home/ec2-user/.docker/config.json.
+……
+$ docker tag myapi:0.0.1 1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp:0.0.1
+$ docker images
+REPOSITORY  TAG IMAGE ID       CREATED         SIZE
+1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp   0.0.1        c163cea7a037   9 hours ago     1.01GB
+$ docker push 1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp   :0.0.1
+The push refers to repository [1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp]
+e6aadc5ffa3e: Pushed
+……
+54b354c15c5a: Pushed
+0.0.1: digest: sha256:193687f5606a46e61634b1020edaea6e347281ea ba8ff41d328371982a533efc size: 3264</pre>
+			<p>If we now go into the AWS console, we will be able to view the image in our repository. As we enabled <strong class="source-inline">scan_on_push</strong>, we will also get a view of any vulnerabilities that the basic scanning has detected. This scanning uses the open source Clair project to perform <span class="No-Break">the scan:</span></p>
+			<div>
+				<div id="_idContainer092" class="IMG---Figure">
+					<img src="image/B18129_11_01.jpg" alt="Figure 11.1 – Initial image details in ECR"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.1 – Initial image details in ECR</p>
+			<p>If we click <a id="_idIndexMarker547"/>on the <strong class="bold">details</strong> link <a id="_idIndexMarker548"/>in the bottom-right <a id="_idIndexMarker549"/>corner, we get a more detailed view of the <a id="_idIndexMarker550"/>issues, complete with a link to the <strong class="bold">Common Vulnerabilities and Exposures</strong> (<strong class="bold">CVE</strong>) number. An example is shown next that <a id="_idIndexMarker551"/>references the two critical issues identified in <span class="No-Break">my image:</span></p>
+			<div>
+				<div id="_idContainer093" class="IMG---Figure">
+					<img src="image/B18129_11_02.jpg" alt="Figure 11.2 – Initial image scan output"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.2 – Initial image scan output</p>
+			<p>In most companies I have worked with, all the <strong class="bold">CRITICAL</strong> issues need to be removed, as a minimum, before the image can be considered <em class="italic">safe</em>. This might be the developers’, DevOps’, or platform engineers’ responsibility, but in reality, it’s everyone’s responsibility to make the image as secure as possible. Image remediation can be a time-consuming practice, but there are some simple things you <span class="No-Break">can do!</span></p>
+			<p>By simply changing the base image from <strong class="source-inline">python:3.9</strong> to <strong class="source-inline">python:3.10-slim-bullseye</strong> in the <a id="_idIndexMarker552"/>Dockerfile <a id="_idIndexMarker553"/>and tagging it as <a id="_idIndexMarker554"/>version 0.0.2, I have removed all the critical vulnerabilities, reduced <a id="_idIndexMarker555"/>the overall vulnerability count, <em class="italic">and</em> reduced the size of the image to nearly a quarter, which will really improve download time and save costs. This is <span class="No-Break">shown next:</span></p>
+			<div>
+				<div id="_idContainer094" class="IMG---Figure">
+					<img src="image/B18129_11_03.jpg" alt="Figure 11.3 – Improved container security posture and size"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.3 – Improved container security posture and size</p>
+			<p>So, we have our image uploaded into ECR, the <strong class="bold">CRITICAL</strong> vulnerabilities have been remediated, and the size has been optimized. Next, let’s look at some more advanced features of ECR before we demonstrate using that image <span class="No-Break">in EKS.</span></p>
+			<h1 id="_idParaDest-169"><a id="_idTextAnchor169"/>Using advanced ECR features</h1>
+			<p>ECR has two advanced <a id="_idIndexMarker556"/>features that are useful when you are managing a large EKS environment: <strong class="bold">pull through cache</strong>, which allows a private repository to cache public images, <a id="_idIndexMarker557"/>and <strong class="bold">cross-region replication</strong>, where you replicate images to another region for use. Let’s explore <span class="No-Break">both options.</span></p>
+			<h2 id="_idParaDest-170"><a id="_idTextAnchor170"/>Pull-through-cache explained</h2>
+			<p>Pull-through-cache allows a private repository to cache images from either the public ECR <a id="_idIndexMarker558"/>repositories <a id="_idIndexMarker559"/>or from Quay (please note that Docker Hub is not currently supported). We will use the public ECR repositories in this example, and this allows us to offer public images without giving public internet access to our <span class="No-Break">worker nodes.</span></p>
+			<p>Let’s configure a rule in ECR using the following Terraform code; please note it’s done at the registry level, not at the <span class="No-Break">repository level:</span></p>
+			<pre class="source-code">
+resource "aws_ecr_pull_through_cache_rule" "example" {
+  ecr_repository_prefix = "ecr-public"
+  upstream_registry_url = "public.ecr.aws"
+}</pre>
+			<p>Once this is deployed, we can log in and use the <strong class="source-inline">ecr-public</strong> prefix to pull images. The following example pulls the latest <span class="No-Break">Alpine image:</span></p>
+			<pre class="console">
+$ aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin 1122334.dkr.ecr.eu-central-1.amazonaws.com/ecr-public
+WARNING! Your password will be stored unencrypted in /home/ec2-user/.docker/config.json.
+……
+$ docker pull  1122334.dkr.ecr.eu-central-1.amazonaws.com/ecr-public/docker/library/alpine:latest
+latest: Pulling from ecr-public/docker/library/alpine
+Digest: sha256:bc41182d7ef5ffc53a40b044e725193bc10142a1243f395 ee852a8d9730fc2ad
+Status: Downloaded newer image for 1122334.dkr.ecr.eu-central-1.amazonaws.com/ecr-public/docker/library/alpine:latest
+1122334.dkr.ecr.eu-central-1.amazonaws.com/ecr-public/docker/library/alpine:latest</pre>
+			<p>A corresponding <a id="_idIndexMarker560"/>private repository <a id="_idIndexMarker561"/>has now been created (see the following screenshot), with the pull-through <span class="No-Break">cache enabled:</span></p>
+			<div>
+				<div id="_idContainer095" class="IMG---Figure">
+					<img src="image/B18129_11_04.jpg" alt="Figure 11.4 – Pull-through-cache-enabled repository"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.4 – Pull-through-cache-enabled repository</p>
+			<p>Now we understand how we work with repositories in a single region, let’s look at how we can work across different <span class="No-Break">AWS regions.</span></p>
+			<h2 id="_idParaDest-171"><a id="_idTextAnchor171"/>Cross-region replication</h2>
+			<p>You may <a id="_idIndexMarker562"/>want to <a id="_idIndexMarker563"/>deploy your application in multiple regions for <strong class="bold">disaster recovery</strong> (<strong class="bold">DR</strong>) reasons or for global reach. You can use cross-region replication <a id="_idIndexMarker564"/>to copy one, many, or all images from one region to another, or to multiple regions. You can do this in the same account or across different accounts, but bear in mind you need to set up a cross-account role if you want to replicate from one account <span class="No-Break">to another.</span></p>
+			<p>Looking at the Terraform configuration shown next, we can see it consists of two parts. The first is a <strong class="source-inline">destination</strong> rule that states which region and account will be the target for the replication. Please note you can have multiple destination rules. The second part is optional and specifies a <strong class="source-inline">filter</strong> rule to select the repositories to replicate. </p>
+			<p>In the example shown next, we will use the <strong class="source-inline">myapp</strong> prefix. If this is not used, all images <span class="No-Break">are replicated:</span></p>
+			<pre class="source-code">
+data "aws_caller_identity" "current" {}
+resource "aws_ecr_replication_configuration" "euwest1" {
+  replication_configuration {
+    rule {
+      destination {
+        region      = "eu-west-1"
+        registry_id = data.aws_caller_identity.current.account_id
+      }
+      repository_filter {
+        filter      = "myapp"
+        filter_type = "PREFIX_MATCH"
+      }
+    }
+  }
+}</pre>
+			<p>As only repository content pushed to a repository after replication is configured is replicated, we now need to push a new tag in order to see the image replicated <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">eu-west-1</strong></span><span class="No-Break">.</span></p>
+			<p>If you follow the commands shown in the <em class="italic">Building and pushing a container image to ECR</em> section, you can create a new image for the <strong class="source-inline">myapp</strong> repository and push it <span class="No-Break">to ECR.</span></p>
+			<p>You will see it replicated to the region. If you use the AWS console and go to the relevant <strong class="source-inline">repo/tag</strong>, you can see the replication status. In the example shown next, <strong class="source-inline">myapp:0.0.3</strong> has been successfully replicated <span class="No-Break">to </span><span class="No-Break"><strong class="source-inline">eu-west-1</strong></span><span class="No-Break">:</span></p>
+			<div>
+				<div id="_idContainer096" class="IMG---Figure">
+					<img src="image/B18129_11_05.jpg" alt="Figure 11.5 – Replication status for new image tag"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.5 – Replication status for new image tag</p>
+			<p>With this, we <a id="_idIndexMarker565"/>have explored the features <a id="_idIndexMarker566"/>and capabilities of ECR. Let’s look at the final section and see how we use ECR images <span class="No-Break">in EKS.</span></p>
+			<h1 id="_idParaDest-172"><a id="_idTextAnchor172"/>Using an ECR image in your EKS cluster</h1>
+			<p>EKS worker <a id="_idIndexMarker567"/>nodes can pull images from ECR as they <a id="_idIndexMarker568"/>should have the <strong class="source-inline">AmazonEC2ContainerRegistryReadOnly</strong> managed role applied to the <span class="No-Break">worker nodes.</span></p>
+			<p>So, the only thing that needs to be done is to specify the full <strong class="source-inline">&lt;aws_account_id&gt;.dkr.ecr.aws_region.amazonaws.com/&lt;image-name&gt;:&lt;tag&gt;</strong> ECR path in your Kubernetes manifest or <span class="No-Break">Helm chart.</span></p>
+			<p>Building on <a href="B18129_04.xhtml#_idTextAnchor067"><span class="No-Break"><em class="italic">Chapter 4</em></span></a>, <em class="italic">Running Your First Application on EKS</em>, we create a deployment that uses our <strong class="source-inline">myapp</strong> container and a <strong class="source-inline">NodePort</strong> service that exposes that service outside the cluster. The only real difference is in the Pod spec, we reference the fully <a id="_idIndexMarker569"/>qualified image name. This is illustrated next. The first <a id="_idIndexMarker570"/>section defines the <span class="No-Break">Kubernetes Deployment:</span></p>
+			<pre class="source-code">
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-deployment
+spec:
+  selector:
+    matchLabels:
+      app: fastapi
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: fastapi
+    spec:
+      containers:
+      - name: fastapi
+        image: "<strong class="bold">1122334.dkr.ecr.eu-central-1.amazonaws.com/myapp:0.0.2"</strong></pre>
+			<p>Now, we define <span class="No-Break">the services:</span></p>
+			<pre class="source-code">
+---
+apiVersion: v1
+kind: Service
+metadata:
+ name: fastapi-dev
+spec:
+ type: NodePort
+ selector:
+   app: fastapi
+ ports:
+ - nodePort: 32410
+   protocol: TCP
+   port: 8080
+   targetPort: 8080</pre>
+			<p>As this is a <strong class="source-inline">NodePort</strong> service, we can get the IP address of the host the Pod is running on by running the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl get pod &lt;podname&gt; -o jsonpath={.status.hostIP}</pre>
+			<p>We can <a id="_idIndexMarker571"/>then curl <strong class="source-inline">http://&lt;hostIP&gt;:32410</strong>, and we will <a id="_idIndexMarker572"/>see the FastAPI <span class="No-Break">response message.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Please make sure the correct routing and security group rules are set up to allow your client to connect to the worker node IP address on <span class="No-Break">port </span><span class="No-Break"><strong class="source-inline">32410</strong></span><span class="No-Break">.</span></p>
+			<p>In this section, we have looked at how you can host your private images and deploy them into EKS with minimal changes to your manifests. We’ll now revisit the key learning points from <span class="No-Break">this chapter.</span></p>
+			<h1 id="_idParaDest-173"><a id="_idTextAnchor173"/>Summary</h1>
+			<p>In this chapter, we explored how we can use ECR to store, cache, and replicate container images. Using ECR comes at a cost, which is made up of the total size of all images in your repository and egress costs, but by using the scan-on-push capability of ECR we can identify and resolve critical dependencies as well as optimize the size of the image, supporting a better security posture and more <span class="No-Break">cost-effective images.</span></p>
+			<p>There are also more advanced features of ECR that allow us to support a DR strategy or deploy applications across multiple regions using cross-region replication as well as caching public images from the ECR public repositories or Quay. Finally, we looked at how you can configure IAM and repository policies to control access to the images inside and pull those images <span class="No-Break">into EKS.</span></p>
+			<p>In the next chapter, we will look at how you can use the AWS storage driver to provide stateful storage to Pods as a source of your applications <span class="No-Break">and Pods.</span></p>
+			<h1 id="_idParaDest-174"><a id="_idTextAnchor174"/>Further reading</h1>
+			<ul>
+				<li>How the AWS Signature V4 signing process <span class="No-Break">works: </span><a href="https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html"><span class="No-Break">https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html</span></a></li>
+				<li>Using the ECR Public <span class="No-Break">Gallery: </span><a href="https://docs.aws.amazon.com/AmazonECR/latest/public/public-gallery.html"><span class="No-Break">https://docs.aws.amazon.com/AmazonECR/latest/public/public-gallery.html</span></a></li>
+				<li>Using Clair to scan your <span class="No-Break">containers: </span><a href="https://github.com/quay/clair"><span class="No-Break">https://github.com/quay/clair</span></a></li>
+			</ul>
+		</div>
+	</body></html>

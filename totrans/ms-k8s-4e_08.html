@@ -1,0 +1,814 @@
+<html><head></head><body>
+  <div id="_idContainer169" class="Basic-Text-Frame">
+    <h1 class="chapterNumber">8</h1>
+    <h1 id="_idParaDest-374" class="chapterTitle">Deploying and Updating Applications</h1>
+    <p class="normal">In this chapter, we will explore the automated pod scalability that Kubernetes provides, how it affects rolling updates, and how it interacts with quotas. We will touch on the important topic of provisioning and how to choose and manage the size of the cluster. Finally, we will look into CI/CD pipelines and infrastructure provisioning. Here are the main points we will cover:</p>
+    <ul>
+      <li class="bulletList">Live cluster updates</li>
+      <li class="bulletList">Horizontal pod autoscaling</li>
+      <li class="bulletList">Performing rolling updates with autoscaling</li>
+      <li class="bulletList">Handling scarce resources with quotas and limits</li>
+      <li class="bulletList">Continuous integration and deployment</li>
+      <li class="bulletList">Provisioning infrastructure with Terraform, Pulumi, custom operators, and Crossplane</li>
+    </ul>
+    <p class="normal">By the end of this chapter, you will have the ability to plan a large-scale cluster, provision it economically, and make informed decisions about the various trade-offs between performance, cost, and availability. You will also understand how to set up horizontal pod auto-scaling and use resource quotas intelligently to let Kubernetes automatically handle intermittent fluctuations in volume as well as deploy software safely to your cluster.</p>
+    <h1 id="_idParaDest-375" class="heading-1">Live cluster updates</h1>
+    <p class="normal">One of the <a id="_idIndexMarker813"/>most complicated and risky tasks involved in running a Kubernetes cluster is a live upgrade. The interactions between different parts of the system when some parts have different versions are often difficult to predict, but in many situations, they are required. Large clusters with many users can’t afford to be offline for maintenance. The best way to attack complexity is to divide and conquer. Microservice architecture helps a lot here. You never upgrade your entire system. You just constantly upgrade several sets of related microservices, and if APIs have changed, then you upgrade their clients, too. A properly designed upgrade will preserve backward compatibility at least until all clients have been upgraded, and then deprecate old APIs across several releases.</p>
+    <p class="normal">In this section, we will discuss how to go about updating your cluster using various strategies, such as rolling updates, blue-green deployments, and canary deployments. We will also discuss when it’s appropriate to introduce breaking upgrades versus backward-compatible upgrades. Then we will get into the critical topic of schema and data migrations.</p>
+    <h2 id="_idParaDest-376" class="heading-2">Rolling updates</h2>
+    <p class="normal">Rolling updates are<a id="_idIndexMarker814"/> updates where you gradually update components from the<a id="_idIndexMarker815"/> current version to the next. This means that your cluster will run current and new components at the same time. There are two cases to consider here:</p>
+    <ul>
+      <li class="bulletList">New components are backward-compatible</li>
+      <li class="bulletList">New components are not backward-compatible</li>
+    </ul>
+    <p class="normal">If the new components are backward-compatible, then the upgrade should be very easy. In earlier versions of Kubernetes, you had to manage rolling updates very carefully with labels and change the number of replicas gradually for both the old and new versions (although <code class="inlineCode">kubectl rolling-update</code> is a convenient shortcut for replication controllers). But, the <code class="inlineCode">Deployment</code> resource introduced in Kubernetes 1.2 makes it much easier and supports replica sets. It has the following capabilities built-in:</p>
+    <ul>
+      <li class="bulletList">Running server-side (it keeps going if your machine disconnects)</li>
+      <li class="bulletList">Versioning</li>
+      <li class="bulletList">Multiple concurrent rollouts</li>
+      <li class="bulletList">Updating deployments</li>
+      <li class="bulletList">Aggregating status across all pods</li>
+      <li class="bulletList">Rollbacks</li>
+      <li class="bulletList">Canary deployments</li>
+      <li class="bulletList">Multiple upgrade strategies (rolling upgrade is the default)</li>
+    </ul>
+    <p class="normal">Here is a sample manifest for a deployment that deploys three Nginx pods:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-deployment</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">3</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+        <span class="hljs-attr">image:</span> <span class="hljs-string">nginx:1.7.9</span>
+        <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+</code></pre>
+    <p class="normal">The <a id="_idIndexMarker816"/>resource kind is <code class="inlineCode">Deployment</code> and it’s got the name <code class="inlineCode">nginx-deployment</code>, which you can use to refer to <a id="_idIndexMarker817"/>this deployment later (for example, for updates or rollbacks). The most important part is, of course, the <code class="inlineCode">spec</code>, which contains a pod template. The replicas determine how many pods will be in the cluster, and the template spec has the configuration for each container. In this case, just a single container.</p>
+    <p class="normal">To start the rolling update, create the deployment resource and check that it rolled out successfully:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k create -f nginx-deployment.yaml
+deployment.apps/nginx-deployment created
+$ k rollout status deployment/nginx-deployment
+deployment "nginx-deployment" successfully rolled out
+Deployments have an update strategy, which defaults to rollingUpdate:
+$ k get deployment nginx-deployment -o yaml | grep strategy -A 4
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+</code></pre>
+    <p class="normal">The following<a id="_idIndexMarker818"/> diagram <a id="_idIndexMarker819"/>illustrates how a rolling update works:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_08_01.png" alt=""/></figure>
+    <p class="packt_figref">Figure 8.1: Kubernetes rolling update</p>
+    <h3 id="_idParaDest-377" class="heading-3">Complex deployments</h3>
+    <p class="normal">The <code class="inlineCode">Deployment</code> resource is great when<a id="_idIndexMarker820"/> you just want to upgrade one pod, but you may often <a id="_idIndexMarker821"/>need to upgrade multiple pods, and those pods sometimes have version inter-dependencies. In those situations, you sometimes must forgo a rolling update or introduce a temporary compatibility layer. </p>
+    <p class="normal">For example, suppose service A depends on service B. Service B now has a breaking change. The v1 pods of service A can’t interoperate with the pods from service B v2. It is also undesirable from a reliability and change management point of view to make the v2 pods of service B support the old and new APIs. In this case, the solution may be to introduce an adapter service that implements the v1 API of the B service. This service will sit between A and B and will translate requests and responses across versions. </p>
+    <p class="normal">This adds complexity to the deployment process and requires several steps, but the benefit is that the A and B services themselves are simple. You can do rolling updates across incompatible versions, and all indirection can go away once everybody upgrades to v2 (all A pods and all B pods).</p>
+    <p class="normal">But, rolling updates are not always the answer.</p>
+    <h2 id="_idParaDest-378" class="heading-2">Blue-green deployments</h2>
+    <p class="normal">Rolling updates are great for <a id="_idIndexMarker822"/>availability, but sometimes the complexity involved in <a id="_idIndexMarker823"/>managing a proper rolling update is considered too high, or it adds a significant amount of work, which pushes back more important projects. In these cases, blue-green upgrades provide a great alternative. With a blue-green release, you prepare a full copy of your production environment with the new version. Now you have two copies, old (blue) and new (green). It doesn’t matter which one is blue and which one is green. The important thing is that you have two fully independent production environments. Currently, blue is active and services all requests. You can run all your tests on green. Once you’re happy, you flip the switch and green becomes active. If something goes wrong, rolling back is just as easy; just switch back from green to blue.</p>
+    <p class="normal">The following diagram illustrates how blue-green deployments work using two deployments, two labels, and a single service, which uses a label selector to switch from the blue deployment to the green deployment:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_08_02.png" alt=""/></figure>
+    <p class="packt_figref">Figure 8.2: Blue-green deployment</p>
+    <p class="normal">I totally ignored the storage and in-memory state in the previous discussion. This immediate switch assumes that blue and green are composed of stateless components only and share a common persistence layer.</p>
+    <p class="normal">If there were<a id="_idIndexMarker824"/> storage changes or breaking changes to the API accessible<a id="_idIndexMarker825"/> to external clients, then additional steps would need to be taken. For example, if blue and green have their own storage, then all incoming requests may need to be sent to both blue and green, and green may need to ingest historical data from blue to get in sync before switching.</p>
+    <h2 id="_idParaDest-379" class="heading-2">Canary deployments</h2>
+    <p class="normal">Blue-green deployments are <a id="_idIndexMarker826"/>cool. However, there are times when a more nuanced approach is<a id="_idIndexMarker827"/> needed. Suppose you are responsible for a large distributed system with many users. The developers plan to deploy a new version of their service. They tested the new version of the service in the test and staging environment. But, the production environment is too complicated to be replicated one to one for testing purposes. This means there is a risk that the service will misbehave in production. That’s where canary deployments shine.</p>
+    <p class="normal">The basic idea is to test the service in production but in a limited capacity. This way, if something is wrong with the new version, only a small fraction of your users or a small fraction of requests will be impacted. This can be implemented very easily in Kubernetes at the pod level. If a service is backed up by 10 pods and you deploy the new version to one pod, then only 10% of the requests will be routed by the service load balancer to the canary pod, while 90% of the requests are still serviced by the current version.</p>
+    <p class="normal">The following<a id="_idIndexMarker828"/> diagram <a id="_idIndexMarker829"/>illustrates this approach:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_08_03.png" alt=""/></figure>
+    <p class="packt_figref">Figure 8.3: Canary deployment</p>
+    <p class="normal">There are more sophisticated ways to route traffic to a canary deployment using a service mesh. We will examine this later in <em class="chapterRef">Chapter 14</em>, <em class="italic">Utilizing Service Meshes</em>.</p>
+    <p class="normal">We have discussed different ways to perform live cluster updates. Let’s now address the hard problem of managing data-contract changes.</p>
+    <h2 id="_idParaDest-380" class="heading-2">Managing data-contract changes</h2>
+    <p class="normal">Data contracts describe how <a id="_idIndexMarker830"/>the data is organized. It’s an umbrella term for structure metadata. The most common example is a relational database schema. Other examples include network payloads, file formats, and even the content of string arguments or responses. If you have a configuration file, then this configuration file has both a file format (JSON, YAML, TOML, XML, INI, or custom format) and some internal structure that describes what kind of hierarchy, keys, values, and data types are valid. Sometimes the data contract is explicit and sometimes it’s implicit. Either way, you need to manage it carefully, or else you’ll get runtime errors when code that’s reading, parsing, or validating encounters data with an unfamiliar structure.</p>
+    <h2 id="_idParaDest-381" class="heading-2">Migrating data</h2>
+    <p class="normal">Data migration<a id="_idIndexMarker831"/> is a big deal. Many systems these days manage staggering amounts of data measured in terabytes, petabytes, or more. The amount of collected and managed data will continue to increase for the foreseeable future. The pace of data collection exceeds the pace of hardware innovation. The essential point is that if you have a lot of data, and you need to migrate it, it can take a while. In a previous company, I oversaw a project to migrate close to 100 terabytes of data from one Cassandra cluster of a legacy system to another Cassandra cluster.</p>
+    <p class="normal">The second Cassandra cluster had a different schema and was accessed by a Kubernetes cluster 24/7. The project was very complicated, and thus it kept getting pushed back when urgent issues popped up. The legacy system was still in place side by side with the next-gen system long after the original estimate.</p>
+    <p class="normal">There were a lot of mechanisms in place to split the data and send it to both clusters, but then we ran into scalability issues with the new system, and we had to address those before we could continue. The historical data was important, but it didn’t have to be accessed with the same service level as recent hot data. So, we embarked on yet another project to send historical data to cheaper storage. That meant, of course, that client libraries or frontend services had to know how to query both stores and merge the results. When you deal with a lot of data, you can’t take anything for granted. You run into scalability issues with your tools, your infrastructure, your third-party dependencies, and your processes. Large scale is not just a quantity change; it is often a qualitative change as well. Don’t expect it to<a id="_idIndexMarker832"/> go smoothly. It is much more than copying some files from A to B.</p>
+    <h2 id="_idParaDest-382" class="heading-2">Deprecating APIs</h2>
+    <p class="normal">API deprecation<a id="_idIndexMarker833"/> comes in two flavors: internal and external. Internal APIs are APIs used by components that are fully controlled by you and your team or organization. You can be sure that all API users will upgrade to the new API within a short time. External APIs are used by users or services outside your direct sphere of influence. </p>
+    <p class="normal">There are a few gray-area situations where you work for a huge organization (think Google), and even internal APIs may need to be treated as external APIs. If you’re lucky, all your external APIs are used by self-updating applications or through a web interface you control. In those cases, the API is practically hidden and you don’t even need to publish it.</p>
+    <p class="normal">If you have a lot of users (or a few very important users) using your API, you should consider deprecation very carefully. Deprecating an API means you force your users to change their application to work with you or stay locked into an earlier version.</p>
+    <p class="normal">There are a few ways you can mitigate the pain:</p>
+    <ul>
+      <li class="bulletList">Don’t deprecate. Extend the existing API or keep the previous API active. It is sometimes pretty simple, although it adds a testing burden.</li>
+      <li class="bulletList">Provide client libraries in all relevant programming languages to your target audience. This is always good practice. It allows you to make many changes to the underlying API without disrupting users (as long as you keep the programming language interface stable).</li>
+      <li class="bulletList">If you have to deprecate, explain why, allow ample time for users to upgrade, and provide as much support as possible (for example, an upgrade guide with examples). Your users will appreciate it.</li>
+    </ul>
+    <p class="normal">We covered different ways to deploy and upgrade workloads and discussed how to manage data migrations and deprecating APIs. Let’s take a look at another staple of Kubernetes – horizontal pod autoscaling – which allows our workloads to efficiently handle different volumes of requests and dynamically adjust the number of pods used to process these requests.</p>
+    <h1 id="_idParaDest-383" class="heading-1">Horizontal pod autoscaling</h1>
+    <p class="normal">Kubernetes can watch over<a id="_idIndexMarker834"/> your pods and scale them when the CPU utilization, memory, or some other metric crosses a threshold. The autoscaling resource specifies the details (the percentage of CPU and how often to check) and the corresponding autoscaling controller adjusts the number of replicas if needed.</p>
+    <p class="normal">The following diagram illustrates the different players and their relationships:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_08_04.png" alt=""/></figure>
+    <p class="packt_figref">Figure 8.4: Horizontal pod autoscaling</p>
+    <p class="normal">As you can see, the horizontal pod autoscaler doesn’t create or destroy pods directly. It adjusts the number of replicas in a <code class="inlineCode">Deployment</code> or <code class="inlineCode">StatefulSet</code> resource and its corresponding controllers take care of actually creating and destroying pods. This is very smart because you don’t need to deal with situations where autoscaling conflicts with the normal operation of those controllers, unaware of the autoscaler efforts.</p>
+    <p class="normal">The autoscaler automatically does what we had to do ourselves before. Without the autoscaler, if we had a deployment with replicas set to 3, but we determined that, based on average CPU utilization, we actually needed 4, then we would have to update the deployment from 3 to 4 and keep monitoring the CPU utilization manually in all pods. However, instead, the autoscaler will do it for us.</p>
+    <h2 id="_idParaDest-384" class="heading-2">Creating a horizontal pod autoscaler</h2>
+    <p class="normal">To declare a horizontal<a id="_idIndexMarker835"/> pod autoscaler, we need a workload resource (<code class="inlineCode">Deployment</code> or <code class="inlineCode">StatefulSet</code>), and a <code class="inlineCode">HorizontalPodAutoscaler</code> resource. Here is a simple deployment configured to maintain 3 Nginx pods:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">3</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">run:</span> <span class="hljs-string">nginx</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">run:</span> <span class="hljs-string">nginx</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+        <span class="hljs-attr">image:</span> <span class="hljs-string">nginx</span>
+        <span class="hljs-attr">resources:</span>
+          <span class="hljs-attr">requests:</span>
+            <span class="hljs-attr">cpu:</span> <span class="hljs-string">400m</span>
+        <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+</code></pre>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f nginx-deployment.yaml
+deployment.apps/nginx created
+</code></pre>
+    <p class="normal">Note that in order to participate in autoscaling, the containers must request a specific amount of CPU.</p>
+    <p class="normal">The horizontal pod autoscaler references the Nginx deployment in <code class="inlineCode">scaleTargetRef</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">autoscaling/v2</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">HorizontalPodAutoscaler</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">maxReplicas:</span> <span class="hljs-number">4</span>
+  <span class="hljs-attr">minReplicas:</span> <span class="hljs-number">2</span>
+  
+  <span class="hljs-attr">scaleTargetRef:</span>
+    <span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+    <span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+  <span class="hljs-attr">metrics:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">type:</span> <span class="hljs-string">Resource</span>
+    <span class="hljs-attr">resource:</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">cpu</span>
+      <span class="hljs-attr">target:</span>
+        <span class="hljs-attr">type:</span> <span class="hljs-string">Utilization</span>
+        <span class="hljs-attr">averageUtilization:</span> <span class="hljs-number">90</span>
+</code></pre>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f nginx-hpa.yaml
+horizontalpodautoscaler.autoscaling/nginx created
+</code></pre>
+    <p class="normal">The <code class="inlineCode">minReplicas</code> and <code class="inlineCode">maxReplicas</code> specify the range of scaling. This is needed to avoid runaway situations that could occur because of some problem. Imagine that, due to some bug, every pod<a id="_idIndexMarker836"/> immediately uses 100% of the CPU regardless of the actual load. Without the <code class="inlineCode">maxReplicas</code> limit, Kubernetes will keep creating more and more pods until all cluster resources are exhausted. If we are running in a cloud environment with autoscaling of VMs, then we will incur a significant cost. The other side of this problem is that if there is no <code class="inlineCode">minReplicas</code> and there is a lull in activity, then all pods could be terminated, and when new requests come in a new pod will have to be created and scheduled again, which could take several minutes if a new node needs to be provisioned too, and if the pod takes a while to get ready, it adds up. If there are patterns of on and off activity, then this cycle can repeat multiple times. Keeping the minimum number of replicas running can smooth this phenomenon. In the preceding example, <code class="inlineCode">minReplicas</code> is set to 2, and <code class="inlineCode">maxReplicas</code> is set to 4. Kubernetes will ensure that there are always between 2 to 4 Nginx instances running.</p>
+    <p class="normal">The <strong class="keyWord">target CPU utilization percentage</strong> is a mouthful. Let’s abbreviate it to <strong class="keyWord">TCUP</strong>. You specify a single number<a id="_idIndexMarker837"/> like 80%, but Kubernetes doesn’t start scaling up and down immediately when the threshold is crossed. This could lead to constant thrashing if the average load hovers around the TCUP. Kubernetes will alternate frequently between adding more replicas and removing replicas. This is often not a desired behavior. To address this concern, you can specify a delay for either scaling up or scaling down. </p>
+    <p class="normal">There are two flags for the <code class="inlineCode">kube-controller-manager</code> to support this:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">--horizontal-pod-autoscaler-downscale-delay</code>: The provided option requires a duration value that determines the waiting period for the autoscaler before initiating another downscale operation once the current one has finished. The default duration is set to 5 minutes (5m0s).</li>
+      <li class="bulletList"><code class="inlineCode">--horizontal-pod-autoscaler-upscale-delay</code>: This option expects a duration value that determines the waiting period for the autoscaler before initiating another upscale operation once the current one has finished. By default, the duration is set to 3 minutes (3m0s).</li>
+    </ul>
+    <p class="normal">Let’s check the HPA:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get hpa
+NAME    REFERENCE          TARGETS         MINPODS   MAXPODS   REPLICAS   AGE
+nginx   Deployment/nginx   &lt;unknown&gt;/90%   2         4         3          70s
+</code></pre>
+    <p class="normal">As you can see, the <a id="_idIndexMarker838"/>targets are unknown. The HPA requires a metrics server to measure the CPU percentage. One of the easiest ways to install the metrics server is using Helm. We installed Helm in <em class="chapterRef">Chapter 2</em>, <em class="italic">Creating Kubernetes Clusters</em>, already. Here is the command to install the Kubernetes metrics server into the monitoring namespace:</p>
+    <pre class="programlisting gen"><code class="hljs">$ helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+"metrics-server" has been added to your repositories
+$ helm upgrade --install metrics-server metrics-server/metrics-server \
+                --namespace monitoring \
+                --create-namespace
+                
+Release "metrics-server" does not exist. Installing it now.
+NAME: metrics-server
+LAST DEPLOYED: Sat Jul 30 23:16:09 2022
+NAMESPACE: monitoring
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+***********************************************************************
+* Metrics Server                                                      *
+***********************************************************************
+  Chart version: 3.8.2
+  App version:   0.6.1
+  Image tag:     k8s.gcr.io/metrics-server/metrics-server:v0.6.1
+***********************************************************************
+</code></pre>
+    <p class="normal">Unfortunately, the <code class="inlineCode">metrics-server</code> can’t run on a KinD cluster out of the box due to certificate issues.</p>
+    <p class="normal">This is easy to fix with the following command:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k patch -n monitoring deployment metrics-server --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+</code></pre>
+    <p class="normal">We may need to wait for the metrics server to be ready. A good way to do that is using <code class="inlineCode">kubectl wait</code>:</p>
+    <pre class="programlisting gen"><code class="hljs">kubectl wait deployment metrics-server -n monitoring --for=condition=Available
+deployment.apps/metrics-server condition met
+</code></pre>
+    <p class="normal">Now that kubectl has returned, we can also take advantage of the <code class="inlineCode">kubectl top</code> command, which shows metrics about nodes and pods:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k top no
+NAME                 CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
+kind-control-plane   213m         5%     15Mi            0%
+$ k top po
+NAME                     CPU(cores)   MEMORY(bytes)
+nginx-64f97b4d86-gqmjj   0m           3Mi
+nginx-64f97b4d86-sj8cz   0m           3Mi
+nginx-64f97b4d86-xc99j   0m           3Mi
+</code></pre>
+    <p class="normal">After redeploying<a id="_idIndexMarker839"/> Nginx and the HPA, you can see the utilization and that the replica count is 3, which is within the range of 2-4:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get hpa
+NAME    REFERENCE          TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+nginx   Deployment/nginx   0%/90%    2         4         3          26s
+</code></pre>
+    <p class="normal">Since the CPU utilization is below the utilization target, after a few minutes, the HPA will scale down Nginx to the minimum 2 replicas:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get hpa
+NAME    REFERENCE          TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+nginx   Deployment/nginx   0%/90%    2         4         2          6m57s
+</code></pre>
+    <h2 id="_idParaDest-385" class="heading-2">Custom metrics</h2>
+    <p class="normal">CPU utilization is an<a id="_idIndexMarker840"/> important metric to gauge if pods that are bombarded with too many requests should be scaled up, or if they are mostly idle and can be scaled down. But CPU is not the only, and sometimes not even the best, metric to keep track of. Memory may be the limiting factor, or even more specialized metrics, such as the number of concurrent threads, the depth of a pod’s internal on-disk queue, the average latency on a request, or the average number of service timeouts.</p>
+    <p class="normal">The horizontal pod custom metrics were added as an alpha extension in version 1.2. In version 1.6 they were upgraded to beta status, and in version 1.23, they became stable. You can now autoscale your pods based on multiple custom metrics. </p>
+    <p class="normal">The autoscaler will evaluate all the metrics and will autoscale based on the largest number of replicas required, so the requirements of all the metrics are respected.</p>
+    <p class="normal">Using the horizontal pod autoscaler with custom metrics requires some configuration when launching your cluster. First, you need to enable the API aggregation layer. Then you need to register your resource metrics API and your custom metrics API. This is not trivial. Enter Keda.</p>
+    <h3 id="_idParaDest-386" class="heading-3">Keda</h3>
+    <p class="normal"><strong class="keyWord">Keda</strong> stands for <strong class="keyWord">Kubernetes Event-Driven Autoscaling</strong>. It is an impressive project that packages everything you need to <a id="_idIndexMarker841"/>implement custom metrics for horizontal pod autoscaling. Typically, you would want to scale Deployments, StatefulSets, or Jobs, but Keda can also scale CRDs as long as they have a <code class="inlineCode">/scale</code> subresource. Keda is deployed as an operator that watches several custom resources:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">scaledobjects.keda.sh</code></li>
+      <li class="bulletList"><code class="inlineCode">scaledjobs.keda.sh</code></li>
+      <li class="bulletList"><code class="inlineCode">triggerauthentications.keda.sh</code></li>
+      <li class="bulletList"><code class="inlineCode">clustertriggerauthentications.keda.sh</code></li>
+    </ul>
+    <p class="normal">Keda also has a metrics server, which supports a large number of event sources and scalers and can collect metrics from all these sources to inform the scaling process. Event sources include all the popular databases, message queues, cloud data stores, and various monitoring APIs. For example, if you rely on Prometheus for your metrics, you can use Keda to scale your workloads based on any metric or combination of metrics you push to Prometheus.</p>
+    <p class="normal">The following diagram depicts <a id="_idIndexMarker842"/>Keda’s architecture:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_08_05.png" alt=""/></figure>
+    <p class="packt_figref">Figure 8.5: Keda architecture</p>
+    <p class="normal">See <a href="https://keda.sh"><span class="url">https://keda.sh</span></a> for <a id="_idIndexMarker843"/>more details.</p>
+    <h2 id="_idParaDest-387" class="heading-2">Autoscaling with kubectl</h2>
+    <p class="normal">kubectl<a id="_idIndexMarker844"/> can create an autoscale resource using the standard <code class="inlineCode">create</code> command accepting a configuration file. But kubectl also has a special command, <code class="inlineCode">autoscale</code>, which lets you easily set an autoscaler in one command without a special configuration file.</p>
+    <p class="normal">First, let’s start a deployment that<a id="_idIndexMarker845"/> makes sure there are three replicas of a simple pod and that just runs an infinite bash loop:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span> 
+  <span class="hljs-attr">name:</span> <span class="hljs-string">bash-loop</span>
+<span class="hljs-attr">spec:</span> 
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">3</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">bash-loop</span>
+  <span class="hljs-attr">template:</span> 
+    <span class="hljs-attr">metadata:</span> 
+      <span class="hljs-attr">labels:</span> 
+        <span class="hljs-attr">name:</span> <span class="hljs-string">bash-loop</span>
+    <span class="hljs-attr">spec:</span> 
+      <span class="hljs-attr">containers:</span> 
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">bash-loop</span> 
+          <span class="hljs-attr">image:</span> <span class="hljs-string">g1g1/py-kube:0.3</span>
+          <span class="hljs-attr">resources:</span>
+            <span class="hljs-attr">requests:</span>
+              <span class="hljs-attr">cpu:</span> <span class="hljs-string">100m</span>
+          <span class="hljs-attr">command:</span> [<span class="hljs-string">"/bin/bash"</span>, <span class="hljs-string">"-c"</span>, <span class="hljs-string">"while true; do sleep 10; done"</span>]
+</code></pre>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f bash-loop-deployment.yaml
+deployment.apps/bash-loop created
+</code></pre>
+    <p class="normal">Here is the resulting deployment:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get deployment
+NAME        READY   UP-TO-DATE   AVAILABLE   AGE
+bash-loop   3/3     3            3           35s
+</code></pre>
+    <p class="normal">You can see that the desired count and current count are both 3, meaning three pods are running. Let’s make sure:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get pods
+NAME                         READY   STATUS    RESTARTS   AGE
+bash-loop-8496f889f8-9khjs   1/1     Running   0          106s
+bash-loop-8496f889f8-frhb7   1/1     Running   0          105s
+bash-loop-8496f889f8-hcd2d   1/1     Running   0          105s
+</code></pre>
+    <p class="normal">Now, let’s create an autoscaler. To make it interesting, we’ll set the minimum number of replicas to 4 and the maximum number to 6:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k autoscale deployment bash-loop --min=4 --max=6 --cpu-percent=50
+horizontalpodautoscaler.autoscaling/bash-loop autoscaled
+</code></pre>
+    <p class="normal">Here is the resulting horizontal pod <a id="_idIndexMarker846"/>autoscaler (you can use <code class="inlineCode">hpa</code>). It shows the referenced deployment, the target and current CPU percentage, and the min/max pods. The name matches the referenced deployment <code class="inlineCode">bash-loop</code>:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get hpa
+NAME        REFERENCE              TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+bash-loop   Deployment/bash-loop   2%/50%    4         6         4          36s
+</code></pre>
+    <p class="normal">Originally, the deployment was set to have three replicas, but the autoscaler has a minimum of four pods. What’s the effect on the deployment? Now the desired number of replicas is four. If the average CPU utilization goes above 50%, then it will climb to five or even six, but never below four:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get deployment
+NAME        READY   UP-TO-DATE   AVAILABLE   AGE
+bash-loop   4/4     4            4           4m11s
+</code></pre>
+    <p class="normal">When we delete the horizontal pod autoscaler, the deployment retains the last desired number of replicas (4, in this case). Nobody remembers that the deployment was created initially with three replicas:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k delete hpa bash-loop
+horizontalpodautoscaler.autoscaling "bash-loop" deleted
+</code></pre>
+    <p class="normal">As you <a id="_idIndexMarker847"/>can see, the deployment wasn’t reset and still maintains four pods, even when the autoscaler is gone:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get deployment
+NAME        READY   UP-TO-DATE   AVAILABLE   AGE
+bash-loop   4/4     4            4           5m17s
+</code></pre>
+    <p class="normal">This makes sense because the horizontal pod autoscaler modified the spec of the deployment to have 4 replicas:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get deploy bash-loop -o jsonpath='{.spec.replicas}'
+4
+</code></pre>
+    <p class="normal">Let’s try something else. What happens if we create a new horizontal pod autoscaler with a range of 2 to 6 and the same CPU target of 50%?</p>
+    <pre class="programlisting gen"><code class="hljs">$ k autoscale deployment bash-loop --min=2 --max=6 --cpu-percent=50
+horizontalpodautoscaler.autoscaling/bash-loop autoscaled
+</code></pre>
+    <p class="normal">Well, the deployment still maintains its four replicas, which is within the range:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get deployment
+NAME        READY   UP-TO-DATE   AVAILABLE   AGE
+bash-loop   4/4     4            4           8m18s
+</code></pre>
+    <p class="normal">However, the actual CPU utilization is just 2%. The deployment will eventually be scaled down to two replicas, but because the horizontal pod autoscaler doesn’t scale down immediately, we have to wait a few minutes (5 minutes by default):</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get deployment
+NAME        READY   UP-TO-DATE   AVAILABLE   AGE
+bash-loop   2/2     2            2           28m
+</code></pre>
+    <p class="normal">Let’s check out<a id="_idIndexMarker848"/> the horizontal pod autoscaler itself:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get hpa
+NAME        REFERENCE              TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+bash-loop   Deployment/bash-loop   2%/50%    2         6         2          21m
+</code></pre>
+    <p class="normal">Now, that you understand what horizontal pod autoscaling is all about, let’s look at performing rolling updates with autoscaling.</p>
+    <h2 id="_idParaDest-388" class="heading-2">Performing rolling updates with autoscaling</h2>
+    <p class="normal">Rolling updates are a cornerstone of <a id="_idIndexMarker849"/>managing workloads in large<a id="_idIndexMarker850"/> clusters. When you do a rolling update of a deployment controlled by an HPA, the deployment will create a new replica set with the new image and start increasing its replicas, while reducing the replicas of the old replica set. At the same time, the HPA may change the total replica count of the deployment. This is not an issue. Everything will reconcile eventually.</p>
+    <p class="normal">Here is a deployment configuration file we’ve used in <em class="chapterRef">Chapter 5</em>, <em class="italic">Using Kubernetes Resources in Practice</em>, for deploying the <code class="inlineCode">hue-reminders</code> service:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">hue-reminders</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">2</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">app:</span> <span class="hljs-string">hue</span>
+      <span class="hljs-attr">service:</span> <span class="hljs-string">reminders</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">hue-reminders</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">app:</span> <span class="hljs-string">hue</span>
+        <span class="hljs-attr">service:</span> <span class="hljs-string">reminders</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">hue-reminders</span>
+        <span class="hljs-attr">image:</span> <span class="hljs-string">g1g1/hue-reminders:2.2</span>
+        <span class="hljs-attr">resources:</span>
+          <span class="hljs-attr">requests:</span>
+            <span class="hljs-attr">cpu:</span> <span class="hljs-string">100m</span>
+        <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+</code></pre>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f hue-reminders-deployment.yaml
+deployment.apps/hue-reminders created
+</code></pre>
+    <p class="normal">To support it with<a id="_idIndexMarker851"/> autoscaling and ensure we always<a id="_idIndexMarker852"/> have between 10 to 15 instances running, we can create an autoscaler configuration file:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">autoscaling/v2</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">HorizontalPodAutoscaler</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">hue-reminders</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">maxReplicas:</span> <span class="hljs-number">15</span>
+  <span class="hljs-attr">minReplicas:</span> <span class="hljs-number">10</span>
+  <span class="hljs-attr">targetCPUUtilizationPercentage:</span> <span class="hljs-number">90</span>
+  <span class="hljs-attr">scaleTargetRef:</span>
+    <span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+    <span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">hue-reminders</span>
+</code></pre>
+    <p class="normal">Alternatively, we can use the kubectl <code class="inlineCode">autoscale</code> command:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k autoscale deployment hue-reminders --min=10 --max=15 --cpu-percent=90
+horizontalpodautoscaler.autoscaling/hue-reminders autoscaled
+</code></pre>
+    <p class="normal">Let’s perform a rolling update from version 2.2 to 3.0:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k set image deployment/hue-reminders hue-reminders=g1g1/hue-reminders:3.0
+</code></pre>
+    <p class="normal">We can check the status using the <code class="inlineCode">rollout status</code>:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k rollout status deployment hue-reminders
+Waiting for deployment "hue-reminders" rollout to finish: 9 out of 10 new replicas have been updated...
+Waiting for deployment "hue-reminders" rollout to finish: 9 out of 10 new replicas have been updated...
+Waiting for deployment "hue-reminders" rollout to finish: 9 out of 10 new replicas have been updated...
+Waiting for deployment "hue-reminders" rollout to finish: 9 out of 10 new replicas have been updated...
+Waiting for deployment "hue-reminders" rollout to finish: 3 old replicas are pending termination...
+Waiting for deployment "hue-reminders" rollout to finish: 3 old replicas are pending termination...
+Waiting for deployment "hue-reminders" rollout to finish: 2 old replicas are pending termination...
+Waiting for deployment "hue-reminders" rollout to finish: 2 old replicas are pending termination...
+Waiting for deployment "hue-reminders" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "hue-reminders" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "hue-reminders" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "hue-reminders" rollout to finish: 8 of 10 updated replicas are available...
+Waiting for deployment "hue-reminders" rollout to finish: 9 of 10 updated replicas are available...
+deployment "hue-reminders" successfully rolled out
+</code></pre>
+    <p class="normal">Finally, we <a id="_idIndexMarker853"/>review the <a id="_idIndexMarker854"/>history of the deployment:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k rollout history deployment hue-reminders
+deployment.apps/hue-reminders
+REVISION  CHANGE-CAUSE
+3         kubectl1.23.4 set image deployment/hue-reminders hue-reminders=g1g1/hue-reminders:3.0 --record=true
+4         kubectl1.23.4 set image deployment/hue-reminders hue-reminders=g1g1/hue-reminders:3.0 --record=true
+</code></pre>
+    <p class="normal">Autoscaling works based on resource usage and thresholds. In the next section, we will explore how Kubernetes lets us control and manage the resources of each workload using requests and limits.</p>
+    <h1 id="_idParaDest-389" class="heading-1">Handling scarce resources with limits and quotas</h1>
+    <p class="normal">With the horizontal pod autoscaler <a id="_idIndexMarker855"/>creating pods on the fly, we need to think about <a id="_idIndexMarker856"/>managing our resources. Scheduling<a id="_idIndexMarker857"/> can easily get out of control, and inefficient use of resources is a real concern. There are several factors, which can interact<a id="_idIndexMarker858"/> with each other in subtle ways:</p>
+    <ul>
+      <li class="bulletList">Overall cluster capacity</li>
+      <li class="bulletList">Resource granularity per node</li>
+      <li class="bulletList">Division of workloads per namespace</li>
+      <li class="bulletList">Daemon sets</li>
+      <li class="bulletList">Stateful sets</li>
+      <li class="bulletList">Affinity, anti-affinity, taints, and tolerations</li>
+    </ul>
+    <p class="normal">First, let’s understand the core issue. The Kubernetes scheduler has to take into account all these factors when it schedules pods. If there are conflicts or a lot of overlapping requirements, then Kubernetes may have a problem finding room to schedule new pods. For example, a very extreme yet simple scenario is that a daemon set runs a pod on every node that requires 50% of the available memory. Now, Kubernetes can’t schedule any other pod that needs more than 50% memory because the daemon set’s pod gets priority. Even if you provision new nodes, the daemon set will immediately commandeer half of the memory.</p>
+    <p class="normal">Stateful sets are similar to daemon sets in that they require new nodes to expand. The trigger for adding new members to the stateful set is growth in data, but the impact is taking resources from the pool available for Kubernetes to schedule other workloads. In a multi-tenant situation, the noisy neighbor problem can rear its head in a provisioning or resource allocation context. You may plan exact rations meticulously in your namespace between different pods and their resource requirements, but you share the actual nodes with your neighbors from other namespaces that you may not even have visibility into.</p>
+    <p class="normal">Most of these problems can be mitigated by judiciously using namespace resource quotas and careful management of the cluster capacity across multiple resource types such as CPU, memory, and storage. In addition, if you control node provisioning, you may carve out dedicated nodes for your workloads by tainting them.</p>
+    <p class="normal">But, in most situations, a more robust and dynamic approach is to take advantage of the cluster autoscaler, which can add capacity to the cluster when needed (until the quota is exhausted).</p>
+    <h2 id="_idParaDest-390" class="heading-2">Enabling resource quotas</h2>
+    <p class="normal">Most Kubernetes distributions <a id="_idIndexMarker859"/>support <code class="inlineCode">ResourceQuota</code> out of the box. The API server’s <code class="inlineCode">–admission-control</code> flag must have <code class="inlineCode">ResourceQuota</code> as one of its arguments. You will also have to create a <code class="inlineCode">ResourceQuota</code> object to enforce it. Note that there may be at most one <code class="inlineCode">ResourceQuota</code> object per namespace to prevent potential conflicts. This is enforced by Kubernetes.</p>
+    <h2 id="_idParaDest-391" class="heading-2">Resource quota types</h2>
+    <p class="normal">There are different types of quotas we can manage and control. The categories are compute, storage, and objects.</p>
+    <h3 id="_idParaDest-392" class="heading-3">Compute resource quota</h3>
+    <p class="normal">Compute resources are CPU <a id="_idIndexMarker860"/>and memory. For each one, you can<a id="_idIndexMarker861"/> specify a limit or request a certain amount. Here is the list of compute-related fields. Note that <code class="inlineCode">requests.cpu</code> can be specified as just <code class="inlineCode">cpu</code>, and <code class="inlineCode">requests.memory</code> can be specified as just <code class="inlineCode">memory</code>:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">limits.cpu</code>: The total CPU limits, considering all pods in a non-terminal state, must not exceed this value.</li>
+      <li class="bulletList"><code class="inlineCode">limits.memory</code>: The combined memory limits, considering all pods in a non-terminal state, must not surpass this value.</li>
+      <li class="bulletList"><code class="inlineCode">requests.cpu</code>: The total CPU requests, considering all pods in a non-terminal state, should not go beyond this value.</li>
+      <li class="bulletList"><code class="inlineCode">requests.memory</code>: The combined memory requests, considering all pods in a non-terminal state, should not exceed this value.</li>
+      <li class="bulletList"><code class="inlineCode">hugepages-</code>: The maximum allowed number of huge page requests of the specified size, considering all pods in a non-terminal state, must not surpass this value.</li>
+    </ul>
+    <p class="normal">Since Kubernetes 1.10, you can also specify a quota for extended resources such as GPU resources. Here is an example:</p>
+    <pre class="programlisting gen"><code class="hljs">requests.nvidia.com/gpu: 10
+</code></pre>
+    <h3 id="_idParaDest-393" class="heading-3">Storage resource quota</h3>
+    <p class="normal">The storage resource quota<a id="_idIndexMarker862"/> type is a little more complicated. There<a id="_idIndexMarker863"/> are two entities you can restrict per namespace: the amount of storage and the number of persistent volume claims. However, in addition to just globally setting the quota on total storage or the total number of persistent volume claims, you can also do that per storage class. The notation for storage class resource quota is a little verbose, but it gets the job done:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">requests.storage</code>: The total amount of requested storage across all persistent volume claims</li>
+      <li class="bulletList"><code class="inlineCode">persistentvolumeclaims</code>: The maximum number of persistent volume claims allowed in the namespace</li>
+      <li class="bulletList"><code class="inlineCode">.storageclass.storage.k8s.io/requests.storage</code>: The total amount of requested storage across all persistent volume claims associated with the <code class="inlineCode">storage-class-name</code></li>
+      <li class="bulletList"><code class="inlineCode">.storageclass.storage.k8s.io/persistentvolumeclaims</code>: The maximum number of persistent volume claims allowed in the namespace that are associated with the <code class="inlineCode">storage-class-name</code></li>
+    </ul>
+    <p class="normal">Kubernetes 1.8 added alpha support for ephemeral storage quotas too:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">requests.ephemeral-storage</code>: The total amount of requested ephemeral storage across all pods in the namespace claims</li>
+      <li class="bulletList"><code class="inlineCode">limits.ephemeral-storage</code>: The total amount of limits for ephemeral storage across all pods in the namespace claims</li>
+    </ul>
+    <p class="normal">One of the problems with provisioning storage is that disk capacity is not the only factor. Disk I/O is an important resource too. For example, consider a pod that keeps updating the same small file. It will not use a lot of capacity, but it will perform a lot of I/O operations.</p>
+    <h3 id="_idParaDest-394" class="heading-3">Object count quota</h3>
+    <p class="normal">Kubernetes has another <a id="_idIndexMarker864"/>category of resource quotas, which is API<a id="_idIndexMarker865"/> objects. My guess is that the goal is to protect the Kubernetes API server from having to manage too many objects. Remember that Kubernetes does a lot of work under the hood. It often has to query multiple objects to authenticate, authorize, and ensure that an operation doesn’t violate any of the many policies that may be in place. A simple example is pod scheduling based on replication controllers. Imagine that you have a million replica set objects. Maybe you just have three pods and most of the replica sets have zero replicas. Still, Kubernetes will spend all its time just verifying that indeed all those million replica sets have no replicas of their pod template and that they don’t need to kill any pods. This is an extreme example, but the concept applies. Having too many API objects means a lot of work for Kubernetes.</p>
+    <p class="normal">In addition, it’s a problem that clients use the discovery cache like kubectl itself. See this issue: <a href="https://github.com/kubernetes/kubectl/issues/1126"><span class="url">https://github.com/kubernetes/kubectl/issues/1126</span></a>.</p>
+    <p class="normal">Since Kubernetes 1.9, you can restrict the number of any namespaced resource (prior to that, coverage of objects that could be restricted was a little spotty). The syntax is interesting, <code class="inlineCode">count/&lt;resource type&gt;.&lt;group&gt;</code>. Typically in YAML files and kubectl, you identify objects by group first, as in <code class="inlineCode">&lt;group&gt;/&lt;resource type&gt;</code>.</p>
+    <p class="normal">Here are some objects <a id="_idIndexMarker866"/>you may want to limit (note that deployments can be<a id="_idIndexMarker867"/> limited for two separate API groups):</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">count/configmaps</code></li>
+      <li class="bulletList"><code class="inlineCode">count/deployments.apps</code></li>
+      <li class="bulletList"><code class="inlineCode">count/deployments.extensions</code></li>
+      <li class="bulletList"><code class="inlineCode">count/persistentvolumeclaims</code></li>
+      <li class="bulletList"><code class="inlineCode">count/replicasets.apps</code></li>
+      <li class="bulletList"><code class="inlineCode">count/replicationcontrollers</code></li>
+      <li class="bulletList"><code class="inlineCode">count/secrets</code></li>
+      <li class="bulletList"><code class="inlineCode">count/services</code></li>
+      <li class="bulletList"><code class="inlineCode">count/statefulsets.apps</code></li>
+      <li class="bulletList"><code class="inlineCode">count/jobs.batch</code></li>
+      <li class="bulletList"><code class="inlineCode">count/cronjobs.batch</code></li>
+    </ul>
+    <p class="normal">Since Kubernetes 1.5, you can restrict the number of custom resources too. Note that while the custom resource definition is cluster-wide, this allows you to restrict the actual number of the custom resources in each namespace. For example:</p>
+    <pre class="programlisting gen"><code class="hljs">count/awesome.custom.resource
+</code></pre>
+    <p class="normal">The most glaring omission is namespaces. There is no limit to the number of namespaces. Since all limits are per namespace, you can easily overwhelm Kubernetes by creating too many namespaces, where each namespace has only a small number of API objects. But, the ability to<a id="_idIndexMarker868"/> create namespaces should be<a id="_idIndexMarker869"/> reserved to cluster administrators only, who don’t need resource quotas to constrain them.</p>
+    <h2 id="_idParaDest-395" class="heading-2">Quota scopes</h2>
+    <p class="normal">Some resources, such<a id="_idIndexMarker870"/> as pods, may be in different states, and it is useful to have different quotas for these different states. For example, if there are many pods that are terminating (this happens a lot during rolling updates), then it is OK to create more pods, even if the total number exceeds the quota. This can be achieved by only applying a pod object count quota to non-terminating pods. Here are the existing scopes:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">Terminating</code>: Select pods in which the value of <code class="inlineCode">activeDeadlineSeconds</code> is greater than or equal to <code class="inlineCode">0</code>.</li>
+      <li class="bulletList"><code class="inlineCode">NotTerminating</code>: Select pods where <code class="inlineCode">activeDeadlineSeconds</code> is not specified (nil).</li>
+      <li class="bulletList"><code class="inlineCode">BestEffort</code>: Select pods with a best effort quality of service, meaning pods that do not specify resource requests and limits.</li>
+      <li class="bulletList"><code class="inlineCode">NotBestEffort</code>: Select pods that do not have a best effort quality of service, indicating pods that specify resource requests and limits.</li>
+      <li class="bulletList"><code class="inlineCode">PriorityClass</code>: Select pods that define a priority class.</li>
+      <li class="bulletList"><code class="inlineCode">CrossNamespacePodAffinity</code>: Select pods with cross-namespace affinity or anti-affinity terms for pod scheduling. </li>
+    </ul>
+    <p class="normal">While the <code class="inlineCode">BestEffort</code> scope applies only to pods, the <code class="inlineCode">Terminating</code>, <code class="inlineCode">NotTerminating</code>, and <code class="inlineCode">NotBestEffort</code> scopes apply to CPU and memory too. This is interesting because a resource quota limit can prevent a pod from terminating. Here are the supported objects:</p>
+    <ul>
+      <li class="bulletList">CPU</li>
+      <li class="bulletList">Memory</li>
+      <li class="bulletList"><code class="inlineCode">limits.cpu</code></li>
+      <li class="bulletList"><code class="inlineCode">limits.memory</code></li>
+      <li class="bulletList"><code class="inlineCode">requests.cpu</code></li>
+      <li class="bulletList"><code class="inlineCode">requests.memory</code></li>
+      <li class="bulletList">Pods</li>
+    </ul>
+    <h2 id="_idParaDest-396" class="heading-2">Resource quotas and priority classes</h2>
+    <p class="normal">Kubernetes 1.9 introduced <a id="_idIndexMarker871"/>priority classes<a id="_idIndexMarker872"/> as a way to prioritize scheduling pods when resources are scarce. In Kubernetes 1.14, priority classes became stable. However, as of Kubernetes 1.12, resource quotas support separate resource quotas per priority class (in beta). That means that with priority classes, you can sculpt your resource quotas in a very fine-grained manner, even within a namespace.</p>
+    <p class="normal">For more details, check out <a href="https://kubernetes.io/docs/concepts/policy/resource-quotas/#resource-quota-per-priorityclass"><span class="url">https://kubernetes.io/docs/concepts/policy/resource-quotas/#resource-quota-per-priorityclass</span></a>.</p>
+    <h2 id="_idParaDest-397" class="heading-2">Requests and limits</h2>
+    <p class="normal">The meaning of requests and limits in the context of resource quotas<a id="_idIndexMarker873"/> is that it requires the containers to explicitly specify the target attribute. This way, Kubernetes can<a id="_idIndexMarker874"/> manage the total quota because it knows exactly what range of resources is allocated to each container.</p>
+    <h2 id="_idParaDest-398" class="heading-2">Working with quotas</h2>
+    <p class="normal">That was a lot of theory. It’s<a id="_idIndexMarker875"/> time to get hands-on. Let’s create a namespace first:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k create namespace ns
+namespace/ns created
+</code></pre>
+    <h3 id="_idParaDest-399" class="heading-3">Using namespace-specific context</h3>
+    <p class="normal">When working with a namespace <a id="_idIndexMarker876"/>other than the default, I prefer to set the namespace of the current context, so I don’t have to keep typing <code class="inlineCode">--namespace=ns</code> for every command:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k config set-context --current --namespace ns
+Context "kind-kind" modified.
+</code></pre>
+    <h3 id="_idParaDest-400" class="heading-3">Creating quotas</h3>
+    <p class="normal">Here is a quota for<a id="_idIndexMarker877"/> compute:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span> 
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ResourceQuota</span> 
+<span class="hljs-attr">metadata:</span> 
+  <span class="hljs-attr">name:</span> <span class="hljs-string">compute-quota</span> 
+<span class="hljs-attr">spec:</span> 
+  <span class="hljs-attr">hard:</span> 
+    <span class="hljs-attr">pods:</span> <span class="hljs-number">2</span> 
+    <span class="hljs-attr">requests.cpu:</span> <span class="hljs-number">1</span> 
+    <span class="hljs-attr">requests.memory:</span> <span class="hljs-string">200Mi</span> 
+    <span class="hljs-attr">limits.cpu:</span> <span class="hljs-number">2</span> 
+    <span class="hljs-attr">limits.memory:</span> <span class="hljs-string">2Gi</span> 
+</code></pre>
+    <p class="normal">We create it by typing:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f compute-quota.yaml
+resourcequota/compute-quota created
+</code></pre>
+    <p class="normal">And here is a count quota:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span> 
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ResourceQuota</span> 
+<span class="hljs-attr">metadata:</span> 
+  <span class="hljs-attr">name:</span> <span class="hljs-string">object-counts-quota</span> 
+<span class="hljs-attr">spec:</span> 
+  <span class="hljs-attr">hard:</span> 
+    <span class="hljs-attr">count/configmaps:</span> <span class="hljs-number">10</span>
+    <span class="hljs-attr">count/persistentvolumeclaims:</span> <span class="hljs-number">4</span>
+    <span class="hljs-attr">count/jobs.batch:</span> <span class="hljs-number">20</span>
+    <span class="hljs-attr">count/secrets:</span> <span class="hljs-number">3</span>
+</code></pre>
+    <p class="normal">We create it by typing:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f object-count-quota.yaml
+resourcequota/object-counts-quota created
+</code></pre>
+    <p class="normal">We can observe<a id="_idIndexMarker878"/> all the quotas:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get quota
+NAME                  AGE   REQUEST                                                                                                 LIMIT
+compute-quota         32s   pods: 0/2, requests.cpu: 0/1, requests.memory: 0/200Mi                                                   limits.cpu: 0/2, limits.memory: 0/2Gi
+object-counts-quota   13s   count/configmaps: 1/10, count/jobs.batch: 0/20, count/persistentvolumeclaims: 0/4, count/secrets: 1/3
+</code></pre>
+    <p class="normal">We can drill down to get all the information for both resource quotas in a more visually pleasing manner using <code class="inlineCode">kubectl describe</code>:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k describe quota compute-quota
+Name:            compute-quota
+Namespace:       ns
+Resource         Used  Hard
+--------         ----  ----
+limits.cpu       0     2
+limits.memory    0     2Gi
+pods             0     2
+requests.cpu     0     1
+requests.memory  0     200Mi
+$ k describe quota object-counts-quota
+Name:                         object-counts-quota
+Namespace:                    ns
+Resource                      Used  Hard
+--------                      ----  ----
+count/configmaps              1     10
+count/jobs.batch              0     20
+count/persistentvolumeclaims  0     4
+count/secrets                 1     3
+</code></pre>
+    <p class="normal">As you can see, it <a id="_idIndexMarker879"/>reflects exactly the specification, and it is defined in the <code class="inlineCode">ns</code> namespace.</p>
+    <p class="normal">This view gives us an instant understanding of the global resource usage of important resources across the cluster without diving into too many separate objects.</p>
+    <p class="normal">Let’s add an Nginx server to our namespace:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k create -f nginx-deployment.yaml
+deployment.apps/nginx created
+</code></pre>
+    <p class="normal">Let’s check the pods:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get po
+No resources found in ns namespace.
+</code></pre>
+    <p class="normal">Uh-oh. No <a id="_idIndexMarker880"/>resources were found. But, there was no error when the deployment was created. Let’s check out the deployment then:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k describe deployment nginx
+Name:                   nginx
+Namespace:              ns
+CreationTimestamp:      Sun, 31 Jul 2022 13:49:24 -0700
+Labels:                 &lt;none&gt;
+Annotations:            deployment.kubernetes.io/revision: 1                                                                                                                             kind-kind | ns
+Selector:               run=nginx
+Replicas:               3 desired | 0 updated | 0 total | 0 available | 3 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  run=nginx
+  Containers:
+   nginx:
+    Image:      nginx
+    Port:       80/TCP
+    Host Port:  0/TCP
+    Requests:
+      cpu:        400m
+    Environment:  &lt;none&gt;
+    Mounts:       &lt;none&gt;
+  Volumes:        &lt;none&gt;
+Conditions:
+  Type             Status  Reason
+  ----             ------  ------
+  Progressing      True    NewReplicaSetCreated
+  Available        False   MinimumReplicasUnavailable
+  ReplicaFailure   True    FailedCreate
+OldReplicaSets:    &lt;none&gt;
+NewReplicaSet:     nginx-64f97b4d86 (0/3 replicas created)
+Events:
+  Type    Reason             Age   From                   Message
+  ----    ------             ----  ----                   -------
+  Normal  ScalingReplicaSet  65s   deployment-controller  Scaled up replica set nginx-64f97b4d86 to 3
+</code></pre>
+    <p class="normal">There it is, in the <code class="inlineCode">Conditions</code> section – the <code class="inlineCode">ReplicaFailure</code> status is <code class="inlineCode">True</code> and the reason is <code class="inlineCode">FailedCreate</code>. You can see that the deployment created a new replica set called <code class="inlineCode">nginx-64f97b4d86</code>, but it couldn’t create the pods it was supposed to create. We still don’t know why. </p>
+    <p class="normal">Let’s check out the replica set. I use the JSON output format (<code class="inlineCode">-o json</code>) and pipe it to <code class="inlineCode">jq</code> for its nice layout, which is <a id="_idIndexMarker881"/>much better than the <code class="inlineCode">jsonpath</code> output format that kubectl supports natively:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get rs nginx-64f97b4d86 -o json | jq .status.conditions
+[
+  {
+    "lastTransitionTime": "2022-07-31T20:49:24Z",
+    "message": "pods \"nginx-64f97b4d86-ks7d6\" is forbidden: failed quota: compute-quota: must specify limits.cpu,limits.memory,requests.memory",
+    "reason": "FailedCreate",
+    "status": "True",
+    "type": "ReplicaFailure"
+  }
+]
+</code></pre>
+    <p class="normal">The message is <a id="_idIndexMarker882"/>crystal clear. Since there is a compute quota in the namespace, every container must specify its CPU, memory requests, and limit. The quota controller must account for every container’s compute resource usage to ensure the total namespace quota is respected.</p>
+    <p class="normal">OK. We understand the problem, but how to resolve it? We can create a dedicated deployment object for each pod type we want to use and carefully set the CPU and memory requests and limit.</p>
+    <p class="normal">For example, we can define Nginx deployment with resources. Since the resource quota specifies a hard limit of 2 pods, let’s reduce the number of replicas from 3 to 2 as well:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">2</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">run:</span> <span class="hljs-string">nginx</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">run:</span> <span class="hljs-string">nginx</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+        <span class="hljs-attr">image:</span> <span class="hljs-string">nginx</span>
+        <span class="hljs-attr">resources:</span>
+          <span class="hljs-attr">requests:</span>
+            <span class="hljs-attr">cpu:</span> <span class="hljs-string">400m</span>
+            <span class="hljs-attr">memory:</span> <span class="hljs-string">60Mi</span>
+          <span class="hljs-attr">limits:</span>
+            <span class="hljs-attr">cpu:</span> <span class="hljs-string">400m</span>
+            <span class="hljs-attr">memory:</span> <span class="hljs-string">60Mi</span>
+        <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+</code></pre>
+    <p class="normal">Let’s create it and check the pods:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f nginx-deployment-with-resources.yaml
+deployment.apps/nginx created
+$ k get po
+NAME                     READY   STATUS    RESTARTS   AGE
+nginx-5d68f45c5f-6h9w9   1/1     Running   0          21s
+nginx-5d68f45c5f-b8htm   1/1     Running   0          21s
+</code></pre>
+    <p class="normal">Yeah, it works! However, specifying <a id="_idIndexMarker883"/>the limit and resources for each pod type can be exhausting. Is there an easier or better way?</p>
+    <h3 id="_idParaDest-401" class="heading-3">Using limit ranges for default compute quotas</h3>
+    <p class="normal">A better way is to specify <a id="_idIndexMarker884"/>default compute limits. Enter limit ranges. Here<a id="_idIndexMarker885"/> is a configuration file that sets some defaults for containers:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span> 
+<span class="hljs-attr">kind:</span> <span class="hljs-string">LimitRange</span> 
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">limits</span> 
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">limits:</span> 
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">default:</span> 
+      <span class="hljs-attr">cpu:</span> <span class="hljs-string">400m</span> 
+      <span class="hljs-attr">memory:</span> <span class="hljs-string">50Mi</span> 
+    <span class="hljs-attr">defaultRequest:</span> 
+      <span class="hljs-attr">cpu:</span> <span class="hljs-string">400m</span>
+      <span class="hljs-attr">memory:</span> <span class="hljs-string">50Mi</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">Container</span>
+</code></pre>
+    <p class="normal">Let’s create it and observe the default limits:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f limits.yaml
+limitrange/limits created
+$ k describe limits
+Name:       limits
+Namespace:  ns
+Type        Resource  Min  Max  Default Request  Default Limit  Max Limit/Request Ratio
+----        --------  ---  ---  ---------------  -------------  -----------------------
+Container   cpu       -    -    400m             400m           -
+Container   memory    -    -    50Mi             50Mi           -
+</code></pre>
+    <p class="normal">To test it, let’s delete our current Nginx deployment with the explicit limits and deploy our original Nginx again:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k delete deployment nginx
+deployment.apps "nginx" deleted
+$ k apply -f nginx-deployment.yaml
+deployment.apps/nginx created
+$ k get deployment
+NAME    READY   UP-TO-DATE   AVAILABLE   AGE
+nginx   2/3     2            2           16s
+</code></pre>
+    <p class="normal">As you can see, only 2 out of 3 pods are ready. What happened? The default limits worked but, if you recall, the compute quota had a hard limit of 2 pods for the namespace. There is no way to override it with the <code class="inlineCode">RangeLimit</code> object, so the deployment was able to create only two Nginx pods. This is exactly the desired result based on the current configuration. If the deployment really requires 3 pods, then the compute <a id="_idIndexMarker886"/>quota for the namespace should be <a id="_idIndexMarker887"/>updated to allow 3 pods.</p>
+    <p class="normal">This concludes our discussion of resource management using requests, limits, and quotas. The next section explores how to automate the deployment and configuration of multiple workloads at scale on Kubernetes.</p>
+    <h1 id="_idParaDest-402" class="heading-1">Continuous integration and deployment</h1>
+    <p class="normal">Kubernetes is a great platform for running your microservice-based applications. But, at the end of the day, it is an implementation detail. Users, and often most developers, may not be aware that the system is deployed on Kubernetes. But Kubernetes can change the game and make things that were too difficult before possible.</p>
+    <p class="normal">In this section, we’ll explore the CI/CD pipeline and what Kubernetes brings to the table. At the end of this section, you’ll be able to design CI/CD pipelines that take advantage of Kubernetes properties such as easy scaling and development-production parity to improve the productivity and robustness of day-to-day development and deployment.</p>
+    <h2 id="_idParaDest-403" class="heading-2">What is a CI/CD pipeline?</h2>
+    <p class="normal">A CI/CD pipeline <a id="_idIndexMarker888"/>is a set of tools and steps that takes a set of changes by developers or operators that modify the code, data, or configuration of a system, tests them, and deploys them to production (and possibly other environments). Some pipelines are fully automated and some are semi-automated with human checks. In large organizations, it is common to deploy changes automatically to test and staging environments. Release to production requires manual intervention with human approval. The following diagram depicts a typical CI/CD pipeline that follows this practice:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_08_06.png" alt=""/></figure>
+    <p class="packt_figref">Figure 8.6: CI/CD pipeline</p>
+    <p class="normal">It may be worth mentioning that developers can be completely isolated from production infrastructure. Their interface is just a Git workflow, where a good example is Deis Workflow (PaaS on Kubernetes, similar to Heroku).</p>
+    <h2 id="_idParaDest-404" class="heading-2">Designing a CI/CD pipeline for Kubernetes</h2>
+    <p class="normal">When your <a id="_idIndexMarker889"/>deployment target is a Kubernetes cluster, you<a id="_idIndexMarker890"/> should rethink some traditional practices. For starters, the packaging is different. You need to bake images for your containers. Reverting code changes is super easy and instantaneous by using smart labeling. It gives you a lot of confidence that if a bad change slips through the testing net somehow, you’ll be able to revert to the previous version immediately. But you want to be careful there. Schema changes and data migrations can’t be automatically rolled back without coordination.</p>
+    <p class="normal">Another unique capability of Kubernetes is that developers can run a whole cluster locally. That takes some work when you design your cluster, but since the microservices that comprise your system run in containers, and those containers interact via APIs, it is possible and practical to do. As always, if your system is very data-driven, you will need to accommodate that and provide data snapshots and synthetic data that your developers can use. Also, if your services access external systems or cloud provider services, then fully local clusters may not be ideal.</p>
+    <p class="normal">Your CI/CD pipeline should allow the cluster administrator to quickly adjust quotas and limits to accommodate scaling and business growth. In addition, you should be able to easily deploy most of your workloads into different environments. For example, if your staging environment diverges from your production environment, it reduces the confidence that changes that worked well in the staging environment will not harm the production environment. By making sure that all environment changes go through CI/CD, it becomes possible to keep different environments in sync.</p>
+    <p class="normal">There are many commercial CI/CD solutions that support Kubernetes, but there are also several Kubernetes-native solutions, such as Tekton, Argo CD, Flux CD, and Jenkins X.</p>
+    <p class="normal">A Kubernetes-native CI/CD solution runs inside your cluster, is specified using Kubernetes CRDs, and uses containers to execute the steps. By using a Kubernetes-native CI/CD solution, you get the benefit of Kubernetes managing and easily scaling your CI/CD pipelines, which is often a non-trivial task.</p>
+    <h1 id="_idParaDest-405" class="heading-1">Provisioning infrastructure for your applications</h1>
+    <p class="normal">CI/CD pipelines are used for deploying workloads on Kubernetes. However, these services often require you to operate against infrastructures such as cloud resources, databases, and even the Kubernetes cluster itself. There are different ways to provision this infrastructure. Let’s review some of the common solutions.</p>
+    <h2 id="_idParaDest-406" class="heading-2">Cloud provider APIs and tooling</h2>
+    <p class="normal">If you are fully committed to a single <a id="_idIndexMarker891"/>cloud provider and have no intentions of using multiple cloud providers or mixing cloud-based clusters with on-prem clusters, you may prefer to use your cloud provider’s APIs tooling (e.g., AWS CloudFormation). There are several benefits to this approach:</p>
+    <ul>
+      <li class="bulletList">Deep integration with your cloud provider infrastructure</li>
+      <li class="bulletList">Best support from your cloud provider</li>
+      <li class="bulletList">No layer of indirection</li>
+    </ul>
+    <p class="normal">However, this means that your view of the system will be split. Some information will be available through Kubernetes and stored in etcd. Other information will be stored and accessible through your cloud provider.</p>
+    <p class="normal">The lack of a Kubernetes-native view of infrastructure means that it may be challenging to run local clusters, and incorporating other cloud providers or on-prem will definitely take a lot of work.</p>
+    <h2 id="_idParaDest-407" class="heading-2">Terraform</h2>
+    <p class="normal">Terraform (<a href="https://terraform.io"><span class="url">https://terraform.io</span></a>) by <a id="_idIndexMarker892"/>HashiCorp is a tool for <strong class="keyWord">IaC</strong> (<strong class="keyWord">infrastructure as code</strong>). It is the <a id="_idIndexMarker893"/>incumbent leader. You define your infrastructure using Terraform’s HCL language and you can structure your infrastructure configuration using modules. It was initially focused on AWS, but over time it became a general-purpose tool for provisioning infrastructure on any cloud as well as other types of infrastructure via provider plugins.</p>
+    <p class="normal">Check out all the available providers in the Terraform registry: <a href="https://registry.terraform.io/browse/providers"><span class="url">https://registry.terraform.io/browse/providers</span></a>.</p>
+    <p class="normal">Since Terraform defines infrastructure declaratively, it naturally supports the GitOps life cycle, where changes to infrastructure must be checked into code control and can be reviewed, and the history is recorded.</p>
+    <p class="normal">You typically interact with Terraform through its CLI. You can run a <code class="inlineCode">terraform plan</code> command to see what changes Terraform will make, and if you’re happy with the result, you apply these changes via <code class="inlineCode">terraform apply</code>.</p>
+    <p class="normal">The following diagram <a id="_idIndexMarker894"/>demonstrates the Terraform workflow: </p>
+    <figure class="mediaobject"><img src="../Images/B18998_08_07.png" alt=""/></figure>
+    <p class="packt_figref">Figure 8.7: Terraform workflow</p>
+    <p class="normal">I have used Terraform extensively to provision infrastructure for large-scale systems on AWS, GCP, and Azure. It can <a id="_idIndexMarker895"/>definitely get the job done, but it suffers from several issues:</p>
+    <ul>
+      <li class="bulletList">Its managed state can get out of sync with the real-world</li>
+      <li class="bulletList">Its design and language make it difficult to use at scale</li>
+      <li class="bulletList">It can’t detect and <a id="_idIndexMarker896"/>reconcile external changes to infrastructure automatically</li>
+    </ul>
+    <h2 id="_idParaDest-408" class="heading-2">Pulumi</h2>
+    <p class="normal">Pulumi is a <a id="_idIndexMarker897"/>more modern tool for IaC. Conceptually, it is similar to Terraform, but you can use multiple programming languages to define infrastructure instead of a custom DSL. This gives you a full-fledged ecosystem of languages like TypeScript, Python, or Go, including testing and packaging to manage your infrastructure.</p>
+    <p class="normal">Pulumi also boasts of having dynamic providers that get updated on the same day to support cloud provider resources. It can also wrap Terraform providers to achieve full coverage of your infrastructure needs.</p>
+    <p class="normal">The Pulumi programming model is based on the concepts of stacks, resources, and inputs/outputs:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_08_08.png" alt=""/></figure>
+    <p class="packt_figref">Figure 8.8: Pulumi programming model</p>
+    <p class="normal">Here is a simple <a id="_idIndexMarker898"/>example for provisioning an EC2 instance in Python using Pulumi:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">import</span> pulumi
+<span class="hljs-keyword">import</span> pulumi_aws <span class="hljs-keyword">as</span> aws
+group = aws.ec2.SecurityGroup('web-sg',
+    description='Enable HTTP access',
+    ingress=[
+        { 'protocol': 'tcp', 'from_port': <span class="hljs-number">80</span>, 'to_port': <span class="hljs-number">80</span>, 'cidr_blocks': ['<span class="hljs-number">0.0.0.0</span>/<span class="hljs-number">0</span>'] }
+    ])
+server = aws.ec2.Instance('web-server',
+    ami='ami-6869aa05',
+    instance_type='t2.micro',
+    vpc_security_group_ids=[group.name] <span class="hljs-comment"># reference the security group resource above</span>
+)
+pulumi.export('public_ip', server.public_ip)
+pulumi.export('public_dns<span class="hljs-string">', server.public_dns)</span>
+</code></pre>
+    <h2 id="_idParaDest-409" class="heading-2">Custom operators</h2>
+    <p class="normal">Both Terraform and Pulumi support Kubernetes and can provision clusters, but they are not cloud-native. They also don’t allow dynamic reconciliation, which goes against the grain of the Kubernetes <a id="_idIndexMarker899"/>model. This means that if someone deletes or modifies some infrastructure provisioned by Terraform or Pulumi, it will not be detected until the next time you run Terraform/Pulumi.</p>
+    <p class="normal">Writing a custom Kubernetes operator gives you full control. You can expose as much of the configuration surface of the target infrastructure as you want and can enforce rules and default configurations. For example, in my current company, we used to manage a large number of Cloudflare DNS domains via Terraform. That caused a significant performance issue as Terraform tried to refresh all these domains by making API calls to Cloudflare for any change to the infrastructure (even unrelated to Cloudflare). We decided to write a custom Kubernetes operator to manage those domains. The operator defined several CRDs to represent zones, domains, and records and interacted with Cloudflare through their APIs.</p>
+    <p class="normal">In addition to the total control and the performance benefits, the operator automatically reconciled any outside changes, to avoid unintentional manual changes.</p>
+    <h2 id="_idParaDest-410" class="heading-2">Using Crossplane</h2>
+    <p class="normal">Custom operators are very powerful, but it takes a lot of work to write and maintain an operator. Crossplane (<a href="https://crossplane.io"><span class="url">https://crossplane.io</span></a>) styles itself as a control plane for your infrastructure. In <a id="_idIndexMarker900"/>practice, it<a id="_idIndexMarker901"/> means that you configure everything (providers, certs, resources, and composite resources) via CRDs. Infrastructure credentials like DB connection info are written to Kubernetes secrets, which can be consumed by workloads later. The Crossplane operator watches all the custom resources that define the infrastructure and reconciles them with the infrastructure providers.</p>
+    <p class="normal">Here is an example of<a id="_idIndexMarker902"/> defining an AWS RDS PostgresSQL instance:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">database.example.org/v1alpha1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">PostgreSQLInstance</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">the-db</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">data</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">parameters:</span>
+    <span class="hljs-attr">storageGB:</span> <span class="hljs-number">20</span>
+  <span class="hljs-attr">compositionSelector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">provider:</span> <span class="hljs-string">aws</span>
+      <span class="hljs-attr">vpc:</span> <span class="hljs-string">default</span>
+  <span class="hljs-attr">writeConnectionSecretToRef:</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">db-conn</span>
+</code></pre>
+    <p class="normal">Crossplane extends kubectl with its own CLI to provide support for building, pushing, and installing packages.</p>
+    <p class="normal">In this section, we covered the concepts behind CI/CD pipelines and different methods to provision infrastructure on Kubernetes.</p>
+    <h1 id="_idParaDest-411" class="heading-1">Summary</h1>
+    <p class="normal">In this chapter, we’ve covered many topics related to deploying and updating applications, scaling Kubernetes clusters, managing resources, CI/CD pipelines, and provisioning infrastructure. We discussed live cluster updates, different deployment models, how the horizontal pod autoscaler can automatically manage the number of running pods, how to perform rolling updates correctly and safely in the context of autoscaling, and how to handle scarce resources via resource quotas. Then we discussed CI/CD pipelines and how to provision infrastructure on Kubernetes using tools like Terraform, Pulumi, custom operators, and Crossplane.</p>
+    <p class="normal">At this point, you have a good understanding of all the factors that come into play when a Kubernetes cluster faces dynamic and growing workloads. You have multiple tools to choose from for planning and designing your own release and scaling strategy.</p>
+    <p class="normal">In the next chapter, we will learn how to package applications for deployment on Kubernetes. We will discuss Helm as well as Kustomize and other solutions.</p>
+    <h1 id="_idParaDest-412" class="heading-1">Join us on Discord!</h1>
+    <p class="normal">Read this book alongside other users, cloud experts, authors, and like-minded professionals.</p>
+    <p class="normal">Ask questions, provide solutions to other readers, chat with the authors via. Ask Me Anything sessions and much more.</p>
+    <p class="normal">Scan the QR code or visit the link to join the community now.</p>
+    <p class="normal"><a href="https://packt.link/cloudanddevops"><span class="url">https://packt.link/cloudanddevops</span></a></p>
+    <p class="normal"><img src="../Images/QR_Code844810820358034203.png" alt=""/></p>
+  </div>
+</body></html>

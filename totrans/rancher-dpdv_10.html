@@ -1,0 +1,262 @@
+<html><head></head><body>
+		<div id="_idContainer058">
+			<h1 id="_idParaDest-113"><em class="italic"><a id="_idTextAnchor112"/>Chapter 7</em>: Deploying a Hosted Cluster with Rancher</h1>
+			<p>For teams that don't want to manage any servers, Rancher provides the ability to deploy and manage hosted Kubernetes services such as <strong class="bold">Google Kubernetes Engine</strong> (<strong class="bold">GKE</strong>), <strong class="bold">Amazon Elastic Container Service for Kubernetes</strong> (<strong class="bold">Amazon EKS</strong>), or <strong class="bold">Azure Kubernetes Service</strong> (<strong class="bold">AKS</strong>). This chapter will cover the pros and cons of using a hosted cluster versus an RKE cluster. Then, we'll cover the requirements and limitations of this type of cluster. At that point, we'll go through the process of prepping the cloud provider. Then, we'll go over setting up EKS, GKE, and AKS clusters using Rancher. Finally, we'll cover the maintenance tasks needed for ongoing cluster management.</p>
+			<p>In this chapter, we're going to cover the following main topics:</p>
+			<ul>
+				<li>How can Rancher manage a hosted cluster?</li>
+				<li>Requirements and limitations</li>
+				<li>Rules for architecting a solution</li>
+				<li>Prepping the cloud provider</li>
+				<li>Installation steps</li>
+				<li>Ongoing maintenance tasks</li>
+			</ul>
+			<h1 id="_idParaDest-114"><a id="_idTextAnchor113"/>How can Rancher manage a hosted cluster?</h1>
+			<p>One of the <a id="_idIndexMarker506"/>first questions I get is, <em class="italic">what is a hosted cluster?</em> The short answer is that it's a Kubernetes cluster created and managed <a id="_idIndexMarker507"/>by a cloud provider such as Google, Amazon, or Azure but with Rancher managing the configuration of the cluster. Rancher uses a cloud provider's API and their SDK to create the cluster the same way you would as an end user through their web console or a command-line tool. As of Rancher v2.6, the current list of supported cloud providers is as follows:</p>
+			<ul>
+				<li><strong class="bold">GKE</strong></li>
+				<li><strong class="bold">Amazom EKS</strong></li>
+				<li><strong class="bold">AKS</strong></li>
+				<li><strong class="bold">Alibaba Cloud Container Service for Kubernetes</strong>) (<strong class="bold">Alibaba ACK</strong>)</li>
+				<li><strong class="bold">Tencent Kubernetes Engine</strong> (<strong class="bold">Tencent TKE</strong>)</li>
+				<li><strong class="bold">Huawei Cloud Container Engine</strong> (<strong class="bold">Huawei CCE</strong>)</li>
+			</ul>
+			<p>Rancher does this by having a set of controllers in the Rancher leader pod. Each cloud provider <a id="_idIndexMarker508"/>has its controller, and each controller uses a Go library for communicating with the cloud provider. Rancher uses a process <a id="_idIndexMarker509"/>wherein Rancher stores the cluster's configuration as a specification in the cluster object. For example, EKS is stored under <strong class="source-inline">Spec.EKSConfig</strong>. For this section, we will go over the v1 controllers first and then the new v2 controllers.</p>
+			<p>With the original v1 controllers, which are found in Rancher v2.0–2.4, the cluster config was stored in this object and was only updated when Rancher or a user changed. If you were to create an EKS cluster in Rancher and then make a change in the AWS console, that change wouldn't be reflected in Rancher, which would overwrite your change during the next update event. This means the source of truth for these types of clusters is Rancher, and at the time of writing, these clusters cannot be detached from Rancher and managed externally.</p>
+			<p>The new v2 controllers are only available for EKS and GKE, added to Rancher v2.5.8 and later. The idea of configuration synchronization was added to allow changes made outside Rancher to be synced to it. This is done by two operators called eks-operator and gke-operator. The operator stores the configuration for the cloud provider as <strong class="source-inline">Spec.EKSStatus</strong> and <strong class="source-inline">Spec.GKEStatus</strong>. These objects are refreshed every 5 minutes from the cloud provider. The local configuration of the cluster is stored as <strong class="source-inline">Spec.EKSConfig</strong> and <strong class="source-inline">Spec.GKEConfig</strong>, which represent the desired state of the cluster with most of the fields in the <strong class="source-inline">config section</strong> being <strong class="source-inline">NULL</strong>. Rancher keeps these values <strong class="source-inline">NULL</strong> until they are set in Rancher. Once the value has been set in Rancher, the operator uses the cloud provider's SDK to update the cluster. Once the cloud has been updated, the <strong class="source-inline">Status</strong> specs will get updated. If you change the cluster outside Rancher, that change will get picked up by it, and if the managed field is different, it will get overwritten.</p>
+			<p>One question that always comes up is, <em class="italic">what is the difference between building a hosted cluster in Rancher and building it outside Rancher and then importing it?</em> The answer to this question depends on the type of cluster. If it's an EKS or GKE cluster, you'll import <a id="_idIndexMarker510"/>the cluster, and Rancher will detect <a id="_idIndexMarker511"/>the cluster type. Then, assuming Rancher has the correct permissions, Rancher will <em class="italic">convert</em> this cluster into a hosted cluster. At that point, the cluster can be managed in the same manner it would be if Rancher created it. We will be covering more about importing clusters into Rancher in the next chapter.</p>
+			<h1 id="_idParaDest-115"><a id="_idTextAnchor114"/>Requirements and limitations</h1>
+			<p>Now that we understand what a hosted cluster is and how it works in Rancher, we will move on to <a id="_idIndexMarker512"/>the requirements and limitations of a hosted <a id="_idIndexMarker513"/>cluster in Rancher, along with the design limitations and constraints when choosing a hosted cluster.</p>
+			<h2 id="_idParaDest-116"><a id="_idTextAnchor115"/>Basic requirements</h2>
+			<p>Rancher needs permissions from a cloud provider to be able to create a cluster and its related services. The required permissions will vary, depending upon the cloud provider. The links <a id="_idIndexMarker514"/>to the official Rancher documentation for each cloud provider type are listed as follows:</p>
+			<ul>
+				<li>Google <a id="_idIndexMarker515"/>Kubernetes Engine: <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/gke/">https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/gke/</a>.</li>
+				<li>Amazon <a id="_idIndexMarker516"/>EKS: <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/eks/">https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/eks/</a>.</li>
+				<li>AKS: <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/aks/">https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/aks/</a>.</li>
+				<li>The rest <a id="_idIndexMarker517"/>of the cloud providers can be found at <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/">https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/</a>.</li>
+			</ul>
+			<p>It is recommended that Rancher be configured using a dedicated service account with the least permissions possible.</p>
+			<p>Rancher will <a id="_idIndexMarker518"/>need access to a cloud provider's API endpoint, which means that Rancher will need internet access directly or via an HTTP(S) proxy. If you are using a private API such as AWS's API gateway, that will need to be configured in Rancher.</p>
+			<p>Rancher will need access to the Kubernetes-API endpoint for the cluster from the Rancher servers.</p>
+			<p>It is recommended that cloud service accounts are configured in Rancher under a dedicated service account such as local admin, and this account should be the admin permissions in Rancher.</p>
+			<h2 id="_idParaDest-117"><a id="_idTextAnchor116"/>Design limitations and considerations</h2>
+			<p>Some settings such as the available regions are hardcoded in Rancher, meaning that if a cloud <a id="_idIndexMarker519"/>provider adds a new region, it might not be available in the Rancher UI until you upgrade Rancher. </p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">For the v2 controllers, you can work around the limitations in the Rancher UI by creating the cluster outside Rancher and then importing it.</p>
+			<p>The Kubernetes versions that are available in the Rancher UI may not match what the cloud provider allows. For example, if you are running an older version of Rancher, you might have v1.13 available in the drop-down menu, but because Amazon no longer supports this version, you will get an error in Rancher stating that the cluster creation failed.</p>
+			<p>More cloud providers will assume that the cluster being built will have public internet access and public IP addresses assigned to the nodes, load balancers, and a Kube-API endpoint if you want to set up an air-gapped or private IP-only cluster. You will need to work with the cloud provider to configure the additional firewall rules, routes, and other settings required for this cluster. The following are the documentations for using the private endpoints in Rancher:</p>
+			<ul>
+				<li>For EKS private-only <a id="_idIndexMarker520"/>endpoints, Rancher provides documentation for the additional steps needed, which are located at https://rancher.com/docs/rancher/v2.5/en/cluster-admin/editing-clusters/eks-config-reference/#private-only-api-endpoints.</li>
+				<li>For the <a id="_idIndexMarker521"/>GKE private endpoint, you can find the documentation at https://rancher.com/docs/rancher/v2.5/en/cluster-admin/editing-clusters/gke-config-reference/#private-cluster.<p class="callout-heading">Note</p><p class="callout">At the time of writing, this type of configuration is not very mature and has several bugs.</p></li>
+			</ul>
+			<p>Snapshots <a id="_idIndexMarker522"/>and backups are not a thing. Unlike an RKE/2 cluster, most of the hosted clusters do not provide you access to the etcd backup and do not provide an etcd backup option. If the cluster is lost or a user makes a mistake (for example, deleting the wrong namespace), your only option is to redeploy. There are third-party tools such as Velero that can address this shortcoming, and we will cover them later on in this chapter.</p>
+			<p>The permissions Rancher requires can be too great for some security teams to approve. Rancher does provide a list of the minimum EKS permissions, located at <a href="https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/hosted-kubernetes-clusters/eks/permissions/">https://rancher.com/docs/rancher/v2.5/en/cluster-provisioning/hosted-kubernetes-clusters/eks/permissions/</a>. It is important to note that some features may not work with a lower set of permissions, and it may require tuning.</p>
+			<p>The cost of load balancers with hosted clusters can be greater than an RKE/2 cluster. This is because most cloud providers will deploy an external load balancer instead of the shared load balancer, the Ingress NGINX Controller, that RKE/2 uses. Note that you can work around this limitation by deploying nginx-ingress with an external load balancer in front of it.</p>
+			<p>In this section, we have covered the requirements and limitations. In the next section, we are going to use that knowledge along with additional rules and example designs to help us architect a solution that meets your needs.</p>
+			<h1 id="_idParaDest-118"><a id="_idTextAnchor117"/>Rules for architecting a solution</h1>
+			<p>In this section, we'll cover some of the standard designs and the pros and cons of each. It is important <a id="_idIndexMarker523"/>to note that each environment is unique and will require tuning for the best performance and experience. It's also important to note that all CPU, memory, and storage sizes are recommended starting points and may need to be increased or decreased by your workloads and deployment processes. Also, we'll be covering designs for the major infrastructure providers (Amazon EKS and GKE), but you should be able to translate the core concepts for other infrastructure providers.</p>
+			<p>Before designing a solution, you should be able to answer the following questions:</p>
+			<ul>
+				<li>Will multiple environments be sharing the same cluster?</li>
+				<li>Will production and non-production workloads be on the same cluster?</li>
+				<li>What level of availability does this cluster require?</li>
+				<li>Will this cluster be spanning multiple data centers in a metro cluster environment?</li>
+				<li>How much latency will there be between nodes in the cluster?</li>
+				<li>How many pods will be hosted in the cluster?</li>
+				<li>What are the average and maximum size of pods for deployment in the cluster?</li>
+				<li>Will you need GPU support for some of your applications?</li>
+				<li>Will you need to provide storage to your applications?</li>
+				<li>If you need storage, do you need only <strong class="source-inline">ReadWriteOnce</strong> (RWO) or will you need <strong class="source-inline">ReadWriteMany</strong> (RWX)?</li>
+			</ul>
+			<p>Let's start with Amazon EKS. </p>
+			<h2 id="_idParaDest-119"><a id="_idTextAnchor118"/>Amazon EKS</h2>
+			<p>EKS is the <a id="_idIndexMarker524"/>most mature cloud provider when <a id="_idIndexMarker525"/>it comes to <strong class="bold">Kubernetes as a Service</strong> (<strong class="bold">KaaS</strong>). Because <a id="_idIndexMarker526"/>of this, EKS is one of the most flexible solutions, but some limitations and rules need to be followed when creating an EKS cluster in Rancher.</p>
+			<p>The <strong class="bold">pros</strong> of Amazon <a id="_idIndexMarker527"/>EKS are as follows:</p>
+			<ul>
+				<li>EKS supports enormous clusters, with the current limits being 3,000 nodes per cluster with 737 pods per node (depending on node size).</li>
+				<li>EKS supports <a id="_idIndexMarker528"/>third-party <strong class="bold">Container Network Interface</strong> (<strong class="bold">CNI</strong>) providers such as Calico.</li>
+				<li>EKS natively <a id="_idIndexMarker529"/>supports <strong class="bold">Elastic Block Store</strong> (<strong class="bold">EBS</strong>) for high-speed <strong class="source-inline">ReadWriteOnce</strong> storage. The provisioner comes pre-installed. You <a id="_idIndexMarker530"/>can find more details about this storage class at <a href="https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html">https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html</a>.</li>
+				<li>For workloads <a id="_idIndexMarker531"/>that require <strong class="source-inline">ReadWriteMany</strong>, EKS supports <strong class="bold">Elastic File System</strong> (<strong class="bold">EFS</strong>), managed by NFS share from Amazon. You <a id="_idIndexMarker532"/>can find more details about this at <a href="https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html">https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html</a>.</li>
+				<li>Because Amazon controls both the cloud networking and the cluster overlay network, you <a id="_idIndexMarker533"/>can assign IP addresses from your <strong class="bold">Virtual Private Cloud</strong> (<strong class="bold">VPC</strong>) directly to pods inside your cluster. This allows other Amazon <a id="_idIndexMarker534"/>services to communicate with pods directly. You can find more details about this at <a href="https://docs.aws.amazon.com/eks/latest/userguide/pod-networking.html">https://docs.aws.amazon.com/eks/latest/userguide/pod-networking.html</a>.</li>
+				<li>EKS has direct integration between EKS and AWS load balancers. This allows you to deploy <a id="_idIndexMarker535"/>both an <strong class="bold">Application Load Balancer</strong> (<strong class="bold">ALB</strong>) as a <a id="_idIndexMarker536"/>layer 7/HTTP(S) load balancer and a <strong class="bold">Network Load Balancer</strong> (<strong class="bold">NLB</strong>) as a layer 4/TCP load balancer.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> of Amazon <a id="_idIndexMarker537"/>EKS are as follows:</p>
+			<ul>
+				<li>EKS limits the number of pods per node based on the node size. For example, <strong class="source-inline">t2.nano</strong> only supports four pods per node. With so few available pods, most services such as the CNI, node exporters, and log collectors will use up all available slots of the node before any application pods can be started. <strong class="source-inline">t2.large</strong> or larger is generally recommended. You can find a list of all the node sizes versus the maximum pod count at <a href="https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt">https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt</a>.</li>
+				<li>At the time of writing, EKS doesn't have an automatic node repair process, so if a node crashes and doesn't recover, that node will not be replaced until you force a replacement. You can find more details about this limitation at <a href="https://aws.amazon.com/premiumsupport/knowledge-center/eks-node-status-ready/">https://aws.amazon.com/premiumsupport/knowledge-center/eks-node-status-ready/</a>.</li>
+				<li>Several manual steps are required when doing upgrades. Amazon has these steps documented at <a href="https://docs.aws.amazon.com/eks/latest/userguide/update-cluster.html">https://docs.aws.amazon.com/eks/latest/userguide/update-cluster.html</a>.</li>
+			</ul>
+			<p>Now, let's talk about GKE. </p>
+			<h2 id="_idParaDest-120"><a id="_idTextAnchor119"/>GKE</h2>
+			<p>GKE is the <a id="_idIndexMarker538"/>second-most mature cloud provider <a id="_idIndexMarker539"/>when it comes to KaaS. This is because Google created Kubernetes and still drives a lot of the integration and development work for core Kubernetes.</p>
+			<p>The <strong class="bold">pros</strong> of <a id="_idIndexMarker540"/>GKE are as follows:</p>
+			<ul>
+				<li>GKE has the broadest range of supported Kubernetes (three significant releases), and GKE is typically very up to date with new releases. You can find more details about the release schedule and versions at <a href="https://cloud.google.com/kubernetes-engine/docs/release-notes#latest_versions">https://cloud.google.com/kubernetes-engine/docs/release-notes#latest_versions</a>.</li>
+				<li>With GKE, you can enable Autopilot on your cluster, and with that, you can fully automate the upgrade process for your cluster. This includes both the control plane and the worker node level. You can find the documentation for Autopilot at <a href="https://cloud.google.com/kubernetes-engine/docs/concepts/autopilot-overview">https://cloud.google.com/kubernetes-engine/docs/concepts/autopilot-overview</a>.</li>
+				<li>You can set the release channel for your cluster to be rapid, which gives you releases every couple of weeks to the regular channel (which is the default option) and <a id="_idIndexMarker541"/>provides an update every 2 to 3 months. Finally, you can select the stable channel, which is very similar to regular, the difference being that it is the last channel to get updates. This allows even more time for accurate user testing. You can find more details about this at <a href="https://cloud.google.com/kubernetes-engine/docs/concepts/release-channels">https://cloud.google.com/kubernetes-engine/docs/concepts/release-channels</a>.</li>
+				<li>GKE provides automatic node repair; if a node fails, GKE can and will automatically replace it. It does this using the node status, which helps if kubelet crashes when the OS stays running, but the node is effectively dead in the cluster. You can learn more about this process at <a href="https://cloud.google.com/kubernetes-engine/docs/how-to/node-auto-repair">https://cloud.google.com/kubernetes-engine/docs/how-to/node-auto-repair</a>.</li>
+				<li>GKE is unique because you can select Google's container-optimized OS, a stripped-down OS designed for security and stability. Alternatively, you can choose an Ubuntu-based image. You can also mix and match inside a cluster. The complete list of node images is available at <a href="https://cloud.google.com/kubernetes-engine/docs/concepts/node-images">https://cloud.google.com/kubernetes-engine/docs/concepts/node-images</a>.</li>
+				<li>GKE supports Windows Server containers. This is done by adding Windows workers nodes to your GKE cluster. The limitation of Windows nodes in GKE can be found at <a href="https://cloud.google.com/kubernetes-engine/docs/concepts/windows-server-gke">https://cloud.google.com/kubernetes-engine/docs/concepts/windows-server-gke</a>.</li>
+				<li>GKE allows <a id="_idIndexMarker542"/>you to remotely access worker nodes using an SSH client, which is excellent for troubleshooting node and application issues.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> of GKE <a id="_idIndexMarker543"/>are as follows:</p>
+			<ul>
+				<li>GKE will only <a id="_idIndexMarker544"/>provide 99.95% of the <strong class="bold">service-level agreement</strong> (<strong class="bold">SLA</strong>) if you use regional clusters, which costs extra. The details about this cost can be found at https://cloud.google.com/kubernetes-engine/pricing#cluster_management_fee_and_free_tier.</li>
+				<li>At the time of writing, GKE does not have a government cloud option. All the currently supported regions can be found at <a href="https://cloud.google.com/compute/docs/regions-zones">https://cloud.google.com/compute/docs/regions-zones</a>.</li>
+			</ul>
+			<p>Lastly, we'll talk about AKS. </p>
+			<h2 id="_idParaDest-121"><a id="_idTextAnchor120"/>Microsoft Azure Kubernetes Service (AKS)</h2>
+			<p>AKS is the <a id="_idIndexMarker545"/>new kid on the block when it comes <a id="_idIndexMarker546"/>to KaaS, but Microsoft has been investing a lot in AKS and has closed the feature gap very quickly.</p>
+			<p>The <strong class="bold">pros</strong> of AKS <a id="_idIndexMarker547"/>are as follows:</p>
+			<ul>
+				<li>AKS follows Microsoft's standard monthly patch schedule as they do with their OSes. They also publish their releases on their GitHub page, which is located at <a href="https://github.com/Azure/AKS/releases">https://github.com/Azure/AKS/releases</a>.</li>
+				<li>AKS has automatic node repair whereas Microsoft Azure uses both node agents and the node status in the cluster to trigger a repair. Azure's restoration process is less advanced than the other cloud providers, as it will try rebooting the node before reimaging it and then giving up. Finally, if that fails, an Azure engineer will investigate the issue. You read more about this process at <a href="https://docs.microsoft.com/en-us/azure/aks/node-auto-repair">https://docs.microsoft.com/en-us/azure/aks/node-auto-repair</a>.</li>
+				<li>AKS fully <a id="_idIndexMarker548"/>supports integration with <strong class="bold">Azure Active Directory</strong> (<strong class="bold">Azure AD</strong>). This allows you to assign permissions inside your cluster using Azure AD users and groups. For more details, visit <a href="https://docs.microsoft.com/en-us/azure/aks/managed-aad">https://docs.microsoft.com/en-us/azure/aks/managed-aad</a>.</li>
+				<li>AKS has <a id="_idIndexMarker549"/>Visual Studio Code extensions that allow developers to run and debug their code directly on their laptop as if it was part of the AKS cluster. Bridge to Kubernetes is basically like creating a VPN connection in your cluster so that pods running on your computer can directly communicate with the clusters and other pods running in the cluster. You can learn more about how this works at <a href="https://docs.microsoft.com/en-us/visualstudio/bridge/overview-bridge-to-kubernetes?view=vs-2019">https://docs.microsoft.com/en-us/visualstudio/bridge/overview-bridge-to-kubernetes?view=vs-2019</a>.</li>
+			</ul>
+			<p>The <strong class="bold">cons</strong> of AKS <a id="_idIndexMarker550"/>are as follows:</p>
+			<ul>
+				<li>The upgrade process for AKS has some manual steps. <p class="callout-heading">Note</p><p class="callout">The automatic <a id="_idIndexMarker551"/>cluster upgrade is in public preview. You can see the current status at <a href="https://azure.microsoft.com/en-us/updates/public-preview-automatic-cluster-upgrades-in-aks/">https://azure.microsoft.com/en-us/updates/public-preview-automatic-cluster-upgrades-in-aks/</a>.</p></li>
+				<li>Some settings such as network policies can only be set when creating clusters and cannot be enabled afterward. You can find more details at https://docs.microsoft.com/en-us/azure/aks/use-network-policies#create-an-aks-cluster-and-enable-network-policy.</li>
+				<li>AKS will only provide 99.95% of the SLA if you use regional clusters, which increases the cost of the cluster. Details about this cost can be found at <a href="https://azure.microsoft.com/en-us/pricing/details/bandwidth/">https://azure.microsoft.com/en-us/pricing/details/bandwidth/</a>.</li>
+			</ul>
+			<p>Now that we understand the pros and cons of each of the major hosted providers, we are going to dive into getting everything set up in the cloud provider and in Rancher so that we can start creating clusters.</p>
+			<h1 id="_idParaDest-122"><a id="_idTextAnchor121"/>Prepping the cloud provider</h1>
+			<p>Before creating <a id="_idIndexMarker552"/>a hosted cluster in Rancher, we need to prepare the cloud provider for Rancher. In this section, we'll be covering setting up permissions in the three major hosted Kubernetes clusters, which are EKS, GKE, and AKS.</p>
+			<p>We'll start with Amazon EKS. </p>
+			<h2 id="_idParaDest-123"><a id="_idTextAnchor122"/>Amazon EKS</h2>
+			<p>The <a id="_idIndexMarker553"/>prerequisites <a id="_idIndexMarker554"/>are as follows:</p>
+			<ul>
+				<li>You <a id="_idIndexMarker555"/>should already have an AWS subscription created and available to use.</li>
+				<li>You'll <a id="_idIndexMarker556"/>need permissions in AWS to be able to create <strong class="bold">Identity and Access Management</strong> (<strong class="bold">IAM</strong>) policies.</li>
+				<li>Your Rancher server(s) should be able to reach AWS API public or private endpoints. You <a id="_idIndexMarker557"/>can read more about Amazon's API Gateway private endpoint at <a href="https://aws.amazon.com/blogs/compute/introducing-amazon-api-gateway-private-endpoints/">https://aws.amazon.com/blogs/compute/introducing-amazon-api-gateway-private-endpoints/</a>.</li>
+				<li>EKS will require a VPC to be created, and you should work with your networking team to make it. Amazon has a tutorial located at <a href="https://docs.aws.amazon.com/eks/latest/userguide/create-public-private-vpc.html">https://docs.aws.amazon.com/eks/latest/userguide/create-public-private-vpc.html</a> that covers creating a VPC.</li>
+				<li>You should have a dedicated service account in AWS for Rancher.</li>
+				<li>You should have a dedicated service account in Rancher, and this account should have admin-level permissions. You can use the local admin account for this role. For this section, we will assume that you will be using the local admin account.</li>
+			</ul>
+			<h3>Setup permissions</h3>
+			<p>Here <a id="_idIndexMarker558"/>are the setup permissions for Rancher:</p>
+			<ol>
+				<li>If you do not already have a dedicated service account in AWS, you should follow the steps at <a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html.">https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html.</a> For this section, we are going to use the name <strong class="source-inline">rancher</strong> for this service account.</li>
+				<li>Now that we have the service account, we will assign an IAM policy to that account. This policy gives Rancher the permissions it needs to create an EKS cluster. The minimum required permissions can be found at https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/eks/#minimum-eks-permissions, and the steps for creating an IAM policy and attaching it to a service account can be found at <a href="https://docs.aws.amazon.com/eks/latest/userguide/EKS_IAM_user_policies.html">https://docs.aws.amazon.com/eks/latest/userguide/EKS_IAM_user_policies.html</a>.</li>
+				<li>We now need to create access and secret key pair, and the process for doing this can be found at https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html#Using_CreateAccessKey. It is important to note that as per Amazon's best practices guide for access keys, you should set an expiration time for the access key. This will require you to rotate it though. The best practices guide can be found at <a href="https://docs.aws.amazon.com/general/latest/gr/aws-access-keys-best-practices.html">https://docs.aws.amazon.com/general/latest/gr/aws-access-keys-best-practices.html</a>, and you can find the documentation for rotating access keys at <a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html#rotating_access_keys_console">https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html#rotating_access_keys_console</a>. You should also store this key in a safe place if it is needed in the future.</li>
+				<li>At this point, you should log into the Rancher web UI as the local admin or your dedicated service account.</li>
+				<li>For the <a id="_idIndexMarker559"/>web UI, navigate to <strong class="bold">Cluster Management</strong> and then to <strong class="bold">Cloud Credentials</strong>.</li>
+				<li>Then, click on the <strong class="bold">Create</strong> button and select <strong class="bold">Amazon</strong> from the list.</li>
+				<li>Fill in the following form. You should give this credential a name that lets you know it's for Amazon and what subscription it's a part of – for example, you might call it <strong class="source-inline">AWS-Prod</strong>. The Rancher UI will test whether the credentials are correct but will not validate that the account has all the permissions that Rancher will need. Also, the default region doesn't matter and can be changed at any time. It is also important to note that the access key will be visible, but the secret key is encrypted and cannot be quickly recovered from Rancher:</li>
+			</ol>
+			<div>
+				<div id="_idContainer054" class="IMG---Figure">
+					<img src="image/B18053_07_001.jpg" alt="Figure 7.1 – The Cloud Credential setup wizard for Amazon&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.1 – The Cloud Credential setup wizard for Amazon</p>
+			<p>For more <a id="_idIndexMarker560"/>details about the cloud credentials, please go to <a href="https://rancher.com/docs/rancher/v2.5/en/user-settings/cloud-credentials/">https://rancher.com/docs/rancher/v2.5/en/user-settings/cloud-credentials/</a>.</p>
+			<p>Now, let's move on to GKE. </p>
+			<h2 id="_idParaDest-124"><a id="_idTextAnchor123"/>GKE</h2>
+			<p>The <a id="_idIndexMarker561"/>prerequisites are as follows:</p>
+			<ul>
+				<li>You <a id="_idIndexMarker562"/>should already have a Google cloud project created and available to use.</li>
+				<li>You'll need permissions in GCP to be able to create and assign roles.</li>
+				<li>Your Rancher server(s) should be able to reach the GCP API public or private endpoints. You can read more about private access options for services at <a href="https://cloud.google.com/vpc/docs/private-access-options">https://cloud.google.com/vpc/docs/private-access-options</a>.</li>
+				<li>As with AWS, you should have dedicated service accounts in both GCP and Rancher.</li>
+				<li>If you <a id="_idIndexMarker563"/>want to use a private GKE cluster, you <a id="_idIndexMarker564"/>should review Rancher's documentation, <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-admin/editing-clusters/gke-config-reference/private-clusters/">https://rancher.com/docs/rancher/v2.6/en/cluster-admin/editing-clusters/gke-config-reference/private-clusters/</a>, for all the additional steps and costs required for this type of cluster.</li>
+			</ul>
+			<h3>Setup permissions</h3>
+			<p>Here <a id="_idIndexMarker565"/>are the setup permissions for Rancher:</p>
+			<ol>
+				<li value="1">If you do not already have a dedicated service account in GCP, you should follow the steps located at <a href="https://cloud.google.com/compute/docs/access/create-enable-service-accounts-for-instances">https://cloud.google.com/compute/docs/access/create-enable-service-accounts-for-instances</a>. For this section, we are going to use the name <strong class="source-inline">rancher</strong> for this service account.</li>
+				<li>Now that we have the service account, we will assign the following default roles to the rancher service account: <strong class="source-inline">compute.viewer</strong>, <strong class="source-inline">viewer</strong>, <strong class="source-inline">container.admin</strong>, and <strong class="source-inline">iam.serviceAccountUser</strong>.</li>
+				<li>Instead of an API key pair, GCP uses a private key for service accounts. You'll need to save the key in JSON format. You can find a detailed set of instructions at https://cloud.google.com/iam/docs/creating-managing-service-account-keys#creating_service_account_keys. You must keep this key for future use.</li>
+				<li>At this point, you should log into the Rancher web UI as the local admin or your dedicated service account.</li>
+				<li>Navigate to <strong class="bold">Cluster Management</strong> for the web UI and then to <strong class="bold">Cloud Credentials</strong>.</li>
+				<li>Then, click on the <strong class="bold">Create</strong> button and select <strong class="bold">Google</strong> from the list.</li>
+				<li>Fill in the following form. You should give this credential a name that lets you know it's for Google and what project it's a part of – for example, you might call it <strong class="source-inline">GCP-Prod</strong>. The Rancher UI will test whether the credentials are correct but will not <a id="_idIndexMarker566"/>validate that the account has all the permissions that Rancher will need:</li>
+			</ol>
+			<div>
+				<div id="_idContainer055" class="IMG---Figure">
+					<img src="image/B18053_07_002.jpg" alt="Figure 7.2 – The Cloud Credential setup wizard for Google&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.2 – The Cloud Credential setup wizard for Google</p>
+			<p>Lastly, let's delve into AKS. </p>
+			<h2 id="_idParaDest-125"><a id="_idTextAnchor124"/>AKS</h2>
+			<p>The <a id="_idIndexMarker567"/>prerequisites are as follows:</p>
+			<ul>
+				<li>You <a id="_idIndexMarker568"/>should already have an Azure subscription <a id="_idIndexMarker569"/>created and available to use.</li>
+				<li>You'll need permissions in Azure AD to be able to create an app registration.</li>
+				<li>Your Rancher server(s) should be able to reach the Azure API public or private endpoints. You can read more about private access options for services at <a href="https://docs.microsoft.com/en-us/azure/api-management/api-management-using-with-internal-vnet?tabs=stv2">https://docs.microsoft.com/en-us/azure/api-management/api-management-using-with-internal-vnet?tabs=stv2</a>.</li>
+				<li>Azure doesn't need a dedicated service account, but as with AWS and GCP, Rancher should have one.</li>
+				<li>You should <a id="_idIndexMarker570"/>have the Azure command-line tool already installed.</li>
+				<li>You should have a resource group created for the AKS clusters and related services.</li>
+			</ul>
+			<h3>Setup permissions</h3>
+			<p>Here are <a id="_idIndexMarker571"/>the setup permissions for Rancher:</p>
+			<ul>
+				<li>Run the following command. You'll want to document the output, as we'll need it later:<p class="source-code">az ad sp create-for-rbac --skip-assignment</p></li>
+				<li>We now want to assign the contributor role to the service principal using the following command. Please note that you'll need the app and subscription ID from the previous command:<p class="source-code">az role assignment create --assignee $appId --scope /subscriptions/$&lt;SUBSCRIPTION-ID&gt;/resourceGroups/$&lt;GROUP&gt; --role Contributor</p></li>
+				<li>At this point, you should log into the Rancher web UI as the local admin or your dedicated service account.</li>
+				<li>Navigate to <strong class="bold">Cluster Management</strong> for the web UI and then to <strong class="bold">Cloud Credentials</strong>.</li>
+				<li>Then, click on the <strong class="bold">Create</strong> button and select <strong class="bold">Azure</strong> from the list.</li>
+				<li>Fill in the following form. You should give this credential a name that lets you know it's for Azure and what project it's a part of – for example, you might call it <strong class="source-inline">AZ-Prod</strong>. The Rancher UI will test that the credentials are correct but will not validate that the account has all the permissions that Rancher will need. For the <strong class="bold">Environment</strong> field, <strong class="bold">AzurePublicCloud</strong> is the most common option unless you are <a id="_idIndexMarker572"/>using a government subscription:</li>
+			</ul>
+			<div>
+				<div id="_idContainer056" class="IMG---Figure">
+					<img src="image/B18053_07_003.jpg" alt="Figure 7.3 – The Cloud Credential setup wizard for Azure&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.3 – The Cloud Credential setup wizard for Azure</p>
+			<p>For the other cloud providers, you can find the steps at <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/">https://rancher.com/docs/rancher/v2.6/en/cluster-provisioning/hosted-kubernetes-clusters/</a>. At this point, Rancher should have access to the cloud provider. In the next section, we will go through creating some hosted clusters.</p>
+			<h1 id="_idParaDest-126"><a id="_idTextAnchor125"/>Installation steps</h1>
+			<p>In this section, we're going to create a hosted cluster, mainly using the default settings. For the examples, we will be continuing to use EKS, GKE, and AKS. Most of these settings can be translated <a id="_idIndexMarker573"/>for other cloud providers. It is important to note that you must already have the cloud credentials for each provider and environment you want to configure. It is also recommended that you keep Rancher up to date as cloud providers are constantly changing, and you might run into a bug simply because you are on an older version of Rancher. The latest stable versions can be found at <a href="https://github.com/rancher/rancher#latest-release">https://github.com/rancher/rancher#latest-release</a>.</p>
+			<p>We'll start with Amazon EKS.</p>
+			<h2 id="_idParaDest-127"><a id="_idTextAnchor126"/>Amazon EKS</h2>
+			<p>The following <a id="_idIndexMarker574"/>steps show you how to set up EKS using Rancher:</p>
+			<ol>
+				<li value="1">Log into Rancher using the service account that we used during the cloud credentials creation step.</li>
+				<li>Browse the <strong class="bold">Cluster Management</strong> page, click on <strong class="bold">Clusters</strong>, and then click the <strong class="bold">Create</strong> button.</li>
+				<li>Then, from the list, select <strong class="bold">Amazon EKS</strong>, at which point you should be prompted with a cluster setup wizard.</li>
+				<li>You'll want to give the cluster a name. This name can be changed later, but it is recommended not to change it, as that can lead to a name mismatch, which would then lead to a user deleting the wrong resource. Also, the description field is a freeform field that can provide additional information such as who owns this cluster or who should be contacted about this cluster; some users will use this field to post maintenance messages such as <strong class="source-inline">Scheduled maintenance every Friday at 7 PM CDT</strong>. This can be changed at any time. The bottom section assigns the cloud credential to this cluster:</li>
+			</ol>
+			<div>
+				<div id="_idContainer057" class="IMG---Figure">
+					<img src="image/B18053_07_004.jpg" alt="Figure 7.4 – The cluster creation wizard for Amazon EKS&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.4 – The cluster creation wizard for Amazon EKS</p>
+			<ol>
+				<li value="5">The rest <a id="_idIndexMarker575"/>of the wizard will fill in the default values. You can change them as you see fit, but you should know what you are changing.</li>
+				<li>The final <a id="_idIndexMarker576"/>step is to define the node groups. This includes settings such as the size of the node, the <strong class="bold">Amazon Machine Image</strong> (<strong class="bold">AMI</strong>) image, and the pool size. After defining the cluster, you should click the <strong class="bold">Create</strong> button, at which point Rancher will start the cluster creation process.</li>
+				<li>The details for all the different settings can be found at <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-admin/editing-clusters/eks-config-reference/">https://rancher.com/docs/rancher/v2.6/en/cluster-admin/editing-clusters/eks-config-reference/</a>.</li>
+				<li>The cluster will go into the <strong class="bold">Updating</strong> status, depending on the cluster's size and Amazon's request queue. This process can take anywhere from 2 to 60 minutes. Please <a id="_idIndexMarker577"/>note that the wait is primarily dependent on Amazon and how busy they are.</li>
+			</ol>
+			<p>Let's move on to GKE.</p>
+			<h2 id="_idParaDest-128"><a id="_idTextAnchor127"/>GKE</h2>
+			<p>Now, let's <a id="_idIndexMarker578"/>look at the installation steps for GKE:</p>
+			<ol>
+				<li value="1">Follow the same steps as you did for EKS, but this time, select <strong class="bold">Google GKE</strong> from the options menu.</li>
+				<li>The main difference is the <strong class="bold">Account access</strong> section, as it may ask you to re-enter the cloud credentials and Google project ID.</li>
+				<li>The details for all the different settings can be found at <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-admin/editing-clusters/gke-config-reference/">https://rancher.com/docs/rancher/v2.6/en/cluster-admin/editing-clusters/gke-config-reference/</a>.</li>
+				<li>Again, the final step of clicking the <strong class="bold">Create</strong> button will cause Rancher to start the cluster creation process.</li>
+				<li>The cluster will go into the <strong class="bold">Updating</strong> status, depending on the cluster's size and Google request queue. This process usually takes around 15 minutes.</li>
+			</ol>
+			<p>Lastly, let's look into AKS.</p>
+			<h2 id="_idParaDest-129"><a id="_idTextAnchor128"/>AKS</h2>
+			<p>Lastly, the <a id="_idIndexMarker579"/>installation procedure for AKS is as follows:</p>
+			<ol>
+				<li value="1">Follow the same steps for EKS and GKE, but this time, select <strong class="bold">Azure AKS</strong> from the options menu.</li>
+				<li>The details for all the different settings can be found at <a href="https://rancher.com/docs/rancher/v2.6/en/cluster-admin/editing-clusters/aks-config-reference/">https://rancher.com/docs/rancher/v2.6/en/cluster-admin/editing-clusters/aks-config-reference/</a>.</li>
+				<li>It is important to note that the network policy is a setting that can only be enabled when creating clusters. You can find details about the different options at https://docs.microsoft.com/en-us/azure/aks/use-network-policies#differences-between-azure-and-calico-policies-and-their-capabilities.</li>
+				<li>Again, the final step of clicking the <strong class="bold">Create</strong> button will cause Rancher to start the cluster creation process.</li>
+				<li>The cluster <a id="_idIndexMarker580"/>will go into the <strong class="bold">Updating</strong> status, depending on the cluster's size and Microsoft's request queue. This process usually takes around 60 minutes. From experience, the first cluster in a subscription takes the longest, with additional clusters being faster.</li>
+			</ol>
+			<p>At this point, we should have a Kubernetes cluster from one or more of the cloud providers and be able to easily repeat this process for as many different clusters as we need. This leads us into the final section on what do you do after your cluster is up and running. </p>
+			<h1 id="_idParaDest-130"><a id="_idTextAnchor129"/>Ongoing maintenance tasks</h1>
+			<p>After creating a cluster, a few ongoing maintenance tasks need to be done to keep it running in a healthy state.</p>
+			<p>The first <a id="_idIndexMarker581"/>recommended task is setting up backups. But because these are hosted clusters, we can't take an etcd backup as we would with an RKE1/2 cluster. So, we'll need to <a id="_idIndexMarker582"/>use a third-party tool such as <strong class="bold">Velcro</strong> or <strong class="bold">Kasten</strong>. These tools <a id="_idIndexMarker583"/>follow the same basic process of querying the Kube-API endpoint to grab a list of objects in the cluster. Then, they will export the different types of Kubernetes objects, IE deployments, ConfigMaps, secrets, and so on as a JSON or YAML file, the idea being that the restore process is running <strong class="source-inline">kubectl apply</strong> on the backup files. We will be covering these tools in an upcoming chapter.</p>
+			<p>The second recommended task is testing and documenting how an upgrade impacts your applications. As most cloud providers will do a force drain of a node during a scheduled upgrade, you'll want to test how your application handles this kind of drain. For example, if you are using a multi-master database such as MariaDB Galera Cluster, do your database <a id="_idIndexMarker584"/>pods rebuild faster than the worker nodes are drained? A typical way to test this is by changing the node image to simulate the effects of a Kubernetes upgrade. This is because most providers don't allow you to downgrade your clusters. So, being able to repeat this test over and over again is not possible.</p>
+			<h1 id="_idParaDest-131"><a id="_idTextAnchor130"/>Summary</h1>
+			<p>In this chapter, we learned about the different types of hosted clusters that Rancher can deploy, including the requirements and limitations of each. We then covered the rules of architecting each type of cluster, including some of the pros and cons of each solution. We finally went into detail about the steps for creating each type of cluster. We ended the chapter by going over the major ongoing maintenance tasks. </p>
+			<p>The next chapter will cover importing an externally managed cluster into Rancher.</p>
+		</div>
+	</body></html>

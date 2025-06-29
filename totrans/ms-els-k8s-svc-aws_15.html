@@ -1,0 +1,233 @@
+<html><head></head><body>
+		<div id="_idContainer121">
+			<h1 id="_idParaDest-217" class="chapter-number"><a id="_idTextAnchor220"/>15</h1>
+			<h1 id="_idParaDest-218"><a id="_idTextAnchor221"/>Working with AWS Fargate</h1>
+			<p>Throughout this book, we have used <strong class="bold">Elastic Compute Cloud</strong> (<strong class="bold">EC2</strong>) instances as worker nodes for our <strong class="bold">Elastic Kubernetes Service</strong> (<strong class="bold">EKS</strong>) cluster, but <strong class="bold">AWS Fargate</strong> can be used as an alternative to host Pods. As we will see later on, Fargate can be used to provide a more secure operating environment for a Pod and can also be more cost-effective (but <span class="No-Break">not always).</span></p>
+			<p>In some cases, you want to deploy a workload/application that runs infrequently, has a small memory/CPU footprint, and/or needs enhanced security, for example, creating a regular dump of a production database. Fargate can be used to meet all of these requirements. In this chapter, we will dive into more detail on how and when you should use AWS Fargate, as well as how it works with EKS to provide an alternative to EC2-based worker nodes. Specifically, we will cover the <span class="No-Break">following topics:</span></p>
+			<ul>
+				<li>What AWS Fargate is and how is <span class="No-Break">it priced</span></li>
+				<li>How to create a Fargate profile <span class="No-Break">in EKS</span></li>
+				<li>How to deploy a Pod to a <span class="No-Break">Fargate instance</span></li>
+				<li>How to troubleshoot common <span class="No-Break">Fargate issues</span></li>
+			</ul>
+			<h1 id="_idParaDest-219"><a id="_idTextAnchor222"/>Technical requirements</h1>
+			<p>You should be familiar with YAML, AWS <strong class="bold">Identity and Access Management</strong> (<strong class="bold">IAM</strong>), and EKS architecture. Before getting started with this chapter, please ensure that the following is <span class="No-Break">in place:</span></p>
+			<ul>
+				<li>Network connectivity to your EKS cluster <span class="No-Break">API endpoint</span></li>
+				<li>The AWS <strong class="bold">Command Line Interface</strong> (<strong class="bold">CLI</strong>), Docker, and the <strong class="source-inline">kubectl</strong> binary are installed on <span class="No-Break">your workstation</span></li>
+				<li>You have a basic understanding of AWS networking <span class="No-Break">and EC2</span></li>
+			</ul>
+			<h1 id="_idParaDest-220"><a id="_idTextAnchor223"/>What is AWS Fargate?</h1>
+			<p>AWS Fargate was developed as an alternative<a id="_idIndexMarker746"/> to EC2 to provide a <em class="italic">serverless</em>, container-native compute solution with three key <span class="No-Break">design tenets:</span></p>
+			<ul>
+				<li>To be as secure <span class="No-Break">as possible</span></li>
+				<li>To be reliable and scale to <span class="No-Break">meet demand</span></li>
+				<li>To <span class="No-Break">be cost-efficient</span></li>
+			</ul>
+			<p>If we compare the EC2-based EKS worker node and Fargate technical stacks, illustrated in <span class="No-Break"><em class="italic">Figure 15</em></span><em class="italic">.1</em>, we can see that they are very similar. They run on physical servers, with both a virtual machine operating system and a container runtime that support a containerized application. The key difference is that Fargate is serverless, which means that you don’t need to care about the virtual machine operating system, container runtime, and so on, as this is all managed <span class="No-Break">by AWS:</span></p>
+			<div>
+				<div id="_idContainer118" class="IMG---Figure">
+					<img src="image/Figure_15.1_B18838.jpg" alt="Figure 15.1 – AWS Fargate versus EC2"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.1 – AWS Fargate versus EC2</p>
+			<p>The other main difference<a id="_idIndexMarker747"/> is that Fargate is really<a id="_idIndexMarker748"/> designed for small, bursty, or batch workloads, unlike EC2, which is traditionally used for more stable, long-running workloads. This means that the underlying physical compute fleet is optimized to maintain a high utilization/density, which in turn means it is operationally efficient and can therefore be much cheaper to use for <span class="No-Break">the consumer.</span></p>
+			<p>The following workloads<a id="_idIndexMarker749"/> suit the use of Fargate over a more traditional <span class="No-Break">EC2 deployment:</span></p>
+			<ul>
+				<li>If your production workload is small with the occasional burst, such as sporadic web traffic during the day but low to no traffic <span class="No-Break">at night</span></li>
+				<li>If you have a small test/non-production environment that is used occasionally, then Fargate can be more efficient than an underutilized <span class="No-Break">EC2 instance</span></li>
+				<li>If your workload consists of a task that runs periodically, such as a batch or <span class="No-Break">cron job</span></li>
+			</ul>
+			<p>Another<a id="_idIndexMarker750"/> consideration is the use of <strong class="bold">Firecracker</strong>, which is a <strong class="bold">Virtual Machine Manager</strong> (<strong class="bold">VMM</strong>) developed by AWS and open<a id="_idIndexMarker751"/> source. Firecracker<a id="_idIndexMarker752"/> uses the concept of a <strong class="bold">MicroVM</strong> to create a small, secure, isolated<a id="_idIndexMarker753"/> environment to run containers<a id="_idIndexMarker754"/> that are very quick to create or destroy and provide fine-grained control over how <strong class="bold">central processing unit</strong> (<strong class="bold">CPU</strong>), <strong class="bold">random access memory</strong> (<strong class="bold">RAM</strong>), disk, and networking shares <span class="No-Break">are allocated:</span></p>
+			<div>
+				<div id="_idContainer119" class="IMG---Figure">
+					<img src="image/Figure_15.2_B18838.jpg" alt="Figure 15.2 – Fargate EKS architecture"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.2 – Fargate EKS architecture</p>
+			<p>Fargate <a id="_idIndexMarker755"/>uses EC2 Baremetal instances<a id="_idIndexMarker756"/> as its fleet and Firecracker to create and manage MicroVMs on these instances for multiple tenants (customers). Firecracker ensures that while a single Fargate EC2 host can support many MicroVMs from different<a id="_idIndexMarker757"/> AWS customers, they are all isolated through different <strong class="bold">virtual machine</strong> (<strong class="bold">VM</strong>) <span class="No-Break">boundary controls.</span></p>
+			<p>A MicroVM will host a single Pod, and these Pods<a id="_idIndexMarker758"/> don’t share underlying kernels, CPU resources, memory resources, or <strong class="bold">Elastic Network Interfaces</strong> (<strong class="bold">ENIs</strong>) with another Pod. They are orchestrated through the Fargate EKS agent, which allows the K8s scheduler<a id="_idIndexMarker759"/> to schedule Pods<a id="_idIndexMarker760"/> on the Fargate fleet and connect it using the EKS AWS <strong class="bold">virtual private cloud</strong> (<strong class="bold">VPC</strong>) <strong class="bold">Container Network Interface</strong> (<strong class="bold">CNI</strong>) to private subnets (public subnets are not supported) in the <span class="No-Break">customer’s VPC.</span></p>
+			<p>The K8s scheduler uses a <strong class="bold">Fargate profile</strong> to determine whether a Pod<a id="_idIndexMarker761"/> specification meets the requirements to be deployed onto the Fargate fleet. We will describe this process in more detail in the <span class="No-Break">subsequent</span><span class="No-Break"><a id="_idIndexMarker762"/></span><span class="No-Break"> section.</span></p>
+			<p>Now that we understand the general architecture, let’s look at how Fargate <span class="No-Break">is priced.</span></p>
+			<h1 id="_idParaDest-221"><a id="_idTextAnchor224"/>Understanding the Fargate pricing model</h1>
+			<p>Fargate has a simple pricing<a id="_idIndexMarker763"/> model based on the duration for which you use the MicroVM/Pod (per-second granularity) and the vCPU/RAM and disk allocated <span class="No-Break">to it.</span></p>
+			<p>If we first look at a 2 CPU/4 GB EC2 instance with 30 GB of disk running 100% of the time, then based on on-demand pricing using the Frankfurt Region as an example, that would cost us <span class="No-Break">approximately </span><span class="No-Break"><em class="italic">$21/month</em></span><span class="No-Break">.</span></p>
+			<p>If we use a Fargate Pod with 2 CPU/4 GB with 30 GB of disk running for 5 hours every day, based on on-demand pricing in the Frankfurt Region, that would cost us <span class="No-Break">approximately </span><span class="No-Break"><em class="italic">$10/month</em></span><span class="No-Break">.</span></p>
+			<p>At first glance, we can see that Fargate is less than half the price of an EC2 instance! However, if we just double the duration of the Pod execution time from 5 hours/day to 10 hours/day, then the cost goes up to $35/month, which is quite a bit more. Also, bear in mind that with the EC2 instance, we could run multiple Pods on an instance without incurring any additional costs, whereas with Fargate, every Pod would be an additional $10 or $35 (assuming they are configured the same and run for the same amount <span class="No-Break">of time).</span></p>
+			<p>What you can see from this example is that while the Fargate pricing model is easy to understand, from a pure cost perspective, using Fargate for long-running workloads is not very effective, but for bursty, short-lived workloads, it will be cost-efficient. However, if you factor in the total cost of managing and operating EC2 instances, as opposed to the fact that AWS will manage and patch your Fargate ones, you may be able to build a business case <span class="No-Break">around Fargate.</span></p>
+			<p>You should also bear in mind that most EC2 instances are not 100% utilized; in many cases, they barely touch 30% utilization. So, if you have an existing large EC2 estate (of more than 100 instances), Fargate may save you a lot of money as you can reduce the impact of higher Fargate costs with a reduction<a id="_idIndexMarker764"/> in costs in your EC2 estate. Now that we’ve looked at the Fargate pricing model, let’s consider how we can configure EKS to <span class="No-Break">use Fargate.</span></p>
+			<h1 id="_idParaDest-222"><a id="_idTextAnchor225"/>Creating an AWS Fargate profile in EKS</h1>
+			<p>Understanding the AWS Fargate service<a id="_idIndexMarker765"/> is interesting, but we only covered<a id="_idIndexMarker766"/> it in this book to really give you some background. As Fargate is serverless, you really only need to understand how to get the Kubernetes scheduler to talk to the Fargate service and create the MicroVM, attach it to the network, and deploy the Pod. This is all done through the Fargate Profile, which will be discussed in detail in the <span class="No-Break">following section.</span></p>
+			<h2 id="_idParaDest-223"><a id="_idTextAnchor226"/>Understanding how the AWS Fargate profile works</h2>
+			<p>When considering how to integrate<a id="_idIndexMarker767"/> the Fargate service with EKS, the AWS team made a conscious decision not to make users update their existing K8s manifests to support Fargate. Instead, the <strong class="bold">profile</strong> identifies which namespaces and/or labels will be used to host Pods on Fargate, and no changes are required in the Pod definition. The following diagram illustrates how this <span class="No-Break">process works:</span></p>
+			<div>
+				<div id="_idContainer120" class="IMG---Figure">
+					<img src="image/Figure_15.3_B18838.jpg" alt="Figure 15.3 – Fargate profile workflow"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.3 – Fargate profile workflow</p>
+			<p>The steps shown in the previous<a id="_idIndexMarker768"/> diagram are detailed <span class="No-Break">as follows:</span></p>
+			<ol>
+				<li>When a <strong class="source-inline">Pod Create</strong> API request is received by the API server (this could be an individual Pod spec, part of a deployment, or any other), it triggers an event that is captured by a custom webhook that is installed and managed by AWS in the EKS <span class="No-Break">control plane.</span></li>
+				<li>This webhook looks at the Fargate profile<a id="_idIndexMarker769"/> to determine whether the namespace or labels being used are serviced by the Fargate service. If it matches, it will change the scheduler name to use the <strong class="bold">Fargate Scheduler</strong> instead of the standard <span class="No-Break">K8s scheduler.</span></li>
+				<li>The API server now writes the <em class="italic">intent</em> with the appropriate scheduler name to <strong class="source-inline">etcd</strong> to wait to <span class="No-Break">be scheduled.</span></li>
+				<li>If the scheduler name has been changed to the Fargate scheduler, then it will eventually be picked up by that scheduler, which takes care of requesting the compute resources from the AWS Fargate fleet and orchestrating the creation of the MicroVM and attaching it to the customer VPC. The Fargate Scheduler is another component that is created and managed by AWS in the EKS <span class="No-Break">control plane.</span></li>
+			</ol>
+			<p>As you can see, the Fargate profile controls<a id="_idIndexMarker770"/> how everything works. So now, let’s create one and see how <span class="No-Break">it works.</span></p>
+			<h2 id="_idParaDest-224"><a id="_idTextAnchor227"/>Creating and adjusting the Fargate profile</h2>
+			<p>The easiest way to create<a id="_idIndexMarker771"/> a Fargate profile is to use <strong class="source-inline">eksctl</strong>. Let’s first create <a id="_idIndexMarker772"/>a new namespace to host the workload using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl create namespace fargate-workload
+namespace/fargate-workload created</pre>
+			<p>We can then use <strong class="source-inline">eksctl</strong> to create (and verify) the Fargate profile and specify the new namespace as a target for Fargate (by default, you can have up to 10 profiles <span class="No-Break">per cluster):</span></p>
+			<pre class="console">
+$ eksctl create fargateprofile --cluster myipv4cluster --name fargate --namespace fargate-workload
+2022-12-16 10:42:23deploying stack "eksctl-myipv4cluster-fargate"
+…
+2022-12-16 10:47:12 created Fargate profile "fargate" on EKS cluster "myipv4cluster"
+$ eksctl get fargateprofile --cluster myipv4cluster -o yaml
+- name: fargate
+  podExecutionRoleARN: arn:aws:iam::112233:role/eksctl-myipv4cluster-farga-FargatePodExecutionRole-1CD7AYHOTBDYO
+  selectors:
+  - namespace: fargate-workload
+  status: ACTIVE
+  subnets:
+  - subnet-privat1
+  - subnet-private2
+  - subnet-private3</pre>
+			<p>Now the profile<a id="_idIndexMarker773"/> is configured, let’s look<a id="_idIndexMarker774"/> at how we can <span class="No-Break">use it.</span></p>
+			<h1 id="_idParaDest-225"><a id="_idTextAnchor228"/>Deploying a Pod to a Fargate instance</h1>
+			<p>You can see from<a id="_idIndexMarker775"/> the previous output <strong class="source-inline">eksctl</strong> has created not<a id="_idIndexMarker776"/> only the profile but also an execution role to allow Fargate Pods to use the AWS services and automatically assign the private subnets in <span class="No-Break">the VPC.</span></p>
+			<p>If we now take one of the manifests previously used in this book and simply change the namespace to the <strong class="source-inline">fargate-workload</strong> namespace and deploy it, we will see the Pod is deployed on a Fargate instance rather than on <span class="No-Break">EC2 workers:</span></p>
+			<pre class="source-code">
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-web
+  <strong class="bold">namespace: fargate-workload</strong>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simple-nginx-app
+  template:
+    metadata:
+      labels:
+        app: simple-nginx-app
+    spec:
+      containers:
+        - name: nginx
+          image: nginx</pre>
+			<p>If we look at the Pod that was deployed<a id="_idIndexMarker777"/> using the following<a id="_idIndexMarker778"/> commands, we can see it’s running <span class="No-Break">on Fargate:</span></p>
+			<pre class="console">
+$ kubectl get po -n fargate-workload -o wide
+NAME  READY   STATUS    RESTARTS   AGE   IP  NODE ..
+simple-web-12-   1/1     Running   0      11m   192.168.179.65    fargate-ip-192-168-179-65.eu-central-1.compute.internal</pre>
+			<p>We can also verify in the Pod specification whether the scheduler has been set correctly and that the MicroVM is now registered as a node with our cluster using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl get pods -o yaml -n fargate-workload  simple-web-12 | grep schedulerName.
+  schedulerName: <strong class="bold">fargate-scheduler</strong>
+$ kubectl get node
+……
+<strong class="bold">fargate-ip-192-168-179-65.eu-central-1.compute.internal</strong>   Ready    &lt;none&gt;   18m   v1.20.15-eks-14c7a48
+ip-192-168-12-212.eu-central-1.compute.internal           Ready    &lt;none&gt;   96d   v1.20.15-eks-ba74326
+ip-192-168-63-61.eu-central-1.compute.internal            Ready    &lt;none&gt;   96d   v1.20.15-eks-ba74326
+ip-192-168-70-114.eu-central-1.compute.internal           Ready    &lt;none&gt;   96d   v1.20.15-eks-ba74326</pre>
+			<p>While the Pod has been created, it is only accessible from inside the VPC (it will use the same security group as the EC2 base worker node) so we can add an NLB or ALB, as described in <a href="B18129_14.xhtml#_idTextAnchor205"><span class="No-Break"><em class="italic">Chapter 14</em></span></a>. A quick way to test connectivity<a id="_idIndexMarker779"/> to your Pod running on Fargate is to <strong class="bold">Secure Shell Protocol</strong> (<strong class="bold">SSH</strong>) onto an existing EC2 worker node in your cluster (if you have EC2 worker nodes) and run a <strong class="source-inline">curl</strong> command, an example of which is <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+$ curl 192.168.179.65
+&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+&lt;title&gt;Welcome to nginx!&lt;/title&gt;
+…..
+&lt;/html&gt;
+$</pre>
+			<p>Fargate has a number of preconfigured<a id="_idIndexMarker780"/> vCPU and memory sizes; if you don’t specify<a id="_idIndexMarker781"/> a vCPU and memory combination, then the smallest available combination is used (0.25 vCPU and 0.5 GB memory). This can be validated using the <strong class="source-inline">kubectl describe po</strong> command, an example of which is <span class="No-Break">as follows:</span></p>
+			<pre class="console">
+$ kubectl describe po simple-web-12 -n fargate-workload
+Name:                 simple-web-99b67d675-24ptk
+Namespace:            fargate-workload
+Priority:             2000001000
+Priority Class Name:  system-node-critical
+Node:                 fargate-ip-1.1.1.1.eu-central-1.compute.internal/192.168.179.65
+Start Time:           Fri, 16 Dec 2022 11:46:40 +0000
+Labels:               app=simple-nginx-app
+                      eks.amazonaws.com/fargate-profile=fargate
+                      pod-template-hash=99b67d675
+Annotations:          <strong class="bold">CapacityProvisioned: 0.25vCPU 0.5GB</strong>
+                      …….</pre>
+			<p>If we adjust the Pod spec in our initial<a id="_idIndexMarker782"/> deployment and set some<a id="_idIndexMarker783"/> limits, it will then change the size of the Fargate instance. An example of a K8s manifest is shown in the following code snippet, which uses memory and <span class="No-Break">CPU limits:</span></p>
+			<pre class="source-code">
+containers:
+        - name: nginx
+          image: nginx
+<strong class="bold">          resources:</strong>
+<strong class="bold">            limits:</strong>
+<strong class="bold">              memory: "2Gi"</strong>
+<strong class="bold">              cpu: "2000m"</strong></pre>
+			<p>If we rerun the <strong class="source-inline">describe</strong> command after we update the deployment, we can see the provisioned capacity <span class="No-Break">has increased:</span></p>
+			<pre class="console">
+$ kubectl describe po simple-web-688f85f87d-gtxkb -n fargate-workload
+Name:                 simple-web-688f85f87d-gtxkb
+Namespace:            fargate-workload
+Priority:             2000001000
+Priority Class Name:  system-node-critical
+Node:                 &lt;none&gt;
+Labels:               app=simple-nginx-app
+                      eks.amazonaws.com/fargate-profile=fargate
+                      pod-template-hash=688f85f87d
+<strong class="bold">Annotations:          CapacityProvisioned: 2vCPU 4GB</strong></pre>
+			<p>You can see that the limits and the Fargate annotation/size don’t exactly align! This is because there is 2 GiB set for memory in the manifest but 4 GB is assigned. This is because Fargate tries to match the manifest configuration to the set CPU/memory configurations that have been defined, and it will add some overhead (246 MB RAM) to support the required Kubernetes components (<strong class="source-inline">kubelet</strong>, <strong class="source-inline">kube-proxy</strong>, and <strong class="source-inline">containerd</strong>). Each Pod will also receive 20 GB of ephemeral storage that can be used to cache data, but this will be deleted when the Pod <span class="No-Break">is deleted.</span></p>
+			<p>It’s worth noting that if you run<a id="_idIndexMarker784"/> your Pod for an extended period<a id="_idIndexMarker785"/> of time, there is a possibility that AWS will patch your Pod, and this could<a id="_idIndexMarker786"/> lead to it being evicted and deleted. In order to mitigate this, you should use <strong class="bold">Pod Disruption Budgets</strong> (<strong class="bold">PDBs</strong>) to maintain a certain number of Pods and prevent eviction, as shown in the following <span class="No-Break">code snippet:</span></p>
+			<pre class="source-code">
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fg-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: simple-ninx-app</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Depending on your K8s version, you may need to use the <strong class="source-inline">apiVersion policy/v1beta1</strong> <span class="No-Break">beta policy.</span></p>
+			<p>You can validate that the PDB is in place using the <span class="No-Break">following command:</span></p>
+			<pre class="console">
+$ kubectl get pod disruptionbudgets -n fargate-workload
+NAME MIN AVAILABLE  MAX UNAVAILABLE  ALLOWED DISRUPTIONS   AGE
+fg-pdb   1               N/A               0              43s</pre>
+			<p>While a PDB cannot guarantee your application resilience, it can go a certain way toward making sure operational issues don’t impact it. As AWS operates Fargate for you, most things happen seamlessly, but sometimes<a id="_idIndexMarker787"/> issues do occur. In the next section, let’s look at some common issues<a id="_idIndexMarker788"/> and how we can <span class="No-Break">troubleshoot them.</span></p>
+			<h1 id="_idParaDest-226"><a id="_idTextAnchor229"/>Troubleshooting common issues on Fargate</h1>
+			<p>The most common issue<a id="_idIndexMarker789"/> related to capacity is that occasionally, there<a id="_idIndexMarker790"/> will not be enough platform resources, and/or the CPU/RAM combination you want will not be supported. This results in the Pod status always being <strong class="bold">PENDING</strong>. If it is a platform issue, simply waiting and trying later (after 15/20 minutes) may resolve the issue; otherwise, adjust your Pod spec to support a different <span class="No-Break">CPU/RAM combination.</span></p>
+			<p>If your Fargate nodes are shown as <strong class="source-inline">Not Ready</strong> when you run the <strong class="source-inline">$ kubectl get nodes</strong> command, ensure that the execution role they are using is also configured in the <strong class="source-inline">aws-auth</strong> ConfigMap, an example of which is shown <span class="No-Break">as follows:</span></p>
+			<pre class="source-code">
+mapRoles: |
+    - groups:
+      - system:bootstrappers
+      - system:nodes
+      - system:node-proxier
+      rolearn: &lt;Pod_execution_role_ARN&gt;
+      username: system:node:{{SessionName}}</pre>
+			<p>You may have issues with CoreDNS Pods staying in a PENDING state; this is normally due to the VPC DNS not being configured. The solution is to ensure you have <strong class="source-inline">enableDNSHostnames</strong> and <strong class="source-inline">enableDNSSupport</strong> set to <strong class="source-inline">True</strong> for <span class="No-Break">your VPC.</span></p>
+			<p>If you have issues with the Fargate profile, make sure the target namespaces and labels are correctly configured in your cluster and Pod spec. There are some common processing rules that need to <span class="No-Break">be considered:</span></p>
+			<ul>
+				<li>The Fargate Scheduler matches all conditions, so if namespaces and labels are used in the profile, then they must both be used in the manifest in order to be scheduled on a <span class="No-Break">Fargate instance</span></li>
+				<li>If multiple Fargate profiles exist and a Pod matches multiple profiles, it is scheduled using a random <span class="No-Break">Fargate profile</span></li>
+			</ul>
+			<p>In this section, we have looked<a id="_idIndexMarker791"/> at what Fargate is, how it works<a id="_idIndexMarker792"/> and is configured, and how you can do some basic troubleshooting. We’ll now revisit the key learning points from <span class="No-Break">this chapter.</span></p>
+			<h1 id="_idParaDest-227"><a id="_idTextAnchor230"/>Summary</h1>
+			<p>In this chapter, we explored what Fargate is and how it works. You learned that Fargate is an AWS-managed service, so you really only need to focus on the Fargate profile and make sure that VPC networking and, optionally, load balancers are set up correctly for it all <span class="No-Break">to work.</span></p>
+			<p>We also explored the technology and discovered that under the hood, Fargate uses a Firecracker MicroVM to provide complete isolation between your Pod and other Pods even if these are in the <span class="No-Break">same cluster.</span></p>
+			<p>We reviewed how the Fargate profile is used to match Pod spec labels and namespaces in the profile and assign them to the Fargate scheduler, which handles the orchestration with the AWS Fargate service to provision your Pod on a Fargate MicroVM and connect it to <span class="No-Break">your VPC.</span></p>
+			<p>We then looked at how you can use a Pod or deployment manifest unchanged by just matching the namespace and/or labels defined in the Fargate profile namespace. We also learned that adjusting the <strong class="source-inline">Limits</strong> or <strong class="source-inline">Requests</strong> resources in the manifest will change the size of the MicroVM (providing it matches one of the pre-defined <span class="No-Break">CPU/RAM combinations).</span></p>
+			<p>Finally, we reviewed some common issues with Fargate and how to fix them. You should now be able to describe when to use Fargate for an EKS workload and be able to configure a Fargate profile to allow developers to deploy Pods on a <span class="No-Break">Fargate instance.</span></p>
+			<p>In the next chapter, we will look at how you can use a service mesh to provide greater security or <span class="No-Break">better telemetry/logging.</span></p>
+			<h1 id="_idParaDest-228"><a id="_idTextAnchor231"/>Further reading</h1>
+			<ul>
+				<li>Understanding the Firecracker <span class="No-Break">design: </span><a href="https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md"><span class="No-Break">https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md</span></a></li>
+				<li>Understanding how Fargate is <span class="No-Break">priced: </span><a href="https://aws.amazon.com/fargate/pricing/"><span class="No-Break">https://aws.amazon.com/fargate/pricing/</span></a></li>
+				<li>Understanding Fargate Pod <span class="No-Break">configurations: </span><a href="https://docs.aws.amazon.com/eks/latest/userguide/fargate-pod-configuration.html"><span class="No-Break">https://docs.aws.amazon.com/eks/latest/userguide/fargate-pod-configuration.html</span></a></li>
+			</ul>
+		</div>
+	</body></html>

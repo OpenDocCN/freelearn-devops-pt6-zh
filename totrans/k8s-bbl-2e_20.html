@@ -1,0 +1,969 @@
+<html><head></head><body>
+  <div class="Basic-Text-Frame" id="_idContainer416">
+    <h1 class="chapterNumber">20</h1>
+    <h1 class="chapterTitle" id="_idParaDest-642">Autoscaling Kubernetes Pods and Nodes</h1>
+    <p class="normal">Needless to say, having <strong class="keyWord">autoscaling</strong> capabilities for your cloud-native application is considered the holy <a id="_idIndexMarker1794"/>grail of running applications in the cloud. In short, by autoscaling, we mean a method of automatically and dynamically adjusting the amount of computational resources, such as CPU and RAM, available to your application. The goal of autoscaling is to add or remove resources based on the <strong class="keyWord">activity and demand</strong> of end users. So, for example, an application might require more CPU and RAM during daytime hours, when users are most active, but much less during the night. Similarly, for example, if you are supporting an e-commerce business infrastructure, you can expect a huge spike in demand during so-called <em class="italic">Black Friday</em>. In this way, you can not only provide <a id="_idIndexMarker1795"/>a better, highly available service to users but also reduce your <strong class="keyWord">cost of goods sold</strong> (<strong class="keyWord">COGS</strong>) for the business. The fewer resources you consume in the cloud, the less you pay, and the business can invest the money elsewhere – this is a <em class="italic">win-win</em> situation. There is, of course, no single rule that fits all use cases, hence good <a id="_idIndexMarker1796"/>autoscaling needs to be based on critical usage metrics and should have <strong class="keyWord">predictive features</strong> to anticipate the workloads based on history.</p>
+    <p class="normal">Kubernetes, as the most mature container orchestration system available, comes with a variety of built-in autoscaling features. Some of these features are natively supported in every Kubernetes cluster and some require installation or specific type of cluster deployment. There are also multiple <em class="italic">dimensions</em> of scaling that you can have:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Vertical for Pods</strong>: This involves adjusting the amount of CPU and memory resources available to a Pod. Pods can run under limits specified for CPU and memory, to prevent excessive consumption, but these limits may require automatic adjustment rather than a human operator guessing. This is implemented <a id="_idIndexMarker1797"/>by a <strong class="keyWord">VerticalPodAutoscaler</strong> (<strong class="keyWord">VPA</strong>).</li>
+      <li class="bulletList"><strong class="keyWord">Horizontal for Pods</strong>: This involves dynamically changing the number of Pod replicas for your Deployment or StatefulSet. These objects come with nice scaling features out of the box, but adjusting the number of replicas can be automated <a id="_idIndexMarker1798"/>using a <strong class="keyWord">HorizontalPodAutoscaler</strong> (<strong class="keyWord">HPA</strong>).</li>
+      <li class="bulletList"><strong class="keyWord">Horizontal for Nodes</strong>: Another dimension of horizontal scaling (scaling <em class="italic">out</em>), but this time at the level of a Kubernetes Node. You can scale your whole cluster by adding or removing the Nodes. This requires, of course, a Kubernetes Deployment that runs in an environment that supports the dynamic provisioning of machines, such as a cloud environment. This is implemented <a id="_idIndexMarker1799"/>by a <strong class="keyWord">Cluster Autoscaler</strong> (<strong class="keyWord">CA</strong>), available for some cloud vendors.</li>
+    </ul>
+    <p class="normal">In this chapter, we will cover the following topics:</p>
+    <ul>
+      <li class="bulletList">Pod resource requests and limits</li>
+      <li class="bulletList">Autoscaling Pods vertically using a VerticalPodAutoscaler</li>
+      <li class="bulletList">Autoscaling Pods horizontally using a HorizontalPodAutoscaler</li>
+      <li class="bulletList">Autoscaling Kubernetes Nodes using a Cluster Autoscaler</li>
+      <li class="bulletList">Alternative autoscalers for Kubernetes</li>
+    </ul>
+    <h1 class="heading-1" id="_idParaDest-643">Technical requirements</h1>
+    <p class="normal">For this chapter, you will need the following:</p>
+    <ul>
+      <li class="bulletList">A Kubernetes cluster deployed. We recommend using a multi-node Kubernetes cluster.</li>
+      <li class="bulletList">A <a id="_idIndexMarker1800"/>multi-node <strong class="keyWord">Google Kubernetes Engine</strong> (<strong class="keyWord">GKE</strong>) cluster. This is a prerequisite for VPA and cluster autoscaling.</li>
+      <li class="bulletList">A Kubernetes CLI (<code class="inlineCode">kubectl</code>) installed on your local machine and configured to manage your Kubernetes cluster.</li>
+    </ul>
+    <p class="normal">Basic Kubernetes cluster deployment (local and cloud-based) and <code class="inlineCode">kubectl</code> installation have been covered in <em class="chapterRef">Chapter 3</em>, <em class="italic">Installing Your First Kubernetes Cluster</em>.</p>
+    <p class="normal">Chapters <em class="chapterRef">15</em>, <em class="chapterRef">16</em>, and <em class="chapterRef">17</em> of this book have provided you with an overview of how to deploy a fully functional Kubernetes cluster on different cloud platforms and install the requisite CLIs to manage them.</p>
+    <p class="normal">The latest code samples for this chapter can be downloaded from the official GitHub repository at <a href="https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter20"><span class="url">https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter20</span></a>.</p>
+    <h1 class="heading-1" id="_idParaDest-644">Pod resource requests and limits</h1>
+    <p class="normal">Before we dive into the topics of autoscaling in Kubernetes, we need to get a bit more of an understanding <a id="_idIndexMarker1801"/>of how to control the CPU and memory resource (known as <strong class="keyWord">compute resources</strong>) usage by <a id="_idIndexMarker1802"/>using Pod containers in Kubernetes. Controlling the use of compute resources is important since, in this way, it is possible to enforce <strong class="keyWord">resource governance</strong> – this allows <a id="_idIndexMarker1803"/>better planning of the cluster capacity and, most importantly, prevents situations when a single container can consume all compute resources and prevent other Pods from serving the requests.</p>
+    <p class="normal">When you create a Pod, it is possible to specify how much of the compute resources its containers <strong class="keyWord">require</strong> and what the <strong class="keyWord">limits</strong> are in terms of permitted consumption. The Kubernetes resource <a id="_idIndexMarker1804"/>model provides an additional distinction <a id="_idIndexMarker1805"/>between two classes of resources: <strong class="keyWord">compressible</strong> and <strong class="keyWord">incompressible</strong>. In short, a compressible resource can be easily throttled, without severe consequences. </p>
+    <p class="normal">A perfect example of such a resource is the CPU – if you need to throttle CPU usage for a given container, the container will operate normally, just slower. On the other hand, we have incompressible resources that cannot be throttled without severe consequences – memory allocation is an example of such a resource. If you do not allow a process running in a container to allocate more memory, the process will crash and result in a container restart.</p>
+    <p class="normal">To control the resources for a Pod container, you can specify two values in its specification:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">requests</code>: This specifies the guaranteed amount of a given resource provided by the system. You can also think about this the other way around – this is the amount of a given resource that the Pod container requires from the system in order to function properly. This is important as Pod scheduling is dependent on the <code class="inlineCode">requests</code> value (not <code class="inlineCode">limits</code>), namely, the <code class="inlineCode">PodFitsResources</code> predicate and the <code class="inlineCode">BalancedResourceAllocation</code> priority.</li>
+      <li class="bulletList"><code class="inlineCode">limits</code>: This specifies the <strong class="keyWord">maximum</strong> amount of a given resource that is provided by the system. If specified together with <code class="inlineCode">requests</code>, this value must be greater than or equal to <code class="inlineCode">requests</code>. Depending on whether the resource is compressible or incompressible, exceeding the limit has different consequences – compressible resources (CPU) will be throttled, whereas incompressible resources (RAM) <em class="italic">might</em> result in container kill and restart.</li>
+    </ul>
+    <p class="normal">You can allow <a id="_idIndexMarker1806"/>the overcommitment of resources by setting different values for requests and limits. The system will then be able to handle brief periods of high resource usage more gracefully while it optimizes overall resource utilization. This works because it’s fairly unlikely that all containers on a Node will reach their resource limits simultaneously. Hence, Kubernetes can use the available resources more effectively most of the time. It’s kind of like overprovisioning in the case of virtual machines or airlines overbooking because not everybody uses all of their allocation at the same time. This means you can actually get more Pods on each Node, which improves overall resource utilization.</p>
+    <p class="normal">If you do not specify <code class="inlineCode">limits</code> at all, the container can consume as much of the resource on a Node as it wants. This can be controlled by namespace <strong class="keyWord">resource quotas</strong> and <strong class="keyWord">limit ranges</strong>, which we explored in <em class="chapterRef">Chapter 6</em>, <em class="italic">Namespaces, Quotas, and Limits for Multi-Tenancy in Kubernetes</em>.</p>
+    <div class="packt_tip">
+      <p class="normal">In more advanced scenarios, it is also possible to control huge pages and ephemeral storage <code class="inlineCode">requests</code> and <code class="inlineCode">limits</code>.</p>
+    </div>
+    <p class="normal">Before we dive into the configuration details, we need to look at the units for measuring CPU and memory in Kubernetes:</p>
+    <ul>
+      <li class="bulletList">For CPU, the base <a id="_idIndexMarker1807"/>unit is <strong class="keyWord">Kubernetes CPU</strong> (<strong class="keyWord">KCU</strong>), where <code class="inlineCode">1</code> is equivalent to, for example, 1 vCPU on Azure, 1 core on GCP, or 1 hyperthreaded core on a bare-metal machine.</li>
+      <li class="bulletList">Fractional values are allowed: <code class="inlineCode">0.1</code> can be also specified as <code class="inlineCode">100m</code> (<em class="italic">milliKCUs</em>).</li>
+      <li class="bulletList">For memory, the base unit is a <strong class="keyWord">byte</strong>; you can, of course, specify standard unit prefixes, such as <code class="inlineCode">M</code>, <code class="inlineCode">Mi</code>, <code class="inlineCode">G</code>, or <code class="inlineCode">Gi</code>.</li>
+    </ul>
+    <p class="normal">To enable com pute resource <code class="inlineCode">requests</code> and <code class="inlineCode">limits</code> for Pod containers in the <code class="inlineCode">nginx</code> Deployment that we used in the previous chapters, make the following changes to the YAML manifest, <code class="inlineCode">resource-limit/nginx-deployment.yaml</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># resource-limit/nginx-deployment.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-deployment-example</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">5</span>
+<span class="hljs-string">.</span>
+<span class="hljs-string">...&lt;removed</span> <span class="hljs-string">for</span> <span class="hljs-string">brevity&gt;...</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+          <span class="hljs-attr">image:</span> <span class="hljs-string">nginx:1.17</span>
+          <span class="hljs-attr">ports:</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+          <span class="code-highlight"><strong class="hljs-attr-slc">resources:</strong></span>
+            <span class="code-highlight"><strong class="hljs-attr-slc">limits:</strong></span>
+              <span class="code-highlight"><strong class="hljs-attr-slc">cpu:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">200m</strong></span>
+              <span class="code-highlight"><strong class="hljs-attr-slc">memory:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">60Mi</strong></span>
+            <span class="code-highlight"><strong class="hljs-attr-slc">requests:</strong></span>
+              <span class="code-highlight"><strong class="hljs-attr-slc">cpu:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">100m</strong></span>
+              <span class="code-highlight"><strong class="hljs-attr-slc">memory:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">50Mi</strong></span>
+</code></pre>
+    <p class="normal">For each <a id="_idIndexMarker1808"/>container that you have in the Pod, specify the <code class="inlineCode">.spec.template.spec.containers[*].resources</code> field. In this case, we have set <code class="inlineCode">limits</code> at <code class="inlineCode">200m</code> KCU and <code class="inlineCode">60Mi</code> for RAM, and <code class="inlineCode">requests</code> at <code class="inlineCode">100m</code> KCU and <code class="inlineCode">50Mi</code> for RAM.</p>
+    <p class="normal">When you apply the manifest to the cluster using <code class="inlineCode">kubectl apply -f resource-limit/nginx-deployment.yaml</code>, describe one of the Nodes in the cluster that run Pods for this Deployment, and you will see the detailed information about compute resources quotas and allocation:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe node minikube-m03
+...&lt;removed for brevity&gt;...
+Non-terminated Pods:          (5 in total)
+  Namespace                   Name                                         CPU Requests  CPU Limits  Memory Requests  Memory Limits  Age
+  ---------                   ----                                         ------------  ----------  ---------------  -------------  ---
+  default                     nginx-deployment-example-6d444cfd96-f5tnq    100m (5%)     200m (10%)  50Mi (2%)        60Mi (3%)      23s
+  default                     nginx-deployment-example-6d444cfd96-k6j9d    100m (5%)     200m (10%)  50Mi (2%)        60Mi (3%)      23s
+  default                     nginx-deployment-example-6d444cfd96-mqxxp    100m (5%)     200m (10%)  50Mi (2%)        60Mi (3%)      23s
+  kube-system                 calico-node-92bdc                            250m (12%)    0 (0%)      0 (0%)           0 (0%)         6d23h
+  kube-system                 kube-proxy-5cd4x                             0 (0%)        0 (0%)      0 (0%)           0 (0%)         6d23h
+Allocated resources:
+  (Total limits may be over 100 percent, i.e., overcommitted.)
+  Resource           Requests    Limits
+  --------           --------    ------
+  cpu                550m (27%)  600m (30%)
+  memory             150Mi (7%)  180Mi (9%)
+  ephemeral-storage  0 (0%)      0 (0%)
+  hugepages-2Mi      0 (0%)      0 (0%)
+Events:              &lt;none&gt;
+</code></pre>
+    <p class="normal">Now, based on <a id="_idIndexMarker1809"/>this information, you could experiment and set CPU <code class="inlineCode">requests</code> for the container to a value higher than the capacity of a single Node in the cluster; in our case, we modify the value as follows in <code class="inlineCode">resource-limit/nginx-deployment.yaml</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-string">...</span>
+          <span class="hljs-attr">resources:</span>
+            <span class="hljs-attr">limits:</span>
+              <span class="code-highlight"><strong class="hljs-attr-slc">cpu:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">2000m</strong></span>
+              <span class="hljs-attr">memory:</span> <span class="hljs-string">60Mi</span>
+            <span class="hljs-attr">requests:</span>
+              <span class="code-highlight"><strong class="hljs-attr-slc">cpu:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">2000m</strong></span>
+              <span class="hljs-attr">memory:</span> <span class="hljs-string">50Mi</span>
+<span class="hljs-string">...</span>
+</code></pre>
+    <p class="normal">Apply the configuration as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f resource-limit/nginx-deployment.yaml
+deployment.apps/nginx-deployment-example configured
+</code></pre>
+    <p class="normal">Check the Pod status as follows, and you will notice that new Pods hang in the <code class="inlineCode">Pending</code> state because they cannot be scheduled on a matching Node:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pod
+NAME                                        READY   STATUS    RESTARTS   AGE
+nginx-deployment-example-59b669d85f-cdptx   1/1     Running   0          52s
+nginx-deployment-example-59b669d85f-hdzdf   1/1     Running   0          54s
+nginx-deployment-example-59b669d85f-ktn59   1/1     Running   0          54s
+nginx-deployment-example-59b669d85f-vdn87   1/1     Running   0          52s
+nginx-deployment-example-69bd6d55b4-n2mzq   0/1     Pending   0          3s
+nginx-deployment-example-69bd6d55b4-qb62p   0/1     Pending   0          3s
+nginx-deployment-example-69bd6d55b4-w7xng   0/1     Pending   0          3s
+</code></pre>
+    <p class="normal">Investigate <a id="_idIndexMarker1810"/>the <code class="inlineCode">Pending</code> state by describing the Pod as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe pod nginx-deployment-example-69bd6d55b4-n2mzq
+...
+Events:
+  Type     Reason            Age                  From               Message
+  ----     ------            ----                 ----               -------
+  Warning  FailedScheduling  23m (x21 over 121m)  default-scheduler  <span class="code-highlight"><strong class="hljs-slc">0/3 nodes are available:</strong></span> 1 node(s) had untolerated taint {machine-check-exception: memory}, 2 Insufficient cpu. preemption: 0/3 nodes are available: 1 Preemption is not helpful for scheduling, 2 No preemption victims found for incoming pod.
+</code></pre>
+    <div class="note">
+      <p class="normal">Some of the autoscaling mechanisms discussed in this chapter are currently in alpha or beta versions, which might not be fully stable and thus might not be suitable for production environments. For more mature autoscaling solutions, please refer to the Alternative autoscalers for Kubernetes section of this chapter.</p>
+    </div>
+    <p class="normal">In the preceding output, there were no Nodes that could accommodate a Pod that has a container requiring <code class="inlineCode">2000m</code> KCU, and therefore the Pod cannot be scheduled at this time.</p>
+    <p class="normal">Knowing now how to manage compute resources, we will move on to autoscaling topics: first, we will explain the vertical autoscaling of Pods.</p>
+    <h1 class="heading-1" id="_idParaDest-645">Autoscaling Pods vertically using a VerticalPodAutoscaler</h1>
+    <p class="normal">In the previous section, we managed <code class="inlineCode">requests</code> and <code class="inlineCode">limits</code> for compute resources manually. Setting these values correctly requires some accurate human <em class="italic">guessing</em>, observing metrics, and performing benchmarks to adjust. Using overly high <code class="inlineCode">requests</code> values will <a id="_idIndexMarker1811"/>result in a waste of compute resources, whereas setting <code class="inlineCode">requests</code> too low might result in Pods being packed <a id="_idIndexMarker1812"/>too densely and having performance issues. Also, in some cases, the only way to scale the Pod workload is to do it <strong class="keyWord">vertically</strong> by increasing the amount of compute resources it can consume. For bare-metal machines, this would mean upgrading the CPU hardware and adding more physical RAM. For containers, it is as simple as allowing them more of the compute resource quotas. This works, of course, only up to the capacity of a single Node. You cannot scale vertically beyond that unless you add more powerful Nodes to the cluster.</p>
+    <p class="normal">To help resolve these issues, you can use a VPA, which can increase and decrease CPU and memory resource <code class="inlineCode">requests</code> for Pod containers dynamically.</p>
+    <p class="normal">The following diagram shows the vertical scaling of Pods.</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_20_01.png"/></figure>
+    <p class="packt_figref">Figure 20.1: Vertical scaling of Pods</p>
+    <p class="normal">The goal is to better match the <em class="italic">actual</em> usage of the container rather than relying on hardcoded, predefined values resources request and limit values. Controlling <code class="inlineCode">limits</code> within specified ratios is also supported.</p>
+    <p class="normal">The VPA is <a id="_idIndexMarker1813"/>created by a <strong class="keyWord">Custom Resource Definition</strong> (<strong class="keyWord">CRD</strong>) object named <code class="inlineCode">VerticalPodAutoscaler</code>. This means the object is not part of standard Kubernetes API groups and must be installed in the cluster. The VPA is developed as part of an <strong class="keyWord">autoscaler</strong> project (<a href="https://github.com/kubernetes/autoscaler"><span class="url">https://github.com/kubernetes/autoscaler</span></a>) in the Kubernetes ecosystem.</p>
+    <p class="normal">There are three main components of a VPA:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Recommender</strong>: Monitors the current and past resource consumption and provides <a id="_idIndexMarker1814"/>recommended CPU and memory request values for a Pod container.</li>
+      <li class="bulletList"><strong class="keyWord">Updater</strong>: Checks <a id="_idIndexMarker1815"/>for Pods with incorrect resources and <strong class="keyWord">deletes</strong> them, so that the Pods can be recreated with the updated <code class="inlineCode">requests</code> and <code class="inlineCode">limits</code> values.</li>
+      <li class="bulletList"><strong class="keyWord">Admission plugin</strong>: Sets the correct resource <code class="inlineCode">requests</code> and <code class="inlineCode">limits</code> on new Pods <a id="_idIndexMarker1816"/>created or recreated by their controller, for example, a Deployment object, due to changes made by the updater.</li>
+    </ul>
+    <p class="normal">The <a id="_idIndexMarker1817"/>reason that <a id="_idIndexMarker1818"/>the updater needs to terminate Pods, and the VPA has to rely on the admission plugin, is that Kubernetes does not support dynamic changes to the resource <code class="inlineCode">requests</code> and <code class="inlineCode">limits</code>. The only way is to terminate the Pod and create a new one with new values.</p>
+    <div class="note">
+      <p class="normal">A VPA can run in a recommendation-only mode where you see the suggested values in the VPA object, but the changes are not applied to the Pods. A VPA is currently considered <em class="italic">experimental</em> and using it in a mode that recreates the Pods may lead to downtime for our application. This should change when in-place updates of Pod <code class="inlineCode">requests</code> and <code class="inlineCode">limits</code> are implemented.</p>
+    </div>
+    <p class="normal">Some Kubernetes offerings come with one-click or operator support for installing a VPA. Two good examples are OpenShift and GKE. Refer to the <em class="italic">Automatically adjust pod resource levels with the vertical pod autoscaler</em> article (<a href="https://docs.openshift.com/container-platform/4.16/nodes/pods/nodes-pods-vertical-autoscaler.html"><span class="url">https://docs.openshift.com/container-platform/4.16/nodes/pods/nodes-pods-vertical-autoscaler.html</span></a>) to learn <a id="_idIndexMarker1819"/>about VPA implementation in OpenShift. </p>
+    <h2 class="heading-2" id="_idParaDest-646">Enabling InPlacePodVerticalScaling</h2>
+    <p class="normal">In-place pod resizing, an alpha feature introduced in Kubernetes 1.27, allows for the dynamic <a id="_idIndexMarker1820"/>adjustment of pod resources without requiring restarts, potentially improving application performance and resource efficiency.</p>
+    <div class="note">
+      <p class="normal"><strong class="keyWord">Alpha Feature Warning</strong></p>
+      <p class="normal">In-place pod <a id="_idIndexMarker1821"/>resizing is an alpha feature as of Kubernetes 1.27 and may be changed in future versions without notice. It should not be deployed on production clusters because of potential instability; more generally, an alpha feature may not be subject to a stable version and can change at any time.</p>
+    </div>
+    <p class="normal">To activate this capability, the <code class="inlineCode">InPlacePodVerticalScaling</code> feature gate must be enabled across all cluster nodes.</p>
+    <p class="normal">For Kubernetes clusters, enable the feature gate using the following method:</p>
+    <ol>
+      <li class="numberedList" value="1">Update /<code class="inlineCode">etc/kubernetes/manifests/kube-apiserver.yaml</code> (or appropriate configuration for your Kubernetes cluster).</li>
+      <li class="numberedList">Add <code class="inlineCode">feature-gates</code> as follows:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># /etc/kubernetes/manifests/kube-apiserver.yaml</span>
+<span class="hljs-string">...</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">command:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">kube-apiserver</span>
+   <span class="hljs-string">...&lt;removed</span> <span class="hljs-string">for</span> <span class="hljs-string">brevity&gt;...</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">--feature-gates=InPlacePodVerticalScaling=true</span>
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">For minikube environments, incorporate the feature gate during cluster startup as follows:</p>
+    <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>minikube start --feature-gates=InPlacePodVerticalScaling=<span class="hljs-con-literal">true</span>
+</code></pre>
+    <p class="normal">We will now quickly explain how to enable VPA if you are running a GKE cluster.</p>
+    <h2 class="heading-2" id="_idParaDest-647">Enabling a VPA in GKE</h2>
+    <p class="normal">Enabling <a id="_idIndexMarker1822"/>a VPA in <strong class="keyWord">Google Kubernetes Engine</strong> (<strong class="keyWord">GKE</strong>) is as simple as running the following command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>gcloud container clusters update &lt;cluster-name&gt; --enable-vertical-pod-autoscaling
+</code></pre>
+    <p class="normal">Note <a id="_idIndexMarker1823"/>that this operation causes a restart to the Kubernetes control plane.</p>
+    <p class="normal">If you want to enable a VPA for a new cluster, use the additional argument <code class="inlineCode">--enable-vertical-pod-autoscaling</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>gcloud container clusters create k8sforbeginners --num-nodes=2 --zone=us-central1-a --enable-vertical-pod-autoscaling
+</code></pre>
+    <p class="normal">The GKE cluster will have a VPA CRD available, and you can use it to control the vertical autoscaling of Pods.</p>
+    <p class="normal">Let’s learn how to enable VPA for standard Kubernetes clusters in the next section. If you are using a different type of Kubernetes cluster, follow the specific instructions for your setup.</p>
+    <h2 class="heading-2" id="_idParaDest-648">Enabling a VPA for other Kubernetes clusters</h2>
+    <p class="normal">In the <a id="_idIndexMarker1824"/>case of different platforms such as AKS or EKS (or even local deployments for testing), you need to <a id="_idIndexMarker1825"/>install a VPA manually by adding a VPA CRD to the cluster. The exact, most recent steps are documented in the corresponding GitHub repository: <span class="url">https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler#installation</span>.</p>
+    <p class="normal">To install a VPA in your cluster, please perform the following steps:</p>
+    <ol>
+      <li class="numberedList" value="1">Clone the Kubernetes autoscaler repository (<a href="https://github.com/kubernetes/autoscaler"><span class="url">https://github.com/kubernetes/autoscaler</span></a>):
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>git <span class="hljs-con-built_in">clone</span> https://github.com/kubernetes/autoscaler
+</code></pre>
+      </li>
+      <li class="numberedList">Navigate to the VPA component directory:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> autoscaler/vertical-pod-autoscaler
+</code></pre>
+      </li>
+      <li class="numberedList">Begin installation using the following command. This assumes that your current <code class="inlineCode">kubectl</code> context is pointing to the desired cluster:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>./hack/vpa-up.sh
+</code></pre>
+      </li>
+      <li class="numberedList">This <a id="_idIndexMarker1826"/>will create a bunch of Kubernetes objects. Verify that the main component Pods are <a id="_idIndexMarker1827"/>started correctly using the following command:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods -n kube-system | grep vpa
+vpa-admission-controller-5b64b4f4c4-vsn9j   1/1     Running   0             5m34s
+vpa-recommender-54c76554b5-m7wnk            1/1     Running   0             5m34s
+vpa-updater-7d5f6fbf9b-rkwlb                1/1     Running   0             5m34s
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal">The VPA components are running, and we can now proceed to test a VPA on real Pods.</p>
+    <h2 class="heading-2" id="_idParaDest-649">Using a VPA</h2>
+    <p class="normal">For demonstration purposes, we need a Deployment with Pods that cause actual consumption <a id="_idIndexMarker1828"/>of CPU. The Kubernetes autoscaler repository has a good, simple example that has <strong class="keyWord">predictable</strong> CPU usage: <a href="https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/examples/hamster.yaml"><span class="url">https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/examples/hamster.yaml</span></a>. We are going to modify this example a bit and do a step-by-step demonstration.</p>
+    <div class="note">
+      <p class="normal"><strong class="keyWord">WARNING</strong></p>
+      <p class="normal">VPA utilization heavily depends on the distribution and maturity of the underlying Kubernetes. Sometimes, the Pods are not rescheduled as expected, which may lead to application downtime. Therefore, if full automation of the VPA is enabled, that may result in cascading issues related to resource overcommitment and cluster instability if monitoring is not performed.</p>
+    </div>
+    <p class="normal">Let’s prepare the Deployment first:</p>
+    <ol>
+      <li class="numberedList" value="1">First of all, enable the metric server for your Kubernetes cluster. You can use the default metric server (<a href="https://github.com/kubernetes-sigs/metrics-server"><span class="url">https://github.com/kubernetes-sigs/metrics-server</span></a>) and deploy it within your Kubernetes cluster. If you are using a minikube cluster, enable the metric server as follows:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>minikube addons <span class="hljs-con-built_in">enable</span> metrics-server
+</code></pre>
+      </li>
+      <li class="numberedList">Create a new Namespace for this:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># vpa/vpa-demo-ns.yaml</span>
+<span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Namespace</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">project:</span> <span class="hljs-string">vpa-demo</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">vpa-demo</span>
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">Create <a id="_idIndexMarker1829"/>the Namespace using the <code class="inlineCode">kubectl apply</code> command as follows:</p>
+    <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f vpa/vpa-demo-ns.yaml
+namespace/vpa-demo created
+</code></pre>
+    <ol>
+      <li class="numberedList" value="3">Create the <code class="inlineCode">hamster-deployment.yaml</code> <code class="inlineCode">YAML manifest</code> file (check <code class="inlineCode">vpa/hamster-deployment.yaml</code> for sample):
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># vpa/hamster-deployment.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">hamster</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">vpa-demo</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">app:</span> <span class="hljs-string">hamster</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">5</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">app:</span> <span class="hljs-string">hamster</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">hamster</span>
+          <span class="hljs-attr">image:</span> <span class="hljs-string">ubuntu:20.04</span>
+          <span class="hljs-attr">resources:</span>
+            <span class="hljs-attr">requests:</span>
+              <span class="hljs-attr">cpu:</span> <span class="hljs-string">100m</span>
+              <span class="hljs-attr">memory:</span> <span class="hljs-string">50Mi</span>
+          <span class="hljs-attr">command:</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-string">/bin/sh</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-string">-c</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-string">while</span> <span class="hljs-literal">true</span><span class="hljs-string">;</span> <span class="hljs-string">do</span> <span class="hljs-string">timeout</span> <span class="hljs-number">0.</span><span class="hljs-string">5s</span> <span class="hljs-literal">yes</span> <span class="hljs-string">&gt;/dev/null;</span> <span class="hljs-string">sleep</span> <span class="hljs-number">0.</span><span class="hljs-string">5s;</span> <span class="hljs-string">done</span>
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">It’s a real hamster! The <code class="inlineCode">command</code> that is used in the Pod’s <code class="inlineCode">ubuntu</code> container repeatedly <a id="_idIndexMarker1830"/>consumes the maximum available CPU for 0.5 seconds and does nothing for 0.5 seconds. This means that the actual CPU usage will stay, on average, at around <code class="inlineCode">500m</code> KCU. However, the <code class="inlineCode">requests</code> value for resources specifies that it requires <code class="inlineCode">100m</code> KCU. This means that the Pod will consume more than it declares, but since there are no <code class="inlineCode">limits</code> set, Kubernetes will not throttle the container CPU. This could potentially lead to incorrect scheduling decisions by the Kubernetes Scheduler.</p>
+    <ol>
+      <li class="numberedList" value="4">Apply the manifest to the cluster using the following command:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f vpa/hamster-deployment.yaml
+deployment.apps/hamster created
+</code></pre>
+      </li>
+      <li class="numberedList">Check the Pods in the vpa-demo Namespace:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span> kubectl get po -n vpa-demo
+NAME                      READY   STATUS    RESTARTS   AGE
+hamster-7fb7dbff7-hmzt5   1/1     Running   0          8s
+hamster-7fb7dbff7-lbk9f   1/1     Running   0          8s
+hamster-7fb7dbff7-ql6gd   1/1     Running   0          8s
+hamster-7fb7dbff7-qmxd8   1/1     Running   0          8s
+hamster-7fb7dbff7-qtrpp   1/1     Running   0          8s
+</code></pre>
+      </li>
+      <li class="numberedList">Let’s verify what the CPU usage of the Pod is. The simplest way is to use the <code class="inlineCode">kubectl top</code> command:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl top pod -n vpa-demo
+NAME                      CPU(cores)   MEMORY(bytes)
+hamster-7fb7dbff7-hmzt5   457m         0Mi            
+hamster-7fb7dbff7-lbk9f   489m         0Mi            
+hamster-7fb7dbff7-ql6gd   459m         0Mi            
+hamster-7fb7dbff7-qmxd8   453m         0Mi            
+hamster-7fb7dbff7-qtrpp   451m         0Mi            
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal">As we expected, the CPU consumption for each Pod in the deployment oscillates at around 500m KCU.</p>
+    <p class="normal">With that, we can <a id="_idIndexMarker1831"/>move on to creating a VPA for our Pods. VPAs can operate in four <strong class="keyWord">modes</strong> that you specify by means of the <code class="inlineCode">.spec.updatePolicy.updateMode</code> field:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">Recreate</code>: Pod container <code class="inlineCode">limits</code> and <code class="inlineCode">requests</code> are assigned on Pod creation and <a id="_idIndexMarker1832"/>dynamically updated based on calculated recommendations. To update the values, the Pod must be restarted. Please note that this may be disruptive to your application.</li>
+      <li class="bulletList"><code class="inlineCode">Auto</code>: Currently <a id="_idIndexMarker1833"/>equivalent to <code class="inlineCode">Recreate</code>, but when in-place updates for Pod container <code class="inlineCode">requests</code> and <code class="inlineCode">limits</code> are implemented, this can automatically switch to the new update mechanism.</li>
+      <li class="bulletList"><code class="inlineCode">Initial</code>: Pod <a id="_idIndexMarker1834"/>container <code class="inlineCode">limits</code> and <code class="inlineCode">requests</code> values are assigned on Pod creation only.</li>
+      <li class="bulletList"><code class="inlineCode">Off</code>: A VPA <a id="_idIndexMarker1835"/>runs in recommendation-only mode. The recommended values can be inspected in the VPA object, for example, by using <code class="inlineCode">kubectl</code>.</li>
+    </ul>
+    <p class="normal">First, we are going to create a VPA for <code class="inlineCode">hamster</code> Deployment, which runs in <code class="inlineCode">Off</code> mode, and later we will enable <code class="inlineCode">Auto</code> mode. To do this, please perform the following steps:</p>
+    <ol>
+      <li class="numberedList" value="1">Create a VPA YAML manifest named vpa/<code class="inlineCode">hamster-vpa.yaml</code>:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># vpa/hamster-vpa.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">autoscaling.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">VerticalPodAutoscaler</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">hamster-vpa</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">vpa-demo</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">targetRef:</span>
+    <span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+    <span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">hamster</span>
+  <span class="hljs-attr">updatePolicy:</span>
+    <span class="hljs-attr">updateMode:</span> <span class="hljs-string">'Off'</span>
+  <span class="hljs-attr">resourcePolicy:</span>
+    <span class="hljs-attr">containerPolicies:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">containerName:</span> <span class="hljs-string">'*'</span>
+        <span class="hljs-attr">minAllowed:</span>
+          <span class="hljs-attr">cpu:</span> <span class="hljs-string">100m</span>
+          <span class="hljs-attr">memory:</span> <span class="hljs-string">50Mi</span>
+        <span class="hljs-attr">maxAllowed:</span>
+          <span class="hljs-attr">cpu:</span> <span class="hljs-number">1</span>
+          <span class="hljs-attr">memory:</span> <span class="hljs-string">500Mi</span>
+        <span class="hljs-attr">controlledResources:</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-string">cpu</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-string">memory</span>
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">This VPA is created for a Deployment object with the name <code class="inlineCode">hamster</code>, as specified in <code class="inlineCode">.spec.targetRef</code>. The mode is set to <code class="inlineCode">"Off"</code> in <code class="inlineCode">.spec.updatePolicy.updateMode</code> (<code class="inlineCode">"Off"</code> needs to be specified in quotes to avoid being interpreted as a Boolean) and the container resource policy is configured in <code class="inlineCode">.spec.resourcePolicy.containerPolicies</code>. The policy that we used <a id="_idIndexMarker1836"/>allows Pod container <code class="inlineCode">requests</code> for CPU to be adjusted automatically between <code class="inlineCode">100m</code> KCU and <code class="inlineCode">1000m</code> KCU, and for memory between <code class="inlineCode">50Mi</code> and <code class="inlineCode">500Mi</code>.</p>
+    <ol>
+      <li class="numberedList" value="2">Apply the manifest file to the cluster:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f vpa/hamster-vpa.yaml
+verticalpodautoscaler.autoscaling.k8s.io/hamster-vpa created
+</code></pre>
+      </li>
+      <li class="numberedList">You need to wait a while for the recommendation to be calculated for the first time. Then, check what the recommendation is by describing the VPA:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe vpa hamster-vpa -n vpa-demo
+...&lt;removed for brevity&gt;...
+Status:
+  Conditions:
+    Last Transition Time:  2024-08-11T09:20:44Z
+    Status:                True
+    Type:                  RecommendationProvided
+  Recommendation:
+    Container Recommendations:
+      Container Name:  hamster
+      Lower Bound:
+        Cpu:     461m
+        Memory:  262144k
+      Target:
+        Cpu:     587m
+        Memory:  262144k
+      Uncapped Target:
+        Cpu:     587m
+        Memory:  262144k
+      Upper Bound:
+        Cpu:     1
+        Memory:  500Mi
+Events:          &lt;none&gt;
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">The VPA has recommended allocating a bit more than the expected <code class="inlineCode">500m</code> KCU and <code class="inlineCode">262144k</code> memory. This makes sense, as the Pod should have a safe buffer for CPU consumption.</p>
+    <ol>
+      <li class="numberedList" value="4">Now we <a id="_idIndexMarker1837"/>can check the VPA in practice and change its mode to <code class="inlineCode">Auto</code>. Modify <code class="inlineCode">vpa/hamster-vpa.yaml</code>:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># vpa/hamster-vpa.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">autoscaling.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">VerticalPodAutoscaler</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">hamster-vpa</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">vpa-demo</span>
+<span class="hljs-attr">spec:</span>
+<span class="hljs-string">...</span>
+  <span class="hljs-attr">updatePolicy:</span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-attr-slc">updateMode:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">Auto</strong></span>
+<span class="hljs-string">...</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Apply the manifest to the cluster:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f vpa/hamster-vpa.yaml
+verticalpodautoscaler.autoscaling.k8s.io/hamster-vpa configured
+</code></pre>
+      </li>
+      <li class="numberedList">After a while, you will notice that the Pods for the Deployment are being restarted by the VPA:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get po -n vpa-demo -w
+NAME                      READY   STATUS              RESTARTS   AGE
+hamster-7fb7dbff7-24p89   0/1     ContainerCreating   0          2s
+hamster-7fb7dbff7-6nz8f   0/1     ContainerCreating   0          2s
+hamster-7fb7dbff7-hmzt5   1/1     Running             0          20m
+hamster-7fb7dbff7-lbk9f   1/1     Running             0          20m
+hamster-7fb7dbff7-ql6gd   1/1     Terminating         0          20m
+hamster-7fb7dbff7-qmxd8   1/1     Terminating         0          20m
+hamster-7fb7dbff7-qtrpp   1/1     Running             0          20m
+hamster-7fb7dbff7-24p89   1/1     Running             0          2s
+hamster-7fb7dbff7-6nz8f   1/1     Running             0          2s
+</code></pre>
+      </li>
+      <li class="numberedList">We can <a id="_idIndexMarker1838"/>inspect one of the restarted Pods to see the current <code class="inlineCode">requests</code> for resources:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe pod hamster-7fb7dbff7-24p89 -n vpa-demo
+...
+Annotations:      ...&lt;removed for brevity&gt;...
+                  vpaObservedContainers: hamster
+                  vpaUpdates: Pod resources updated by hamster-vpa: container 0: memory request, cpu request
+...
+Containers:
+  hamster:
+    ...
+    Requests:
+      cpu:        587m
+      memory:     262144k
+...&lt;removed for brevity&gt;...
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal">As you can see, the newly started Pod has CPU and memory <code class="inlineCode">requests</code> set to the values recommended by the VPA!</p>
+    <div class="note">
+      <p class="normal">A VPA should not be used with an HPA running on CPU/memory metrics at this moment. However, you can use a VPA in conjunction with an HPA running on custom metrics.</p>
+    </div>
+    <p class="normal">Next, we are <a id="_idIndexMarker1839"/>going to discuss how to autoscale Pods horizontally using an HPA.</p>
+    <h1 class="heading-1" id="_idParaDest-650">Autoscaling Pods horizontally using a HorizontalPodAutoscaler</h1>
+    <p class="normal">While a VPA acts like an optimizer of resource usage, the true scaling of your Deployments <a id="_idIndexMarker1840"/>and StatefulSets that run multiple Pod replicas can be done using an HPA. At a high level, the goal <a id="_idIndexMarker1841"/>of the HPA is to automatically scale the number of replicas in Deployment or StatefulSets depending on the current CPU utilization or other custom metrics (including multiple metrics at once). The details of the algorithm that determines the target number of replicas based on metric values can be found here: <span class="url">https://kubernetes.io/docs/tasks/run-application/horizontal-Pod-autoscale/#algorithm-details</span>.</p>
+    <div class="note">
+      <p class="normal">Not all applications will work equally efficiently with HPAs and VPAs. Some of them might work better using one method, but others might either not support autoscaling or even suffer from the method. Always analyze your application behavior prior to using any autoscaling approach.</p>
+    </div>
+    <p class="normal">A high-level diagram to demonstrate the difference between vertical and horizontal scaling is given below:</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_20_02.png"/></figure>
+    <p class="packt_figref">Figure 20.2: Vertical scaling vs. horizontal scaling for the Pods</p>
+    <p class="normal">HPAs <a id="_idIndexMarker1842"/>are highly configurable, and, in this chapter, we will cover a standard scenario in which we would like <a id="_idIndexMarker1843"/>to autoscale based on target CPU usage.</p>
+    <div class="note">
+      <p class="normal">The HPA is an API resource in the Kubernetes autoscaling API group. The current stable version is <code class="inlineCode">autoscaling/v2</code>, which includes support for scaling based on memory and custom metrics. When using <code class="inlineCode">autoscaling/v1</code>, the new fields introduced in <code class="inlineCode">autoscaling/v2</code> are preserved as annotations.</p>
+    </div>
+    <p class="normal">The role of the HPA is to monitor a configured metric for Pods, for example, CPU usage, and determine whether a change to the number of replicas is needed. Usually, the HPA will calculate the average of the current metric values from all Pods and determine whether adding or removing replicas will bring the metric value closer to the specified target value. For example, say you set the target CPU usage to be 50%. At some point, increased demand for the application causes the Deployment Pods to have 80% CPU usage. The HPA would decide to add more Pod replicas so that the average usage across all replicas will fall and be closer to 50%. And the cycle repeats. In other words, the HPA tries to maintain the average CPU usage to be as close to 50% as possible. This is like a continuous, closed-loop controller – a thermostat reacting to temperature changes in a building is a good example.</p>
+    <p class="normal">The following figure shows a high-level diagram of the Kubernetes HPA components:</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_11_05.png"/></figure>
+    <p class="packt_figref">Figure 20.3: HPA overview in Kubernetes</p>
+    <p class="normal">HPA <a id="_idIndexMarker1844"/>additionally uses <a id="_idIndexMarker1845"/>mechanisms such <a id="_idIndexMarker1846"/>as a <strong class="keyWord">stabilization window</strong> to prevent the replicas from scaling down too quickly and causing unwanted replica <strong class="keyWord">flapping</strong>.</p>
+    <div class="packt_tip">
+      <p class="normal">GKE has beta functionality for multidimensional Pod autoscaling, which combines horizontal scaling using CPU metrics and vertical scaling based on memory usage <a id="_idIndexMarker1847"/>at the same time. Read more about this feature in the official documentation: <a href="https://cloud.google.com/kubernetes-engine/docs/how-to/multidimensional-pod-autoscaling"><span class="url">https://cloud.google.com/kubernetes-engine/docs/how-to/multidimensional-pod-autoscaling</span></a>. Please note that this feature is subject to the Pre-GA Offerings Terms in the General Service Terms and is provided “as is” with limited support; refer to the launch stage descriptions for more details.</p>
+    </div>
+    <p class="normal">As an HPA is a built-in feature of Kubernetes, there is no need to perform any installation. We just need to prepare a Deployment for testing and create a <code class="inlineCode">HorizontalPodAutoscaler</code> Kubernetes resource.</p>
+    <h2 class="heading-2" id="_idParaDest-651">Deploying the app for HPA demonstration</h2>
+    <p class="normal">To test an HPA, we are going to rely on the standard CPU usage metric. This means that we need to configure <code class="inlineCode">requests</code> for CPU on the Deployment Pods; otherwise, autoscaling is not <a id="_idIndexMarker1848"/>possible as there is no absolute number that is needed to calculate the percentage metric. On top of that, we again need a Deployment that can consume a predictable amount of CPU resources. Of course, in real use cases, the varying CPU usage would be coming from actual demand for your application from end users.</p>
+    <p class="normal">First of all, enable the metric server for your Kubernetes cluster. You can use the default metric server (<a href="https://github.com/kubernetes-sigs/metrics-server"><span class="url">https://github.com/kubernetes-sigs/metrics-server</span></a>) and deploy it within your Kubernetes cluster. If you are using a minikube cluster, enable the metric server as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>minikube addons <span class="hljs-con-built_in">enable</span> metrics-server
+</code></pre>
+    <p class="normal">Follow these instructions to learn how to implement HPA:</p>
+    <ol>
+      <li class="numberedList" value="1">To isolate our resources for this demonstration, create a new Namespace as follows:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># hpa/hpa-demo-ns.yaml</span>
+<span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Namespace</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">project:</span> <span class="hljs-string">hpa-demo</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">hpa-demo</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Apply the YAML and create the Namespace:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f hpa/hpa-demo-ns.yaml
+namespace/hpa-demo created
+</code></pre>
+      </li>
+      <li class="numberedList">For the demonstration, we will use a simple web server container based on a custom image, <code class="inlineCode">quay.io/iamgini/one-page-web:1.0</code>. The following YAML contains a simple Deployment definition that will create one replica of the Pod:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-meta">---</span>
+<span class="hljs-comment"># hpa/todo-deployment.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">todo-app</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">hpa-demo</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">1</span>  <span class="hljs-comment"># Adjust as needed</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">app:</span> <span class="hljs-string">todo</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">app:</span> <span class="hljs-string">todo</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">todoapp</span>
+          <span class="hljs-attr">image:</span> <span class="hljs-string">quay.io/ginigangadharan/todo-app:2.0</span>
+          <span class="hljs-attr">ports:</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">3000</span>
+          <span class="hljs-attr">resources:</span>
+            <span class="hljs-attr">requests:</span>
+              <span class="hljs-attr">memory:</span> <span class="hljs-string">"50Mi"</span>   <span class="hljs-comment"># Request 50 MiB of memory</span>
+              <span class="hljs-attr">cpu:</span> <span class="hljs-string">"50m"</span>      <span class="hljs-comment"># Request 0.05 CPU core</span>
+            <span class="hljs-attr">limits:</span>
+              <span class="hljs-attr">memory:</span> <span class="hljs-string">"100Mi"</span>  <span class="hljs-comment"># Request 100 MiB of memory</span>
+              <span class="hljs-attr">cpu:</span> <span class="hljs-string">"100m"</span>      <span class="hljs-comment"># Request 0.1 CPU core</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Apply <a id="_idIndexMarker1849"/>the configuration and ensure the Pods are running as expected:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f hpa/todo-deployment.yaml
+deployment.apps/todo-app created
+<span class="hljs-con-meta">$ </span>kubectl get po -n hpa-demo
+NAME                        READY   STATUS    RESTARTS   AGE
+todo-app-5cfb496d77-l6r69   1/1     Running   0          8s
+</code></pre>
+      </li>
+      <li class="numberedList">To expose the application, let us create a Service using the following YAML:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># hpa/todo-service.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">todo-app</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">hpa-demo</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">ClusterIP</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">todo</span>
+  <span class="hljs-attr">ports:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span> <span class="hljs-number">8081</span>          <span class="hljs-comment"># Port exposed within the cluster</span>
+      <span class="hljs-attr">targetPort:</span> <span class="hljs-number">3000</span>    <span class="hljs-comment"># containerPort on the pods</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Apply <a id="_idIndexMarker1850"/>the configuration and verify the Service resource:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f hpa/todo-service.yaml
+service/todo-app created
+<span class="hljs-con-meta">$ </span>kubectl get svc -n hpa-demo
+NAME       TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+todo-app   ClusterIP   10.96.171.71   &lt;none&gt;        8081/TCP   15s
+</code></pre>
+      </li>
+      <li class="numberedList">Now the application is running and exposed via a <code class="inlineCode">ClusterIP</code> Service, let us use a <code class="inlineCode">kubectl port-forward</code> command to access the application outside of the cluster:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl port-forward svc/todo-app -n hpa-demo 8081:8081
+Forwarding from 127.0.0.1:8081 -&gt; 3000
+Forwarding from [::1]:8081 -&gt; 3000
+</code></pre>
+      </li>
+      <li class="numberedList">Open a web browser and launch <code class="inlineCode">http://localhost:8081</code>. You will see the Todo application is running as follows:</li>
+    </ol>
+    <figure class="mediaobject"><img alt="" src="image/B22019_20_04.png"/></figure>
+    <p class="packt_figref">Figure 20.4: The Todo app is running on Kubernetes</p>
+    <ol>
+      <li class="numberedList" value="9">On the console, press <em class="keystroke">Ctrl+C</em> to end the <code class="inlineCode">kubectl port-forward</code> task.</li>
+    </ol>
+    <p class="normal">Now we <a id="_idIndexMarker1851"/>have Todo application Deployment running in the cluster and it is time to learn how HPA works. In the next section, we will learn how to create the HPA and apply load to the deployment to see the autoscaling.</p>
+    <h2 class="heading-2" id="_idParaDest-652">Implementing an HPA</h2>
+    <p class="normal">You have already learned that you can scale the number of Pods by using the <code class="inlineCode">kubectl scale</code> command (e.g., <code class="inlineCode">kubectl scale deployment one-page-web -n hpa-demo --replicas 3</code>), but in this case, we want to learn how an HPA helps us with automated scaling based on the workload.</p>
+    <p class="normal">As we <a id="_idIndexMarker1852"/>learned earlier in this section, an HPA triggers scaling based on metrics, and so we should give a workload to the Pods. There are several tools available to generate a simulated workload for a web application, in the interests of stress testing and load testing. In this demonstration, we will use a tiny program called <code class="inlineCode">hey</code> for the load testing. hey is a lightweight HTTP load-testing tool written in Go. It was designed to make it easy to generate traffic to web applications in order to measure performance under load. It does this by simplifying benchmarking, since users can quickly send a slew of requests and view things like response times and request throughput.</p>
+    <div class="note">
+      <p class="normal">It is also possible to increase the load using other methods. For instance, you can run another container to access application pods with commands like:</p>
+      <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl run -i --<span class="hljs-con-built_in">tty</span> load-generator --<span class="hljs-con-built_in">rm</span> --image=busybox:1.28 --restart=Never -- /bin/sh -c <span class="hljs-con-string">"while sleep 0.01; do wget -q -O- http://todo-app; done"</span>
+</code></pre>
+      <p class="normal">However, this method may not be efficient for controlling the workload precisely.</p>
+    </div>
+    <p class="normal">The hey <a id="_idIndexMarker1853"/>application is available for Linux, macOS, and Windows (<a href="https://github.com/rakyll/hey"><span class="url">https://github.com/rakyll/hey</span></a>) and installation is pretty simple:</p>
+    <ol>
+      <li class="numberedList" value="1">Download the hey package for your operating system.</li>
+      <li class="numberedList">Set executable permission and copy the file to an executable path (eg., <code class="inlineCode">ln -s ~/Downloads/hey_linux_amd64 ~/.local/bin/</code>).</li>
+    </ol>
+    <p class="normal">Now, create HPA resources to scale the one-page web Deployment based on the workload:</p>
+    <ol>
+      <li class="numberedList" value="1">Prepare the HPA YAML as follows:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># hpa/todo-hpa.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">autoscaling/v2</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">HorizontalPodAutoscaler</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">todo-hpa</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">hpa-demo</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">scaleTargetRef:</span>
+    <span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+    <span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">todo-app</span>
+  <span class="hljs-attr">minReplicas:</span> <span class="hljs-number">1</span>
+  <span class="hljs-attr">maxReplicas:</span> <span class="hljs-number">5</span>
+  <span class="hljs-attr">metrics:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">resource:</span>
+        <span class="hljs-attr">name:</span> <span class="hljs-string">cpu</span>
+        <span class="hljs-attr">target:</span>
+          <span class="hljs-attr">averageUtilization:</span> <span class="hljs-number">80</span>
+          <span class="hljs-attr">type:</span> <span class="hljs-string">Utilization</span>
+      <span class="hljs-attr">type:</span> <span class="hljs-string">Resource</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Apply the configuration and create the HPA:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f hpa/todo-hpa.yaml
+horizontalpodautoscaler.autoscaling/todo-hpa created
+<span class="hljs-con-meta">$ </span>kubectl get hpa -n hpa-demo
+NAME       REFERENCE             TARGETS              MINPODS   MAXPODS   REPLICAS   AGE
+todo-hpa   Deployment/todo-app   cpu: &lt;unknown&gt;/80%   1         5         0          6s
+</code></pre>
+      </li>
+      <li class="numberedList">Let us <a id="_idIndexMarker1854"/>use a <code class="inlineCode">kubectl port-forward</code> command again to access the Todo application outside of the cluster:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl port-forward svc/todo-app -n hpa-demo 8081:8081
+Forwarding from 127.0.0.1:8081 -&gt; 3000
+Forwarding from [::1]:8081 -&gt; 3000
+</code></pre>
+      </li>
+      <li class="numberedList">Nobody is using the <strong class="screenText">todo</strong> application, hence the Pod replica remains 1. Let us simulate the workload by using the <code class="inlineCode">hey</code> utility now. On another console, execute the hey workload command as follows:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>hey -z 4m -c 25 http://localhost:8081
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">Please see the parameters and details of the preceding command below:</p>
+    <ul>
+      <li class="bulletList level-2"><code class="inlineCode">-z 4m</code>: Runs for 4 minutes to sustain the load for a longer period</li>
+      <li class="bulletList level-2"><code class="inlineCode">-c 25: </code>Uses 15 concurrent connections to generate higher load, aiming to push CPU usage closer to 80%</li>
+      <li class="bulletList level-2"><code class="inlineCode">http://localhost:8081</code>: The URL to access the todo appliaction (enabled by the <code class="inlineCode">kubectl port-forward</code> command)</li>
+    </ul>
+    <p class="normal-one">You will find a lot of connection entries in your <code class="inlineCode">kubectl port-forward console</code> as hey is simulating the load on the one-page web application now.</p>
+    <ol>
+      <li class="numberedList" value="5">Open the third console (without waiting for hey to finish the execution) and check the Pod resource utilization:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>watch <span class="hljs-con-string">'kubectl get po -n hpa-demo;kubectl top pods -n hpa-demo'</span>
+Every 2.0s: kubectl get po -n hpa-demo;kubectl top pods -n hpa-demo
+NAME                        READY   STATUS    RESTARTS   AGE
+todo-app-5cfb496d77-5kc27   1/1     Running   0          76s
+todo-app-5cfb496d77-l6r69   1/1     Running   0          10m
+todo-app-5cfb496d77-pb7tx   1/1     Running   0          76s
+NAME                        CPU(cores)   MEMORY(bytes)
+todo-app-5cfb496d77-5kc27   10m          14Mi
+todo-app-5cfb496d77-l6r69   100m         48Mi
+todo-app-5cfb496d77-pb7tx   7m           14Mi
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">You can <a id="_idIndexMarker1855"/>see that there are three Pods (or more) created now because <code class="inlineCode">hey</code> is applying more workload to the <code class="inlineCode">todo</code> application, which triggers the HPA to create mode replicas.</p>
+    <ol>
+      <li class="numberedList" value="6">Also, check the deployment details and confirm the replica count and the events to see the scaling events:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe deployments.apps todo-app -n hpa-demo
+Name:                   todo-app
+...&lt;removed for brevity&gt;...
+Replicas:               3 desired | 3 updated | 3 total | 3 available | 0 unavailable
+StrategyType:           RollingUpdate
+...&lt;removed for brevity&gt;...
+Events:
+  Type    Reason             Age   From                   Message
+  ----    ------             ----  ----                   -------
+  Normal  ScalingReplicaSet  16m   deployment-controller  Scaled up replica set todo-app-749854577d to 1
+  Normal  ScalingReplicaSet  13m   deployment-controller  Scaled up replica set todo-app-5cfb496d77 to 1
+  Normal  ScalingReplicaSet  13m   deployment-controller  Scaled down replica set todo-app-749854577d to 0 from 1
+  Normal  ScalingReplicaSet  4m9s  deployment-controller  Scaled up replica set todo-app-5cfb496d77 to 3 from 1
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal">Congratulations! You have successfully configured horizontal autoscaling for your Deployment <a id="_idIndexMarker1856"/>using an HPA. As part of housekeeping, delete the resources by deleting the <code class="inlineCode">hpa-demo</code> namespace (e.g., <code class="inlineCode">kubectl delete namespaces hpa-demo</code>). In the next section, we will take a look at autoscaling Kubernetes Nodes using a CA, which gives even more flexibility when combined with an HPA.</p>
+    <h1 class="heading-1" id="_idParaDest-653">Autoscaling Kubernetes Nodes using a Cluster Autoscaler</h1>
+    <p class="normal">So far, we have discussed scaling at the level of individual Pods, but this is not the only way in <a id="_idIndexMarker1857"/>which you can scale your workloads on Kubernetes. It is possible to scale the cluster itself to accommodate changes in demand for compute resources – at some point, we will need more <a id="_idIndexMarker1858"/>Nodes to run more Pods. You can configure a fixed number of nodes to manage Node-level capacity manually. This approach is still applicable even if the process of setting up, managing, and decommissioning these nodes is automated.</p>
+    <p class="normal">This is solved by the CA, which is part of the Kubernetes autoscaler repository (<a href="https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler"><span class="url">https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler</span></a>). The CA must be able to provision and deprovision Nodes for the Kubernetes cluster, so this means that vendor-specific plugins must be implemented. You can find the list of supported cloud service providers here: <span class="url">https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler#deployment</span>.</p>
+    <p class="normal">The CA periodically checks the status of Pods and Nodes and decides whether it needs to take action:</p>
+    <ul>
+      <li class="bulletList">If there are Pods that cannot be scheduled and are in the <code class="inlineCode">Pending</code> state because of insufficient resources in the cluster, CA will add more Nodes, up to the predefined maximum size.</li>
+      <li class="bulletList">If Nodes are under-utilized and all Pods can be scheduled even with a smaller number of Nodes in the cluster, the CA will remove the Nodes from the cluster, unless it has reached the predefined minimum size. Nodes are gracefully drained before they are removed from the cluster.</li>
+      <li class="bulletList">For some cloud service providers, the CA can also choose between different SKUs for VMs to better optimize the cost of operating the cluster.</li>
+    </ul>
+    <div class="note">
+      <p class="normal">Pod containers must specify <code class="inlineCode">requests</code> for the compute resources to make the CA work properly. Additionally, these values should reflect real usage; otherwise, the CA will not be able to make the correct decisions for your type of workload.</p>
+    </div>
+    <p class="normal">The CA can complement HPA capabilities. If the HPA decides that there should be more Pods for <a id="_idIndexMarker1859"/>a Deployment <a id="_idIndexMarker1860"/>or StatefulSet, but no more Pods can be scheduled, then the CA can intervene and increase the cluster size.</p>
+    <p class="normal">Before we explore more about the CA, let us note some of the limitations involved in CA-based Kubernetes autoscaling.</p>
+    <h2 class="heading-2" id="_idParaDest-654">CA limitations</h2>
+    <p class="normal">The CA <a id="_idIndexMarker1861"/>has several constraints that can impact its effectiveness:</p>
+    <ul>
+      <li class="bulletList">There’s a delay between the CA requesting a new node from the cloud provider and the node becoming available. This delay, often several minutes, can impact application perform ance during periods of high demand.</li>
+      <li class="bulletList">CA’s scaling decisions are based solely on pod resource requests and limits, not actual CPU or memory utilization. This can lead to underutilized nodes and resource inefficiency if pods over-request resources.</li>
+      <li class="bulletList">CA is primarily designed for cloud environments. While it can be adapted for on-premises or other infrastructures, it requires additional effort. This involves custom scripts or tools to manage node provisioning and deprovisioning, as well as configuring the autoscaler to interact with these mechanisms. Without cloud-based autoscaling features, managing the cluster’s size becomes more complex and requires closer monitoring.</li>
+    </ul>
+    <p class="normal">Enabling the CA entails different steps depending on your cloud service provider. Additionally, some <a id="_idIndexMarker1862"/>configuration values are specific for each of them. We will first take a look at GKE in the next section.</p>
+    <div class="packt_tip">
+      <p class="normal"><strong class="keyWord">WARNING – Resource Consumption Notice</strong></p>
+      <p class="normal">Be very cautious with CA configurations, as many such configurations can easily lead to very high resource consumption and impact system instability or unexpected scaling behaviors. Always monitor and fine-tune your configuration to avoid resource exhaustion or performance degradation.</p>
+    </div>
+    <h2 class="heading-2" id="_idParaDest-655">Enabling the CA in GKE</h2>
+    <p class="normal">For <a id="_idIndexMarker1863"/>GKE, it is <a id="_idIndexMarker1864"/>easiest to create a cluster with CA enabled from scratch. To do that, you need to run the following command to create a cluster named <code class="inlineCode">k8sbible</code>:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>gcloud container clusters create k8sbible \
+  --enable-autoscaling \
+  --num-nodes 3 \
+  --min-nodes 2 \
+  --max-nodes 10 \
+  --region=us-central1-a
+...&lt;removed for brevity&gt;...
+Creating cluster k8sbible in us-central1-a... Cluster is being health-checked (master is healthy)...done.
+Created [https://container.googleapis.com/v1/projects/k8sbible-project/zones/us-central1-a/clusters/k8sbible].
+To inspect the contents of your cluster, go to: https://console.cloud.google.com/kubernetes/workload_/gcloud/us-central1-a/k8sbible?project=k8sbible-project
+kubeconfig entry generated for k8sbible.
+NAME      LOCATION       MASTER_VERSION      MASTER_IP      MACHINE_TYPE  NODE_VERSION        NUM_NODES  STATUS
+k8sbible  us-central1-a  1.29.7-gke.1008000  &lt;removed&gt;      e2-medium     1.29.7-gke.1008000  3          RUNNING
+</code></pre>
+    <p class="normal">In the preceding command:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">cloud container clusters create k8sbible</code>: Creates a new Kubernetes cluster named <code class="inlineCode">k8sbible</code>.</li>
+      <li class="bulletList"><code class="inlineCode">--enable-autoscaling</code>: Enables <code class="inlineCode">autoscaling</code> for the cluster’s node pools.</li>
+      <li class="bulletList"><code class="inlineCode">--num-nodes 3</code>: Sets the initial number of nodes to <code class="inlineCode">3</code>.</li>
+      <li class="bulletList"><code class="inlineCode">--min-nodes 2</code>: Sets the minimum number of nodes to <code class="inlineCode">2</code>.</li>
+      <li class="bulletList"><code class="inlineCode">--max-nodes 10</code>: Sets the maximum number of nodes to <code class="inlineCode">10</code>.</li>
+      <li class="bulletList"><code class="inlineCode">--region=us-central1-a</code>: Specifies the region as <code class="inlineCode">us-central1-a</code>.</li>
+    </ul>
+    <div class="note">
+      <p class="normal">You should have configured your GCP account with appropriate configurations and permission <a id="_idIndexMarker1865"/>including <strong class="keyWord">Virtual Private Cloud</strong> (<strong class="keyWord">VPC</strong>), Networks, Security, etc.</p>
+    </div>
+    <p class="normal">In <a id="_idIndexMarker1866"/>the case of <a id="_idIndexMarker1867"/>an existing cluster, you need to enable the CA on an existing Node pool. For example, if you have a cluster named <code class="inlineCode">k8sforbeginners</code> with one Node pool named <code class="inlineCode">nodepool1</code>, then you need to run the following command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>gcloud container clusters update k8sforbeginners --enable-autoscaling --min-nodes=2 --max-nodes=10 --zone=us-central1-a --node-pool=nodepool1
+</code></pre>
+    <p class="normal">The update will take a few minutes.</p>
+    <p class="normal">Verify the autoscaling feature using the gcloud CLI as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>gcloud container node-pools describe default-pool --cluster=k8sdemo |grep autoscaling -A 1
+autoscaling:
+  enabled: true
+</code></pre>
+    <p class="normal">Learn more <a id="_idIndexMarker1868"/>about autoscaling in GKE in the official documentation: <a href="https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler"><span class="url">https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler</span></a>.</p>
+    <p class="normal">Once configured, you can move on to <em class="italic">Using the CA</em>.</p>
+    <h2 class="heading-2" id="_idParaDest-656">Enabling a CA in Amazon Elastic Kubernetes Service</h2>
+    <p class="normal">Setting <a id="_idIndexMarker1869"/>up a CA in Amazon EKS cannot currently be done in a one-click or one-command action. You <a id="_idIndexMarker1870"/>need to create an appropriate IAM policy and role, deploy the CA resources to the Kubernetes cluster, and undertake manual configuration steps. For this reason, we will not cover this in the book and we request that you refer to the official instructions: <a href="https://docs.aws.amazon.com/eks/latest/userguide/cluster-autoscaler.html"><span class="url">https://docs.aws.amazon.com/eks/latest/userguide/cluster-autoscaler.html</span></a>.</p>
+    <p class="normal">Once configured, move on to <em class="italic">Using the CA</em>.</p>
+    <h2 class="heading-2" id="_idParaDest-657">Enabling a CA in Azure Kubernetes Service</h2>
+    <p class="normal">AKS <a id="_idIndexMarker1871"/>provides a <a id="_idIndexMarker1872"/>similar CA setup experience to GKE – you can use a one-command procedure to either deploy a new cluster with CA enabled or update the existing one to use the CA. To create a new cluster named <code class="inlineCode">k8sforbeginners-aks</code> from scratch in the <code class="inlineCode">k8sforbeginners-rg</code> resource group, execute the following command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>az aks create --resource-group k8sforbeginners-rg \
+  --name k8sforbeginners-aks \
+  --node-count 1 \
+  --enable-cluster-autoscaler \
+  --min-count 1 \
+  --max-count 10 \
+  --vm-set-type VirtualMachineScaleSets \
+  --load-balancer-sku standard \
+  --generate-ssh-keys
+</code></pre>
+    <p class="normal">You can control the minimum number of Nodes in autoscaling by using the <code class="inlineCode">--min-count</code> parameter, and the maximum number of Nodes by using the <code class="inlineCode">--max-count</code> parameter.</p>
+    <p class="normal">To enable the CA on an existing AKS cluster named <code class="inlineCode">k8sforbeginners-aks</code>, execute the following command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>az aks update --resource-group k8sforbeginners-rg --name k8sforbeginners-aks --enable-cluster-autoscaler --min-count 2 --max-count 10
+</code></pre>
+    <p class="normal">The update will take a few minutes.</p>
+    <p class="normal">Learn more in the official documentation: <a href="https://docs.microsoft.com/en-us/azure/aks/cluster-autoscaler"><span class="url">https://docs.microsoft.com/en-us/azure/aks/cluster-autoscaler</span></a>. Additionally, the CA in AKS has more parameters that <a id="_idIndexMarker1873"/>you can configure <a id="_idIndexMarker1874"/>using the <strong class="keyWord">autoscaler profile</strong>. Further <a id="_idIndexMarker1875"/>details are provided in the official documentation at <span class="url">https://docs.microsoft.com/en-us/azure/aks/cluster-autoscaler#using-the-autoscaler-profile</span>.</p>
+    <p class="normal">Now, let’s take a look at how to use a CA in a Kubernetes cluster.</p>
+    <h2 class="heading-2" id="_idParaDest-658">Using the CA</h2>
+    <p class="normal">We have just configured the CA for the cluster and it might take a bit of time for the CA to perform <a id="_idIndexMarker1876"/>its first actions. This depends on the CA configuration, which may be vendor-specific. For example, in the case of AKS, the cluster will be evaluated every 10 seconds (<code class="inlineCode">scan-interval</code>), to check whether it needs to be scaled up or down. If scaling down needs to happen after scaling up, there is a 10-minute delay (<code class="inlineCode">scale-down-delay-after-add</code>). Scaling down will be triggered if the sum of requested resources divided by capacity is below 0.5 (<code class="inlineCode">scale-down-utilization-threshold</code>).</p>
+    <p class="normal">As a result, the cluster may automatically scale up, scale down, or remain unchanged after the CA is enabled.</p>
+    <p class="normal">For the demonstration, we are using a GKE cluster with two nodes:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get nodes -o custom-columns=NAME:.metadata.name,CPU_ALLOCATABLE:.status.allocatable.cpu,MEMORY_ALLOCATABLE:.status.allocatable.memory
+NAME                                     CPU_ALLOCATABLE   MEMORY_ALLOCATABLE
+gke-k8sdemo-default-pool-1bf4f185-6422   940m              2873304Ki
+gke-k8sdemo-default-pool-1bf4f185-csv0   940m              2873312Ki
+</code></pre>
+    <ul>
+      <li class="bulletList">Based on this, we have a computing capacity of 1.88 cores CPU and 5611.34 Mi memory in total in the GKE cluster.</li>
+      <li class="bulletList">Remember, there is a bit of KCU consumed by the kube-system namespace Pods.</li>
+      <li class="bulletList">Check the exact number of CPU and memory usage using the <code class="inlineCode">kubectl top nodes</code> command in your cluster.</li>
+    </ul>
+    <p class="normal">Unfortunately, there is no simple way to have predictable and varying CPU usage in a container out of the box. So, we need to set up a Deployment with a Pod template to achieve this for our demonstration. We’ll use another hamster Deployment to create an <code class="inlineCode">elastic-hamster</code> Deployment (refer to the <code class="inlineCode">Chapter20/ca</code> directory in the GitHub repo). The <code class="inlineCode">hamster.sh</code> shell script running continuously in the container will operate in a way that increases the workload based on the <code class="inlineCode">TOTAL_HAMSTER_USAGE</code> value. We’ll set the total desired work for all hamsters across all Pods. Each Pod will query the Kubernetes API to determine <a id="_idIndexMarker1877"/>the number of currently running replicas for the Deployment. Then, we’ll divide the total desired work by the number of replicas to determine the workload for each hamster.</p>
+    <p class="normal">For instance, if we set the total work for all hamsters to 1.0, which represents the total KCU consumption in the cluster, and deploy five replicas, each hamster will do 1.0/5 = 0.2 work. This means they will work for 0.2 seconds and rest for 0.8 seconds. If we scale the Deployment to 10 replicas, each hamster will then do 0.1 seconds of work and rest for 0.9 seconds. Thus, the hamsters collectively always work for 1.0 seconds, regardless of the number of replicas. This mimics a real-world scenario where end users generate traffic that needs to be managed, and this load is distributed among the Pod replicas. The more Pod replicas there are, the less traffic each has to handle, resulting in lower average CPU usage.</p>
+    <div class="note">
+      <p class="normal">You may use alternative methods to increase the workload using tools you are familiar with. However, to avoid introducing additional tools in this context, we are employing a workaround to demonstrate the workload increase and scaling.</p>
+    </div>
+    <p class="normal">Follow these steps to implement and test the cluster autoscaling in the cluster:</p>
+    <ol>
+      <li class="numberedList" value="1">To isolate the testing, we will use a <code class="inlineCode">ca-demo</code> Namespace:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># ca/ca-demo-ns.yaml</span>
+<span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Namespace</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">project:</span> <span class="hljs-string">ca-demo</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">ca-demo</span>
+</code></pre>
+      </li>
+      <li class="numberedList">To query Deployments via the Kubernetes API, you’ll need to set up additional RBAC permissions. More details can be found in <em class="chapterRef">Chapter 18</em>, <em class="italic">Security in Kubernetes</em>. Prepare a <code class="inlineCode">Role</code> definition as follows:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># ca/deployment-reader-role.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">rbac.authorization.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Role</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">ca-demo</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">deployment-reader</span>
+<span class="hljs-attr">rules:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">apiGroups:</span> [<span class="hljs-string">"apps"</span>]
+  <span class="hljs-attr">resources:</span> [<span class="hljs-string">"deployments"</span>]
+  <span class="hljs-attr">verbs:</span> [<span class="hljs-string">"get"</span>, <span class="hljs-string">"watch"</span>, <span class="hljs-string">"list"</span>]
+</code></pre>
+      </li>
+      <li class="numberedList">Prepare <a id="_idIndexMarker1878"/>a <code class="inlineCode">ServiceAccount</code> for the <code class="inlineCode">hamster</code> Pods to use:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># ca/elastic-hamster-serviceaccount.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ServiceAccount</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">elastic-hamster</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">ca-demo</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Also, prepare a <code class="inlineCode">RoleBinding</code> YAML:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># ca/read-deployments-rolebinding.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">rbac.authorization.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">RoleBinding</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">read-deployments</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">ca-demo</span>
+<span class="hljs-attr">subjects:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">kind:</span> <span class="hljs-string">ServiceAccount</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">elastic-hamster</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">default</span>
+<span class="hljs-attr">roleRef:</span>
+  <span class="hljs-attr">kind:</span> <span class="hljs-string">Role</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">deployment-reader</span>
+  <span class="hljs-attr">apiGroup:</span> <span class="hljs-string">rbac.authorization.k8s.io</span>
+</code></pre>
+      </li>
+      <li class="numberedList">The hamster deployment is very simple, as follows, but with a special container image (refer to <code class="inlineCode">ca/elastic-hamster-deployment.yaml</code>):
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-string">...</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">serviceAccountName:</span> <span class="hljs-string">elastic-hamster</span>
+      <span class="hljs-attr">containers:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">hamster</span>
+          <span class="hljs-attr">image:</span> <span class="hljs-string">quay.io/iamgini/elastic-hamster:1.0</span>
+          <span class="hljs-attr">resources:</span>
+            <span class="hljs-attr">requests:</span>
+              <span class="hljs-attr">cpu:</span> <span class="hljs-string">500m</span>
+              <span class="hljs-attr">memory:</span> <span class="hljs-string">50Mi</span>
+          <span class="hljs-attr">env:</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">TOTAL_HAMSTER_USAGE</span>
+              <span class="hljs-attr">value:</span> <span class="hljs-string">"1.0"</span>
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">We have <a id="_idIndexMarker1879"/>created a custom container image <code class="inlineCode">elastic-hammer</code> with <code class="inlineCode">hamster.sh</code> script inside (refer to the <code class="inlineCode">ca/Dockerfile</code> and <code class="inlineCode">ca/hamster.sh</code> in the <code class="inlineCode">Chaper20</code> folder).</p>
+    <ol>
+      <li class="numberedList" value="6">Finally, create an HPA to autoscale the Pods:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># elastic-hamster-hpa.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">autoscaling/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">HorizontalPodAutoscaler</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">elastic-hamster-hpa</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">ca-demo</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">minReplicas:</span> <span class="hljs-number">1</span>
+  <span class="hljs-attr">maxReplicas:</span> <span class="hljs-number">25</span>
+  <span class="hljs-attr">metrics:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">resource:</span>
+        <span class="hljs-attr">name:</span> <span class="hljs-string">cpu</span>
+        <span class="hljs-attr">target:</span>
+          <span class="hljs-attr">averageUtilization:</span> <span class="hljs-number">75</span>
+          <span class="hljs-attr">type:</span> <span class="hljs-string">Utilization</span>
+      <span class="hljs-attr">type:</span> <span class="hljs-string">Resource</span>
+  <span class="hljs-attr">scaleTargetRef:</span>
+    <span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+    <span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">elastic-hamster</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Instead of applying YAML files one by one, let us apply them together; apply all the YAML files under <code class="inlineCode">ca</code> directory as follows:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f ca/
+namespace/ca-demo created
+role.rbac.authorization.k8s.io/deployment-reader created
+deployment.apps/elastic-hamster created
+horizontalpodautoscaler.autoscaling/elastic-hamster-hpa created
+serviceaccount/elastic-hamster created
+rolebinding.rbac.authorization.k8s.io/read-deployments created
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">Now, based <a id="_idIndexMarker1880"/>on the calculation, we have <code class="inlineCode">maxReplicas: 25</code> configured in the HPA. As per the shell script calculation, HPA will try to schedule 25 Pods with a <code class="inlineCode">cpu: 500m</code> request. Indeed, the cluster doesn’t have enough capacity to schedule those Pods and the CA will start scaling the Kubernetes nodes.</p>
+    <ol>
+      <li class="numberedList" value="8">Check the Pods, as we will find that several Pods have a Pending status due to capacity issues:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get po -n ca-demo
+NAME                              READY   STATUS    RESTARTS   AGE
+elastic-hamster-87d4db7fd-4tmxn   0/1     Pending   0          7m20s
+elastic-hamster-87d4db7fd-59lcd   1/1     Running   0          8m4s
+elastic-hamster-87d4db7fd-5d2gf   0/1     Pending   0          7m20s
+elastic-hamster-87d4db7fd-5m27q   0/1     Pending   0          8m4s
+elastic-hamster-87d4db7fd-7nc48   0/1     Pending   0          7m19s
+...&lt;removed for brevity&gt;...
+elastic-hamster-87d4db7fd-st7r5   0/1     Pending   0          7m34s
+elastic-hamster-87d4db7fd-twb86   1/1     Running   0          8m48s
+elastic-hamster-87d4db7fd-xrppp   0/1     Pending   0          7m34s
+</code></pre>
+      </li>
+      <li class="numberedList">Check the nodes now; you will find a total of 10 nodes in the cluster now (which is the maximum number we configured using the <code class="inlineCode">--max-nodes 10</code> parameter):
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl top pod -n ca-demo
+NAME                                     CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%  
+gke-k8sdemo-default-pool-1bf4f185-6422   196m         20%    1220Mi          43%      
+gke-k8sdemo-default-pool-1bf4f185-csv0   199m         21%    1139Mi          40%      
+gke-k8sdemo-default-pool-1bf4f185-fcsd   751m         79%    935Mi           33%      
+gke-k8sdemo-default-pool-1bf4f185-frq6   731m         77%    879Mi           31%      
+gke-k8sdemo-default-pool-1bf4f185-h8hw   742m         78%    846Mi           30%      
+gke-k8sdemo-default-pool-1bf4f185-j99r   733m         77%    923Mi           32%      
+gke-k8sdemo-default-pool-1bf4f185-k6xq   741m         78%    986Mi           35%      
+...&lt;removed for brevity&gt;...
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal">This shows <a id="_idIndexMarker1881"/>how the CA has worked together with the HPA to seamlessly scale the Deployment and cluster at the same time to accommodate the workload (not a full workload in our case due to the maximum node limit). We will now show what automatic scaling down looks like. Perform the following steps:</p>
+    <ol>
+      <li class="numberedList" value="1">To decrease the load in the cluster, let us reduce the number of maximum replicas in the HPA. It is possible to edit the YAML and apply it in the system, but let us use a <code class="inlineCode">kubectl patch</code> command here:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl patch hpa elastic-hamster-hpa -n ca-demo -p <span class="hljs-con-string">'{"spec": {"maxReplicas": 2}}'</span>
+horizontalpodautoscaler.autoscaling/elastic-hamster-hpa patch
+</code></pre>
+      </li>
+      <li class="numberedList">The Pod count will be adjusted now based on the updated HPA:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pod -n ca-demo
+NAME                              READY   STATUS    RESTARTS   AGE
+elastic-hamster-87d4db7fd-2qghf   1/1     Running   0          20m
+elastic-hamster-87d4db7fd-mdvpx   1/1     Running   0          19m
+</code></pre>
+      </li>
+      <li class="numberedList">Since the capacity demand is less, the CA will start scaling down the nodes as well. But when scaling down, the CA allows a 10-minute grace period to reschedule the Pods from a node onto other nodes before it forcibly terminates the node. So, check the nodes after 10 minutes and you will see the unwanted nodes have been removed from the cluster.
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get nodes
+NAME                                     STATUS   ROLES    AGE    VERSION
+gke-k8sdemo-default-pool-1bf4f185-6422   Ready    &lt;none&gt;   145m   v1.29.7-gke.1008000
+gke-k8sdemo-default-pool-1bf4f185-csv0   Ready    &lt;none&gt;   145m   v1.29.7-gke.1008000
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal">This shows <a id="_idIndexMarker1882"/>how efficiently the CA can react to a decrease in the load in the cluster when the HPA has scaled down the Deployment. Earlier, without any intervention, the cluster scaled to 10 Nodes for a short period of time and then scaled down to just two Nodes. Imagine the cost difference between having an eight-node cluster running all the time and using the CA to cleverly autoscale on demand!</p>
+    <div class="note">
+      <p class="normal">To ensure that you are not charged for any unwanted cloud resources, you need to clean up the cluster or disable cluster autoscaling to be sure that you are not running too many Nodes.</p>
+    </div>
+    <p class="normal">This demonstration concludes our chapter about autoscaling in Kubernetes. But before we go to the summary, let us touch on some other Kubernetes autoscaling tools in the next section.</p>
+    <h1 class="heading-1" id="_idParaDest-659">Alternative autoscalers for Kubernetes</h1>
+    <p class="normal">Compared to <a id="_idIndexMarker1883"/>the basic Kubernetes autoscaler, other autoscalers <a id="_idIndexMarker1884"/>such as <strong class="keyWord">Kubernetes Eventdriven Autoscaling</strong> (<strong class="keyWord">KEDA</strong>) and <strong class="keyWord">Karpenter</strong> offer <a id="_idIndexMarker1885"/>more flexibility and efficiency by managing resource scaling based on application-specific metrics and workloads. KEDA permits autoscaling based on events originating outside a cluster and at custom metrics. This is well suited for event-driven applications. On the other hand, Karpenter simplifies node provisioning and scaling by automatically adapting the node count based <a id="_idIndexMarker1886"/>on workload demands, using your cluster resources efficiently and cost-effectively. Together, these tools enable fine-grained scaling control so that applications can adequately perform under variable load conditions.</p>
+    <p class="normal">Let us learn about these two common Kubernetes autoscaler tools in the coming sections.</p>
+    <h2 class="heading-2" id="_idParaDest-660">KEDA</h2>
+    <p class="normal">KEDA (<a href="https://keda.sh"><span class="url">https://keda.sh</span></a>) is designed to enable event-driven scaling in Kubernetes by allowing <a id="_idIndexMarker1887"/>you to scale the number of pod replicas based on custom metrics or external events. Unlike traditional autoscalers, which <a id="_idIndexMarker1888"/>rely on CPU or memory usage, KEDA can trigger scaling based on metrics from various event sources, such as message queues, HTTP request rates, and custom application metrics. This makes it particularly useful for workloads that are driven by specific events or metrics rather than general resource usage.</p>
+    <p class="normal">KEDA integrates seamlessly with the existing Kubernetes HPA and can scale applications up or down based on dynamic workloads. By supporting a wide range of event sources, it offers flexibility and precision in scaling decisions. KEDA helps ensure that resources are allocated efficiently in response to real-time demand, which can optimize costs and improve application performance.</p>
+    <p class="normal">The following diagram shows the architecture and components of KEDA:</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_20_05.png"/></figure>
+    <p class="packt_figref">Figure 20.5: KEA architecture (image source: https://keda.sh/docs/2.15/concepts/)</p>
+    <p class="normal">KEDA is an <a id="_idIndexMarker1889"/>open source project hosted by the CNCF and provides best-effort support via GitHub for filing bugs and feature requests. There are several different vendors that include KEDA as part of their offering and support, including Azure Container Apps, Red Hat OpenShift Autoscaler with custom metrics, and KEDA Add-On for Azure Kubernetes Service.</p>
+    <h2 class="heading-2" id="_idParaDest-661">Karpenter</h2>
+    <p class="normal">Karpenter (<a href="https://karpenter.sh"><span class="url">https://karpenter.sh</span></a>) is an <a id="_idIndexMarker1890"/>advanced Kubernetes CA that focuses on optimizing the provisioning and scaling of nodes within a cluster. It automates <a id="_idIndexMarker1891"/>the process of scaling compute resources by dynamically adjusting the number of nodes based on the needs of your workloads. Karpenter is designed to rapidly adapt to changes in demand and optimize the cluster’s capacity, thereby improving both performance and cost efficiency.</p>
+    <p class="normal">The following diagram shows how Karpenter works in a Kubernetes cluster.</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_20_06.png"/></figure>
+    <p class="packt_figref">Figure 20.6: Workings of Karpenter (image source: https://karpenter.sh)</p>
+    <p class="normal">Karpenter offers fast and efficient node scaling with capabilities like capacity optimization <a id="_idIndexMarker1892"/>and intelligent provisioning. It ensures that the right types and amounts of nodes are available to meet workload requirements, minimizing waste and cost. By providing sophisticated scaling and provisioning features, Karpenter helps maintain cluster performance while keeping operational costs in check.</p>
+    <p class="normal">Implementing autoscaling using KEDA or Karpenter is beyond the scope of this book; please refer to the documentation (<a href="https://keda.sh/docs/latest"><span class="url">https://keda.sh/docs/latest</span></a>) to learn more.</p>
+    <p class="normal">Now, let’s summarize what we have learned in this chapter.</p>
+    <h1 class="heading-1" id="_idParaDest-662">Summary</h1>
+    <p class="normal">In this chapter, you have learned about autoscaling techniques in Kubernetes clusters. We first explained the basics behind Pod resource requests and limits and why they are crucial for the autoscaling and scheduling of Pods. </p>
+    <p class="normal">Next, we introduced the VPA, which can automatically change requests and limits for Pods based on current and past metrics. After that, you learned about the HPA, which can be used to automatically change the number of Deployment or StatefulSet replicas. The changes are done based on CPU, memory, or custom metrics. Lastly, we explained the role of the CA in cloud environments. We also demonstrated how to efficiently combine the HPA with the CA to achieve the scaling of your workload together with the scaling of the cluster.</p>
+    <p class="normal">There is much more that can be configured in the VPA, HPA, and CA, so we have just scratched the surface of powerful autoscaling in Kubernetes! We also mentioned alternative Kubernetes autoscalers such as KEDA and Karpenter.</p>
+    <p class="normal">In the next chapter, we will explain advanced Kubernetes topics such as traffic management using ingress, multi-cluster strategies, and emerging technologies.</p>
+    <h1 class="heading-1" id="_idParaDest-663">Further reading</h1>
+    <ul>
+      <li class="bulletList">Horizontal Pod Autoscaling: <a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/ "><span class="url">https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/</span></a></li>
+      <li class="bulletList">Autoscaling Workloads: <a href="https://kubernetes.io/docs/concepts/workloads/autoscaling/ "><span class="url">https://kubernetes.io/docs/concepts/workloads/autoscaling/</span></a></li>
+      <li class="bulletList">HorizontalPodAutoscaler Walkthrough: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/</li>
+      <li class="bulletList">Cluster Autoscaling: <a href="https://kubernetes.io/docs/concepts/cluster-administration/cluster-autoscaling/"><span class="url">https://kubernetes.io/docs/concepts/cluster-administration/cluster-autoscaling/</span></a>.</li>
+    </ul>
+    <p class="normal">For more information regarding autoscaling in Kubernetes, please refer to the following Packt books:</p>
+    <ul>
+      <li class="bulletList"><em class="italic">The Complete Kubernetes Guide</em>, by <em class="italic">Jonathan Baier</em>, <em class="italic">Gigi Sayfan</em>, <em class="italic">Jesse White</em> (<a href="https://www.packtpub.com/en-in/product/the-complete-kubernetes-guide-9781838647346"><span class="url">https://www.packtpub.com/en-in/product/the-complete-kubernetes-guide-9781838647346</span></a>)</li>
+      <li class="bulletList"><em class="italic">Getting Started with Kubernetes – Third Edition</em>, by <em class="italic">Jonathan Baier</em>, <em class="italic">Jesse White</em> (<a href="https://www.packtpub.com/en-in/product/getting-started-with-kubernetes-9781788997263"><span class="url">https://www.packtpub.com/en-in/product/getting-started-with-kubernetes-9781788997263</span></a>)</li>
+      <li class="bulletList"><em class="italic">Kubernetes for Developers</em>, by <em class="italic">Joseph Heck</em> (<a href="https://www.packtpub.com/en-in/product/kubernetes-for-developers-9781788830607"><span class="url">https://www.packtpub.com/en-in/product/kubernetes-for-developers-9781788830607</span></a>)</li>
+      <li class="bulletList"><em class="italic">Hands-On Kubernetes on Windows</em>, by <em class="italic">Piotr Tylenda</em> (<a href="https://www.packtpub.com/product/hands-on-kubernetes-on-windows/9781838821562"><span class="url">https://www.packtpub.com/product/hands-on-kubernetes-on-windows/9781838821562</span></a>)</li>
+    </ul>
+    <p class="normal">You can also refer to the official Kubernetes documentation:</p>
+    <ul>
+      <li class="bulletList">Kubernetes documentation (<a href="https://kubernetes.io/docs/home/"><span class="url">https://kubernetes.io/docs/home/</span></a>). This is always the most up-to-date source of knowledge regarding Kubernetes in general.</li>
+      <li class="bulletList">General installation instructions for the VPA are available here: <a href="https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler#installation"><span class="url">https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler#installation</span></a>. </li>
+      <li class="bulletList">EKS’ documentation offers its own version of the instructions: <a href="https://docs.aws.amazon.com/eks/latest/userguide/vertical-pod-autoscaler.html"><span class="url">https://docs.aws.amazon.com/eks/latest/userguide/vertical-pod-autoscaler.html</span></a>.</li>
+    </ul>
+    <h1 class="heading-1" id="_idParaDest-664">Join our community on Discord</h1>
+    <p class="normal">Join our community’s Discord space for discussions with the authors and other readers:</p>
+    <p class="normal"><a href="https://packt.link/cloudanddevops"><span class="url">https://packt.link/cloudanddevops</span></a></p>
+    <p class="normal"><img alt="" src="image/QR_Code119001106479081656.png"/></p>
+  </div>
+</body></html>

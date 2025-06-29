@@ -1,0 +1,1060 @@
+<html><head></head><body>
+  <div id="_idContainer185" class="Basic-Text-Frame">
+    <h1 class="chapterNumber">10</h1>
+    <h1 id="_idParaDest-453" class="chapterTitle">Exploring Kubernetes Networking</h1>
+    <p class="normal">In this chapter, we will examine the important topic of networking. Kubernetes as an orchestration platform manages containers/pods running on different machines (physical or virtual) and requires an explicit networking model. We will look at the following topics:</p>
+    <ul>
+      <li class="bulletList">Understanding the Kubernetes networking model </li>
+      <li class="bulletList">Kubernetes network plugins</li>
+      <li class="bulletList">Kubernetes and eBPF</li>
+      <li class="bulletList">Kubernetes networking solutions</li>
+      <li class="bulletList">Using network policies effectively</li>
+      <li class="bulletList">Load balancing options</li>
+    </ul>
+    <p class="normal">By the end of this chapter, you will understand the Kubernetes approach to networking and be familiar with the solution space for aspects such as standard interfaces, networking implementations, and load balancing. You will even be able to write your very own <strong class="keyWord">Container Networking Interface</strong> (<strong class="keyWord">CNI</strong>) plugin if you wish.</p>
+    <h1 id="_idParaDest-454" class="heading-1">Understanding the Kubernetes networking model</h1>
+    <p class="normal">The Kubernetes networking model<a id="_idIndexMarker978"/> is based on a flat address space. All pods in a cluster can directly see each other. Each pod<a id="_idIndexMarker979"/> has its own IP address. There is no need to configure<a id="_idIndexMarker980"/> any <strong class="keyWord">Network Address Translation</strong> (<strong class="keyWord">NAT</strong>). In addition, containers in the same pod share their pod’s IP address and can communicate with each other through <code class="inlineCode">localhost</code>. This <a id="_idIndexMarker981"/>model is pretty opinionated, but once set up, it simplifies life considerably both for developers and administrators. It makes it particularly easy to migrate traditional network applications to Kubernetes. A pod represents a<a id="_idIndexMarker982"/> traditional node and each container represents a traditional process.</p>
+    <p class="normal">We will cover the following:</p>
+    <ul>
+      <li class="bulletList">Intra-pod communication</li>
+      <li class="bulletList">Pod-to-service communication</li>
+      <li class="bulletList">External access</li>
+      <li class="bulletList">Lookup and discovery</li>
+      <li class="bulletList">DNS in Kubernetes</li>
+    </ul>
+    <h2 id="_idParaDest-455" class="heading-2">Intra-pod communication (container to container)</h2>
+    <p class="normal">A running pod is always<a id="_idIndexMarker983"/> scheduled on one (physical or virtual) node. That means that all the containers run on the same node and can talk to each other in various ways, such as via the local filesystem, any IPC mechanism, or using <code class="inlineCode">localhost</code> and well-known ports. There is no danger of port collision between different pods because each pod has its own IP address and when a container in the pod uses <code class="inlineCode">localhost</code>, it applies to the pod’s IP address only. So if container 1 in pod 1 connects to port <code class="inlineCode">1234</code>, which container 2 listens to on pod 1, it will not conflict with another container in pod 2 running on the same node that also listens on port <code class="inlineCode">1234</code>. The only caveat is that if you’re exposing ports to the host, then you should be careful about pod-to-node affinity. This can be handled using several mechanisms, such as Daemonsets and pod anti-affinity.</p>
+    <h2 id="_idParaDest-456" class="heading-2">Inter-pod communication (pod to pod)</h2>
+    <p class="normal">Pods in Kubernetes are <a id="_idIndexMarker984"/>allocated a network-visible IP address (not private to the node). Pods can communicate directly without the aid of NAT, tunnels, proxies, or any other obfuscating layer. Well-known port numbers can be used for a configuration-free communication scheme. The pod’s internal IP address is the same as its external IP address that other pods see (within the cluster network; not exposed to the outside world). That means that standard naming and discovery mechanisms such<a id="_idIndexMarker985"/> as a <strong class="keyWord">Domain Name System</strong> (<strong class="keyWord">DNS</strong>) work out of the box.</p>
+    <h2 id="_idParaDest-457" class="heading-2">Pod-to-service communication</h2>
+    <p class="normal">Pods can talk to each other directly using <a id="_idIndexMarker986"/>their IP addresses and well-known ports, but that requires the pods to know each other’s IP addresses. In a Kubernetes cluster, pods can be destroyed and created constantly. There may also be multiple replicas of the same pod spec, each with its own IP address. The Kubernetes service resource provides a layer of indirection that is very useful because the service is stable even if the set of actual pods that responds to requests is ever-changing. In addition, you get automatic, highly available load balancing because the kube-proxy on each node takes care of redirecting traffic to the correct pod:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_01.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.1: Internal load balancing using a serviceExternal access</p>
+    <p class="normal">Eventually, some containers need to be accessible from the outside world. The pod IP addresses are not visible externally. The service is the right vehicle, but external access typically requires two redirects. For example, cloud provider load balancers are not Kubernetes-aware, so they can’t direct traffic to a particular service directly to a node that runs a pod that can process the request. Instead, the public load balancer just directs traffic to any node in the cluster and the kube-proxy on that node will redirect it again to an appropriate pod if the current node doesn’t run the necessary pod.</p>
+    <p class="normal">The <a id="_idIndexMarker987"/>following diagram shows how the external load balancer just sends traffic to an arbitrary node, where the kube-proxy takes care of further routing if needed:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_02.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.2: External load balancer sending traffic to an arbitrary node and the kube-proxy</p>
+    <h2 id="_idParaDest-458" class="heading-2">Lookup and discovery</h2>
+    <p class="normal">In order for pods and containers to <a id="_idIndexMarker988"/>communicate with each other, they need to find each other. There are several ways for containers to locate other containers or announce themselves, which we will discuss in the following subsections. Each approach has its own pros and cons.</p>
+    <h3 id="_idParaDest-459" class="heading-3">Self-registration</h3>
+    <p class="normal">We’ve mentioned self-registration<a id="_idIndexMarker989"/> several times. Let’s understand what it means exactly. When a container runs, it knows its pod’s IP address. Every container that wants to be accessible to other containers in the cluster can connect to some registration service and register its IP address and port. Other containers can query the registration service for the IP addresses and ports of all registered containers and connect to them. When a container is destroyed (gracefully), it will unregister itself. If a container dies ungracefully, then some mechanism needs to be established to detect that. For example, the registration service can periodically ping all registered containers, or the containers can be required periodically to send a keep-alive message to the registration service.</p>
+    <p class="normal">The benefit of <a id="_idIndexMarker990"/>self-registration is that once the generic registration service is in place (no need to customize it for different purposes), there is no need to worry about keeping track of containers. Another huge benefit is that containers can employ sophisticated policies and decide to unregister temporarily if they are unavailable based on local conditions; for example, if a container is busy and doesn’t want to receive any more requests at the moment. This sort of smart and decentralized dynamic load balancing can be very difficult to achieve globally without a registration service. The downside is that the registration service is yet another non-standard component that containers need to know about in order to locate other containers.</p>
+    <h3 id="_idParaDest-460" class="heading-3">Services and endpoints</h3>
+    <p class="normal">Kubernetes services can be considered <a id="_idIndexMarker991"/>standard registration services. Pods that belong to a service are registered automatically based on their labels. Other pods can look up the endpoints to find all the service pods or take advantage of the service itself and directly send a message to the service that will get routed to one of the backend pods. Although, most of the time, pods will just send their message to the service itself, which will forward it to one of the backing pods. Dynamic membership can be achieved using a combination of the replica count of deployments, health checks, readiness checks, and horizontal pod autoscaling.</p>
+    <h3 id="_idParaDest-461" class="heading-3">Loosely coupled connectivity with queues</h3>
+    <p class="normal">What if containers can talk to<a id="_idIndexMarker992"/> each other without knowing their IP addresses and ports or even service IP addresses or network names? What if most of the communication can be asynchronous and decoupled? In many cases, systems can be composed of loosely coupled components that are not only unaware of the identities of other components but are also unaware that other components even exist. Queues facilitate such loosely coupled systems. Components (containers) listen to messages from the queue, respond to messages, perform their jobs, and post messages to the queue, such as progress messages, completion <a id="_idIndexMarker993"/>status, and errors. Queues<a id="_idIndexMarker994"/> have many benefits:</p>
+    <ul>
+      <li class="bulletList">Easy to add processing capacity without coordination just by adding more containers that listen to the queue</li>
+      <li class="bulletList">Easy to keep track of the overall load based on the queue depth</li>
+      <li class="bulletList">Easy to have multiple versions of components running side by side by versioning messages and/or queue topics</li>
+      <li class="bulletList">Easy to implement load balancing as well as redundancy by having multiple consumers process requests in different modes</li>
+      <li class="bulletList">Easy to add or<a id="_idIndexMarker995"/> remove other types of listeners dynamically</li>
+    </ul>
+    <p class="normal">The downsides of queues are the following:</p>
+    <ul>
+      <li class="bulletList">You need to make sure <a id="_idIndexMarker996"/>that the queue provides appropriate durability and high availability so it <a id="_idIndexMarker997"/>doesn’t become a critical <strong class="keyWord">single point of failure</strong> (<strong class="keyWord">SPOF</strong>)</li>
+      <li class="bulletList">Containers need to work with the async queue API (could be abstracted away)</li>
+      <li class="bulletList">Implementing a request-response requires somewhat cumbersome listening on response queues</li>
+    </ul>
+    <p class="normal">Overall, queues are an excellent mechanism for large-scale systems and they can be utilized in large Kubernetes clusters to ease coordination.</p>
+    <h3 id="_idParaDest-462" class="heading-3">Loosely coupled connectivity with data stores</h3>
+    <p class="normal">Another loosely <a id="_idIndexMarker998"/>coupled method is to use a data store (for example, Redis) to store messages and then other containers can read them. While possible, this is not the design objective of data stores, and the result is often cumbersome, fragile, and doesn’t have the best performance. Data stores are optimized for data storage and access and not for communication. That being said, data stores can be used in conjunction with queues, where a component stores some data in a data store and then sends a message to the queue saying that the data is ready for processing. Multiple components listen to the message and all start processing the data in parallel.</p>
+    <h3 id="_idParaDest-463" class="heading-3">Kubernetes ingress</h3>
+    <p class="normal">Kubernetes offers<a id="_idIndexMarker999"/> an ingress resource and controller that is designed to expose Kubernetes services to the outside world. You can do it yourself, of course, but many tasks involved in defining an ingress are common across most applications for a particular type of ingress, such as a web application, CDN, or DDoS protector. You can also write your own ingress objects.</p>
+    <p class="normal">The ingress object is often used for smart load balancing and TLS termination. Instead of configuring and deploying your own Nginx server, you can benefit from the built-in ingress controller. If you need a refresher, check out <em class="chapterRef">Chapter 5</em>, <em class="italic">Using Kubernetes Resources in Practice</em>, where we discussed the ingress resource with examples.</p>
+    <h2 id="_idParaDest-464" class="heading-2">DNS in Kubernetes</h2>
+    <p class="normal">A DNS<a id="_idIndexMarker1000"/> is a cornerstone technology in networking. Hosts that are reachable on IP networks have IP addresses. DNS is a hierarchical and decentralized naming system that provides a layer of indirection on top of IP addresses. This is important for several use cases, such as:</p>
+    <ul>
+      <li class="bulletList">Load balancing</li>
+      <li class="bulletList">Dynamically replacing hosts with different IP addresses</li>
+      <li class="bulletList">Providing human-friendly names to well-known access points</li>
+    </ul>
+    <p class="normal">DNS is a vast topic and a full discussion is outside the scope of this book. Just to give you a sense, there are tens of different <a id="_idIndexMarker1001"/>RFC standards that cover DNS: <a href="https://en.wikipedia.org/wiki/Domain_Name_System#Standards"><span class="url">https://en.wikipedia.org/wiki/Domain_Name_System#Standards</span></a>.</p>
+    <p class="normal">In Kubernetes, the main addressable resources are pods and services. Each pod and service has a unique internal (private) IP address within the cluster. The kubelet configures the pods with a <code class="inlineCode">resolve.conf</code> file that points them to the internal DNS server. Here is what it looks like:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k run -it --image g1g1/py-kube:0.3 -- bash
+If you don't see a command prompt, try pressing enter.
+root@bash:/#
+root@bash:/# cat /etc/resolv.conf
+search default.svc.cluster.local svc.cluster.local cluster.local
+nameserver 10.96.0.10
+options ndots:5
+</code></pre>
+    <p class="normal">The nameserver IP address <code class="inlineCode">10.96.0.10</code> is the address of the <code class="inlineCode">kube-dns</code> service:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get svc -n kube-system
+NAME       TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)                  AGE
+kube-dns   ClusterIP   10.96.0.10   &lt;none&gt;        53/UDP,53/TCP,9153/TCP   19m
+</code></pre>
+    <p class="normal">A pod’s hostname is, by default, just its metadata name. If you want pods to have a fully qualified domain name inside the cluster, you can create a headless service and also set the hostname explicitly, as well as a subdomain to the service name. Here is how to set up a DNS for two pods called <code class="inlineCode">py-kube1 </code>and <code class="inlineCode">py-kube2</code> with hostnames of <code class="inlineCode">trouble1</code> and <code class="inlineCode">trouble2</code>, as well as a <a id="_idIndexMarker1002"/>subdomain called <code class="inlineCode">maker</code>, which matches the headless service:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">maker</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">py-kube</span>
+  <span class="hljs-attr">clusterIP:</span> <span class="hljs-string">None</span> <span class="hljs-comment"># headless service</span>
+<span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">py-kube1</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">py-kube</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">hostname:</span> <span class="hljs-string">trouble</span>
+  <span class="hljs-attr">subdomain:</span> <span class="hljs-string">maker</span>
+  <span class="hljs-attr">containers:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">image:</span> <span class="hljs-string">g1g1/py-kube:0.3</span>
+    <span class="hljs-attr">command:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-string">sleep</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-string">"9999"</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">trouble</span>
+<span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Pod</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">py-kube2</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">py-kube</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">hostname:</span> <span class="hljs-string">trouble2</span>
+  <span class="hljs-attr">subdomain:</span> <span class="hljs-string">maker</span>
+  <span class="hljs-attr">containers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">image:</span> <span class="hljs-string">g1g1/py-kube:0.3</span>
+      <span class="hljs-attr">command:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-string">sleep</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-string">"9999"</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">trouble</span>
+</code></pre>
+    <p class="normal">Let’s create the pods and service:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k apply -f pod-with-dns.yaml
+service/maker created
+pod/py-kube1 created
+pod/py-kube2 created
+</code></pre>
+    <p class="normal">Now, we can check the <a id="_idIndexMarker1003"/>hostnames and the DNS resolution inside the pod. First, we will connect to <code class="inlineCode">py-kube2</code> and verify that its hostname is <code class="inlineCode">trouble2</code> and <a id="_idIndexMarker1004"/>the <strong class="keyWord">fully qualified domain name</strong> (<strong class="keyWord">FQDN</strong>) is <code class="inlineCode">trouble2.maker.default.svc.cluster.local</code>. </p>
+    <p class="normal">Then, we can resolve the FQDN of both <code class="inlineCode">trouble</code> and <code class="inlineCode">trouble2</code>:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k exec -it py-kube2 -- bash
+root@trouble2:/# hostname
+trouble2
+root@trouble2:/# hostname --fqdn
+trouble2.maker.default.svc.cluster.local
+root@trouble2:/# dig +short trouble.maker.default.svc.cluster.local
+10.244.0.10
+root@trouble2:/# dig +short trouble2.maker.default.svc.cluster.local
+10.244.0.9
+</code></pre>
+    <p class="normal">To close the loop, let’s confirm that the IP addresses <code class="inlineCode">10.244.0.10</code> and <code class="inlineCode">10.244.0.9</code> actually belong to the <code class="inlineCode">py-kube1</code> and <code class="inlineCode">py-kube2</code> pods:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get po -o wide
+NAME       READY   STATUS    RESTARTS   AGE   IP            NODE                 NOMINATED NODE   READINESS GATES
+py-kube1   1/1     Running   0          10m   10.244.0.10   kind-control-plane   &lt;none&gt;           &lt;none&gt;
+py-kube2   1/1     Running   0          18m   10.244.0.9    kind-control-plane   &lt;none&gt;           &lt;none&gt;
+</code></pre>
+    <p class="normal">There are additional configuration options and DNS policies you can apply. See <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service"><span class="url">https://kubernetes.io/docs/concepts/services-networking/dns-pod-service</span></a>.</p>
+    <h3 id="_idParaDest-465" class="heading-3">CoreDNS</h3>
+    <p class="normal">Earlier, we mentioned<a id="_idIndexMarker1005"/> that the kubelet uses a <code class="inlineCode">resolve.conf</code> file to configure pods by pointing them to the internal DNS server, but where is this internal DNS server hiding? You can find it in the <code class="inlineCode">kube-system</code> namespace. The service is called <code class="inlineCode">kube-dns</code>:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k describe svc -n kube-system kube-dns
+Name:              kube-dns
+Namespace:         kube-system
+Labels:            k8s-app=kube-dns
+                   kubernetes.io/cluster-service=true
+                   kubernetes.io/name=CoreDNS
+Annotations:       prometheus.io/port: 9153
+                   prometheus.io/scrape: true
+Selector:          k8s-app=kube-dns
+Type:              ClusterIP
+IP Family Policy:  SingleStack
+IP Families:       IPv4
+IP:                10.96.0.10
+IPs:               10.96.0.10
+Port:              dns  53/UDP
+TargetPort:        53/UDP
+Endpoints:         10.244.0.2:53,10.244.0.3:53
+Port:              dns-tcp  53/TCP
+TargetPort:        53/TCP
+Endpoints:         10.244.0.2:53,10.244.0.3:53
+Port:              metrics  9153/TCP
+TargetPort:        9153/TCP
+Endpoints:         10.244.0.2:9153,10.244.0.3:9153
+Session Affinity:  None
+Events:            &lt;none&gt;
+</code></pre>
+    <p class="normal">Note that selector: <code class="inlineCode">k8s-app=kube-dns</code>. Let’s find the pods that back this service:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get po -n kube-system -l k8s-app=kube-dns
+NAME                      READY   STATUS    RESTARTS   AGE
+coredns-64897985d-n4x5b   1/1     Running   0          97m
+coredns-64897985d-nqtwk   1/1     Running   0          97m
+</code></pre>
+    <p class="normal">The service is called <code class="inlineCode">kube-dns</code>, but the pods have a prefix of <code class="inlineCode">coredns</code>. Interesting. Let’s check the image the deployment uses:</p>
+    <pre class="programlisting gen"><code class="hljs">$ k get deploy coredns -n kube-system -o jsonpath='{.spec.template.spec.containers[0]}' | jq .image
+"k8s.gcr.io/coredns/coredns:v1.8.6"
+</code></pre>
+    <p class="normal">The reason for this mismatch is that, initially, the default Kubernetes DNS server was called <code class="inlineCode">kube-dns</code>. Then, <code class="inlineCode">CoreDNS</code> replaced it as the mainstream DNS server due to its simplified architecture <a id="_idIndexMarker1006"/>and better performance.</p>
+    <p class="normal">We have covered a lot of information about the Kubernetes networking model and its components. In the next section, we will cover the Kubernetes network plugins that implement this model with standard interfaces such as CNI and Kubenet.</p>
+    <h1 id="_idParaDest-466" class="heading-1">Kubernetes network plugins</h1>
+    <p class="normal">Kubernetes has a <a id="_idIndexMarker1007"/>network plugin system since networking is so diverse and different people would like to implement it in different ways. Kubernetes is flexible enough to support any scenario. The primary network plugin is CNI, which we will discuss in depth. But Kubernetes also comes with a simpler network plugin called Kubenet. Before we go over the details, let’s get on the same page with the basics of Linux networking (just the tip of the iceberg). This is important because Kubernetes networking is built on top of standard Linux networking and you need this foundation to understand how Kubernetes networking works.</p>
+    <h2 id="_idParaDest-467" class="heading-2">Basic Linux networking</h2>
+    <p class="normal">Linux, by default, has a single shared<a id="_idIndexMarker1008"/> network space. The physical network interfaces are all <a id="_idIndexMarker1009"/>accessible in this namespace. But the physical namespace can be divided into multiple logical namespaces, which is very relevant to container networking.</p>
+    <h3 id="_idParaDest-468" class="heading-3">IP addresses and ports</h3>
+    <p class="normal">Network<a id="_idIndexMarker1010"/> entities are identified<a id="_idIndexMarker1011"/> by their IP address. Servers can <a id="_idIndexMarker1012"/>listen to incoming connections on multiple ports. Clients can connect (TCP) or send/receive <a id="_idIndexMarker1013"/>data (UDP) to servers within their network.</p>
+    <h3 id="_idParaDest-469" class="heading-3">Network namespaces</h3>
+    <p class="normal">Namespaces group a bunch of<a id="_idIndexMarker1014"/> network<a id="_idIndexMarker1015"/> devices such that they can reach other servers in the same namespace, but not <em class="italic">other</em> servers, even if they are physically on the same network. Linking networks or network segments can be done via bridges, switches, gateways, and routing.</p>
+    <h3 id="_idParaDest-470" class="heading-3">Subnets, netmasks, and CIDRs</h3>
+    <p class="normal">A granular division of networks segments is very<a id="_idIndexMarker1016"/> useful when designing and maintaining networks. Dividing networks into smaller subnets with a common prefix is a<a id="_idIndexMarker1017"/> common practice. These subnets can be defined by bitmasks that represent the size of the subnet (how many hosts it can contain). For example, a<a id="_idIndexMarker1018"/> netmask of 255.255.255.0 means that the first 3<a id="_idIndexMarker1019"/> octets are used for routing and only 256 (actually 254) individual hosts are available. The <strong class="keyWord">Classless Inter-Domain Routing</strong> (<strong class="keyWord">CIDR</strong>) notation<a id="_idIndexMarker1020"/> is often <a id="_idIndexMarker1021"/>used for this purpose because it is more concise, encodes more information, and also allows combining hosts from multiple legacy classes (A, B, C, D, E). For example, 172.27.15.0/24 means that the first 24 bits (3 octets) are used for routing.</p>
+    <h3 id="_idParaDest-471" class="heading-3">Virtual Ethernet devices</h3>
+    <p class="normal"><strong class="keyWord">Virtual Ethernet</strong> (<strong class="keyWord">veth</strong>) devices<a id="_idIndexMarker1022"/> represent physical <a id="_idIndexMarker1023"/>network devices. When you create a veth that’s linked to a physical device, you can assign that veth (and by extension, the physical device) into a namespace where devices from other namespaces can’t reach it directly, even if, physically, they are on the same local network.</p>
+    <h3 id="_idParaDest-472" class="heading-3">Bridges</h3>
+    <p class="normal">Bridges connect<a id="_idIndexMarker1024"/> multiple<a id="_idIndexMarker1025"/> network segments to an aggregate network, so all the nodes can communicate with each other. Bridging is done at layer 2 (the data link) of the OSI network model.</p>
+    <h3 id="_idParaDest-473" class="heading-3">Routing</h3>
+    <p class="normal">Routing<a id="_idIndexMarker1026"/> connects separate<a id="_idIndexMarker1027"/> networks, typically based on routing tables that instruct network devices how to forward packets to their destinations. Routing is done through various network devices, such as routers, gateways, switches, and firewalls, including regular Linux boxes.</p>
+    <h3 id="_idParaDest-474" class="heading-3">Maximum transmission unit</h3>
+    <p class="normal">The <strong class="keyWord">maximum transmission unit</strong> (<strong class="keyWord">MTU)</strong> determines <a id="_idIndexMarker1028"/>how big packets can be. On<a id="_idIndexMarker1029"/> Ethernet networks, for example, the MTU is 1,500 bytes. The bigger the MTU, the better the ratio between payload and headers, which is a good thing. But the downside is that minimum latency is reduced because you have to wait for the entire packet to arrive and, furthermore, in case of failure, you have to retransmit the entire big packet.</p>
+    <h3 id="_idParaDest-475" class="heading-3">Pod networking</h3>
+    <p class="normal">Here is a diagram that <a id="_idIndexMarker1030"/>describes the<a id="_idIndexMarker1031"/> relationship between pod, host, and the global internet at the networking level via <code class="inlineCode">veth0</code>:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_03.png" alt=""/> </figure>
+    <p class="packt_figref">Figure 10.3: Pod networking</p>
+    <h2 id="_idParaDest-476" class="heading-2">Kubenet</h2>
+    <p class="normal">Back to Kubernetes. Kubenet is a <a id="_idIndexMarker1032"/>network plugin. It’s very rudimentary: it establishes a Linux<a id="_idIndexMarker1033"/> bridge named <code class="inlineCode">cbr0</code> and creates a veth interface for each pod. This is commonly used by cloud providers to configure routing rules for communication between nodes, or in single-node environments. The veth pair connects each pod to its host node using an IP address from the host’s IP address’ range.</p>
+    <h3 id="_idParaDest-477" class="heading-3">Requirements</h3>
+    <p class="normal">The Kubenet plugin has the following <a id="_idIndexMarker1034"/>requirements:</p>
+    <ul>
+      <li class="bulletList">The node must be assigned a subnet to allocate IP addresses to its pods</li>
+      <li class="bulletList">The standard CNI bridge, <code class="inlineCode">lo</code>, and host-local plugins must be installed at version 0.2.0 or higher</li>
+      <li class="bulletList">The kubelet must be executed with the <code class="inlineCode">--network-plugin=kubenet</code> flag</li>
+      <li class="bulletList">The kubelet must be executed with the <code class="inlineCode">--non-masquerade-cidr=&lt;clusterCidr&gt;</code> flag</li>
+      <li class="bulletList">The kubelet<a id="_idIndexMarker1035"/> must be run with <code class="inlineCode">--pod-cidr</code> or the kube-controller-manager must be run with <code class="inlineCode">--allocate-node-cidrs=true --cluster-cidr=&lt;cidr&gt;</code></li>
+    </ul>
+    <h3 id="_idParaDest-478" class="heading-3">Setting the MTU</h3>
+    <p class="normal">The MTU is critical <a id="_idIndexMarker1036"/>for network performance. Kubernetes network plugins such as Kubenet make their best efforts to deduce the optimal MTU, but sometimes they need help. If an existing network interface (for example, the <code class="inlineCode">docker0</code> bridge) sets a small MTU, then Kubenet will reuse it. Another example is IPsec, which requires lowering the MTU due to the extra overhead from IPsec encapsulation, but the Kubenet network plugin doesn’t take it into consideration. The solution is to avoid relying on the automatic calculation of the MTU and just tell the kubelet what MTU should be used for network plugins via the <code class="inlineCode">--network-plugin-mtu</code> command-line switch that is provided to all network plugins. However, at the moment, only the Kubenet network plugin accounts for this command-line switch.</p>
+    <p class="normal">The Kubenet network plugin is mostly around for backward compatibility reasons. The CNI is the primary network interface that all modern network solution providers implement to integrate with Kubernetes. Let’s see what it’s all about.</p>
+    <h2 id="_idParaDest-479" class="heading-2">The CNI</h2>
+    <p class="normal">The CNI is a<a id="_idIndexMarker1037"/> specification as well as a set of libraries for writing network plugins to configure network interfaces in<a id="_idIndexMarker1038"/> Linux containers. The specification actually evolved from the rkt network proposal. CNI is an established industry standard now even beyond Kubernetes. Some of the organizations that use CNI are:</p>
+    <ul>
+      <li class="bulletList">Kubernetes</li>
+      <li class="bulletList">OpenShift</li>
+      <li class="bulletList">Mesos</li>
+      <li class="bulletList">Kurma</li>
+      <li class="bulletList">Cloud Foundry</li>
+      <li class="bulletList">Nuage</li>
+      <li class="bulletList">IBM</li>
+      <li class="bulletList">AWS EKS and ECS</li>
+      <li class="bulletList">Lyft</li>
+    </ul>
+    <p class="normal">The CNI team maintains some core plugins, but there are a lot of third-party plugins too that contribute to the <a id="_idIndexMarker1039"/>success of CNI. Here is a non-exhaustive list:</p>
+    <ul>
+      <li class="bulletList">Project Calico: A layer 3 virtual network for Kubernetes</li>
+      <li class="bulletList">Weave: A virtual network to connect multiple Docker containers across multiple hosts</li>
+      <li class="bulletList">Contiv <a id="_idIndexMarker1040"/>networking: Policy-based networking</li>
+      <li class="bulletList">Cilium: ePBF for containers</li>
+      <li class="bulletList">Flannel: Layer 3 network fabric for Kubernetes</li>
+      <li class="bulletList">Infoblox: Enterprise-grade IP address management</li>
+      <li class="bulletList">Silk: A CNI plugin for Cloud Foundry</li>
+      <li class="bulletList">OVN-kubernetes: A CNI plugin<a id="_idIndexMarker1041"/> based on OVS and Open Virtual Networking (OVN)</li>
+      <li class="bulletList">DANM: Nokia’s solution for Telco workloads on Kubernetes</li>
+    </ul>
+    <p class="normal">CNI plugins provide a standard networking interface for arbitrary networking solutions.</p>
+    <h3 id="_idParaDest-480" class="heading-3">The container runtime</h3>
+    <p class="normal">CNI defines a <a id="_idIndexMarker1042"/>plugin spec for networking application containers, but the plugin must be plugged into a container runtime that provides some services. In the context of CNI, an application container is a network-addressable entity (has its own IP address). For Docker, each container has its own IP address. For Kubernetes, each pod has its own IP address and the pod is considered the CNI container, and the containers within the pod are invisible to CNI.</p>
+    <p class="normal">The container runtime’s job is to configure a network and then execute one or more CNI plugins, passing them the network configuration in JSON format.</p>
+    <p class="normal">The following diagram shows a container runtime using the CNI plugin interface to communicate with multiple CNI plugins:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_04.png" alt=""/> </figure>
+    <p class="packt_figref">Figure 10.4: Container runtime with CNI</p>
+    <h3 id="_idParaDest-481" class="heading-3">The CNI plugin</h3>
+    <p class="normal">The CNI plugin’s job is<a id="_idIndexMarker1043"/> to add a network interface into the container network namespace and bridge the container to the host via a veth pair. It should then assign an IP address via <a id="_idIndexMarker1044"/>an <strong class="keyWord">IP address management </strong>(<strong class="keyWord">IPAM</strong>) plugin and set up routes.</p>
+    <p class="normal">The container runtime (any CRI-compliant runtime) invokes the CNI plugin as an executable. The plugin needs to support the following operations:</p>
+    <ul>
+      <li class="bulletList">Add a container to the network</li>
+      <li class="bulletList">Remove a container from the network</li>
+      <li class="bulletList">Report version</li>
+    </ul>
+    <p class="normal">The plugin uses a simple command-line interface, standard input/output, and environment variables. The network configuration in JSON format is passed to the plugin through standard input. The other arguments are defined as environment variables:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">CNI_COMMAND</code>: Specifies the desired operation, such as <code class="inlineCode">ADD</code>, <code class="inlineCode">DEL</code>, or <code class="inlineCode">VERSION</code>.</li>
+      <li class="bulletList"><code class="inlineCode">CNI_CONTAINERID</code>: Represents the ID of the container.</li>
+      <li class="bulletList"><code class="inlineCode">CNI_NETNS</code>: Points to the path of the network namespace file.</li>
+      <li class="bulletList"><code class="inlineCode">CNI_IFNAME</code>: Specifies the name of the interface to be set up. The CNI plugin should use this name or return an error.</li>
+      <li class="bulletList"><code class="inlineCode">CNI_ARGS</code>: Contains additional arguments passed in by the user during invocation. It consists of alphanumeric key-value pairs separated by semicolons, such as <code class="inlineCode">FOO=BAR;ABC=123</code>.</li>
+      <li class="bulletList"><code class="inlineCode">CNI_PATH</code>: Indicates a list of paths to search for CNI plugin executables. The paths are separated by an OS-specific list separator, such as “<code class="inlineCode">:</code>" on Linux and “<code class="inlineCode">;</code>" on Windows.</li>
+    </ul>
+    <p class="normal">If the command succeeds, the plugin returns a zero exit code and the generated interfaces (in the case of the <code class="inlineCode">ADD</code> command) are streamed to standard output as JSON. This low-tech interface is smart in the sense that it doesn’t require any specific programming language or component technology or binary API. CNI plugin writers can use their favorite programming language too.</p>
+    <p class="normal">The result of invoking the CNI plugin with the <code class="inlineCode">ADD</code> command looks as follows:</p>
+    <pre class="programlisting code"><code class="hljs-code">{
+  <span class="hljs-attr">"cniVersion":</span> <span class="hljs-string">"0.3.0"</span>,
+  <span class="hljs-attr">"interfaces":</span> [              <span class="hljs-string">(this</span> <span class="hljs-string">key</span> <span class="hljs-string">omitted</span> <span class="hljs-string">by</span> <span class="hljs-string">IPAM</span> <span class="hljs-string">plugins)</span>
+      {
+          <span class="hljs-attr">"name":</span> <span class="hljs-string">"&lt;name&gt;"</span>,
+          <span class="hljs-attr">"mac":</span> <span class="hljs-string">"&lt;MAC address&gt;"</span>, <span class="hljs-string">(required</span> <span class="hljs-string">if</span> <span class="hljs-string">L2</span> <span class="hljs-string">addresses</span> <span class="hljs-string">are</span> <span class="hljs-string">meaningful)</span>
+          <span class="hljs-attr">"sandbox":</span> <span class="hljs-string">"&lt;netns path or hypervisor identifier&gt;"</span> <span class="hljs-string">(required</span> <span class="hljs-string">for</span> <span class="hljs-string">container/hypervisor</span> <span class="hljs-string">interfaces</span>, <span class="hljs-string">empty/omitted</span> <span class="hljs-string">for</span> <span class="hljs-string">host</span> <span class="hljs-string">interfaces)</span>
+      }
+  ],
+  <span class="hljs-attr">"ip":</span> [
+      {
+          <span class="hljs-attr">"version":</span> <span class="hljs-string">"&lt;4-or-6&gt;"</span>,
+          <span class="hljs-attr">"address":</span> <span class="hljs-string">"&lt;ip-and-prefix-in-CIDR&gt;"</span>,
+          <span class="hljs-attr">"gateway":</span> <span class="hljs-string">"&lt;ip-address-of-the-gateway&gt;"</span>,     <span class="hljs-string">(optional)</span>
+          <span class="hljs-attr">"interface":</span> <span class="hljs-string">&lt;numeric</span> <span class="hljs-string">index</span> <span class="hljs-string">into</span> <span class="hljs-string">'interfaces'</span> <span class="hljs-string">list&gt;</span>
+      },
+      <span class="hljs-string">...</span>
+  ],
+  <span class="hljs-attr">"routes":</span> [                                           <span class="hljs-string">(optional)</span>
+      {
+          <span class="hljs-attr">"dst":</span> <span class="hljs-string">"&lt;ip-and-prefix-in-cidr&gt;"</span>,
+          <span class="hljs-attr">"gw":</span> <span class="hljs-string">"&lt;ip-of-next-hop&gt;"</span>                      <span class="hljs-string">(optional)</span>
+      },
+      <span class="hljs-string">...</span>
+  ]
+  <span class="hljs-attr">"dns":</span> {
+    <span class="hljs-attr">"nameservers":</span> <span class="hljs-string">&lt;list-of-nameservers&gt;</span>                <span class="hljs-string">(optional)</span>
+    <span class="hljs-attr">"domain":</span> <span class="hljs-string">&lt;name-of-local-domain&gt;</span>                    <span class="hljs-string">(optional)</span>
+    <span class="hljs-attr">"search":</span> <span class="hljs-string">&lt;list-of-additional-search-domains&gt;</span>       <span class="hljs-string">(optional)</span>
+    <span class="hljs-attr">"options":</span> <span class="hljs-string">&lt;list-of-options&gt;</span>                        <span class="hljs-string">(optional)</span>
+  }
+}
+</code></pre>
+    <p class="normal">The input network <a id="_idIndexMarker1045"/>configuration contains a lot of information: <code class="inlineCode">cniVersion</code>, <code class="inlineCode">name</code>, <code class="inlineCode">type</code>, <code class="inlineCode">args</code> (optional), <code class="inlineCode">ipMasq</code> (optional), <code class="inlineCode">ipam</code>, and <code class="inlineCode">dns</code>. The <code class="inlineCode">ipam</code> and <code class="inlineCode">dns</code> parameters are dictionaries with their own specified keys. Here is an example of a network configuration:</p>
+    <pre class="programlisting code"><code class="hljs-code">{
+  <span class="hljs-attr">"cniVersion":</span> <span class="hljs-string">"0.3.0"</span>,
+  <span class="hljs-attr">"name":</span> <span class="hljs-string">"dbnet"</span>,
+  <span class="hljs-attr">"type":</span> <span class="hljs-string">"bridge"</span>,
+  <span class="hljs-string">//</span> <span class="hljs-string">type</span> <span class="hljs-string">(plugin)</span> <span class="hljs-string">specific</span>
+  <span class="hljs-attr">"bridge":</span> <span class="hljs-string">"cni0"</span>,
+  <span class="hljs-attr">"ipam":</span> {
+    <span class="hljs-attr">"type":</span> <span class="hljs-string">"host-local"</span>,
+    <span class="hljs-string">//</span> <span class="hljs-string">ipam</span> <span class="hljs-string">specific</span>
+    <span class="hljs-attr">"subnet":</span> <span class="hljs-string">"10.1.0.0/16"</span>,
+    <span class="hljs-attr">"gateway":</span> <span class="hljs-string">"10.1.0.1"</span>
+  },
+  <span class="hljs-attr">"dns":</span> {
+    <span class="hljs-attr">"nameservers":</span> [<span class="hljs-string">"10.1.0.1"</span>]
+  }
+}
+</code></pre>
+    <p class="normal">Note that additional plugin-specific elements can be added. In this case, the <code class="inlineCode">bridge: cni0</code> element is a custom one that the specific bridge plugin understands.</p>
+    <p class="normal">The CNI spec also supports network configuration lists where multiple CNI plugins can be invoked in order.</p>
+    <p class="normal">That concludes the <a id="_idIndexMarker1046"/>conceptual discussion of Kubernetes network plugins, which are built on top of basic Linux networking, allowing multiple network solution providers to integrate smoothly with Kubernetes.</p>
+    <p class="normal">Later in this chapter, we will dig into a full-fledged implementation of a CNI plugin. First, let’s talk about one of the most exciting prospects in the Kubernetes networking world – <strong class="keyWord">extended Berkeley Packet Filter</strong> (<strong class="keyWord">eBPF</strong>).</p>
+    <h1 id="_idParaDest-482" class="heading-1">Kubernetes and eBPF</h1>
+    <p class="normal">Kubernetes, as you<a id="_idIndexMarker1047"/> know very well, is a very versatile and flexible platform. The Kubernetes developers, in their wisdom, avoided making many assumptions and decisions that could later paint them into a corner. For example, Kubernetes networking operates at the IP and DNS levels only. There is no concept of a network or subnets. Those are left for networking solutions that integrate with Kubernetes through very narrow and generic interfaces like CNI.</p>
+    <p class="normal">That opens the door to a lot of innovation because Kubernetes doesn’t constrain the choices of implementors.</p>
+    <p class="normal">Enter ePBF. It is a technology that allows running sandboxed programs safely in the Linux kernel without compromising the system’s security or requiring you to make changes to the kernel itself or even kernel modules. These programs execute in response to events. This is a big deal for software-defined networking, observability, and security. Brendan Gregg calls it the Linux super-power.</p>
+    <p class="normal">The original BPF technology could be attached only to sockets for packet filtering (hence the name Berkeley Packet Filter). With<a id="_idIndexMarker1048"/> ePBF, you can attach to additional objects, such as:</p>
+    <ul>
+      <li class="bulletList">Kprobes</li>
+      <li class="bulletList">Tracepoints</li>
+      <li class="bulletList">Network schedulers or qdiscs for classification or action</li>
+      <li class="bulletList">XDP</li>
+    </ul>
+    <p class="normal">Traditional Kubernetes routing is done by the kube-proxy. It is a user space process that runs on every node. It’s responsible for setting up <code class="inlineCode">iptable</code> rules and does UDP, TCP, and STCP forwarding as well as load balancing (based on Kubernetes services). At large scale, kube-proxy becomes a liability. The <code class="inlineCode">iptable</code> rules are processed sequentially and the frequent user space to kernel space transitions are unnecessary overhead. It is possible to completely remove kube-proxy and replace it with an eBPF-based approach that performs the same function much more efficiently. We will discuss one of these solutions – Cilium – in the next section.</p>
+    <p class="normal">Here is an overview of eBPF:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_05.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.5: eBPF overview</p>
+    <p class="normal">For more <a id="_idIndexMarker1049"/>details, check out <a href="https://ebpf.io"><span class="url">https://ebpf.io</span></a>.</p>
+    <h1 id="_idParaDest-483" class="heading-1">Kubernetes networking solutions</h1>
+    <p class="normal">Networking is a vast topic. There <a id="_idIndexMarker1050"/>are many ways to set up networks and connect devices, pods, and containers. Kubernetes can’t be opinionated about it. The high-level networking model of a flat address space for Pods is all that Kubernetes prescribes. Within that space, many valid solutions are possible, with various capabilities and policies for different environments. In this section, we’ll examine some of the available solutions and understand how they map to the Kubernetes networking model.</p>
+    <h2 id="_idParaDest-484" class="heading-2">Bridging on bare-metal clusters</h2>
+    <p class="normal">The most basic <a id="_idIndexMarker1051"/>environment is a raw bare-metal cluster with just an L2 physical network. You can connect your containers to the physical network with a Linux bridge device. The procedure is quite involved and requires familiarity with low-level Linux network commands such as <code class="inlineCode">brctl</code>, <code class="inlineCode">ipaddr</code>, <code class="inlineCode">iproute</code>, <code class="inlineCode">iplink</code>, and <code class="inlineCode">nsenter</code>. If you plan to implement it, this guide can serve as a good start (search for the <em class="italic">With Linux Bridge devices</em> section): <a href="http://blog.oddbit.com/2014/08/11/four-ways-to-connect-a-docker/"><span class="url">http://blog.oddbit.com/2014/08/11/four-ways-to-connect-a-docker/</span></a>.</p>
+    <h2 id="_idParaDest-485" class="heading-2">The Calico project</h2>
+    <p class="normal">Calico is a <a id="_idIndexMarker1052"/>versatile virtual <a id="_idIndexMarker1053"/>networking and network security solution for containers. Calico can integrate with all the primary container orchestration frameworks and runtimes:</p>
+    <ul>
+      <li class="bulletList">Kubernetes (CNI plugin)</li>
+      <li class="bulletList">Mesos (CNI plugin)</li>
+      <li class="bulletList">Docker (libnetwork plugin)</li>
+      <li class="bulletList">OpenStack (Neutron plugin)</li>
+    </ul>
+    <p class="normal">Calico can also be deployed on-premises or on public clouds with its full feature set. Calico’s network policy enforcement can be specialized for each workload and makes sure that traffic is controlled precisely and packets always go from their source to vetted destinations. Calico can automatically map network policy concepts from orchestration platforms to its own network policy. The reference implementation of Kubernetes’ network policy is Calico. Calico can be deployed together with Flannel, utilizing Flannel’s networking layer and<a id="_idIndexMarker1054"/> Calico’s network<a id="_idIndexMarker1055"/> policy facilities.</p>
+    <h2 id="_idParaDest-486" class="heading-2">Weave Net</h2>
+    <p class="normal">Weave Net is all about <a id="_idIndexMarker1056"/>ease of use and zero configuration. It uses VXLAN encapsulation under the hood <a id="_idIndexMarker1057"/>and micro DNS on each node. As a developer, you operate at a higher abstraction level. You name your containers and Weave Net lets you connect to them and use standard ports for services. That helps migrate existing applications into containerized applications and microservices. Weave Net has a CNI plugin for interfacing with Kubernetes (and Mesos). On Kubernetes 1.4 and higher, you can integrate Weave Net with Kubernetes by running a single command that deploys a <code class="inlineCode">Daemonset</code>:</p>
+    <pre class="programlisting gen"><code class="hljs">kubectl apply -f https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s.yaml
+</code></pre>
+    <p class="normal">The Weave Net pods on every node will take care of attaching any new pod you create to the Weave network. Weave Net supports the network policy API, as well providing a complete, yet easy-to-set-up solution.</p>
+    <h2 id="_idParaDest-487" class="heading-2">Cilium</h2>
+    <p class="normal">Cilium is a <a id="_idIndexMarker1058"/>CNCF <a id="_idIndexMarker1059"/>incubator project that is focused on eBPF-based networking, security, and observability (via its Hubble project).</p>
+    <p class="normal">Let’s take a look at the capabilities Cilium provides.</p>
+    <h3 id="_idParaDest-488" class="heading-3">Efficient IP allocation and routing</h3>
+    <p class="normal">Cilium allows a flat Layer 3 <a id="_idIndexMarker1060"/>network that covers multiple clusters and connects all application containers. Host scope allocators can allocate IP addresses without coordination with other hosts. Cilium supports multiple networking models:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Overlay</strong>: This model utilizes encapsulation-based virtual networks that span across all hosts. It supports encapsulation formats like VXLAN and Geneve, as well as other formats supported by Linux. Overlay mode works with almost any network infrastructure as long as the hosts have IP connectivity. It provides a flexible and scalable solution.</li>
+      <li class="bulletList"><strong class="keyWord">Native routing</strong>: In this model,<a id="_idIndexMarker1061"/> Kubernetes leverages the regular routing table of the Linux host. The network infrastructure must be capable of routing the IP addresses used by the application containers. Native Routing mode is considered more advanced and requires knowledge of the underlying networking infrastructure. It works well with native IPv6 networks, cloud network routers, or when using custom routing daemons.</li>
+    </ul>
+    <h3 id="_idParaDest-489" class="heading-3">Identity-based service-to-service communication</h3>
+    <p class="normal">Cilium provides a security <a id="_idIndexMarker1062"/>management feature that assigns a security identity to groups of application containers with the same security policies. This identity is then associated with all network packets generated by those application containers. By doing this, Cilium enables the validation of the identity at the receiving node. The management of security identities is handled through a key-value store, which allows for efficient and secure management of identities within the Cilium networking solution.</p>
+    <h3 id="_idParaDest-490" class="heading-3">Load balancing</h3>
+    <p class="normal">Cilium offers distributed load balancing<a id="_idIndexMarker1063"/> for traffic between application containers and external services as an alternative to kube-proxy. This load balancing functionality is implemented using efficient hashtables in eBPF, providing a scalable approach compared to the traditional iptables method. With Cilium, you can achieve high-performance load balancing while ensuring efficient utilization of network resources.</p>
+    <p class="normal">When it comes to east-west load balancing, Cilium excels in performing efficient service-to-backend translation directly within the Linux kernel’s socket layer. This approach eliminates the need for per-packet NAT operations, resulting in lower overhead and improved performance.</p>
+    <p class="normal">For north-south load balancing, Cilium’s eBPF implementation is highly optimized for maximum performance. It can be seamlessly integrated with <strong class="keyWord">XDP</strong> (<strong class="keyWord">eXpress Data Path</strong>) and supports advanced load balancing techniques like <strong class="keyWord">Direct Server Return</strong> (<strong class="keyWord">DSR</strong>) and <a id="_idIndexMarker1064"/>Maglev consistent hashing. This allows load balancing operations to be efficiently offloaded from the source host, further enhancing performance and scalability.</p>
+    <h3 id="_idParaDest-491" class="heading-3">Bandwidth management</h3>
+    <p class="normal">Cilium implements bandwidth <a id="_idIndexMarker1065"/>management through efficient <strong class="keyWord">Earliest Departure Time</strong> (<strong class="keyWord">EDT</strong>)-based rate-limiting<a id="_idIndexMarker1066"/> with eBPF for egress traffic. This significantly reduces transmission tail latencies for applications.</p>
+    <h3 id="_idParaDest-492" class="heading-3">Observability</h3>
+    <p class="normal">Cilium offers comprehensive event<a id="_idIndexMarker1067"/> monitoring with rich metadata. In addition to capturing the source and destination IP addresses of dropped packets, it also provides detailed label information for both the sender and receiver. This metadata enables enhanced visibility and troubleshooting capabilities. Furthermore, Cilium exports metrics through Prometheus, allowing for easy monitoring and analysis of network performance.</p>
+    <p class="normal">To further enhance observability, the Hubble observability platform provides additional features such as service dependency maps, operational monitoring, alerting, and comprehensive visibility into application and security aspects. By leveraging flow logs, Hubble enables administrators to gain valuable insights into the behavior and interactions of services within the network.</p>
+    <p class="normal">Cilium is a large project<a id="_idIndexMarker1068"/> with a very broad scope. Here, we just scratched the surface. See <a href="https://cilium.io"><span class="url">https://cilium.io</span></a> for more details.</p>
+    <p class="normal">There are many good networking solutions. Which network solution is the best for you? If you’re running in the cloud, I recommend using the native CNI plugin from your cloud provider. If you’re on your own, Calico is a solid choice, and if you’re adventurous and need to heavily optimize your network, consider Cilium. </p>
+    <p class="normal">In the next section, we will cover network policies that let you get a handle on the traffic in your cluster.</p>
+    <h1 id="_idParaDest-493" class="heading-1">Using network policies effectively</h1>
+    <p class="normal">The Kubernetes network policy is <a id="_idIndexMarker1069"/>about managing network traffic to selected pods and namespaces. In a world of hundreds of microservices deployed and orchestrated, as is often the case with Kubernetes, managing networking and connectivity between pods is essential. It’s important to understand that it is not primarily a security mechanism. If an attacker can reach the internal network, they will probably be able to create their own pods that comply with the network policy in place and communicate freely with other pods. In the previous section, we looked at different Kubernetes networking solutions and focused on the container networking interface. In this section, the focus is on the network policy, although there are strong connections between the networking solution and how the network policy is implemented on top of it.</p>
+    <h2 id="_idParaDest-494" class="heading-2">Understanding the Kubernetes network policy design</h2>
+    <p class="normal">A <a id="_idIndexMarker1070"/>network policy defines the communication rules for pods and other network endpoints within a Kubernetes cluster. It uses labels to select specific pods and applies whitelist rules to control traffic access to the selected pods. These rules complement the isolation policy defined at the namespace level by allowing additional traffic based on the defined criteria. By configuring network policies, administrators can fine-tune and restrict the communication between pods, enhancing security and network segmentation within the cluster.</p>
+    <h2 id="_idParaDest-495" class="heading-2">Network policies and CNI plugins</h2>
+    <p class="normal">There is an <a id="_idIndexMarker1071"/>intricate relationship between network policies and CNI plugins. Some CNI plugins implement both network connectivity and a network policy, while others implement just one aspect, but they can collaborate with another CNI plugin that implements the other aspect (for example, Calico and Flannel).</p>
+    <h2 id="_idParaDest-496" class="heading-2">Configuring network policies</h2>
+    <p class="normal">Network policies are<a id="_idIndexMarker1072"/> configured via the <code class="inlineCode">NetworkPolicy</code> resource. You can define ingress and/or egress policies. Here is a sample network policy that specifies both ingress and egress:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">networking.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">NetworkPolicy</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">test-network-policy</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">awesome-project</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">podSelector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">role:</span> <span class="hljs-string">db</span>
+  <span class="hljs-attr">policyTypes:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">Ingress</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">Egress</span>
+  <span class="hljs-attr">ingress:</span>  
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">from:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">namespaceSelector:</span>
+            <span class="hljs-attr">matchLabels:</span>
+              <span class="hljs-attr">project:</span> <span class="hljs-string">awesome-project</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">podSelector:</span>
+            <span class="hljs-attr">matchLabels:</span>
+              <span class="hljs-attr">role:</span> <span class="hljs-string">frontend</span>
+      <span class="hljs-attr">ports:</span>
+       <span class="hljs-bullet">-</span> <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+         <span class="hljs-attr">port:</span> <span class="hljs-number">6379</span>
+  <span class="hljs-attr">egress:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">to:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">ipBlock:</span>
+            <span class="hljs-attr">cidr:</span> <span class="hljs-number">10.0.0.0</span><span class="hljs-string">/24</span>
+      <span class="hljs-attr">ports:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+          <span class="hljs-attr">port:</span> <span class="hljs-number">7777</span>     
+</code></pre>
+    <h2 id="_idParaDest-497" class="heading-2">Implementing network policies</h2>
+    <p class="normal">While the network <a id="_idIndexMarker1073"/>policy API itself is generic and is part of the Kubernetes API, the implementation is tightly coupled to the networking solution. That means that on each node, there is a special agent or gatekeeper (Cilium implements it via eBPF in the kernel) that does the following:</p>
+    <ul>
+      <li class="bulletList">Intercepts all traffic coming into the node</li>
+      <li class="bulletList">Verifies that it adheres to the network policy</li>
+      <li class="bulletList">Forwards or rejects each request</li>
+    </ul>
+    <p class="normal">Kubernetes provides the facilities to define and store network policies through the API. Enforcing the network policy is left to the networking solution or a dedicated network policy solution that is tightly integrated with the specific networking solution. </p>
+    <p class="normal">Calico is a good example of this approach. Calico has its own networking solution and a network policy solution, which work together. In both cases, there is tight integration between the two pieces. The following diagram shows how the Kubernetes policy controller manages the network policies and how agents on the nodes execute them:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_06.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.6: Kubernetes network policy management</p>
+    <p class="normal">In this section, we covered various networking solutions, as well as network policies, and we briefly discussed load balancing. However, load balancing is a wide subject and the next section will explore it.</p>
+    <h1 id="_idParaDest-498" class="heading-1">Load balancing options</h1>
+    <p class="normal">Load balancing is a <a id="_idIndexMarker1074"/>critical capability in dynamic systems such as a Kubernetes cluster. Nodes, VMs, and pods come and go, but the clients typically can’t keep track of which individual entities can service their requests. Even if they could, it requires a complicated dance of managing a dynamic map of the cluster, refreshing it frequently, and handling disconnected, unresponsive, or just slow nodes. This so-called client-side load balancing is appropriate in special cases only. Server-side load balancing is a battle-tested and well-understood mechanism that adds a layer of indirection that hides the internal turmoil from the clients or consumers outside the cluster. There are options for external as well as internal load balancers. You can also mix and match and use both. The hybrid approach has its own particular pros and cons, such as performance versus flexibility. We will cover the following options:</p>
+    <ul>
+      <li class="bulletList">External load balancer</li>
+      <li class="bulletList">Service load balancer</li>
+      <li class="bulletList">Ingress</li>
+      <li class="bulletList">HA Proxy</li>
+      <li class="bulletList">MetalLB</li>
+      <li class="bulletList">Traefik</li>
+      <li class="bulletList">Kubernetes Gateway API </li>
+    </ul>
+    <h2 id="_idParaDest-499" class="heading-2">External load balancers</h2>
+    <p class="normal">An external load balancer is <a id="_idIndexMarker1075"/>a load balancer that runs outside the Kubernetes<a id="_idIndexMarker1076"/> cluster. There must be an external load balancer provider that Kubernetes can interact with to configure the external load balancer with health checks and firewall rules and get the external IP address of the load balancer.</p>
+    <p class="normal">The following diagram shows the connection between the load balancer (in the cloud), the Kubernetes API server, and the cluster nodes. The external load balancer has an up-to-date picture of which pods run on which nodes and it can direct external service traffic to the right pods:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_07.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.7: The connection between the load balancer, the Kubernetes API server, and the cluster nodes</p>
+    <h3 id="_idParaDest-500" class="heading-3">Configuring an external load balancer</h3>
+    <p class="normal">The external load <a id="_idIndexMarker1077"/>balancer is configured via the service configuration file or directly through kubectl. We use a service type of <code class="inlineCode">LoadBalancer</code> instead of using a service type of <code class="inlineCode">ClusterIP</code>, which directly exposes a Kubernetes node as a load balancer. This depends on an external load balancer provider properly installed and configured in the cluster.</p>
+    <h4 class="heading-4">Via manifest file</h4>
+    <p class="normal">Here is an example service <a id="_idIndexMarker1078"/>manifest file that accomplishes this goal:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">api-gateway</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">LoadBalancer</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span>  <span class="hljs-number">80</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">5000</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">svc:</span> <span class="hljs-string">api-gateway</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">delinkcious</span>
+</code></pre>
+    <h4 class="heading-4">Via kubectl</h4>
+    <p class="normal">You may also <a id="_idIndexMarker1079"/>accomplish the same result using a direct <code class="inlineCode">kubectl</code> command:</p>
+    <pre class="programlisting gen"><code class="hljs">$ kubectl expose deployment api-gateway --port=80 --target-port=5000 --name=api-gateway --type=LoadBalancer
+</code></pre>
+    <p class="normal">The decision whether to use a service configuration file or <code class="inlineCode">kubectl</code> command is usually determined by the way you set up the rest of your infrastructure and deploy your system. Manifest files are more declarative and more appropriate for production usage where you want a versioned, auditable, and repeatable way to manage your infrastructure. Typically, this will be part of a GitOps-based CI/CD pipeline.</p>
+    <h3 id="_idParaDest-501" class="heading-3">Finding the load balancer IP addresses</h3>
+    <p class="normal">The load balancer <a id="_idIndexMarker1080"/>will have two IP addresses of interest. The internal IP address can be used inside the cluster to access the service. Clients outside the cluster will use the external IP address. It’s a good practice to create a DNS entry for the external IP address. It is particularly important if you want to use TLS/SSL, which requires stable hostnames. To get both addresses, use the <code class="inlineCode">kubectl describe service</code> command. The <code class="inlineCode">IP</code> field denotes the internal IP address and the <code class="inlineCode">LoadBalancer Ingress</code> field denotes the external IP address:</p>
+    <pre class="programlisting gen"><code class="hljs">$ kubectl describe services example-service
+Name: example-service
+Selector: app=example
+Type: LoadBalancer
+IP: 10.67.252.103
+LoadBalancer Ingress: 123.45.678.9
+Port: &lt;unnamed&gt; 80/TCP
+NodePort: &lt;unnamed&gt; 32445/TCP
+Endpoints: 10.64.0.4:80,10.64.1.5:80,10.64.2.4:80
+Session Affinity: None
+No events.
+</code></pre>
+    <h3 id="_idParaDest-502" class="heading-3">Preserving client IP addresses</h3>
+    <p class="normal">Sometimes, the service<a id="_idIndexMarker1081"/> may be interested in the source IP address of the clients. Up until Kubernetes 1.5, this information wasn’t available. In Kubernetes 1.7, the capability to preserve the original client IP was added to the API.</p>
+    <h4 class="heading-4">Specifying original client IP address preservation</h4>
+    <p class="normal">You need to configure the following two fields of the <code class="inlineCode">service</code> spec:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">service.spec.externalTrafficPolicy</code>: This field determines whether the service should route external traffic to a node-local endpoint or a cluster-wide endpoint, which is the default. The <code class="inlineCode">Cluster</code> option doesn’t reveal the client source IP and might add a hop to a different node, but spreads the load well. The <code class="inlineCode">Local</code> option keeps the client source IP and doesn’t add an extra hop as long as the service type is <code class="inlineCode">LoadBalancer</code> or <code class="inlineCode">NodePort</code>. Its downside is it might not balance the load very well.</li>
+      <li class="bulletList"><code class="inlineCode">service.spec.healthCheckNodePort</code>: This field is optional. If used, then the service health check will use this port number. The default is the allocated node port. It has an<a id="_idIndexMarker1082"/> effect on services of the <code class="inlineCode">LoadBalancer</code> type whose <code class="inlineCode">externalTrafficPolicy</code> is set to <code class="inlineCode">Local</code>.</li>
+    </ul>
+    <p class="normal">Here is an example:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">api-gateway</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">LoadBalancer</span>
+  <span class="hljs-attr">externalTrafficPolicy:</span> <span class="hljs-string">Local</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span>  <span class="hljs-number">80</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">5000</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">svc:</span> <span class="hljs-string">api-gateway</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">delinkcious</span>
+</code></pre>
+    <h3 id="_idParaDest-503" class="heading-3">Understanding even external load balancing</h3>
+    <p class="normal">External load balancers <a id="_idIndexMarker1083"/>operate at the node level; while they direct traffic to a particular pod, the load distribution is done at the node level. That means that if your service has four pods, and three of them are on node A and the last one is on node B, then an external load balancer is likely to divide the load evenly between node A and node B. </p>
+    <p class="normal">This will have the 3 pods on node A handle half of the load (1/6 each) and the single pod on node B handle the other half of the load on its own. Weights may be added in the future to address this issue. You can avoid the issue of too many pods unevenly distributed between nodes by using pod anti-affinity or topology spread constraints.</p>
+    <h2 id="_idParaDest-504" class="heading-2">Service load balancers</h2>
+    <p class="normal">Service load balancing is designed for<a id="_idIndexMarker1084"/> funneling internal traffic within the Kubernetes <a id="_idIndexMarker1085"/>cluster and not for external load balancing. This is done by using a service type of <code class="inlineCode">clusterIP</code>. It is possible to expose a service load balancer directly via a pre-allocated port by using a service type of <code class="inlineCode">NodePort</code> and using it as an external load balancer, but it requires curating all Node ports across the cluster to avoid conflicts and might not be appropriate for production. Desirable features such as SSL termination and HTTP caching will not be readily available.</p>
+    <p class="normal">The following diagram shows how the service load balancer (the yellow cloud) can route traffic to one of the backend pods it manages (via labels of course):</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_08.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.8: The service load balancer routing traffic to a backend pod</p>
+    <h2 id="_idParaDest-505" class="heading-2">Ingress</h2>
+    <p class="normal">Ingress in<a id="_idIndexMarker1086"/> Kubernetes is, at its core, a set of rules that allow inbound HTTP/S traffic to reach <a id="_idIndexMarker1087"/>cluster services. In addition, some ingress controllers support the following:</p>
+    <ul>
+      <li class="bulletList">Connection algorithms</li>
+      <li class="bulletList">Request limits</li>
+      <li class="bulletList">URL rewrites and redirects</li>
+      <li class="bulletList">TCP/UDP load balancing</li>
+      <li class="bulletList">SSL termination</li>
+      <li class="bulletList">Access control and authorization</li>
+    </ul>
+    <p class="normal">Ingress is specified using an <code class="inlineCode">Ingress</code> resource and is serviced by an ingress controller. The <code class="inlineCode">Ingress</code> resource was in beta since Kubernetes 1.1 and finally, in Kubernetes 1.19, it became GA. Here is an example of an ingress resource that manages traffic into two services. The rules map the externally visible <code class="inlineCode">http://foo.bar.com/foo</code> to the <code class="inlineCode">s1</code> service, and <code class="inlineCode">http://foo.bar.com/bar</code> to the <code class="inlineCode">s2</code> service:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">networking.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Ingress</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">test</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ingressClassName:</span> <span class="hljs-string">cool-ingress</span>
+  <span class="hljs-attr">rules:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">host:</span> <span class="hljs-string">foo.bar.com</span>
+    <span class="hljs-attr">http:</span>
+      <span class="hljs-attr">paths:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">path:</span> <span class="hljs-string">/foo</span>
+  <span class="hljs-attr">backend:</span> 
+    <span class="hljs-attr">service:</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">s1</span> 
+      <span class="hljs-attr">port:</span> <span class="hljs-number">80</span> 
+<span class="hljs-bullet">-</span> <span class="hljs-attr">path:</span> <span class="hljs-string">/bar</span> 
+  <span class="hljs-attr">backend:</span> 
+    <span class="hljs-attr">service:</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">s2</span> 
+      <span class="hljs-attr">port:</span> <span class="hljs-number">80</span>
+</code></pre>
+    <p class="normal">The <code class="inlineCode">ingressClassname</code> specifies an <code class="inlineCode">IngressClass</code> resource, which contains additional information about the <a id="_idIndexMarker1088"/>ingress. If it’s omitted, a default ingress class <a id="_idIndexMarker1089"/>must be defined.</p>
+    <p class="normal">Here is what it looks like:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">networking.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">IngressClass</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app.kubernetes.io/component:</span> <span class="hljs-string">controller</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">cool-ingress</span>
+  <span class="hljs-attr">annotations:</span>
+    <span class="hljs-attr">ingressclass.kubernetes.io/is-default-class:</span> <span class="hljs-string">"true"</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">controller:</span> <span class="hljs-string">k8s.io/ingress-nginx</span>
+</code></pre>
+    <p class="normal">Ingress controllers often require annotations to be added to the <code class="inlineCode">Ingress</code> resource in order to customize its behavior.</p>
+    <p class="normal">The following diagram demonstrates how <code class="inlineCode">Ingress</code> works:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_09.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.9: Demonstration of ingress</p>
+    <p class="normal">There are two official <a id="_idIndexMarker1090"/>ingress controllers right now in the main Kubernetes repository. One of them is an L7 ingress controller for GCE only, the other is a more general-purpose Nginx ingress controller that lets you configure the Nginx web server through a <code class="inlineCode">ConfigMap</code>. The Nginx ingress controller is very sophisticated and brings a lot of features that are not available yet through the ingress resource directly. It uses the Endpoints API to directly forward traffic to pods. It supports Minikube, GCE, AWS, Azure, and bare-metal clusters. For more details, check out <a href="https://github.com/kubernetes/ingress-nginx"><span class="url">https://github.com/kubernetes/ingress-nginx</span></a>.</p>
+    <p class="normal">However, there are many more<a id="_idIndexMarker1091"/> ingress controllers that may be better for your use case, such as:</p>
+    <ul>
+      <li class="bulletList">Ambassador</li>
+      <li class="bulletList">Traefik</li>
+      <li class="bulletList">Contour</li>
+      <li class="bulletList">Gloo</li>
+    </ul>
+    <p class="normal">For even more<a id="_idIndexMarker1092"/> ingress controllers, see <a href="https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/"><span class="url">https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/</span></a>.</p>
+    <h3 id="_idParaDest-506" class="heading-3">HAProxy</h3>
+    <p class="normal">We discussed using a cloud provider external load balancer using the service type <code class="inlineCode">LoadBalancer</code> and using the internal service load balancer inside the cluster using <code class="inlineCode">ClusterIP</code>. If we want a custom external load balancer, we can create a custom external load balancer provider and use <code class="inlineCode">LoadBalancer</code> or use the third service type, <code class="inlineCode">NodePort</code>. <strong class="keyWord">High-Availability</strong> (<strong class="keyWord">HA</strong>) <strong class="keyWord">Proxy</strong> is a <a id="_idIndexMarker1093"/>mature and battle-tested load balancing solution. It is considered one of the best choices for implementing external load balancing with on-premises clusters. This can be done in several ways:</p>
+    <ul>
+      <li class="bulletList">Utilize <code class="inlineCode">NodePort</code> and carefully manage port allocations</li>
+      <li class="bulletList">Implement a custom load balancer provider interface</li>
+      <li class="bulletList">Run <code class="inlineCode">HAProxy</code> inside your cluster as the only target of your frontend servers at the edge of the cluster (load balanced or not)</li>
+    </ul>
+    <p class="normal">You can use all these approaches with <code class="inlineCode">HAProxy</code>. Regardless, it is still recommended to use ingress objects. The <code class="inlineCode">service-loadbalancer</code> project is a community project that implemented a<a id="_idIndexMarker1094"/> load balancing solution on top of <code class="inlineCode">HAProxy</code>. You can find it here: <a href="https://github.com/kubernetes/contrib/tree/master/service-loadbalancer"><span class="url">https://github.com/kubernetes/contrib/tree/master/service-loadbalancer</span></a>. Let’s look into how to use <code class="inlineCode">HAProxy</code> in a bit more detail.</p>
+    <h4 class="heading-4">Utilizing the NodePort</h4>
+    <p class="normal">Each service will <a id="_idIndexMarker1095"/>be allocated a dedicated port from a predefined range. This usually is a high range such as 30,000 and above to avoid clashing with other applications using ports that are not well known. <code class="inlineCode">HAProxy</code> will run outside the cluster in this case and it will be configured with the correct port for each service. Then, it can just forward any traffic to any nodes and Kubernetes via the internal service, and the load balancer will route it to a proper pod (double load balancing). This is, of course, sub-optimal because it introduces another hop. The way to circumvent it is to query the Endpoints API and dynamically manage for each service the list of its backend pods and directly forward traffic to the pods.</p>
+    <h4 class="heading-4">A custom load balancer provider using HAProxy</h4>
+    <p class="normal">This approach is a<a id="_idIndexMarker1096"/> little more complicated, but the benefit is that it is better integrated with Kubernetes and can make the transition to/from on-premises and the cloud easier.</p>
+    <h4 class="heading-4">Running HAProxy inside the Kubernetes cluster</h4>
+    <p class="normal">In this<a id="_idIndexMarker1097"/> approach, we use the internal <code class="inlineCode">HAProxy</code> load balancer inside the cluster. There may be multiple nodes running <code class="inlineCode">HAProxy</code> and they will share the same configuration to map incoming requests and load-balance them across the backend servers (the Apache servers in the following diagram):</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_10.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.10: Multiple nodes running HAProxy for incoming requests and to load-balance the backend servers</p>
+    <p class="normal"><code class="inlineCode">HAProxy</code> also developed its own ingress controller, which is Kubernetes-aware. This is arguably the most streamlined way to utilize <code class="inlineCode">HAProxy</code> in your Kubernetes cluster. Here are some of the capabilities you<a id="_idIndexMarker1098"/> gain when using the <code class="inlineCode">HAProxy</code> ingress controller:</p>
+    <ul>
+      <li class="bulletList">Streamlined integration with the <code class="inlineCode">HAProxy</code> load balancer</li>
+      <li class="bulletList">SSL termination</li>
+      <li class="bulletList">Rate limiting</li>
+      <li class="bulletList">IP whitelisting</li>
+      <li class="bulletList">Multiple load balancing algorithms: round-robin, least connections, URL hash, and random</li>
+      <li class="bulletList">A dashboard that shows the health of your pods, current request rates, response times, etc.</li>
+      <li class="bulletList">Traffic<a id="_idIndexMarker1099"/> overload protection</li>
+    </ul>
+    <h3 id="_idParaDest-507" class="heading-3">MetalLB</h3>
+    <p class="normal">MetalLB also provides<a id="_idIndexMarker1100"/> a load balancer solution for bare-metal clusters. It is highly configurable and supports multiple modes such as L2 and BGP. I had success configuring it even for minikube. For more <a id="_idIndexMarker1101"/>details, check out <a href="https://metallb.universe.tf"><span class="url">https://metallb.universe.tf</span></a>.</p>
+    <h3 id="_idParaDest-508" class="heading-3">Traefik</h3>
+    <p class="normal">Traefik is a <a id="_idIndexMarker1102"/>modern HTTP reverse proxy and load balancer. It was designed to support microservices. It works with many backends, including Kubernetes, to manage its configuration automatically and dynamically. This is a game-changer compared to traditional load balancers. It has an <a id="_idIndexMarker1103"/>impressive list of features:</p>
+    <ul>
+      <li class="bulletList">It’s fast</li>
+      <li class="bulletList">Single Go executable</li>
+      <li class="bulletList">Tiny official Docker image: The solution provides a lightweight and official Docker image, ensuring efficient resource utilization.</li>
+      <li class="bulletList">Rest API: It offers a RESTful API for easy integration and interaction with the solution.</li>
+      <li class="bulletList">Hot-reloading of configuration: Configuration changes can be applied dynamically without requiring a process restart, ensuring seamless updates.</li>
+      <li class="bulletList">Circuit breakers and retry: The solution includes circuit breakers and retry mechanisms to handle network failures and ensure robust communication.</li>
+      <li class="bulletList">Round-robin and rebalancer load balancers: It supports load balancing algorithms like round-robin and rebalancer to distribute traffic across multiple instances.</li>
+      <li class="bulletList">Metrics support: The solution provides various options for metrics collection, including REST, Prometheus, Datadog, statsd, and InfluxDB.</li>
+      <li class="bulletList">Clean AngularJS web UI: It offers a user-friendly web UI powered by AngularJS for easy configuration and monitoring.</li>
+      <li class="bulletList">Websocket, HTTP/2, and GRPC support: The solution is capable of handling Websocket, HTTP/2, and GRPC protocols, enabling efficient communication.</li>
+      <li class="bulletList">Access logs: It provides access logs in both JSON and Common Log Format (CLF) for monitoring and troubleshooting.</li>
+      <li class="bulletList">Let’s Encrypt support: The solution seamlessly integrates with Let’s Encrypt for automatic HTTPS certificate generation and renewal.</li>
+      <li class="bulletList">High availability with cluster mode: It supports high availability by running in cluster mode, ensuring redundancy and fault tolerance.</li>
+    </ul>
+    <p class="normal">Overall, this solution offers a comprehensive set of features for deploying and managing applications in a scalable and reliable manner.</p>
+    <p class="normal">See <a href="https://traefik.io/traefik/"><span class="url">https://traefik.io/traefik/</span></a> to learn <a id="_idIndexMarker1104"/>more about Traefik.</p>
+    <h2 id="_idParaDest-509" class="heading-2">Kubernetes Gateway API </h2>
+    <p class="normal">Kubernetes Gateway API is <a id="_idIndexMarker1105"/>a set of resources that model service networking in <a id="_idIndexMarker1106"/>Kubernetes. You can think of it as the evolution of the ingress API. While there are no intentions to remove the ingress API, its limitations couldn’t be addressed by improving it, so the Gateway API project was born.</p>
+    <p class="normal">Where the ingress API consists of a single <code class="inlineCode">Ingress</code> resource and an optional <code class="inlineCode">IngressClass</code>, Gateway API is more granular and breaks the definition of traffic management and routing<a id="_idIndexMarker1107"/> into different resources. Gateway API defines the<a id="_idIndexMarker1108"/> following resources:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">GatewayClass</code></li>
+      <li class="bulletList"><code class="inlineCode">Gateway</code></li>
+      <li class="bulletList"><code class="inlineCode">HTTPRoute</code></li>
+      <li class="bulletList"><code class="inlineCode">TLSRoute</code></li>
+      <li class="bulletList"><code class="inlineCode">TCPRoute</code></li>
+      <li class="bulletList"><code class="inlineCode">UDPRoute</code></li>
+    </ul>
+    <h3 id="_idParaDest-510" class="heading-3">Gateway API resources</h3>
+    <p class="normal">The role of the <code class="inlineCode">GatewayClass</code> is to define <a id="_idIndexMarker1109"/>common configurations and behavior that can be used by multiple similar gateways.</p>
+    <p class="normal">The role of the gateway is to define an endpoint and a collection of routes where traffic can enter the cluster and be routed to backend services. Eventually, the gateway configures an underlying load balancer or proxy.</p>
+    <p class="normal">The role of the routes is to map specific requests that match the route to a specific backend service.</p>
+    <p class="normal">The following diagram demonstrates the resources and organization of Gateway API:</p>
+    <figure class="mediaobject"><img src="../Images/B18998_10_11.png" alt=""/></figure>
+    <p class="packt_figref">Figure 10.11: Gateway API resources</p>
+    <h3 id="_idParaDest-511" class="heading-3">Attaching routes to gateways</h3>
+    <p class="normal">Gateways and <a id="_idIndexMarker1110"/>routes can be associated in different ways:</p>
+    <ul>
+      <li class="bulletList">One-to-one: A gateway may have a single route from a single owner that isn’t associated with any other gateway</li>
+      <li class="bulletList">One-to-many: A gateway may have multiple routes associated with it from multiple owners</li>
+      <li class="bulletList">Many-to-many: A route may be associated with multiple gateways (each may have additional routes)</li>
+    </ul>
+    <h3 id="_idParaDest-512" class="heading-3">Gateway API in action</h3>
+    <p class="normal">Let’s see how all the <a id="_idIndexMarker1111"/>pieces of Gateway API fit together with a simple example. Here is a Gateway resource:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">gateway.networking.k8s.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Gateway</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">cool-gateway</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">ns1</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">gatewayClassName:</span> <span class="hljs-string">cool-gateway-class</span>
+  <span class="hljs-attr">listeners:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">cool-service</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-number">80</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">HTTP</span>
+    <span class="hljs-attr">allowedRoutes:</span>
+      <span class="hljs-attr">kinds:</span> 
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">kind:</span> <span class="hljs-string">HTTPRoute</span>
+      <span class="hljs-attr">namespaces:</span>
+        <span class="hljs-attr">from:</span> <span class="hljs-string">Selector</span>
+        <span class="hljs-attr">selector:</span>
+          <span class="hljs-attr">matchLabels:</span>
+            <span class="hljs-comment"># This label is added automatically as of K8s 1.22</span>
+            <span class="hljs-comment"># to all namespaces</span>
+            <span class="hljs-attr">kubernetes.io/metadata.name:</span> <span class="hljs-string">ns2</span>
+</code></pre>
+    <p class="normal">Note that the gateway is <a id="_idIndexMarker1112"/>defined in namespace <code class="inlineCode">ns1</code>, but it allows only HTTP routes that are defined in namespace <code class="inlineCode">ns2</code>. Let’s see a route that attaches to this gateway:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">gateway.networking.k8s.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">HTTPRoute</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">cool-route</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">ns2</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">parentRefs:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">kind:</span> <span class="hljs-string">Gateway</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">cool-gateway</span>
+    <span class="hljs-attr">namespace:</span> <span class="hljs-string">ns1</span>
+  <span class="hljs-attr">rules:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">backendRefs:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">cool-service</span>
+      <span class="hljs-attr">port:</span> <span class="hljs-number">8080</span>
+</code></pre>
+    <p class="normal">The route <code class="inlineCode">cool-route</code> is properly defined in namespace <code class="inlineCode">ns2</code>; it is an HTTP route, so it matches. To close the loop, the route defines a parent reference to the <code class="inlineCode">cool-gateway</code> gateway in namespace <code class="inlineCode">ns1</code>.</p>
+    <p class="normal">See <a href="https://gateway-api.sigs.k8s.io"><span class="url">https://gateway-api.sigs.k8s.io</span></a> to learn more <a id="_idIndexMarker1113"/>about Gateway API.</p>
+    <p class="normal">Load balancing on Kubernetes is an exciting area. It offers many options for both north-south and east-west load balancing. Now that we have covered load balancing in detail, let’s dive deep into the CNI plugins and how they are implemented.</p>
+    <h1 id="_idParaDest-513" class="heading-1">Writing your own CNI plugin</h1>
+    <p class="normal">In this section, we will look at what it takes to actually write your own CNI plugin. First, we will look at the simplest plugin possible – the loopback plugin. Then, we will examine the plugin skeleton that implements most of the boilerplate associated with writing a CNI plugin. </p>
+    <p class="normal">Finally, we will review the implementation of the bridge plugin. Before we dive in, here is a quick reminder of what a<a id="_idIndexMarker1114"/> CNI plugin is:</p>
+    <ul>
+      <li class="bulletList">A CNI plugin is an executable</li>
+      <li class="bulletList">It is responsible for connecting new containers to the network, assigning unique IP addresses to CNI containers, and taking care of routing</li>
+      <li class="bulletList">A container is a network namespace (in Kubernetes, a pod is a CNI container)</li>
+      <li class="bulletList">Network definitions are managed as JSON files, but are streamed to the plugin via standard input (no files are being read by the plugin)</li>
+      <li class="bulletList">Auxiliary information can be provided<a id="_idIndexMarker1115"/> via environment variables</li>
+    </ul>
+    <h2 id="_idParaDest-514" class="heading-2">First look at the loopback plugin</h2>
+    <p class="normal">The loopback plugin<a id="_idIndexMarker1116"/> simply adds the loopback interface. It is so simple that it doesn’t require any network configuration information. Most CNI plugins are implemented in Golang and the loopback CNI plugin is no exception. The full source code is available here: <a href="https://github.com/containernetworking/plugins/blob/master/plugins/main/loopback"><span class="url">https://github.com/containernetworking/plugins/blob/master/plugins/main/loopback</span></a>.</p>
+    <p class="normal">There are multiple packages from the container networking project on GitHub that provide many of the building blocks necessary to implement CNI plugins, as well as the netlink package for adding interfaces, removing interfaces, setting IP addresses, and setting routes. Let’s look at the imports of the <code class="inlineCode">loopback.go</code> file first:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">package</span> main
+<span class="hljs-keyword">import</span> (
+    <span class="hljs-string">"encoding/json"</span>
+    <span class="hljs-string">"errors"</span>
+    <span class="hljs-string">"</span><span class="hljs-string">fmt"</span>
+    <span class="hljs-string">"net"</span>
+    <span class="hljs-string">"github.com/vishvananda/netlink"</span>
+    <span class="hljs-string">"github.com/containernetworking/cni/pkg/skel"</span>
+    <span class="hljs-string">"github.com/containernetworking/cni/pkg/types"</span>
+    current <span class="hljs-string">"github.com/containernetworking/cni/pkg/types/100"</span>
+    <span class="hljs-string">"github.com/containernetworking/cni/pkg/version"</span>
+    <span class="hljs-string">"github.com/containernetworking/plugins/pkg/ns"</span>
+    bv <span class="hljs-string">"github.com/containernetworking/plugins/pkg/utils/buildversion"</span>
+)
+</code></pre>
+    <p class="normal">Then, the plugin <a id="_idIndexMarker1117"/>implements two commands, <code class="inlineCode">cmdAdd</code> and <code class="inlineCode">cmdDel</code>, which are called when a container is added to or removed from the network. Here is the <code class="inlineCode">add</code> command, which does all the heavy lifting:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">func</span><span class="hljs-function"> </span><span class="hljs-title">cmdAdd</span><span class="hljs-params">(args *skel.CmdArgs)</span> <span class="hljs-type">error</span> {
+    conf, err := parseNetConf(args.StdinData)
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> err
+    }
+    <span class="hljs-keyword">var</span> v4Addr, v6Addr *net.IPNet
+    args.IfName = <span class="hljs-string">"</span><span class="hljs-string">lo"</span> <span class="hljs-comment">// ignore config, this only works for loopback</span>
+    err = ns.WithNetNSPath(args.Netns, <span class="hljs-keyword">func</span><span class="hljs-params">(_ ns.NetNS)</span> <span class="hljs-type">error</span> {
+        link, err := netlink.LinkByName(args.IfName)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err <span class="hljs-comment">// not tested</span>
+        }
+        err = netlink.LinkSetUp(link)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err <span class="hljs-comment">// not tested</span>
+        }
+        v4Addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err <span class="hljs-comment">// not tested</span>
+        }
+        <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(v4Addrs) != <span class="hljs-number">0</span> {
+            v4Addr = v4Addrs[<span class="hljs-number">0</span>].IPNet
+            <span class="hljs-comment">// sanity check that this is a loopback address</span>
+            <span class="hljs-keyword">for</span> _, addr := <span class="hljs-keyword">range</span> v4Addrs {
+                <span class="hljs-keyword">if</span> !addr.IP.IsLoopback() {
+                    <span class="hljs-keyword">return</span> fmt.Errorf(<span class="hljs-string">"loopback interface found with non-loopback address %q"</span>, addr.IP)
+                }
+            }
+        }
+        v6Addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err <span class="hljs-comment">// not tested</span>
+        }
+        <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(v6Addrs) != <span class="hljs-number">0</span> {
+            v6Addr = v6Addrs[<span class="hljs-number">0</span>].IPNet
+            <span class="hljs-comment">// sanity check that this is a loopback address</span>
+            <span class="hljs-keyword">for</span> _, addr := <span class="hljs-keyword">range</span> v6Addrs {
+                <span class="hljs-keyword">if</span> !addr.IP.IsLoopback() {
+                    <span class="hljs-keyword">return</span> fmt.Errorf(<span class="hljs-string">"loopback interface found with non-loopback address %q"</span>, addr.IP)
+                }
+            }
+        }
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+    })
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> err <span class="hljs-comment">// not tested</span>
+    }
+    <span class="hljs-keyword">var</span> result types.Result
+    <span class="hljs-keyword">if</span> conf.PrevResult != <span class="hljs-literal">nil</span> {
+        <span class="hljs-comment">// If loopback has previous result which passes from previous CNI plugin,</span>
+        <span class="hljs-comment">// loopback should pass it transparently</span>
+        result = conf.PrevResult
+    } <span class="hljs-keyword">else</span> {
+        r := &amp;current.Result{
+            CNIVersion: conf.CNIVersion,
+            Interfaces: []*current.Interface{
+                &amp;current.Interface{
+                    Name:    args.IfName,
+                    Mac:     <span class="hljs-string">"00:00:00:00:00:00"</span>,
+                    Sandbox: args.Netns,
+                },
+            },
+        }
+        <span class="hljs-keyword">if</span> v4Addr != <span class="hljs-literal">nil</span> {
+            r.IPs = <span class="hljs-built_in">append</span>(r.IPs, &amp;current.IPConfig{
+                Interface: current.Int(<span class="hljs-number">0</span>),
+                Address:   *v4Addr,
+            })
+        }
+        <span class="hljs-keyword">if</span> v6Addr != <span class="hljs-literal">nil</span> {
+            r.IPs = <span class="hljs-built_in">append</span>(r.IPs, &amp;current.IPConfig{
+                Interface: current.Int(<span class="hljs-number">0</span>),
+                Address:   *v6Addr,
+            })
+        }
+        result = r
+    }
+    <span class="hljs-keyword">return</span> types.PrintResult(result, conf.CNIVersion)
+}
+</code></pre>
+    <p class="normal">The core of this function is<a id="_idIndexMarker1118"/> setting the interface name to <code class="inlineCode">lo</code> (for loopback) and adding the link to the container’s network namespace. It supports both IPv4 and IPv6.</p>
+    <p class="normal">The <code class="inlineCode">del</code> command does the opposite and is much simpler:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">func</span><span class="hljs-function"> </span><span class="hljs-title">cmdDel</span><span class="hljs-params">(args *skel.CmdArgs)</span> <span class="hljs-type">error</span> {
+    <span class="hljs-keyword">if</span> args.Netns == <span class="hljs-string">""</span> {
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+    }
+    args.IfName = <span class="hljs-string">"lo"</span> <span class="hljs-comment">// ignore config, this only works for loopback</span>
+    err := ns.WithNetNSPath(args.Netns, <span class="hljs-keyword">func</span><span class="hljs-params">(ns.NetNS)</span> <span class="hljs-type">error</span> {
+        link, err := netlink.LinkByName(args.IfName)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err <span class="hljs-comment">// not tested</span>
+        }
+        err = netlink.LinkSetDown(link)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err <span class="hljs-comment">// not tested</span>
+        }
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+    })
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-comment">//  if NetNs is passed down by the Cloud Orchestration Engine, or if it called multiple times</span>
+        <span class="hljs-comment">// so don't return an error if the device is already removed.</span>
+        <span class="hljs-comment">// https://github.com/kubernetes/kubernetes/issues/43014#issuecomment-287164444</span>
+        _, ok := err.(ns.NSPathNotExistErr)
+        <span class="hljs-keyword">if</span> ok {
+            <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+        }
+        <span class="hljs-keyword">return</span> err
+    }
+    <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+}
+</code></pre>
+    <p class="normal">The <code class="inlineCode">main</code> function simply <a id="_idIndexMarker1119"/>calls the <code class="inlineCode">PluginMain()</code> function of the <code class="inlineCode">skel</code> package, passing the command functions. The <code class="inlineCode">skel</code> package will take care of running the CNI plugin executable and will invoke the <code class="inlineCode">cmdAdd</code> and <code class="inlineCode">delCmd</code> functions at the right time:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">func</span><span class="hljs-function"> </span><span class="hljs-title">main</span><span class="hljs-params">()</span> {
+    skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, bv.BuildString(<span class="hljs-string">"loopback"</span>))
+}
+</code></pre>
+    <h3 id="_idParaDest-515" class="heading-3">Building on the CNI plugin skeleton</h3>
+    <p class="normal">Let’s explore the <code class="inlineCode">skel</code> package <a id="_idIndexMarker1120"/>and see what it does under the covers. The <code class="inlineCode">PluginMain()</code> entry point, is responsible for invoking <code class="inlineCode">PluginMainWithError()</code>, catching errors, printing them to standard output, and exiting:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">func</span><span class="hljs-function"> </span><span class="hljs-title">PluginMain</span><span class="hljs-params">(cmdAdd, cmdCheck, cmdDel </span><span class="hljs-keyword">func</span><span class="hljs-params">(_ *CmdArgs)</span> <span class="hljs-type">error</span>, versionInfo version.PluginInfo, about <span class="hljs-type">string</span>) {
+    <span class="hljs-keyword">if</span> e := PluginMainWithError(cmdAdd, cmdCheck, cmdDel, versionInfo, about); e != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">if</span> err := e.Print(); err != <span class="hljs-literal">nil</span> {
+            log.Print(<span class="hljs-string">"Error writing error JSON to stdout: "</span>, err)
+        }
+        os.Exit(<span class="hljs-number">1</span>)
+    }
+}
+</code></pre>
+    <p class="normal">The <code class="inlineCode">PluginErrorWithMain()</code> function instantiates a dispatcher, sets it up with all the I/O streams and the environment, and invokes its internal <code class="inlineCode">pluginMain()</code> method:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">func</span><span class="hljs-function"> </span><span class="hljs-title">PluginMainWithError</span><span class="hljs-params">(cmdAdd, cmdCheck, cmdDel </span><span class="hljs-keyword">func</span><span class="hljs-params">(_ *CmdArgs)</span> <span class="hljs-type">error</span>, versionInfo version.PluginInfo, about <span class="hljs-type">string</span>) *types.Error {
+    <span class="hljs-keyword">return</span> (&amp;dispatcher{
+        Getenv: os.Getenv,
+        Stdin:  os.Stdin,
+        Stdout: os.Stdout,
+        Stderr: os.Stderr,
+    }).pluginMain(cmdAdd, cmdCheck, cmdDel, versionInfo, about)
+}
+</code></pre>
+    <p class="normal">Here, finally, is the main<a id="_idIndexMarker1121"/> logic of the skeleton. It gets the <code class="inlineCode">cmd</code> arguments from the environment (which includes the configuration from standard input), detects which <code class="inlineCode">cmd</code> is invoked, and calls the appropriate plugin function (<code class="inlineCode">cmdAdd</code> or <code class="inlineCode">cmdDel</code>). It can also return version information:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">func</span><span class="hljs-function"> </span><span class="hljs-params">(t *dispatcher)</span> pluginMain(cmdAdd, cmdCheck, cmdDel <span class="hljs-keyword">func</span><span class="hljs-params">(_ *CmdArgs)</span> <span class="hljs-type">error</span>, versionInfo version.PluginInfo, about <span class="hljs-type">string</span>) *types.Error {
+    cmd, cmdArgs, err := t.getCmdArgsFromEnv()
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-comment">// Print the about string to stderr when no command is set</span>
+        <span class="hljs-keyword">if</span> err.Code == types.ErrInvalidEnvironmentVariables &amp;&amp; t.Getenv(<span class="hljs-string">"CNI_COMMAND"</span>) == <span class="hljs-string">""</span> &amp;&amp; about != <span class="hljs-string">""</span> {
+            _, _ = fmt.Fprintln(t.Stderr, about)
+            _, _ = fmt.Fprintf(t.Stderr, <span class="hljs-string">"CNI protocol versions supported: %s\n"</span>, strings.Join(versionInfo.SupportedVersions(), <span class="hljs-string">", "</span>))
+            <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+        }
+        <span class="hljs-keyword">return</span> err
+    }
+    <span class="hljs-keyword">if</span> cmd != <span class="hljs-string">"VERSION"</span> {
+        <span class="hljs-keyword">if</span> err = validateConfig(cmdArgs.StdinData); err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err
+        }
+        <span class="hljs-keyword">if</span> err = utils.ValidateContainerID(cmdArgs.ContainerID); err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err
+        }
+        <span class="hljs-keyword">if</span> err = utils.ValidateInterfaceName(cmdArgs.IfName); err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err
+        }
+    }
+    <span class="hljs-keyword">switch</span> cmd {
+    <span class="hljs-keyword">case</span> <span class="hljs-string">"ADD"</span>:
+        err = t.checkVersionAndCall(cmdArgs, versionInfo, cmdAdd)
+    <span class="hljs-keyword">case</span> <span class="hljs-string">"CHECK"</span>:
+        configVersion, err := t.ConfVersionDecoder.Decode(cmdArgs.StdinData)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> types.NewError(types.ErrDecodingFailure, err.Error(), <span class="hljs-string">""</span>)
+        }
+        <span class="hljs-keyword">if</span> gtet, err := version.GreaterThanOrEqualTo(configVersion, <span class="hljs-string">"0.4.0"</span>); err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> types.NewError(types.ErrDecodingFailure, err.Error(), <span class="hljs-string">""</span>)
+        } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> !gtet {
+            <span class="hljs-keyword">return</span> types.NewError(types.ErrIncompatibleCNIVersion, <span class="hljs-string">"config version does not allow CHECK"</span>, <span class="hljs-string">""</span>)
+        }
+        <span class="hljs-keyword">for</span> _, pluginVersion := <span class="hljs-keyword">range</span> versionInfo.SupportedVersions() {
+            gtet, err := version.GreaterThanOrEqualTo(pluginVersion, configVersion)
+            <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+                <span class="hljs-keyword">return</span> types.NewError(types.ErrDecodingFailure, err.Error(), <span class="hljs-string">""</span>)
+            } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> gtet {
+                <span class="hljs-keyword">if</span> err := t.checkVersionAndCall(cmdArgs, versionInfo, cmdCheck); err != <span class="hljs-literal">nil</span> {
+                    <span class="hljs-keyword">return</span> err
+                }
+                <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+            }
+        }
+        <span class="hljs-keyword">return</span> types.NewError(types.ErrIncompatibleCNIVersion, <span class="hljs-string">"plugin version does not allow CHECK"</span>, <span class="hljs-string">""</span>)
+    <span class="hljs-keyword">case</span> <span class="hljs-string">"DEL"</span>:
+        err = t.checkVersionAndCall(cmdArgs, versionInfo, cmdDel)
+    <span class="hljs-keyword">case</span> <span class="hljs-string">"VERSION"</span>:
+        <span class="hljs-keyword">if</span> err := versionInfo.Encode(t.Stdout); err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> types.NewError(types.ErrIOFailure, err.Error(), <span class="hljs-string">""</span>)
+        }
+    <span class="hljs-keyword">default</span>:
+        <span class="hljs-keyword">return</span> types.NewError(types.ErrInvalidEnvironmentVariables, fmt.Sprintf(<span class="hljs-string">"unknown CNI_COMMAND: %v"</span>, cmd), <span class="hljs-string">""</span>)
+    }
+    <span class="hljs-keyword">return</span> err
+}
+</code></pre>
+    <p class="normal">The loopback plugin is<a id="_idIndexMarker1122"/> one of the simplest CNI plugins. Let’s check out the bridge plugin.</p>
+    <h3 id="_idParaDest-516" class="heading-3">Reviewing the bridge plugin</h3>
+    <p class="normal">The bridge plugin is <a id="_idIndexMarker1123"/>more substantial. Let’s look at some key parts of its implementation. The full source code is available here: <a href="https://github.com/containernetworking/plugins/tree/main/plugins/main/bridge"><span class="url">https://github.com/containernetworking/plugins/tree/main/plugins/main/bridge</span></a>.</p>
+    <p class="normal">The plugin defines in the <code class="inlineCode">bridge.go</code> file a network configuration struct with the following fields:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-keyword">type</span> NetConf <span class="hljs-keyword">struct</span> {
+    types.NetConf
+    BrName       <span class="hljs-type">string</span> <span class="hljs-string">`</span><span class="hljs-string">json:"bridge"`</span>
+    IsGW         <span class="hljs-type">bool</span>   <span class="hljs-string">`json:"isGateway"`</span>
+    IsDefaultGW  <span class="hljs-type">bool</span>   <span class="hljs-string">`json:"isDefaultGateway"`</span>
+    ForceAddress <span class="hljs-type">bool</span>   <span class="hljs-string">`json:"forceAddress"`</span>
+    IPMasq       <span class="hljs-type">bool</span>   <span class="hljs-string">`json:"ipMasq"`</span>
+    MTU          <span class="hljs-type">int</span>    <span class="hljs-string">`</span><span class="hljs-string">json:"mtu"`</span>
+    HairpinMode  <span class="hljs-type">bool</span>   <span class="hljs-string">`json:"hairpinMode"`</span>
+    PromiscMode  <span class="hljs-type">bool</span>   <span class="hljs-string">`json:"promiscMode"`</span>
+    Vlan         <span class="hljs-type">int</span>    <span class="hljs-string">`json:"vlan"`</span>
+    MacSpoofChk  <span class="hljs-type">bool</span>   <span class="hljs-string">`json:"macspoofchk,omitempty"`</span>
+    EnableDad    <span class="hljs-type">bool</span>   <span class="hljs-string">`</span><span class="hljs-string">json:"enabledad,omitempty"`</span>
+    Args <span class="hljs-keyword">struct</span> {
+        Cni BridgeArgs <span class="hljs-string">`json:"cni,omitempty"`</span>
+    } <span class="hljs-string">`json:"args,omitempty"`</span>
+    RuntimeConfig <span class="hljs-keyword">struct</span> {
+        Mac <span class="hljs-type">string</span> <span class="hljs-string">`json:"mac,omitempty"`</span>
+    } <span class="hljs-string">`json:"runtimeConfig,omitempty"`</span>
+    mac <span class="hljs-type">string</span>
+}
+</code></pre>
+    <p class="normal">We will not cover what each parameter does and how it interacts with the other parameters due to space limitations. The goal is to understand the flow and have a starting point if you want to implement your own CNI plugin. The configuration is loaded from JSON via <a id="_idIndexMarker1124"/>the <code class="inlineCode">loadNetConf()</code> function. It is called at the beginning of the <code class="inlineCode">cmdAdd()</code> and <code class="inlineCode">cmdDel()</code> functions:</p>
+    <pre class="programlisting code"><code class="hljs-code">n, cniVersion, err := loadNetConf(args.StdinData, args.Args)
+</code></pre>
+    <p class="normal">Here is the core of the <code class="inlineCode">cmdAdd()</code> that uses information from network configuration, sets up the bridge, and sets up a veth:</p>
+    <pre class="programlisting code"><code class="hljs-code">br, brInterface, err := setupBridge(n)
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> err
+    }
+    netns, err := ns.GetNS(args.Netns)
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> fmt.Errorf(<span class="hljs-string">"failed to open netns %q: %v"</span>, args.Netns, err)
+    }
+    <span class="hljs-keyword">defer</span> netns.Close()
+    hostInterface, containerInterface, err := setupVeth(netns, br, args.IfName, n.MTU, n.HairpinMode, n.Vlan)
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> err
+    }
+</code></pre>
+    <p class="normal">Later, the <a id="_idIndexMarker1125"/>function handles the L3 mode with its multiple cases:</p>
+    <pre class="programlisting code"><code class="hljs-code">    <span class="hljs-comment">// Assume L2 interface only</span>
+    result := &amp;current.Result{
+        CNIVersion: current.ImplementedSpecVersion,
+        Interfaces: []*current.Interface{
+            brInterface,
+            hostInterface,
+            containerInterface,
+        },
+    }
+    <span class="hljs-keyword">if</span> n.MacSpoofChk {
+        ...
+    }
+    
+    <span class="hljs-keyword">if</span> isLayer3 {
+        <span class="hljs-comment">// run the IPAM plugin and get back the config to apply</span>
+        r, err := ipam.ExecAdd(n.IPAM.Type, args.StdinData)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err
+        }
+        <span class="hljs-comment">// release IP in case of failure</span>
+        <span class="hljs-keyword">defer</span> <span class="hljs-keyword">func</span><span class="hljs-params">()</span> {
+            <span class="hljs-keyword">if</span> !success {
+                ipam.ExecDel(n.IPAM.Type, args.StdinData)
+            }
+        }()
+        <span class="hljs-comment">// Convert whatever the IPAM result was into the current Result type</span>
+        ipamResult, err := current.NewResultFromResult(r)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err
+        }
+        result.IPs = ipamResult.IPs
+        result.Routes = ipamResult.Routes
+        result.DNS = ipamResult.DNS
+        <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(result.IPs) == <span class="hljs-number">0</span> {
+            <span class="hljs-keyword">return</span> errors.New(<span class="hljs-string">"IPAM plugin returned missing IP config"</span>)
+        }
+        <span class="hljs-comment">// Gather gateway information for each IP family</span>
+        gwsV4, gwsV6, err := calcGateways(result, n)
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err
+        }
+        <span class="hljs-comment">// Configure the container hardware address and IP address(es)</span>
+        <span class="hljs-keyword">if</span> err := netns.Do(<span class="hljs-keyword">func</span><span class="hljs-params">(_ ns.NetNS)</span> <span class="hljs-type">error</span> {
+            ...
+        }
+        <span class="hljs-comment">// check bridge port state</span>
+        retries := []<span class="hljs-type">int</span>{<span class="hljs-number">0</span>, <span class="hljs-number">50</span>, <span class="hljs-number">500</span>, <span class="hljs-number">1000</span>, <span class="hljs-number">1000</span>}
+        <span class="hljs-keyword">for</span> idx, sleep := <span class="hljs-keyword">range</span> retries {
+            ...
+        }
+        
+        <span class="hljs-keyword">if</span> n.IsGW {
+            ...
+        }
+        <span class="hljs-keyword">if</span> n.IPMasq {
+            ...
+        }
+    } <span class="hljs-keyword">else</span> {
+        ...
+    }
+</code></pre>
+    <p class="normal">Finally, it updates the MAC address that<a id="_idIndexMarker1126"/> may have changed and returns the results:</p>
+    <pre class="programlisting code"><code class="hljs-code">    <span class="hljs-comment">// Refetch the bridge since its MAC address may change when the first</span>
+    <span class="hljs-comment">// veth is added or after its IP address is set</span>
+    br, err = bridgeByName(n.BrName)
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> err
+    }
+    brInterface.Mac = br.Attrs().HardwareAddr.String()
+    <span class="hljs-comment">// Return an error requested by testcases, if any</span>
+    <span class="hljs-keyword">if</span> debugPostIPAMError != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> debugPostIPAMError
+    }
+    <span class="hljs-comment">// Use incoming DNS settings if provided, otherwise use the</span>
+    <span class="hljs-comment">// settings that were already configued by the IPAM plugin</span>
+    <span class="hljs-keyword">if</span> dnsConfSet(n.DNS) {
+        result.DNS = n.DNS
+    }
+    success = <span class="hljs-literal">true</span>
+    <span class="hljs-keyword">return</span> types.PrintResult(result, cniVersion)
+</code></pre>
+    <p class="normal">This is just part of the <a id="_idIndexMarker1127"/>full implementation. There is also route setting and hardware IP allocation. If you plan to write your own CNI plugin, I encourage you to pursue the full source code, which is quite extensive, to get the full picture: <a href="https://github.com/containernetworking/plugins/tree/main/plugins/main/bridge"><span class="url">https://github.com/containernetworking/plugins/tree/main/plugins/main/bridge</span></a>.</p>
+    <p class="normal">Let’s summarize what we have learned.</p>
+    <h1 id="_idParaDest-517" class="heading-1">Summary</h1>
+    <p class="normal">In this chapter, we covered a lot of ground. Networking is such a vast topic as there are so many combinations of hardware, software, operating environments, and user skills. It is a very complicated endeavor to come up with a comprehensive networking solution that is both robust, secure, performs well, and is easy to maintain. For Kubernetes clusters, the cloud providers mostly solve these issues. But if you run on-premises clusters or need a tailor-made solution, you get a lot of options to choose from. Kubernetes is a very flexible platform, designed for extension. Networking in particular is highly pluggable. </p>
+    <p class="normal">The main topics we discussed were the Kubernetes networking model (a flat address space where pods can reach other), how lookup and discovery work, the Kubernetes network plugins, various networking solutions at different levels of abstraction (a lot of interesting variations), using network policies effectively to control the traffic inside the cluster, ingress and Gateway APIs, the spectrum of load balancing solutions, and, finally, we looked at how to write a CNI plugin by dissecting a real-world implementation.</p>
+    <p class="normal">At this point, you are probably overwhelmed, especially if you’re not a subject matter expert. However, you should have a solid grasp of the internals of Kubernetes networking, be aware of all the interlocking pieces required to implement a full-fledged solution, and be able to craft your own solution based on trade-offs that make sense for your system and your skill level.</p>
+    <p class="normal">In <em class="chapterRef">Chapter 11</em>, <em class="italic">Running Kubernetes on Multiple Clusters</em>, we will go even bigger and look at running Kubernetes on multiple clusters with federation. This is an important part of the Kubernetes story for geo-distributed deployments and ultimate scalability. Federated Kubernetes clusters can exceed local limitations, but they bring a whole slew of challenges too.</p>
+  </div>
+</body></html>

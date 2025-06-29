@@ -1,0 +1,415 @@
+<html><head></head><body>
+		<div id="_idContainer101" class="IMG---Figure">
+			<h1 id="_idParaDest-175" class="chapter-number"><a id="_idTextAnchor175"/>12</h1>
+			<h1 id="_idParaDest-176"><a id="_idTextAnchor176"/>Deploying Pods with Amazon Storage</h1>
+			<p>A guiding principle in most distributed or cloud-native applications is to limit the state where you can, and so far we have deployed Pods that are stateless, which means that when they are destroyed and recreated, any data they had is lost. In some cases, you might want to share data between containers in the Pod, maintain the state or content between reboots/re-deployments/crashes, or share data between Pods, in which case you need some sort of <span class="No-Break">persistent storage.</span></p>
+			<p>This chapter <a id="_idIndexMarker573"/>looks at how you can use <strong class="bold">Elastic Block Storage</strong> (<strong class="bold">EBS</strong>) and <strong class="bold">Elastic File System</strong> (<strong class="bold">EFS</strong>) to persist the container state or content across <a id="_idIndexMarker574"/>multiple containers, Pods, or deployments. Specifically, we will cover the following <span class="No-Break">key topics:</span></p>
+			<ul>
+				<li>Understanding <a id="_idIndexMarker575"/>Kubernetes volumes, the <strong class="bold">Container Storage Interface</strong> (<strong class="bold">CSI</strong>) driver, and storage <span class="No-Break">on AWS</span></li>
+				<li>Installing and configuring the AWS CSI drivers in <span class="No-Break">your cluster</span></li>
+				<li>Using EBS volumes with <span class="No-Break">your application</span></li>
+				<li>Using EFS volumes with <span class="No-Break">your application</span></li>
+			</ul>
+			<h1 id="_idParaDest-177"><a id="_idTextAnchor177"/>Technical requirements</h1>
+			<p>You should be <a id="_idIndexMarker576"/>familiar with YAML, basic networking, <a id="_idTextAnchor178"/>and <strong class="bold">Elastic Kubernetes Service</strong> (<strong class="bold">EKS</strong>) architecture. Before getting started with this chapter, please ensure that you have <span class="No-Break">the following:</span></p>
+			<ul>
+				<li>Network <a id="_idIndexMarker577"/>connectivity to your EKS cluster <span class="No-Break">API endpoint</span></li>
+				<li>The<a id="_idTextAnchor179"/> AWS <strong class="bold">command-line interface</strong> (<strong class="bold">CLI</strong>), Docker, and kubectl binary installed on <span class="No-Break">your workstation</span></li>
+				<li>A basic understanding of block and file <span class="No-Break">storage systems</span></li>
+			</ul>
+			<h1 id="_idParaDest-178"><a id="_idTextAnchor180"/>Understanding Kubernetes volumes, the CSI driver, and storage on AWS</h1>
+			<p>The basic storage <a id="_idIndexMarker578"/>object within Kubernetes is a <strong class="bold">volume</strong>, which represents a directory (with or without data) that can be accessed by containers in a Pod. You can <a id="_idIndexMarker579"/>have ephemeral volumes that persist over container restarts but are aligned to the lifetime of the Pod and are destroyed by the Kubernetes scheduler when <a id="_idIndexMarker580"/>the Pod is destroyed. Persistent volumes are not destroyed by Kubernetes and exist separately from the Pod or Pods that <span class="No-Break">use them.</span></p>
+			<p>The simplest example of an ephemeral volume is an <strong class="source-inline">emptyDir</strong> volume type. An example is shown next, which mounts host storage inside the containers using the <strong class="source-inline">mountPath</strong> key. As both containers use the same volume, they see the same data despite the fact it’s mounted onto different mount points. When a Pod dies, crashes, or is removed from a node, the data in the <strong class="source-inline">emptyDir</strong> volume is deleted <span class="No-Break">and lost:</span></p>
+			<pre class="source-code">
+apiVersion: v1
+kind: Pod
+metadata:
+  name: empty-dir-example
+spec:
+<strong class="bold">  volumes:</strong>
+<strong class="bold">  - name: shared-data</strong>
+<strong class="bold">    emptyDir: {}</strong>
+  containers:
+  - name: nginx-container
+    image: nginx
+    volumeMounts:
+    - name: shared-data
+<strong class="bold">      mountPath: /usr/share/nginx/html</strong>
+  - name: debian-container
+    image: debian
+    volumeMounts:
+    - name: shared-data
+<strong class="bold">      mountPath: /pod-data</strong>
+    command: ["/bin/sh"]
+    args: ["-c", "echo Hello from Debian &gt; /pod-data/index.html"]</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">The Pod will crash after it has run the <strong class="source-inline">echo</strong> command, but this is expected, so <span class="No-Break">rest assured.</span></p>
+			<p>You can also <a id="_idIndexMarker581"/>create a persistent host volume using the <strong class="source-inline">hostPath</strong> type shown next. In this example, a volume is created and mapped to the host <strong class="source-inline">/data</strong> directory, which <a id="_idIndexMarker582"/>in turn, is mounted in the nginx container using the <strong class="source-inline">mountPath</strong> key. The main difference between this configuration and the <a id="_idIndexMarker583"/>previous <strong class="source-inline">emptyDir</strong> volume type is that any data stored on the volume will be persisted in the <strong class="source-inline">/data</strong> directory on the host even if the Pod <span class="No-Break">is deleted:</span></p>
+			<pre class="source-code">
+apiVersion: v1
+kind: Pod
+metadata:
+  name: host-path-example
+spec:
+  containers:
+  - image: nginx
+    name: test
+    volumeMounts:
+    - mountPath: /usr/share/nginx/html
+      name: shared-data
+  volumes:
+  - name: shared-data
+<strong class="bold">    hostPath:</strong>
+<strong class="bold">            path: /data</strong></pre>
+			<p>The main challenge to these types of volumes is they are host-specific and so if there are any issues with the hosts, or if the Pod is scheduled on another host, the data is lost or <span class="No-Break">not reachable.</span></p>
+			<p>Kubernetes <a id="_idIndexMarker584"/>started with more volume types, such as <strong class="source-inline">awsElasticBlockStore</strong>, which uses an external/non-host AWS resource and removes some <a id="_idIndexMarker585"/>of these constraints. The plugins that supported these external volume types were known as <em class="italic">in-tree</em>, as they were developed by the Kubernetes <a id="_idIndexMarker586"/>community. However, the effort required to support changes in the volume configuration and different volume types became too much, so the CSI was made generally available in <span class="No-Break">Kubernetes 1.13.</span></p>
+			<p>The CSI specification acts as a way to expose block and file-based storage consistently, irrespective of the storage type or vendor. The CSI allows AWS (and other vendors) to develop and support storage drivers for its storage services, namely EBS <span class="No-Break">and EFS.</span></p>
+			<p>Let’s take a deeper look at these storage systems <span class="No-Break">on AWS.</span></p>
+			<h2 id="_idParaDest-179"><a id="_idTextAnchor181"/>EBS</h2>
+			<p>EBS is <a id="_idIndexMarker587"/>block-based storage that is typically attached to a <a id="_idIndexMarker588"/>single <strong class="bold">Elastic Compute Cloud</strong> (<strong class="bold">EC2</strong>) instance or Pod in a single <strong class="bold">availability zone</strong> (<strong class="bold">AZ</strong>). It comes in <a id="_idIndexMarker589"/>a variety of performance flavors from general-purpose (gp3 and gp2) and high-performance (io1 and io2) as well as SSD and HDD (magnetic) types. Amazon EBS volumes are <a id="_idIndexMarker590"/>billed by the <strong class="bold">gigabyte-month</strong> (<strong class="bold">GB-month</strong>), a measure of how many gigabytes <a id="_idIndexMarker591"/>of EBS storage are provisioned in your account and the length of time it is <span class="No-Break">used for.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">While EBS now supports attaching up to 16 nitro-based EC2 instances, in the same AZ, to a single EBS volume, this is a relatively new <span class="No-Break">configuration option.</span></p>
+			<h2 id="_idParaDest-180"><a id="_idTextAnchor182"/>EFS</h2>
+			<p>EFS is file-based storage based on NFS (NFSv4.1 and NFSv4.0), which allows multiple EC2 instances or Pods <a id="_idIndexMarker592"/>to access shared storage across multiple AZs. The storage provided by EFS can be regional (multi-AZ) or span a single AZ and can support both standard and infrequently accessed data patterns. Billing for Amazon EFS is based on the amount of storage used per month, measured in GB-months, as well as the storage class used and the duration of storage usage within <span class="No-Break">your account.</span></p>
+			<p>The criteria used to choose between EBS and EFS vary but, generally, if you want a shared storage solution that can be used across multiple AZs, then EFS is a good candidate. EBS is normally used to provide persistent volumes within a single AZ with <span class="No-Break">high throughput.</span></p>
+			<p>Let’s look at how we install and configure the different CSI drivers for EBS and EFS in <span class="No-Break">our cluster.</span></p>
+			<h1 id="_idParaDest-181"><a id="_idTextAnchor183"/>Installing and configuring the AWS CSI drivers in your cluster</h1>
+			<p>We will <a id="_idIndexMarker593"/>install both the EBS and EFS drivers in this section. You will need a similar process for both, <span class="No-Break">det<a id="_idTextAnchor184"/>ailed next:</span></p>
+			<ol>
+				<li>Create <a id="_idIndexMarker594"/>an <strong class="bold">Identity and Access Management</strong> (<strong class="bold">IAM</strong>) policy that will allow the plugin to perform AWS API calls for either EBS <span class="No-Break">or EFS.</span></li>
+				<li>Create and map an IAM role to an EKS service account (this is discussed in detail in <a href="B18129_01.xhtml#_idTextAnchor014"><span class="No-Break"><em class="italic">Chapter 1</em></span></a><span class="No-Break"><em class="italic">)3</em></span><span class="No-Break">.</span></li>
+				<li>Deploy the plugin and configure it to use the service account created in <span class="No-Break"><em class="italic">step 2</em></span><span class="No-Break">.</span></li>
+			</ol>
+			<h2 id="_idParaDest-182"><a id="_idTextAnchor185"/>Installing and configuring the EBS CSI driver</h2>
+			<p>The driver <a id="_idIndexMarker595"/>can be found at <a href="https://github.com/kubernetes-sigs/aws-ebs-csi-driver">https://github.com/kubernetes-sigs/aws-ebs-csi-driver</a>. Let’s get down to <span class="No-Break">installing it!</span></p>
+			<ol>
+				<li value="1">You can <a id="_idIndexMarker596"/>create the IAM policy from scratch or you can use the <strong class="source-inline">AmazonEBSCSIDriverPolicy</strong> <span class="No-Break">AWS-managed policy.</span></li>
+				<li>We can now create the role. We will use the <strong class="source-inline">–role-only</strong> command-line switch, so we don’t create the EKS service account. Using the following <strong class="source-inline">eksctl</strong> command, adjust the command line parameters <span class="No-Break">as necessary:</span><pre class="source-code">
+<strong class="bold">$ eksctl create iamserviceaccount  --name ebs-csi-controller-sa --namespace kube-system --cluster myipv4cluster   --override-existing-serviceaccounts --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy  --approve --role-name AmazonEKS_EBS_CSI_DriverRole --role-only</strong></pre></li>
+			</ol>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">In the preceding example, we used the cluster we created in <a href="B18129_09.xhtml#_idTextAnchor135"><span class="No-Break"><em class="italic">Chapter 9</em></span></a>. If you use a different cluster, you will need to change the <strong class="source-inline">--cluster</strong> parameter to reflect your <span class="No-Break">cluster name.</span></p>
+			<ol>
+				<li value="3">You can create an add-on for the EBS CSI controller using the following <strong class="source-inline">eksctl</strong> command, which will deploy the CSI Pods and also the service accounts needed to access the AWS API using the role created in <span class="No-Break"><em class="italic">step 2</em></span><span class="No-Break">:</span><pre class="source-code">
+<strong class="bold">$ eksctl create addon --name aws-ebs-csi-driver --cluster myipv4cluster  --service-account-role-arn arn:aws:iam::11223344:role/AmazonEKS_EBS_CSI_DriverRole  --force</strong>
+<strong class="bold">2022-09-22 19:59:19 []  Kubernetes version "1.20" in use by cluster "myipv4cluster"</strong>
+<strong class="bold">………</strong>
+<strong class="bold">2022-09-22 20:00:28 []  addon "aws-ebs-csi-driver" active</strong></pre></li>
+				<li>You can <a id="_idIndexMarker597"/>validate whether the controller and DaemonSets <a id="_idIndexMarker598"/>are deployed using the <span class="No-Break">following commands:</span><pre class="source-code">
+<strong class="bold">$ kubectl get pods -n kube-system | grep ebs</strong>
+<strong class="bold">ebs-csi-controller-2233-p75xg   6/6     Running   1</strong>
+<strong class="bold">ebs-csi-controller-3444-rb9zg   6/6     Running   0</strong>
+<strong class="bold">ebs-csi-node-94pgc              3/3     Running   0</strong>
+<strong class="bold">ebs-csi-node-mwdqc              3/3     Running   0</strong>
+<strong class="bold">ebs-csi-node-t9h77              3/3     Running   0</strong>
+<strong class="bold">$ kubectl logs deployment/ebs-csi-controller -n kube-system -c csi-provisioner</strong>
+<strong class="bold">………</strong>
+<strong class="bold">I0922 19:59:53.169651       1 leaderelection.go:258] successfully acquired lease kube-system/ebs-csi-aws-com</strong>
+<strong class="bold">………</strong></pre></li>
+			</ol>
+			<p>In the <em class="italic">Using EBS volumes with your application</em> section, we will see how you can attach EBS volumes directly to Pods, but before that, let’s install the <span class="No-Break">EFS driver.</span></p>
+			<h2 id="_idParaDest-183"><a id="_idTextAnchor186"/>Installing and configuring the EFS CSI driver</h2>
+			<p>The driver <a id="_idIndexMarker599"/>can be <a id="_idIndexMarker600"/>found at <a href="https://github.com/kubernetes-sigs/aws-efs-csi-driver">https://github.com/kubernetes-sigs/aws-efs-csi-driver</a>. Let’s get down to <span class="No-Break">installing it!</span></p>
+			<ol>
+				<li value="1">You can create the IAM policy from scratch or you can use the example policy found here: <a href="https://raw.githubusercontent.com/kubernetes-sigs/aws-efs-csi-driver/master/docs/iam-policy-example.json">https://raw.githubusercontent.com/kubernetes-sigs/aws-efs-csi-driver/master/docs/iam-policy-example.json</a>. The following commands can be used to download and create the <span class="No-Break">IAM policy:</span><pre class="source-code">
+<strong class="bold">$ curl -o iam-policy-example.json https://raw.githubusercontent.com/kubernetes-sigs/aws-efs-csi-driver/master/docs/iam-policy-example.json</strong>
+<strong class="bold">$ aws iam create-policy --policy-name AmazonEKS_EFS_CSI_Driver_Policy --policy-document file://iam-policy-example.json</strong></pre></li>
+				<li>We can now create the role and associated EKS service account using the following <strong class="source-inline">eksctl</strong> command <a id="_idIndexMarker601"/>and adjust the command line parameters as necessary (you will need to specify the <strong class="bold">Amazon Resource Name</strong> (<strong class="bold">ARN</strong>) of the policy created in <em class="italic">step 1</em>, as well as the cluster name and Region). The most important aspect to verify is that the new service account has an annotation for the new <span class="No-Break">IAM role:</span><pre class="source-code">
+<strong class="bold">$ eksctl create iamserviceaccount  --cluster myipv4cluster     --namespace kube-system  --name efs-csi-controller-sa --attach-policy-arn arn:aws:iam::11223344:policy/AmazonEKS_EFS_CSI_Driver_Policy     --approve  --region eu-central-1</strong>
+<strong class="bold">2022-09-22 20:32:29 []  3 existing iamserviceaccount(s) (kube-system/ebs-csi-controller-sa,kube-system/eni-allocator,kube-system/multus) will be exclude</strong>
+<strong class="bold">………</strong>
+<strong class="bold">022-09-22 20:32:59 []  created serviceaccount "kube-system/efs-csi-controller-sa"</strong>
+<strong class="bold">$ kubectl describe sa efs-csi-controller-sa -n kube-system</strong>
+<strong class="bold">Name:                efs-csi-controller-sa</strong>
+<strong class="bold">……</strong>
+<strong class="bold">Annotations:         eks.amazonaws.com/role-arn: arn:aws:iam::076637564853:role/eksctl-myipv4cluster-addon-iamserviceaccount-Role1-P08589EN3NY7</strong>
+<strong class="bold">…..</strong></pre></li>
+				<li>We will <a id="_idIndexMarker602"/>use Helm to install this EFS CSI driver as, unlike <a id="_idIndexMarker603"/>the EBS driver, at the time of writing, the EFS driver is not supported as an add-on. The following command will add the EFS repository to Helm and deploy the Helm chart, re-using the EKS service account that was created in <span class="No-Break"><em class="italic">step 2</em></span><span class="No-Break">:</span></li>
+			</ol>
+			<p class="callout-heading">Important note</p>
+			<p class="callout"><strong class="source-inline">Image.repository</strong> is Region-specific, and the relevant repositories can be found <span class="No-Break">at </span><a href="https://docs.aws.amazon.com/eks/latest/userguide/add-ons-images.html"><span class="No-Break">https://docs.aws.amazon.com/eks/latest/userguide/add-ons-images.html</span></a><span class="No-Break">.</span></p>
+			<pre class="source-code">
+$ helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver/
+$ helm repo update
+$ helm search repo aws-efs-csi-driver
+NAME CHART VERSION   APP VERSION     DESCRIPTION
+aws-efs-csi-driver/aws-efs-csi-driver   2.2.7 1.4.0 A Helm chart for AWS EFS CSI Driver
+$ helm upgrade -i aws-efs-csi-driver aws-efs-csi-driver/aws-efs-csi-driver --namespace kube-system --set image.repository=602401143452.dkr.ecr.eu-central-1.amazonaws.com/eks/aws-efs-csi-driver --set controller.serviceAccount.create=false --set controller.serviceAccount.name=efs-csi-controller-sa
+$ kubectl get pod -n kube-system -l "app.kubernetes.io/name=aws-efs-csi-driver,app.kubernetes.io/instance=aws-efs-csi-driver"
+NAME                 READY   STATUS    RESTARTS   AGE
+efs-csi-controller-122-hrzfg          3/3     Running   0
+efs-csi-controller-1234-q8wpt         3/3     Running   0
+efs-csi-node-2g46k                    3/3     Running   0
+efs-csi-node-59rsx                    3/3     Running   0
+efs-csi-node-ncsk8                    3/3     Running   0
+$ kubectl logs deployment/efs-csi-controller -n kube-system -c csi-provisioner
+………
+I0922 20:51:53.306805       1 leaderelection.go:253] successfully acquired lease kube-system/efs-csi-aws-com
+……</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">The EFS <a id="_idIndexMarker604"/>plugin will require a pre-configured EFS cluster to be available; we will <a id="_idIndexMarker605"/>discuss how this can be created in the <em class="italic">Using EFS volumes with your </em><span class="No-Break"><em class="italic">application</em></span><span class="No-Break"> section.</span></p>
+			<p>Now we have both drivers installed and running, we can look at how they can be used by Pods to <span class="No-Break">store data.</span></p>
+			<h1 id="_idParaDest-184"><a id="_idTextAnchor187"/>Using EBS volumes with your application</h1>
+			<p>Kubernetes <a id="_idIndexMarker606"/>has three main <strong class="source-inline">kinds</strong> that are used for persistent storage. The <strong class="bold">PersistentVolume</strong> (<strong class="bold">PV</strong>) represents the actual storage in the attached storage <a id="_idIndexMarker607"/>system, in our case, an EBS volume. The other <a id="_idIndexMarker608"/>components are a <strong class="bold">StorageClass</strong> (<strong class="bold">SC</strong>), which defines the characteristics <a id="_idIndexMarker609"/>of the storage, and a <strong class="bold">PersistentVolumeClaim</strong> (<strong class="bold">PVC</strong>), which represents a request for storage that is fulfilled by a PV based on <span class="No-Break">an SC.</span></p>
+			<p>The reason a PVC exists is that different Pods may require different types of storage, for example, storage shared between many Pods or dedicated to just one. The PVC provides an abstraction between what a developer or DevOps engineer needs for their application and the type of storage provided by the <span class="No-Break">cluster administrator.</span></p>
+			<p>The following diagram illustrates the relationship between an EBS volume, PV, PVC, and <span class="No-Break">a Pod:</span></p>
+			<div>
+				<div id="_idContainer098" class="IMG---Figure">
+					<img src="image/B18129_12_01.jpg" alt="Figure 12.1 – EBS volumes"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.1 – EBS volumes</p>
+			<p>It’s important to know that an EBS volume is specific to a Region and an AZ; you can’t move EBS volumes between AZs. Instead, you need to create a snapshot and then create a new volume in the new AZ. A PV (EBS volume) can be created statically by an AWS administrator or dynamically as you consume a PVC, but it can only be consumed by worker nodes in the same AZ as the <span class="No-Break">volume itself.</span></p>
+			<p>We will focus on the dynamic creation of the volumes, as this is the simplest method to implement. The latest EBS CSI driver automatically creates a <strong class="source-inline">gp2</strong> SC and this can be viewed by using the <span class="No-Break">following commands:</span></p>
+			<pre class="console">
+$ kubectl get storageclass
+NAME  PROVISIONER  RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+gp2 (default)   kubernetes.io/aws-ebs   Delete          WaitForFirstConsumer   false                  50d</pre>
+			<p>We want <a id="_idIndexMarker610"/>to use <strong class="source-inline">gp3</strong>, which is a more cost-effective form of storage and performant type on AWS, so let’s create a new SC using the following manifest and deploy it using the <strong class="source-inline">$ kubectl create -f </strong><span class="No-Break"><strong class="source-inline">SC-config.yaml</strong></span><span class="No-Break"> command:</span></p>
+			<pre class="source-code">
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com # Amazon EBS CSI driver
+parameters:
+  type: <strong class="bold">gp3</strong>
+  encrypted: '<strong class="bold">true</strong>'
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete</pre>
+			<p>We can now create a PVC that will leverage the new SC. As we are using dynamic provisioning, we don’t have to create a PV, as this will be created once we deploy a Pod that references the <span class="No-Break">new PVC.</span></p>
+			<p>The following manifest will create the PVC and it can be deployed using the <strong class="source-inline">$ kubectl create -f VC-config.yaml</strong> command. The manifest contains the SC that will be used, in our case <strong class="source-inline">gp3</strong>, as well as the size of the volume to create 4 Gi. We don’t specify any encryption requirements in the PVC, but as that is set in the SC, the volume will be encrypted; we could create a non-encrypted <strong class="source-inline">gp3</strong> SC as well if we wanted to allow developers to choose an <span class="No-Break">unencrypted volume:</span></p>
+			<pre class="source-code">
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ebs-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: <strong class="bold">gp3</strong>
+  resources:
+    requests:
+      storage: <strong class="bold">4Gi</strong></pre>
+			<p><strong class="source-inline">accessModes</strong> defines how <a id="_idIndexMarker611"/>the volume can be attached, and these are listed next; however, EBS will only <span class="No-Break">support </span><span class="No-Break"><strong class="source-inline">ReadWriteOnce</strong></span><span class="No-Break">:</span></p>
+			<ul>
+				<li><strong class="source-inline">ReadWriteOnce(RWO)</strong>: This volume can be mounted as read-write by a <span class="No-Break">single node.</span></li>
+				<li><strong class="source-inline">ReadOnlyMany(ROX)</strong>: This volume can be mounted read-only by <span class="No-Break">many nodes.</span></li>
+				<li><strong class="source-inline">ReadWriteMany(RWX)</strong>: This volume can be mounted as read-write by <span class="No-Break">many nodes.</span></li>
+				<li><strong class="source-inline">ReadWriteOncePod(RWOP)</strong>: This volume can be mounted as read-write by a <span class="No-Break">single Pod.</span></li>
+			</ul>
+			<p>The following commands show the PVC being created in a pending state (as no Pod has made a claim against it), and no associated EBS volume (PV) has been created, as the PVC is still in a <span class="No-Break">pending state:</span></p>
+			<pre class="console">
+$ kubectl create -f ebs-pvc.yaml
+persistentvolumeclaim/ebs-claim created
+$ kubectl get pvc
+NAME STATUS VOLUME CAPACITYACCESS MODES STORAGECLASS   AGE
+ebs-claim   Pending          gp3            10s
+$ kubectl get pv
+No resources found</pre>
+			<p>We can now <a id="_idIndexMarker612"/>deploy a Pod that uses this PVC, which, in turn, will, using the EBS CSI driver, create a new EBS volume (dynamic provisioning) and attach it to the Pod as specified by <strong class="source-inline">mountPath</strong> in the <span class="No-Break">Pod specification.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">It’s worth noting that the Pod deployment time will take longer as the EBS volume needs to be created first. If a quicker startup time is needed, then static provisioning can be used and the PV can be created before <span class="No-Break">the Pod.</span></p>
+			<p>The following manifest will create the Pod and references the PVC created previously. It can be deployed using the <strong class="source-inline">$ kubectl create -f </strong><span class="No-Break"><strong class="source-inline">ebs-pod.yaml</strong></span><span class="No-Break"> command:</span></p>
+			<pre class="source-code">
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+spec:
+  containers:
+  - name: app
+    image: debian
+    command: ["/bin/sh"]
+    args: ["-c", "while true; do echo $(date -u) &gt;&gt; /data/out.txt; sleep 5; done"]
+    volumeMounts:
+    - name: persistent-storage
+      mountPath: /data
+<strong class="bold">  volumes:</strong>
+<strong class="bold">  - name: persistent-storage</strong>
+<strong class="bold">    persistentVolumeClaim:</strong>
+<strong class="bold">      claimName: ebs-claim</strong></pre>
+			<p>We use the <a id="_idIndexMarker613"/>following commands to verify the successful deployment of the Pod and the creation of the EBS volume. Once the Pod is created, we can see the PVC is now in a <strong class="source-inline">Bound</strong> state and a new PV is created also in a <span class="No-Break"><strong class="source-inline">Bound</strong></span><span class="No-Break"> state:</span></p>
+			<pre class="console">
+$ kubectl create -f ebs-pod.yaml
+pod/app created
+$ kubectl get pvc
+NAME STATUS VOLUME CAPACITY ACCESS MODES STORAGECLASS AGE
+ebs-claim   Bound    pvc-18661cce-cda5-4779-86b4-21cb76a5ecc0   4Gi        RWO            gp3            30m
+$ kubectl get pv
+NAME CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM
+pvc-1 4Gi RWO Delete  Bound    default/ebs-claim   gp3     17s</pre>
+			<p>If we look in detail at the PV, we can see the ID of the volume created in AWS by looking at the <span class="No-Break"><strong class="source-inline">VolumeHandle</strong></span><span class="No-Break"> key:</span></p>
+			<pre class="console">
+$ kubectl describe pv pvc-1
+Name:              pvc-1
+Labels:            &lt;none&gt;
+…
+StorageClass:      gp3
+Status:            Bound
+Claim:             default/ebs-claim
+Reclaim Policy:    Delete
+Access Modes:      RWO
+VolumeMode:        Filesystem
+Capacity:          4Gi
+Node Affinity:
+  Required Terms:
+    Term 0: topology.ebs.csi.aws.com/zone in [eu-central-1b]
+Message:
+Source:
+    Type:  CSI ( (CSI) volume source)
+    Driver:            ebs.csi.aws.com
+    FSType:            ext4
+    VolumeHandle:      vol-00f7c5d865ef5c14f
+    ReadOnly:          false
+    …</pre>
+			<p>When the <a id="_idIndexMarker614"/>PVC is removed, the reclaim policy (defaulting to what is defined in the SC for dynamic provisioning) dictates what happens. In the previous example, <strong class="source-inline">Reclaim Policy</strong> is <strong class="source-inline">Delete</strong>, which means the Kubernetes resources (the PV and PVC) will be deleted, along with the associated EBS volume. If you want to preserve the EBS volume, then the <strong class="source-inline">Retain</strong> value should be set in <span class="No-Break">the SC.</span></p>
+			<p>Now, go into the AWS console and search for the volume ID. The example shown next illustrates the <a id="_idIndexMarker615"/>volume, the provisioned size, and the type, along with the <strong class="bold">Key Management Service </strong>(<strong class="bold">KMS</strong>) details <span class="No-Break">and throughput:</span></p>
+			<div>
+				<div id="_idContainer099" class="IMG---Figure">
+					<img src="image/B18129_12_02.jpg" alt="Figure 12.2 – The AWS console EBS volumes"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.2 – The AWS console EBS volumes</p>
+			<p>Now we have <a id="_idIndexMarker616"/>set up block-based storage using EBS, let’s look at how we can use filesystem-based storage shared between multiple Pods <span class="No-Break">using EFS.</span></p>
+			<h1 id="_idParaDest-185"><a id="_idTextAnchor188"/>Using EFS volumes with your application</h1>
+			<p>EFS is a shared <a id="_idIndexMarker617"/>storage platform unlike EBS, so while at the Kubernetes level, you have the same objects, SC, PV, and PVCs, the way you access the storage and how the storage is created are <span class="No-Break">quite different.</span></p>
+			<p>The following diagram illustrates the relationship between an EFS instance/volume and the Kubernetes PV, PVC, <span class="No-Break">and Pod:</span></p>
+			<div>
+				<div id="_idContainer100" class="IMG---Figure">
+					<img src="image/B18129_12_03.jpg" alt="Figure 12.3 – EFS volumes"/>
+				</div>
+			</div>
+			<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.3 – EFS volumes</p>
+			<p>Although we <a id="_idIndexMarker618"/>have installed the CSI driver, we can’t provision volumes without an EFS instance and mount targets in the required subnets. Let’s look at how we can create <span class="No-Break">them next.</span></p>
+			<h2 id="_idParaDest-186"><a id="_idTextAnchor189"/>Creating the EFS instance and mount targets</h2>
+			<p>You can do <a id="_idIndexMarker619"/>this in a variety of ways, but we will use the AWS CLI. Let’s start by creating the EFS filesystem and retrieving the filesystem ID. The following command <a id="_idIndexMarker620"/>will create the EFS instance and filter the response to only return <strong class="source-inline">FileSystemId</strong>. Please adjust the <strong class="source-inline">–region</strong> parameter to account for the Region <span class="No-Break">you’re using:</span></p>
+			<pre class="console">
+$ aws efs create-file-system --region eu-central-1  --performance-mode generalPurpose --query 'FileSystemId' --output text
+fs-078166286587fc22</pre>
+			<p>The next step is to identify the subnets we want to use for our mount targets. Ideally, we place the <a id="_idIndexMarker621"/>mount targets in the same subnets as the worker nodes. The following commands will list all the subnets for a given <strong class="bold">virtual private cloud</strong> (<strong class="bold">VPC</strong>) (you will need to supply the correct VPC-ID) and then list which subnets <a id="_idIndexMarker622"/>and security groups are being used by your managed <a id="_idIndexMarker623"/><span class="No-Break">node group:</span></p>
+			<pre class="console">
+$ aws ec2 describe-subnets  --filters "Name=vpc-id,Values=vpc-123" --query 'Subnets[*].{SubnetId: SubnetId,AvailabilityZone: AvailabilityZone,CidrBlock: CidrBlock}'  --output table
++------------------+--------------------+-----------------+
+| AvailabilityZone |     CidrBlock      |   SubnetId         |
++------------------+--------------------+-----------------+
+|  eu-central-1a   |  192.168.96.0/19   |  subnet-1  |
+|  eu-central-1b   |  192.168.32.0/19   |  subnet-2  |
+|  eu-central-1a   |  192.168.0.0/19    |  subnet-3  |
+|  eu-central-1c   |  192.168.160.0/19  |  subnet-4  |
+|  eu-central-1c   |  192.168.64.0/19   |  subnet-5  |
++------------------+--------------------+-----------------+
+$ aws ec2 describe-instances --filters "Name=tag:aws:eks:cluster-name,Values=myipv4cluster"   --query "Reservations[*].Instances[*].{Instance:InstanceId,Subnet:SubnetId,PrivateIP:PrivateIpAddress}"  --output table
++---------------------+------------------+----------------+
+|      Instance       |    PrivateIP     |          Subnet   |
++---------------------+------------------+-------- -------+
+|  i-01437f1b219217d8a|  192.168.12.212  |  subnet-3  |
+|  i-0f74d4d5b7e5dc146|  192.168.70.114  |  subnet-5  |
+|  i-04c48cc4d2ac11ca6|  192.168.63.61   |  subnet-2  |
++---------------------+------------------+----------------+</pre>
+			<p>We can see from the previous output that we should create mount points in subnets 3, 5, and 2, as this is where our worker nodes that belong to <strong class="source-inline">myipv4cluster</strong> <span class="No-Break">are placed.</span></p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">These subnets also cover the three AZs for <span class="No-Break">high-availability reasons.</span></p>
+			<p>We can now <a id="_idIndexMarker624"/>identify what security groups are being used by <a id="_idIndexMarker625"/>these instances using the next command. In our case, the instances are all part of the same security group, as they belong to the same managed node group. We will use this for the EFS mount targets for simplicity, but you may want to create a separate security group for EFS. However, ensure that any security group you use allows the <strong class="source-inline">TCP/2049</strong> port between the Pods and the EFS <span class="No-Break">mount targets:</span></p>
+			<pre class="console">
+$ aws ec2 describe-instances --filters "Name=tag:aws:eks:cluster-name,Values=myipv4cluster"    --query "Reservations[*].Instances[*].SecurityGroups[*]"  --output table
+|GroupId  |                GroupName                 |
++-----------------------+--------------------------------+
+|  sg-123 |  eks-cluster-sg-myipv4cluster-940370103  |
+|  sg-123 |  eks-cluster-sg-myipv4cluster-940370103  |
+|  sg-123 |  eks-cluster-sg-myipv4cluster-940370103  |
++-----------------------+---------------------------------+</pre>
+			<p>We can now create and verify the mount points, one per subnet/AZ, using the following commands. When we <a id="_idIndexMarker626"/>verify the mount targets, you will see the IP address assigned to the <strong class="bold">Elastic Network Interface</strong> (<strong class="bold">ENI</strong>) placed in the subnet, which will be used by <span class="No-Break">the Pods:</span></p>
+			<pre class="console">
+$ aws efs create-mount-target --file-system-id fs-078166286587fc22--security-groups sg-123 --subnet-id subnet-3
+&lt;repeat for remaining subnets&gt;
+$ aws efs describe-mount-targets --file-system-id fs-078166286587fc22 --query "MountTargets[*].{id:MountTargetId,az:AvailabilityZoneName,subnet:SubnetId,EFSIP:IpAddress}" --output
++----------------+----------------+-----------+-----------+
+| EFSIP          |      az        |     id    | subnet     |
++----------------+----------------+-----------------------+
+|  192.168.10.59 |  eu-central-1a |  fsmt-22  |  subnet-3  |
+|  192.168.66.201|  eu-central-1c |  fsmt-33  |  subnet-4  |
+|  192.168.34.140|  eu-central-1b |  fsmt-44  |  subnet-5  |
++----------------+----------------+-----------+-----------+</pre>
+			<p>We have <a id="_idIndexMarker627"/>now set up EFS and made it available to the Pods; the next <a id="_idIndexMarker628"/>steps are almost identical to EBS and involve setting up the Kubernetes object to <span class="No-Break">use EFS.</span></p>
+			<h2 id="_idParaDest-187"><a id="_idTextAnchor190"/>Creating your EFS cluster objects</h2>
+			<p>We need to <a id="_idIndexMarker629"/>create the SC and example manifest as shown in the following code snippet. You will need to replace the <strong class="source-inline">fileSystemId</strong> key and then deploy it using the <strong class="source-inline">$ kubectl create -f </strong><span class="No-Break"><strong class="source-inline">SC-config.yaml</strong></span><span class="No-Break"> command:</span></p>
+			<pre class="source-code">
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: efs-sc
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+<strong class="bold">  fileSystemId: fs-078166286587fc22</strong>
+  directoryPerms: "700"</pre>
+			<p>We can now <a id="_idIndexMarker630"/>create the PVC that consumes the SC using the following manifest, and then deploy it using the <strong class="source-inline">$ kubectl create -f pvc.yaml</strong> command. Please note that <strong class="source-inline">accessMode</strong> is now set to <strong class="source-inline">ReadWriteMany</strong>, as this is <span class="No-Break">shared storage:</span></p>
+			<pre class="source-code">
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: efs-claim
+spec:
+  accessModes:
+    <strong class="bold">- ReadWriteMany</strong>
+  storageClassName: <strong class="bold">efs-sc</strong>
+  resources:
+    requests:
+      storage: 5Gi</pre>
+			<p>If we review the PVC and PV that get created using the commands shown next, we can see the new PVC and the PV are created and bound, as again, we are using dynamic provisioning. This is different from EBS where it’s only when the PVC is <em class="italic">used</em> that the PV gets created. With EFS, you are charged only for what you use, unlike an EBS volume, which you get charged for as soon as it is created, so there are no issues with creating the PVC/PV combination as soon as the PVC <span class="No-Break">is created:</span></p>
+			<pre class="console">
+$ kubectl get pvc
+NAME STATUS VOLUME CAPACITY ACCESS MODES   STORAGECLASS   AGE
+ebs-claim Bound  pvc-1   4Gi    RWO     gp3            14h
+efs-claim Bound  pvc-2   5Gi   RWX      efs-sc         4s
+$kubectl get pv
+NAME CAPACITY ACCESS MODES RECLAIM STATUS CLAIM SC REASON AGE
+pvc-1 4Gi RWO Delete Bound default/ebs-claim gp3 16h
+pvc-2 5Gi RWX Delete Bound default/efs-claim efs-sc  2m1s</pre>
+			<p>If you look <a id="_idIndexMarker631"/>in the controller logs (an example is shown next), you can see the CSI driver making a call to create <span class="No-Break">the volume:</span></p>
+			<pre class="console">
+$ kubectl logs efs-csi-controller-xx -n kube-system  -c csi-provisioner   --tail 10
+………
+I1005 10:55:45.301869   1 event.go:282] Event (v1.ObjectReference {Kind:"PersistentVolumeClaim", Namespace:"default", Name:"efs-claim", UID:"323", APIVersion:"v1", ResourceVersion:"15905560", FieldPath:""}): type: 'Normal' reason: 'Provisioning' External provisioner is provisioning volume for claim "default/efs-claim"
+I1005 10:55:46.515609       1 controller.go:838] successfully created PV pvc-2 for PVC efs-claim and csi volume name fs-078166286587fc22::fsap-013a6156108263624</pre>
+			<p>The final step is to provision the Pod to use the PVC and attach the EFS volume to a mount point within the container. The manifest shown next will create a single CentOS-based container and mount the volume under <strong class="source-inline">/data</strong>, which can be deployed using the <strong class="source-inline">$ kubectl create -f </strong><span class="No-Break"><strong class="source-inline">pod2.yaml</strong></span><span class="No-Break"> command:</span></p>
+			<pre class="source-code">
+apiVersion: v1
+kind: Pod
+metadata:
+  name: efs-app
+spec:
+  containers:
+    - name: app
+      image: centos
+      command: ["/bin/sh"]
+      args: ["-c", "while true; do echo $(date -u) &gt;&gt; /data/out; sleep 5; done"]
+      volumeMounts:
+        - name: persistent-storage
+          mountPath: /data
+<strong class="bold">  volumes:</strong>
+<strong class="bold">    - name: persistent-storage</strong>
+<strong class="bold">      persistentVolumeClaim:</strong>
+<strong class="bold">        claimName: efs-claim</strong></pre>
+			<p>You can <a id="_idIndexMarker632"/>validate whether data is being produced and stored in EFS using the following command. If you delete and recreate the Pod, the previous Pod’s data will <span class="No-Break">be persisted:</span></p>
+			<pre class="console">
+$ kubectl exec -it efs-app -- tail /data/out
+Wed Oct 5 20:56:03 UTC 2022
+Wed Oct 5 20:56:08 UTC 2022</pre>
+			<p>As <strong class="source-inline">Reclaim Policy</strong> is set to <strong class="source-inline">Delete</strong> (by default), if you delete the PVC, you will remove the PV and corresponding EFS data. To sum up, in this section, we have looked at how to install and configure the EBS and EFS CSI drivers and how we use them to create persistent storage for your Pods. We’ll now revisit the key learning points from <span class="No-Break">this chapter.</span></p>
+			<h1 id="_idParaDest-188"><a id="_idTextAnchor191"/>Summary</h1>
+			<p>In this chapter, we explored how EBS (block) differs from EFS (filesystem) storage. We identified that EBS is normally used where you need to provide dedicated volumes per Pod, is fixed in size, and is charged as soon as you provision it. Meanwhile, EFS is shared storage and can therefore be mounted across multiple Pods, can scale as needed, and you are only charged for what <span class="No-Break">you use.</span></p>
+			<p>We also discussed how EFS requires more setup than EBS, as the EBS filesystem and mount targets need to be deployed prior to it being used in EKS. EFS can be viewed as more complex to set up as it’s a shared storage platform, whereas EBS is just network-attached storage for a single node. EBS is generally cheaper to provision and use but it is mostly only used for columns attached to a single <span class="No-Break">instance (EC2).</span></p>
+			<p>We then reviewed how to install the CSI drivers, creating an add-on for the EBS CSI driver and Helm for the EFS CSI driver. Once the drivers were installed, we explored the Kubernetes objects (SC, PVC, and PV) and how we can use dynamic provisioning to create the volumes in EBS and EFS from Kubernetes rather than having an administrator provision the volumes <span class="No-Break">for us.</span></p>
+			<p>In the next chapter, we will look at how you can grant IAM permissions to your applications/Pods, allowing them to use <span class="No-Break">AWS services.</span></p>
+			<h1 id="_idParaDest-189"><a id="_idTextAnchor192"/>Further reading</h1>
+			<ul>
+				<li>EBS volume <span class="No-Break">types: </span><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html"><span class="No-Break">https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html</span></a></li>
+				<li>EFS <span class="No-Break">SC: </span><a href="https://docs.aws.amazon.com/efs/latest/ug/storage-classes.html"><span class="No-Break">https://docs.aws.amazon.com/efs/latest/ug/storage-classes.html</span></a></li>
+				<li>When to use <span class="No-Break">EFS: </span><a href="https://aws.amazon.com/efs/when-to-choose-efs/"><span class="No-Break">https://aws.amazon.com/efs/when-to-choose-efs/</span></a></li>
+				<li>EBS multi-attach versus <span class="No-Break">EFS: </span><a href="https://www.youtube.com/watch?v=3ORzqOjtsmE"><span class="No-Break">https://www.youtube.com/watch?v=3ORzqOjtsmE</span></a></li>
+				<li>Troubleshooting <span class="No-Break">EFS: </span><a href="https://docs.aws.amazon.com/efs/latest/ug/troubleshooting-efs-general.html"><span class="No-Break">https://docs.aws.amazon.com/efs/latest/ug/troubleshooting-efs-general.html</span></a></li>
+			</ul>
+		</div>
+	</body></html>

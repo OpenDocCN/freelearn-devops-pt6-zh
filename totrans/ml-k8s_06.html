@@ -1,0 +1,786 @@
+<html><head></head><body>
+		<div id="_idContainer231">
+			<h1 id="_idParaDest-99"><em class="italic"><a id="_idTextAnchor098"/>Chapter 7</em>: Model Deployment and Automation</h1>
+			<p>In the previous chapter, you saw how the platform enables you to build and register the model in an autonomous fashion. In this chapter, we will extend the <strong class="bold">machine learning</strong> (<strong class="bold">ML</strong>) engineering domain to model deployment, monitoring, and automation of deployment activities. </p>
+			<p>You will learn how the platform provides the model packaging and deployment capabilities and how you can automate them. You will take the model from the registry, package it as a container, and deploy the model onto the platform to be consumed as an API. You will then automate all these steps using the workflow engine provided by the platform. </p>
+			<p>Once your model is deployed, it works well for the data it was trained upon. The real world, however, changes. You will see how the platform allows you to observe your model's performance. This chapter discusses the tools and techniques to monitor your model performance. The performance data could be used to decide whether the model needs retraining on the new dataset, or whether it is time to build a new model for the given problem.</p>
+			<p>In this chapter, you will learn about the following topics:</p>
+			<ul>
+				<li>Understanding model inferencing with Seldon Core</li>
+				<li>Packaging, running, and monitoring a model using Seldon Core</li>
+				<li>Understanding Apache Airflow</li>
+				<li>Automating ML model deployments in Airflow</li>
+			</ul>
+			<h1 id="_idParaDest-100"><a id="_idTextAnchor099"/>Technical requirements</h1>
+			<p>This chapter includes some hands-on setup and exercises. You will need a running Kubernetes cluster configured with <strong class="bold">Operator Lifecycle Manager</strong>. Building such a Kubernetes environment is covered in <a href="B18332_03_ePub.xhtml#_idTextAnchor040"><em class="italic">Chapter 3</em></a>, <em class="italic">Exploring Kubernetes</em>. Before attempting the technical exercises in this chapter, please make sure that you have a working Kubernetes cluster and <strong class="bold">Open Data Hub</strong> (<strong class="bold">ODH</strong>) is installed on your Kubernetes cluster. Installing ODH is covered in <a href="B18332_04_ePub.xhtml#_idTextAnchor055"><em class="italic">Chapter 4</em></a>, <em class="italic">The Anatomy of a Machine Learning Platform</em>.</p>
+			<h1 id="_idParaDest-101"><a id="_idTextAnchor100"/>Understanding model inferencing with Seldon Core</h1>
+			<p>In the <a id="_idIndexMarker486"/>previous<a id="_idIndexMarker487"/> chapter, you built the model. These models are built by data science teams to be used in production and serve the prediction requests. There are many ways to use a model in production, such as embedding the model with your customer-facing program, but the most common way is to expose the model as a REST API. The REST API can then be used by any application. In general, running and serving a model in production is<a id="_idIndexMarker488"/> called <strong class="bold">model serving</strong>.</p>
+			<p>However, once the model is in production, it needs to be monitored for performance and needs updating to meet the expected criteria. A hosted model solution enables you to not only serve the model but monitor its performance and generate alerts that can be used to trigger retraining of the model.</p>
+			<p>Seldon is a UK-based firm that created a set of tools to manage the model's life cycle. Seldon Core is an open source framework that helps expose ML models to be consumed as REST APIs. Seldon Core automatically exposes the monitoring statistics for the REST API, which can be consumed by <strong class="bold">Prometheus</strong>, the platform's monitoring component. To expose your model as a REST API in the platform, the following steps are required:</p>
+			<ol>
+				<li>Write a language-specific wrapper for your model to expose as a service.</li>
+				<li>Containerize your model.</li>
+				<li>Define and <a id="_idIndexMarker489"/>deploy the model using the inference graph of your model using Seldon Deployment <strong class="bold">custom resource</strong> (<strong class="bold">CR</strong>) in Kubernetes</li>
+			</ol>
+			<p>Next, we will see these three steps in detail.</p>
+			<h2 id="_idParaDest-102"><a id="_idTextAnchor101"/>Wrapping the model using Python</h2>
+			<p>Let's see<a id="_idIndexMarker490"/> how<a id="_idIndexMarker491"/> you can apply the preceding steps. In <a href="B18332_06_ePub.xhtml#_idTextAnchor086"><em class="italic">Chapter 6</em></a>, <em class="italic">Machine Learning Engineering</em>, you registered your experiment details and a model with the MLflow server. Recall that the model file was stored in the artifacts of MLflow and named <strong class="source-inline">model.pkl</strong>. </p>
+			<p>Let's take the model file and write a simple Python wrapper around it. The job of the wrapper is to use Seldon libraries to conveniently expose the model as a REST service. You can find the example of the wrapper in the code at <strong class="source-inline">chapter7/model_deploy_pipeline/model_build_push/Predictor.py</strong>. The key component of this wrapper is a function named <strong class="source-inline">predict</strong> that will be invoked from an HTTP endpoint created by the Seldon framework. <em class="italic">Figure 7.1</em> shows a simple<a id="_idIndexMarker492"/> Python<a id="_idIndexMarker493"/> wrapper using a <strong class="source-inline">joblib</strong> model:</p>
+			<div>
+				<div id="_idContainer162" class="IMG---Figure">
+					<img src="image/B18332_07_001.jpg" alt="Figure 7.1 – A Python language wrapper for the model prediction&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.1 – A Python language wrapper for the model prediction</p>
+			<p>The <strong class="source-inline">predict</strong> function receives a <strong class="source-inline">numpy</strong> array (<strong class="source-inline">data_array</strong>) and a set of column names (<strong class="source-inline">column_names</strong>), serialized from the HTTP request. The method returns the result of the prediction as either a <strong class="source-inline">numpy</strong> array or a list of values or bytes. There are many more methods available for the language wrapper and a full list is available at <a href="https://docs.seldon.io/projects/seldon-core/en/v1.12.0/python/python_component.html#low-level-methods">https://docs.seldon.io/projects/seldon-core/en/v1.12.0/python/python_component.html#low-level-methods</a>. Note that in later chapters of this book, you will see a more thorough inferencing example that will have additional wrappers for data transformation before prediction. But, for this chapter, we keep it as simple as possible.</p>
+			<p>The language wrapper is ready, and the next stage is to containerize the model and the language wrapper. </p>
+			<h2 id="_idParaDest-103"><a id="_idTextAnchor102"/>Containerizing the model</h2>
+			<p>What would you <a id="_idIndexMarker494"/>put in the container? Let's start with a list. You will need the model and the wrapper files. You will need the Seldon Python packages available in the container. Once you have all these packages, then you will use the Seldon services to expose the model. <em class="italic">Figure 7.2</em> shows a <strong class="source-inline">Docker</strong> file that is building one such container. This file is available in <strong class="source-inline">Chapter 7/model_deployment_pipeline/model_build_push/Dockerfile.py</strong>.</p>
+			<div>
+				<div id="_idContainer163" class="IMG---Figure">
+					<img src="image/B18332_07_002.jpg" alt="Figure 7.2 – Docker file to package the model as a container&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.2 – Docker file to package the model as a container</p>
+			<p>Now, let's understand the content of the Docker file: </p>
+			<ul>
+				<li><em class="italic">Line 1</em> indicates the base container image for your model service. We have chosen the freely available image from Red Hat, but you can choose as per your convenience. This image could be your organization's base image with the standard version of Python and related software.</li>
+				<li>In <em class="italic">Line 3</em>, we have created a <strong class="source-inline">microservice</strong> directory to place all the related artifacts in our container. </li>
+				<li>In <em class="italic">Line 4</em>, the first file we need to build the container is <strong class="source-inline">base_requirements.txt</strong>. This file contains the packages and dependencies for the Seldon Core system. You can find this file at <strong class="source-inline">chapter7/model_deployment_pipeline/model_build_push/base_requirements.txt</strong>. In this file, you will see that Seldon Core packages and <strong class="source-inline">joblib</strong> packages have been added.</li>
+			</ul>
+			<p><em class="italic">Figure 7.3</em> shows the <strong class="source-inline">base_requirements.txt</strong> file:</p>
+			<div>
+				<div id="_idContainer164" class="IMG---Figure">
+					<img src="image/B18332_07_003.jpg" alt="Figure 7.3 – File adding Seldon and Joblib to the container&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.3 – File adding Seldon and Joblib to the container</p>
+			<ul>
+				<li><em class="italic">Line 5</em> is using the <strong class="source-inline">base_requirements.txt</strong> file to install the Python packages onto the container.</li>
+				<li>In <em class="italic">Lines 7</em> and <em class="italic">8</em>, when you are training the model, you may use different packages. During inferencing, some of the packages may be needed; for example, if you have done input data scaling before model training using a library, you may need the same library to apply the scaling at inference time. </li>
+			</ul>
+			<p>In <a href="B18332_06_ePub.xhtml#_idTextAnchor086"><em class="italic">Chapter 6</em></a>, <em class="italic">Machine Learning Engineering</em>, you registered your experiment details and a model <a id="_idIndexMarker495"/>with the MLflow server. Recall that the model file was stored in the artifacts along with a file containing packages used to train the model named <strong class="source-inline">requirements.txt</strong>. Using the <strong class="source-inline">requirements.txt</strong> file generated by MLflow, you can install the packages required to run your model, or you may choose to add these dependencies on your own to a custom file. <em class="italic">Figure 7.4</em> shows the MLflow snapshot referred to in <a href="B18332_06_ePub.xhtml#_idTextAnchor086"><em class="italic">Chapter 6</em></a>, <em class="italic">Machine Learning Engineering</em>. You can see the <strong class="source-inline">requirements.txt</strong> file here next to the <strong class="source-inline">model.pkl</strong> file.</p>
+			<div>
+				<div id="_idContainer165" class="IMG---Figure">
+					<img src="image/B18332_07_004.jpg" alt="Figure 7.4 – MLflow run artifacts&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.4 – MLflow run artifacts</p>
+			<p><em class="italic">Line 10</em>: You add the<a id="_idIndexMarker496"/> language wrapper files and the model files to the container.</p>
+			<p><em class="italic">Line 11</em>: Here, you are using the <strong class="source-inline">seldon-core-microservice</strong> server to start the inferencing server. Notice that the parameters have been passed here, and in the next section, you will see how we can pass these parameters: </p>
+			<ul>
+				<li><strong class="bold">MODEL_NAME</strong>: This is the name of the Python class in the language wrapper containing the model.</li>
+				<li><strong class="bold">SERVICE_TYPE</strong>: This parameter contains the type of service being created here in the inference pipeline. Recall that an inference pipeline may contain the model execution or data transformation or it may be an outlier-detector. For model execution, the value of this parameter will be <strong class="source-inline">MODEL</strong>.</li>
+				<li><strong class="bold">GRPC_PORT</strong>: The port <a id="_idIndexMarker497"/>at which the <strong class="bold">Google Remote Procedure Call</strong> (<strong class="bold">gRPC</strong>) endpoint will listen for model inference.</li>
+				<li><strong class="bold">METRICS_PORT</strong>: The port at which the service performance data will be exposed. Note that this is the performance data for the service and not the model.</li>
+				<li><strong class="bold">HTTP_NAME</strong>: The HTTP port where will you serve the model over HTTP.</li>
+			</ul>
+			<p>Now, we have a <a id="_idIndexMarker498"/>container specification in the form of the Docker file. Next, we will see how to deploy the container on the Kubernetes platform using the Seldon controller.</p>
+			<h2 id="_idParaDest-104"><a id="_idTextAnchor103"/>Deploying the model using the Seldon controller</h2>
+			<p>Our ML<a id="_idIndexMarker499"/> platform <a id="_idIndexMarker500"/>provides a Seldon controller, a piece of software that runs as a pod and assists in deploying the containers you built in the preceding section. Note that the controller in our platform is the extension of the existing Seldon operator. At the time of writing, the Seldon operator was not compatible with Kubernetes version 1.22, so we have extended the existing operator to work with the latest and future versions of the Kubernetes platform.</p>
+			<p>Refer to <a href="B18332_04_ePub.xhtml#_idTextAnchor055"><em class="italic">Chapter 4</em></a>, <em class="italic">The Anatomy of a Machine Learning Platform</em>, where you learned about installing ODH and how it works on the Kubernetes cluster. In an equivalent manner, the Seldon controller is also installed by the ODH operator. The <strong class="source-inline">manifests/ml-platform.yaml</strong> file has the configuration for installing the Seldon controller. <em class="italic">Figure 7.5</em> shows the settings:</p>
+			<div>
+				<div id="_idContainer166" class="IMG---Figure">
+					<img src="image/B18332_07_005.jpg" alt="Figure 7.5 – MLFlow section of the manifest file&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.5 – MLFlow section of the manifest file</p>
+			<p>Let's verify whether the Seldon controller is running correctly in the cluster:</p>
+			<p class="source-code"><strong class="bold">kubectl get pods –n ml-workshop | grep –i seldon</strong></p>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer167" class="IMG---Figure">
+					<img src="image/B18332_07_006.jpg" alt="Figure 7.6 – Seldon controller pod&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.6 – Seldon controller pod</p>
+			<p>The Seldon controller pod is installed by the ODH operators, which watch for the Seldon Deployment CR. This<a id="_idIndexMarker501"/> schema for this resource is defined by the Seldon Deployment <strong class="bold">custom resource definition</strong> (<strong class="bold">CRD</strong>); you can find the CRD at <strong class="source-inline">manifests/odhseldon/cluster/base/seldon-operator-crd-seldondeployments.yaml</strong>. Once you create the Seldon Deployment CR, the controller deploys the pods associated with the CR. <em class="italic">Figure 7.7</em> shows this relationship:</p>
+			<div>
+				<div id="_idContainer168" class="IMG---Figure">
+					<img src="image/B18332_07_007.jpg" alt="Figure 7.7 – Components of the platform for deploying Seldon services&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.7 – Components of the platform for deploying Seldon services</p>
+			<p>Let's see<a id="_idIndexMarker502"/> the<a id="_idIndexMarker503"/> different components of the Seldon Deployment CR. You can find one simple example in <strong class="source-inline">chapter7/manual_model_deployment/SeldonDeploy.yaml</strong>.</p>
+			<p>The Seldon Deployment CR contains all the information that is required by the Seldon controller to deploy your model on the Kubernetes cluster. There are three main sections in the Seldon Deployment CR:</p>
+			<ul>
+				<li><strong class="bold">General information</strong>: This is <a id="_idIndexMarker504"/>the section that describes <strong class="source-inline">apiVersion</strong>, <strong class="source-inline">kind</strong>, and other Kubernetes-related information. You will define the labels and name of the Seldon Deployment as any other Kubernetes object. You can see in the following screenshot that it contains the labels and annotations for the object:</li>
+			</ul>
+			<div>
+				<div id="_idContainer169" class="IMG---Figure">
+					<img src="image/B18332_07_008.jpg" alt="Figure 7.8 – Seldon Deployment – Kubernetes-related information&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.8 – Seldon Deployment – Kubernetes-related information</p>
+			<ul>
+				<li><strong class="bold">Container specifications</strong>: The second section is where you provide details about the container location, the deployment, and the horizontal pod scaling configuration of your service. Note that this is the same container that you built in the precedin<a id="_idIndexMarker505"/>g section. <em class="italic">Figure 7.7</em> contains the section of the <strong class="source-inline">chapter7/manual_model_deployment/SeldonDeploy.yaml</strong> file that has this information.</li>
+			</ul>
+			<p>Notice that <strong class="source-inline">containers</strong> take an array for the <strong class="source-inline">image</strong> object, so you can add more <a id="_idIndexMarker506"/>images<a id="_idIndexMarker507"/> to it. The <strong class="source-inline">image</strong> key will have the location of your container. The <strong class="source-inline">env</strong> array defines the environment variables that will be available for the pod. Recall that, in our Docker file in the previous section, these variables have been used. <strong class="source-inline">MODEL_NAME</strong> has a value of <strong class="source-inline">Predictor</strong>, which is the name of the class you have used as a wrapper. <strong class="source-inline">SERVICE_TYPE</strong> has a value of <strong class="source-inline">MODEL</strong>, which mentions the type of service this container provides.</p>
+			<p>The last part has <strong class="source-inline">hpaSpec</strong>, which the Seldon controller will translate onto the <strong class="bold">Kubernetes Horizontal Pod Autoscaler</strong> object. Through these settings, you can control the scalability of your pods while serving inferencing calls. For the following example, <strong class="source-inline">maxReplicas</strong> is set to <strong class="source-inline">1</strong>, so there will not be any new pods, but you can control this value for each deployment. The scalability will kick in if the CPU utilization goes beyond 80% for the pods in the following example; however, because <strong class="source-inline">maxReplica</strong> is <strong class="source-inline">1</strong>, there will not be any new pods created.</p>
+			<div>
+				<div id="_idContainer170" class="IMG---Figure">
+					<img src="image/B18332_07_009.jpg" alt="Figure 7.9 – Seldon Deployment – Seldon service containers&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.9 – Seldon Deployment – Seldon service containers</p>
+			<ul>
+				<li><strong class="bold">Inference graph</strong>: The<a id="_idIndexMarker508"/> section <a id="_idIndexMarker509"/>under the <strong class="source-inline">graph</strong> key<a id="_idIndexMarker510"/> builds the inference graph for your service. An inference graph will have different nodes and you will define what container will be used at each node. You will see there is a <strong class="source-inline">children</strong> key that takes an array of objects through which you define your inference graph. For this example, <strong class="source-inline">graph</strong> has only one node and the <strong class="source-inline">children</strong> key has no information associated with it; however, in the later chapters, you will see how to build the inference graph with more nodes.</li>
+			</ul>
+			<p>The remaining fields under the graph define the first node of your inference graph. The <strong class="source-inline">name</strong> field has the value that corresponds to the name you have given in the <strong class="source-inline">containers</strong> section. Note that this is the key through which Seldon knows what container would be serving at this node of your inference graph.</p>
+			<p>The other important part is the <strong class="source-inline">logger</strong> section. Seldon can automatically forward the request and response to the URL mentioned under the <strong class="source-inline">logger</strong> section. The <a id="_idIndexMarker511"/>capability of forwarding the request and response can be used for a variety of scenarios, such as storing the payload for audit/legal reasons or applying <a id="_idIndexMarker512"/>data<a id="_idIndexMarker513"/> drift algorithms to trigger retraining or anything else. Note that Seldon can also forward to Kafka if needed, but this is outside the scope of this book.</p>
+			<div>
+				<div id="_idContainer171" class="IMG---Figure">
+					<img src="image/B18332_07_010.jpg" alt="Figure 7.10 – Seldon Deployment – inference graph&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.10 – Seldon Deployment – inference graph</p>
+			<p>Once you create the Seldon Deployment CR using the routine <strong class="source-inline">kubectl</strong> command, the Seldon controller will deploy the pods, and the model will be available for consumption as a service.</p>
+			<p>Next, we'll move on to packaging and deploying the basic model that you built in <a href="B18332_06_ePub.xhtml#_idTextAnchor086"><em class="italic">Chapter 6</em></a>, <em class="italic">Machine Learning Engineering</em>.</p>
+			<h1 id="_idParaDest-105"><a id="_idTextAnchor104"/>Packaging, running, and monitoring a model using Seldon Core</h1>
+			<p>In <a id="_idIndexMarker514"/>this<a id="_idIndexMarker515"/> section, you<a id="_idIndexMarker516"/> will <a id="_idIndexMarker517"/>package<a id="_idIndexMarker518"/> and <a id="_idIndexMarker519"/>build the container from the model file you built in <a href="B18332_06_ePub.xhtml#_idTextAnchor086"><em class="italic">Chapter 6</em></a>,  <em class="italic">Machine Learning Engineering</em>. You will then use the Seldon Deployment to deploy and access the model. Later in this book, you will automate the process, but to do it manually, as you'll do in this section, we will further strengthen your understanding of the components and how they work.</p>
+			<p>Before you start this exercise, please make sure that you have created an account with a public Docker registry. We will use the free <strong class="source-inline">quay.io</strong> as our registry, but you are free to use your preferred one:</p>
+			<ol>
+				<li value="1">Let's first verify that MLflow and Minio (our S3 server) are running in our cluster: <p class="source-code"><strong class="bold">kubectl get pods -n ml-workshop | grep -iE 'mlflow|minio' </strong></p></li>
+			</ol>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer172" class="IMG---Figure">
+					<img src="image/B18332_07_011.jpg" alt="Figure 7.11 – MLflow and Minio are running on the platform&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.11 – MLflow and Minio are running on the platform</p>
+			<ol>
+				<li value="2">Get the ingress list for MLflow, and log in to MLflow using the <strong class="source-inline">mlflow</strong> URL available from the following output:<p class="source-code"><strong class="bold">kubectl get ingresses.networking.k8s.io -n ml-workshop </strong></p></li>
+			</ol>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer173" class="IMG---Figure">
+					<img src="image/B18332_07_012.jpg" alt="Figure 7.12 – ingress in your Kubernetes cluster&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.12 – ingress in your Kubernetes cluster</p>
+			<ol>
+				<li value="3">Once you are in the MLflow UI, navigate to the experiment that you recorded in <a href="B18332_06_ePub.xhtml#_idTextAnchor086"><em class="italic">Chapter 6</em></a>, <em class="italic">Machine Learning Engineering</em>. The name of the experiment is <strong class="bold">HelloMIFlow</strong>.</li>
+			</ol>
+			<div>
+				<div id="_idContainer174" class="IMG---Figure">
+					<img src="image/B18332_07_013.jpg" alt="Figure 7.13 – MlFlow Experiment Tracking&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.13 – MlFlow Experiment Tracking</p>
+			<ol>
+				<li value="4">Select<a id="_idIndexMarker520"/> the <a id="_idIndexMarker521"/>first <a id="_idIndexMarker522"/>run from the right-hand <a id="_idIndexMarker523"/>panel<a id="_idIndexMarker524"/> to get<a id="_idIndexMarker525"/> to the detail page of the run. From the <strong class="bold">Artifacts</strong> section, click on <strong class="source-inline">model.pkl</strong> and you will see a little download arrow icon to the right. Use the icon to download the <strong class="bold">model.pkl</strong> and <strong class="source-inline">requirements.txt</strong> files from this screen.</li>
+			</ol>
+			<div>
+				<div id="_idContainer175" class="IMG---Figure">
+					<img src="image/B18332_07_014.jpg" alt="Figure 7.14 – MLflow experiment tracking – run details&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.14 – MLflow experiment tracking – run details</p>
+			<ol>
+				<li value="5">Go to the <a id="_idIndexMarker526"/>folder <a id="_idIndexMarker527"/>where <a id="_idIndexMarker528"/>you<a id="_idIndexMarker529"/> have<a id="_idIndexMarker530"/> cloned<a id="_idIndexMarker531"/> the code repository that comes with this book. If you have not done so, please clone the <a href="https://github.com/PacktPublishing/Machine-Learning-on-Kubernetes.git">https://github.com/PacktPublishing/Machine-Learning-on-Kubernetes.git</a> repository on your local machine.</li>
+				<li>Then, go to the <strong class="source-inline">chapter7/model_deploy_pipeline/model_build_push</strong> folder and copy the two files downloaded in the previous step to this folder. In the end, this folder will have the following files:</li>
+			</ol>
+			<div>
+				<div id="_idContainer176" class="IMG---Figure">
+					<img src="image/B18332_07_015.jpg" alt="Figure 7.15 – Sample files to package the model as a container&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.15 – Sample files to package the model as a container</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">The last two files are the ones that you have just copied. All other files are coming from the code repository that you have cloned.</p>
+			<p>Curious people will note that the <strong class="source-inline">requirements.txt</strong> file that you have downloaded from the MLFlow server contains the packages required while you run the notebook for model training. Not all of these packages (<strong class="source-inline">mlflow</strong>, for example) will be needed to execute the saved model. To keep things simple, we will add all of them to our container.</p>
+			<ol>
+				<li value="7">Now, let'<a id="_idIndexMarker532"/>s build the container on the local machine:<p class="source-code"><strong class="bold">docker build -t hellomlflow-manual:1.0.0 .</strong></p></li>
+			</ol>
+			<p>You <a id="_idIndexMarker533"/>should<a id="_idIndexMarker534"/> see<a id="_idIndexMarker535"/> the <a id="_idIndexMarker536"/>following<a id="_idIndexMarker537"/> response:</p>
+			<div>
+				<div id="_idContainer177" class="IMG---Figure">
+					<img src="image/B18332_07_016.jpg" alt="Figure 7.16 – Packaging the model as a container&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.16 – Packaging the model as a container</p>
+			<ol>
+				<li value="8">The next step is to tag the container and push it to the repository of your choice. Before you push your image to a repository, you will need to have an account with an image registry. If you do not have one, you can create one at <a href="https://hub.docker.com">https://hub.docker.com</a> or <a href="https://quay.io">https://quay.io</a>. Once you have created your registry, you can run the following commands to tag and push the image: <p class="source-code"><strong class="bold">docker tag hellomlflow-manual:1.0.0 &lt;DOCKER_REGISTRY&gt;/hellomlflow-manual:1.0.0</strong></p><p class="source-code"><strong class="bold">docker push &lt;DOCKER_REGISTRY&gt; /hellomlflow-manual:1.0.0</strong></p></li>
+			</ol>
+			<p>You<a id="_idIndexMarker538"/> should <a id="_idIndexMarker539"/>see <a id="_idIndexMarker540"/>the<a id="_idIndexMarker541"/> following <a id="_idIndexMarker542"/>response. You <a id="_idIndexMarker543"/>will notice that, in the following screenshot, we refer to <strong class="source-inline">quay.io/ml-on-k8s</strong> as our registry:</p>
+			<div>
+				<div id="_idContainer178" class="IMG---Figure">
+					<img src="image/B18332_07_017.jpg" alt="Figure 7.17 – Pushing the model to a public repository&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.17 – Pushing the model to a public repository</p>
+			<ol>
+				<li value="9">Now that your container is available in a registry, you will need to use the Seldon Deployment CR to deploy it as a service. Open the <strong class="source-inline">chapter7/manual_model_deployment/SeldonDeploy.yaml</strong> file and adjust the location of the image. </li>
+			</ol>
+			<p>You can see the file after I have modified <em class="italic">line 16</em> (as per my image location) as follows:</p>
+			<div>
+				<div id="_idContainer179" class="IMG---Figure">
+					<img src="image/B18332_07_018.jpg" alt="Figure 7.18 – Seldon Deployment CR with the image location&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.18 – Seldon Deployment CR with the image location</p>
+			<ol>
+				<li value="10">Let's<a id="_idIndexMarker544"/> deploy<a id="_idIndexMarker545"/> the<a id="_idIndexMarker546"/> model<a id="_idIndexMarker547"/> as <a id="_idIndexMarker548"/>a service<a id="_idIndexMarker549"/> by deploying the <strong class="source-inline">chapter7/manual_model_deployment/SeldonDeploy.yaml</strong> file. Run the following command:<p class="source-code"><strong class="bold">kubectl create -f chapter7/manual_model_deployment/SeldonDeploy.yaml -n ml-workshop</strong></p></li>
+			</ol>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer180" class="IMG---Figure">
+					<img src="image/B18332_07_019.jpg" alt="Figure 7.19 – Creating the Seldon Deployment CR &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.19 – Creating the Seldon Deployment CR </p>
+			<ol>
+				<li value="11">Validate that the container is in a running state. Run the following command:<p class="source-code"><strong class="bold">kubectl get pod -n ml-workshop | grep model-test-predictor</strong></p></li>
+			</ol>
+			<p>You will note that the name that you have put in the <strong class="source-inline">graph</strong> section of the <strong class="source-inline">SeldonDeploy.yaml</strong> file (<strong class="source-inline">model-test-predictor</strong>) is part of the container name.</p>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer181" class="IMG---Figure">
+					<img src="image/B18332_07_020.jpg" alt="Figure 7.20 – Validating the pod after the Seldon Deployment CR &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.20 – Validating the pod after the Seldon Deployment CR </p>
+			<ol>
+				<li value="12">Great! You have a model running as a service. Now, let's see what is in the pod created <a id="_idIndexMarker550"/>for<a id="_idIndexMarker551"/> us by the Seldon controller. Run the following command to get a list of<a id="_idIndexMarker552"/> containers<a id="_idIndexMarker553"/> inside <a id="_idIndexMarker554"/>our <a id="_idIndexMarker555"/>pod:<p class="source-code"><strong class="bold">export POD_NAME=$(kubectl get pod -o=custom-columns=NAME:.metadata.name -n ml-workshop | grep model-test-predictor) </strong></p><p class="source-code"><strong class="bold">kubectl get pods $POD_NAME -o jsonpath='{.spec.containers[*].name}' -n ml-workshop </strong></p></li>
+			</ol>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer182" class="IMG---Figure">
+					<img src="image/B18332_07_021.jpg" alt="Figure 7.21 – Containers inside the Seldon pod&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.21 – Containers inside the Seldon pod</p>
+			<p>You will see that there are two containers. One is <strong class="source-inline">model-test-predictor</strong>, which is the image that we have built, and the second container is <strong class="source-inline">seldon-container-engine</strong>, which is the Seldon server. </p>
+			<p>The <strong class="source-inline">model-test-predictor</strong> container has the model and is using the language wrapper to expose the model over HTTP and gRPC. You can use the following command to see the logs and what ports have been exposed from <strong class="source-inline">model-test-predictor</strong>:</p>
+			<p class="source-code"><strong class="bold">kubectl logs -f $POD_NAME -n ml-workshop -c model-test-predictor</strong></p>
+			<p>You should see the following response (among other logs):</p>
+			<div>
+				<div id="_idContainer183" class="IMG---Figure">
+					<img src="image/B18332_07_022.jpg" alt="Figure 7.22 – Containers log showing the ports&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.22 – Containers log showing the ports</p>
+			<p>You can see that the servers are ready to take the calls on <strong class="source-inline">9000</strong> for HTTP and on <strong class="source-inline">6005</strong> for the metrics server. This metrics server will have the Prometheus-based monitoring <a id="_idIndexMarker556"/>data exposed on the <strong class="source-inline">/prometheus</strong> endpoint. You can see this<a id="_idIndexMarker557"/> in<a id="_idIndexMarker558"/> the <a id="_idIndexMarker559"/>following <a id="_idIndexMarker560"/>portion<a id="_idIndexMarker561"/> of the log:</p>
+			<div>
+				<div id="_idContainer184" class="IMG---Figure">
+					<img src="image/B18332_07_023.jpg" alt="Figure 7.23 – Containers log showing the Prometheus endpoint&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.23 – Containers log showing the Prometheus endpoint</p>
+			<p>The second container is <strong class="source-inline">seldon-container-engine</strong>, which does the orchestration for the inference graph and forwards the payloads to the service configured by you in the <strong class="source-inline">logger</strong> section of the Seldon Deployment CR. </p>
+			<ol>
+				<li value="13">In this step, you will find out what Kubernetes objects your Seldon Deployment CR has created for you. A simple way to find out is by running the command as follows. This command depends on the Seldon controller labeling the objects it creates with the label key as <strong class="source-inline">seldon-deployment-id</strong>, and the value is the name of your Seldon Deployment CR, which is <strong class="source-inline">model-test</strong>:<p class="source-code"><strong class="bold">kubectl get all  -l seldon-deployment-id=model-test -n ml-workshop</strong></p></li>
+			</ol>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer185" class="IMG---Figure">
+					<img src="image/B18332_07_024.jpg" alt="Figure 7.24 – Kubernetes objects created by the Seldon controller&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.24 – Kubernetes objects created by the Seldon controller</p>
+			<p>You can see that there are Deployment objects, services, and <strong class="bold">Horizontal Pod Autoscalers</strong> (<strong class="bold">HPA</strong>) objects created for you for the Seldon controller using the configuration that you have provided in the Seldon Deployment CR. The deployment ends up creating pods and a replica set for your pods. The Seldon controller made it easy to deploy our model on the Kubernetes platform.</p>
+			<ol>
+				<li value="14">You may have noticed that there is no ingress object created by the Seldon Deployment CR. Let's<a id="_idIndexMarker562"/> create the ingress object so<a id="_idIndexMarker563"/> that<a id="_idIndexMarker564"/> we can call our model from outside<a id="_idIndexMarker565"/> the<a id="_idIndexMarker566"/> cluster <a id="_idIndexMarker567"/>by running the command as follows. The ingress object is created by the file in <strong class="source-inline">chapter7/manual_model_deployment/Ingress.yaml</strong>. Make sure to adjust the <strong class="source-inline">host</strong> value as per your configuration, as you have done in earlier chapters. You will also notice that the ingress is forwarding traffic to port <strong class="source-inline">8000</strong>. Seldon provides the listener to this port, which orchestrates the inference call. This service is available in the container named <strong class="source-inline">seldon-container-engine</strong>:<p class="source-code"><strong class="bold">kubectl create -f chapter7/manual_model_deployment/Ingress.yaml -n ml-workshop</strong></p></li>
+			</ol>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer186" class="IMG---Figure">
+					<img src="image/B18332_07_025.jpg" alt="Figure 7.25 – Creating ingress objects for our service&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.25 – Creating ingress objects for our service</p>
+			<p>Validate that the ingress has been created by issuing the following command:</p>
+			<p class="source-code"><strong class="bold">kubectl get ingress -n ml-workshop | grep model-test</strong></p>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer187" class="IMG---Figure">
+					<img src="image/B18332_07_026.jpg" alt="Figure 7.26 – Validating the ingress for our service&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.26 – Validating the ingress for our service</p>
+			<ol>
+				<li value="15">Since our Seldon Deployment CR has referenced a logger URL, you will deploy a simple HTTP echo server that will just print the calls it received. This will assist us in validating whether the payloads have been forwarded to the configured URL in the <strong class="source-inline">logger</strong> section of the Seldon Deployment CR. A very simple echo server <a id="_idIndexMarker568"/>can <a id="_idIndexMarker569"/>be<a id="_idIndexMarker570"/> created <a id="_idIndexMarker571"/>via<a id="_idIndexMarker572"/> the<a id="_idIndexMarker573"/> following command:<p class="source-code"><strong class="bold">kubectl create -f chapter7/manual_model_deployment/http-echo-service.yaml -n ml-workshop</strong></p></li>
+			</ol>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer188" class="IMG---Figure">
+					<img src="image/B18332_07_027.jpg" alt="Figure 7.27 – Creating a simple HTTP echo server to validate payload logging&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.27 – Creating a simple HTTP echo server to validate payload logging</p>
+			<p>Validate that the pod has been created by issuing the following command:</p>
+			<p class="source-code"><strong class="bold">kubectl get pods  -n ml-workshop | grep logger</strong></p>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer189" class="IMG---Figure">
+					<img src="image/B18332_07_028.jpg" alt="Figure 7.28 – Validating a simple HTTP echo server &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.28 – Validating a simple HTTP echo server </p>
+			<ol>
+				<li value="16">Let's make a call for our model to predict something. The model we developed in the previous chapter is not very useful, but it will help us understand and validate the overall process of packaging and deploying the model.</li>
+			</ol>
+			<p>Recall from <a href="B18332_06_ePub.xhtml#_idTextAnchor086"><em class="italic">Chapter 6</em></a>, <em class="italic">Machine Learning Engineering</em>, that the <strong class="source-inline">hellomlflow</strong> notebook has the input for the model with shape <strong class="source-inline">(4,2)</strong>, and the output shape is <strong class="source-inline">(4,)</strong>.</p>
+			<div>
+				<div id="_idContainer190" class="IMG---Figure">
+					<img src="image/B18332_07_029.jpg" alt="Figure 7.29 – Input and output for the model&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.29 – Input and output for the model</p>
+			<p>So, if <a id="_idIndexMarker574"/>we <a id="_idIndexMarker575"/>want<a id="_idIndexMarker576"/> to <a id="_idIndexMarker577"/>send <a id="_idIndexMarker578"/>data to <a id="_idIndexMarker579"/>our model, it would be an array of integer pairs such as [<strong class="source-inline">2,1</strong>]. When you make a call to your model, the input data is required within an <strong class="source-inline">ndarray</strong> field under a key named <strong class="source-inline">data</strong>. The input would look as follows. This is the format the Seldon service expects for the data to be sent to it:</p>
+			<div>
+				<div id="_idContainer191" class="IMG---Figure">
+					<img src="image/B18332_07_030.jpg" alt="Figure 7.30 – Input for the model as an HTTP payload&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.30 – Input for the model as an HTTP payload</p>
+			<ol>
+				<li value="17">Next is the REST endpoint for the model. It will be the ingress that you created in <em class="italic">Step 13</em> and the standard Seldon URL. The final form would be as follows: http://&lt;INGRESS_LOCATION&gt;/api/v1.0/predictions.</li>
+			</ol>
+			<p>This would translate, in my case, to <a href="http://model-test.192.168.61.72.nip.io/api/v1.0/predictions">http://model-test.192.168.61.72.nip.io/api/v1.0/predictions</a>.</p>
+			<p>Now, you have the payload and the URL to send this request to.</p>
+			<ol>
+				<li value="18">In this step, you will make a call to your model. We are using a commonly used command-line option to make this call; however, you may choose to use other software, such as Postman, to make this HTTP call. </li>
+			</ol>
+			<p>You will use the <strong class="source-inline">POST</strong> HTTP verb in the call and then provide the location of the service. You will have to pass the <strong class="source-inline">Content-Type</strong> header to mention JSON content <a id="_idIndexMarker580"/>and<a id="_idIndexMarker581"/> the<a id="_idIndexMarker582"/> body<a id="_idIndexMarker583"/> is<a id="_idIndexMarker584"/> passed <a id="_idIndexMarker585"/>using the <strong class="source-inline">data-raw</strong> flag of the curl program:</p>
+			<p class="source-code"><strong class="bold">curl -vvvv -X POST 'http://&lt;INGRESS_LOCATION&gt;/api/v1.0/predictions' \--header 'Content-Type: application/json' \--data-raw '{  "data": {    "ndarray": [[2,1]]  }}'</strong></p>
+			<p>The final request should look as follows. Before making this call, make sure to change the URL as per your ingress location:</p>
+			<p class="source-code"><strong class="bold">curl -vvvv -X POST 'http://model-test.192.168.61.72.nip.io/api/v1.0/predictions' \--header 'Content-Type: application/json' \--data-raw '{  "data": {    "ndarray": [[2,1]]  }}'</strong></p>
+			<p>You should see the following response. Note that the output of the command shows the array of the same shape as per our model, which is <strong class="source-inline">(4,)</strong>, and it is under the <strong class="source-inline">ndarray</strong> key in the following screenshot:</p>
+			<div>
+				<div id="_idContainer192" class="IMG---Figure">
+					<img src="image/B18332_07_031.jpg" alt="Figure 7.31 – Output payload for the model inference call&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.31 – Output payload for the model inference call</p>
+			<ol>
+				<li value="19">Now, let's verify that the model payload has been logged onto our echo server. You are validating the capability of Seldon to capture input and output and send it to the desired location for further processing, such as drift detection or audit logging:<p class="source-code"><strong class="bold">export LOGGER_POD_NAME=$(kubectl get pod -o=custom-columns=NAME:.metadata.name -n ml-workshop | grep logger)</strong></p><p class="source-code"><strong class="bold">kubectl logs -f $LOGGER_POD_NAME -n ml-workshop</strong></p></li>
+			</ol>
+			<p>You will see there is a separate record for the input and the output payload. You can use the <strong class="source-inline">ce-requestid</strong> key to<a id="_idIndexMarker586"/> correlate<a id="_idIndexMarker587"/> the two records in the logs. The following <a id="_idIndexMarker588"/>screenshot displays the main<a id="_idIndexMarker589"/> fields of<a id="_idIndexMarker590"/> the<a id="_idIndexMarker591"/> captured input payload of the inference call: </p>
+			<div>
+				<div id="_idContainer193" class="IMG---Figure">
+					<img src="image/B18332_07_032.jpg" alt="Figure 7.32 – Captured input payload forwarded to the echo pod&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.32 – Captured input payload forwarded to the echo pod</p>
+			<p>The following screenshot <a id="_idIndexMarker592"/>displays the main fields of the output payload of the inference call:</p>
+			<div>
+				<div id="_idContainer194" class="IMG---Figure">
+					<img src="image/B18332_07_033.jpg" alt="Figure 7.33 – Captured output payload forwarded to the echo pod&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.33 – Captured output payload forwarded to the echo pod</p>
+			<ol>
+				<li value="20">Now, let's<a id="_idIndexMarker593"/> verify<a id="_idIndexMarker594"/> that<a id="_idIndexMarker595"/> service<a id="_idIndexMarker596"/> monitoring <a id="_idIndexMarker597"/>data is captured by the Seldon engine and is available for us to use and record. Note that the way Prometheus works is by scraping repetitively, so this data is in the current state and the Prometheus server is responsible for calling this URL and record in its database.</li>
+			</ol>
+			<p>The URL format for this information is as follows. The ingress is the same as you created in <em class="italic">Step 13</em>:</p>
+			<p class="source-code"><strong class="source-inline">http://&lt;INGRESS_LOCATION&gt;/prometheus</strong></p>
+			<p>This would translate to the following for my ingress: </p>
+			<p class="source-code">http://model-test.192.168.61.72.nip.io/prometheus</p>
+			<p>Open <a id="_idIndexMarker598"/>a <a id="_idIndexMarker599"/>browser <a id="_idIndexMarker600"/>and access the URL in it. You should see the following response:</p>
+			<div>
+				<div id="_idContainer195" class="IMG---Figure">
+					<img src="image/B18332_07_034.jpg" alt="Figure 7.34 – Accessing monitoring data in Prometheus format&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.34 – Accessing monitoring data in Prometheus format</p>
+			<p>You will find that a lot of information is captured, including response times, the number of HTTP responses per status code (<strong class="source-inline">200</strong>, <strong class="source-inline">400</strong>, <strong class="source-inline">500</strong>, and so on), data capture, server performance, and exposing the Go runtime metrics. We encourage you to go through these parameters to develop an understanding of the data available. In the later chapters, you will see how to harvest and plot this data to visualize the performance of the model inferencing server.</p>
+			<p>You have done<a id="_idIndexMarker601"/> a<a id="_idIndexMarker602"/> great<a id="_idIndexMarker603"/> deal in this exercise. The aim <a id="_idIndexMarker604"/>of<a id="_idIndexMarker605"/> this <a id="_idIndexMarker606"/>section was to showcase the steps and components involved to deploy a model using Seldon Core. In the next section, you will be introduced to the workflow component of the platform, Airflow, and in the next couple of chapters, all of these steps will be automated using the components in the ML platform.</p>
+			<h1 id="_idParaDest-106"><a id="_idTextAnchor105"/>Introducing Apache Airflow</h1>
+			<p>Apache Airflow is an<a id="_idIndexMarker607"/> open source software designed for programmatically authoring, executing, scheduling, and monitoring workflows. A workflow is a sequence of tasks that can include data pipelines, ML workflows, deployment pipelines, and even infrastructure tasks. It was developed by Airbnb as a workflow management system and was later open sourced as a project in Apache Software Foundation's incubation program.</p>
+			<p>While most workflow engines use XML to define workflows, Airflow uses Python as the core language for defining workflows. The tasks within the workflow are also written in Python.</p>
+			<p>Airflow has many features, but we will cover only the fundamental bits of Airflow in this book. This section is by no means a detailed guide for Airflow. Our focus is to introduce you to the software components for the ML platform. Let's start with DAG.</p>
+			<h2 id="_idParaDest-107"><a id="_idTextAnchor106"/>Understanding DAG</h2>
+			<p>A workflow<a id="_idIndexMarker608"/> can <a id="_idIndexMarker609"/>be simply defined as a sequence of <strong class="bold">tasks</strong>. In <a id="_idIndexMarker610"/>Airflow, the sequence of tasks follows a data structure called a <strong class="bold">directed acyclic graph</strong> (<strong class="bold">DAG</strong>). If you remember your computer science data structures, a DAG is composed of nodes and one-way vertices organized in a way to ensure that there are no cycles or loops. Hence, a workflow in Airflow is called a DAG.</p>
+			<p><em class="italic">Figure 7.35</em> shows a typical example of a data pipeline workflow:</p>
+			<div>
+				<div id="_idContainer196" class="IMG---Figure">
+					<img src="image/B18332_07_035.jpg" alt="Figure 7.35 – Typical data pipeline workflow&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.35 – Typical data pipeline workflow</p>
+			<p>The example workflow in <em class="italic">Figure 7.36</em> is composed of tasks represented by boxes. The order of execution of these tasks is determined by the direction of the arrows:</p>
+			<div>
+				<div id="_idContainer197" class="IMG---Figure">
+					<img src="image/B18332_07_036.jpg" alt="Figure 7.36 – Example workflow with parallel execution &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.36 – Example workflow with parallel execution </p>
+			<p>Another <a id="_idIndexMarker611"/>example<a id="_idIndexMarker612"/> of a workflow is shown in <em class="italic">Figure 7.36</em>. In this example, there are tasks that are executed in parallel. The <strong class="bold">Generate Report</strong> tasks will wait for both <strong class="bold">Transform Data</strong> tasks to complete. This is called <strong class="bold">execution dependency</strong> and<a id="_idIndexMarker613"/> it is one of the problems Airflow is solving. Tasks can only execute if the upstream tasks are completed.</p>
+			<p>You can configure the workflow however you want as long as there are no cycles in the graph, as shown in <em class="italic">Figure 7.37</em>:</p>
+			<div>
+				<div id="_idContainer198" class="IMG---Figure">
+					<img src="image/B18332_07_037.jpg" alt="Figure 7.37 – Example workflow with cycle&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.37 – Example workflow with cycle</p>
+			<p>In the example in <em class="italic">Figure 7.37</em>, the <strong class="bold">Clean Data</strong> task will never be executed because it is dependent on the <strong class="bold">Store Data</strong> task, which will also not be executed. Airflow only allows acyclic graphs. </p>
+			<p>As illustrated, a DAG is a <a id="_idIndexMarker614"/>series of tasks, and there are three common types of tasks in Airflow:</p>
+			<ul>
+				<li><strong class="bold">Operators</strong>: Predefined tasks that you can use to execute something, They can be strung together to form a pipeline or a workflow. Your DAG is composed mostly, if not entirely, of operators.</li>
+				<li><strong class="bold">Sensors</strong>: Subtypes of operators that are used for a series of other operators based on an external event. </li>
+				<li><strong class="bold">TaskFlow</strong>: Custom Python functions decorated with <strong class="source-inline">@task</strong>. This allows you to run regular Python functions as tasks.</li>
+			</ul>
+			<p>Airflow <a id="_idIndexMarker615"/>operators are extendable, which means there are quite a<a id="_idIndexMarker616"/> lot of predefined operators created by the community that you can simply use. One of the operators that you will mostly use in the following exercises is<a id="_idIndexMarker617"/> the <strong class="bold">Notebook Operator</strong>. This operator allows you to run any Jupyter notebook as tasks in the DAG.</p>
+			<p>So, what are the advantages of using DAGs to execute a sequence of tasks? Isn't it enough to just write a script that can execute other scripts sequentially? Well, the answer lies in the features that Airflow offers, which we will explore next.</p>
+			<h2 id="_idParaDest-108"><a id="_idTextAnchor107"/>Exploring Airflow features</h2>
+			<p>The advantages<a id="_idIndexMarker618"/> that Airflow brings when compared with <strong class="source-inline">cron</strong> jobs and scripts can be detailed by its features. Let's start by looking at some of those features:</p>
+			<ul>
+				<li><strong class="bold">Failure and error management</strong>: In the event of a task failure, Airflow handles errors and failures gracefully. Tasks can be configured to automatically retry when they fail. You can also configure how many times it retries.</li>
+			</ul>
+			<p>In terms of execution sequence, there are two types of task dependencies in a typical workflow that can be managed in Airflow much easier than writing a script.</p>
+			<ul>
+				<li><strong class="bold">Data dependencies</strong>: Some tasks may require that the other tasks be processed first because they require data that is generated by other tasks. This can be managed in Airflow. Moreover, Airflow allows the passing of small amounts of metadata from the output of one task as an input to another task.</li>
+				<li><strong class="bold">Execution dependencies</strong>: You may be able to script execution dependencies in a small workflow. However, imagine scripting a workflow in Bash with a hundred tasks, where some tasks can run concurrently while others can only run sequentially. I imagine this to be a pretty daunting task. Airflow helps simplify this by creating DAGs.</li>
+				<li><strong class="bold">Scalability</strong>: Airflow can horizontally scale to multiple machines or containers. The tasks in the workflow may be executed on different nodes while being orchestrated centrally by a common scheduler.</li>
+				<li><strong class="bold">Deployment</strong>: Airflow can use Git to store DAGs. This allows you to continuously <a id="_idIndexMarker619"/>deploy new changes to your workflows. A sidecar container can automatically pick up the changes from the <strong class="source-inline">git</strong> repository containing your DAGs. This allows you to implement the continuous integration of DAGs.</li>
+			</ul>
+			<p>The next step is to understand the different components of Airflow.</p>
+			<h2 id="_idParaDest-109"><a id="_idTextAnchor108"/>Understanding Airflow components</h2>
+			<p>Airflow comprises multiple components running as independent services. <em class="italic">Figure 7.38</em> shows the components of Airflow and their interactions:</p>
+			<div>
+				<div id="_idContainer199" class="IMG---Figure">
+					<img src="image/B18332_07_038.jpg" alt="Figure 7.38 – Airflow components&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.38 – Airflow components</p>
+			<p>There are three core services in <a id="_idIndexMarker620"/>Airflow. The <strong class="bold">Airflow Web</strong> serves the user interface where users can visually monitor and interact with DAGs and tasks. The <strong class="bold">Airflow Scheduler</strong> is a<a id="_idIndexMarker621"/> service responsible for scheduling tasks for the Airflow Worker. Scheduling does not only mean executing tasks according to their scheduled time. It's also about executing the tasks in a particular sequence, taking into account the execution dependencies and failure management. <strong class="bold">Airflow Worker</strong> is the<a id="_idIndexMarker622"/> service that executes the tasks. This is also the main scalability point of Airflow. The more Airflow Worker is running, the<a id="_idIndexMarker623"/> more tasks can be executed concurrently.</p>
+			<p>The DAG repository is a directory in the filesystem where DAG files written in Python are stored and retrieved by the scheduler. The Airflow instance configured in our platform includes a sidecar container that synchronizes the DAG repository with a remote <strong class="source-inline">git</strong> repository. This simplifies the deployment of DAGs by simply pushing a Python file to Git.</p>
+			<p>We will not dig too deep into Airflow in this book. The objective is for you to learn enough to a point where you are able to create pipelines in Airflow with minimal Python coding. You will use the Elyra notebooks pipeline builder feature to build Airflow pipelines graphically. If you want to learn more about Airflow and how to build pipelines programmatically in Python, we recommend that you start with Apache Airflow's very rich documentation at <a href="https://airflow.apache.org/docs/apache-airflow/stable/concepts/overview.html">https://airflow.apache.org/docs/apache-airflow/stable/concepts/overview.html</a>. </p>
+			<p>Now that you have a basic understanding of Airflow, it's time to take a look at it in action. In <a href="B18332_04_ePub.xhtml#_idTextAnchor055"><em class="italic">Chapter 4</em></a>, <em class="italic">The Anatomy of a Machine Learning Platform</em>, you installed a fresh instance of ODH. This process also <a id="_idIndexMarker624"/>installed the Airflow services for you. Now, let's validate this installation.</p>
+			<h2 id="_idParaDest-110"><a id="_idTextAnchor109"/>Validating the Airflow installation</h2>
+			<p>To validate that<a id="_idIndexMarker625"/> Airflow is running correctly in your cluster, you need to perform the following steps:</p>
+			<ol>
+				<li value="1">Check whether all the Airflow pods are running by executing the following command:<p class="source-code"><strong class="bold">kubectl get pods -n ml-workshop | grep airflow</strong></p></li>
+			</ol>
+			<p>You should see the three Airflow services pods in running status, as shown in the following screenshot in <em class="italic">Figure 7.39</em>. Verify that all pods are in the <strong class="source-inline">Running</strong> state:</p>
+			<div>
+				<div id="_idContainer200" class="IMG---Figure">
+					<img src="image/B18332_07_039.jpg" alt="Figure 7.39 – Airflow pods in the Running state&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.39 – Airflow pods in the Running state</p>
+			<ol>
+				<li value="2">Get the URL of Airflow Web by looking at the ingress host of <strong class="source-inline">ap-airflow2</strong>. You can do this by executing the following command:<p class="source-code"><strong class="bold">kubectl get ingress -n ml-workshop | grep airflow</strong></p></li>
+			</ol>
+			<p>You should see results similar to <em class="italic">Figure 7.39</em>. Take note of the host value of the <strong class="source-inline">ap-airflow2</strong> ingress. The IP address may be different in your environment:</p>
+			<div>
+				<div id="_idContainer201" class="IMG---Figure">
+					<img src="image/B18332_07_040.jpg" alt="Figure 7.40 – Airflow ingress in the ml-workshop namespace&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.40 – Airflow ingress in the ml-workshop namespace</p>
+			<ol>
+				<li value="3">Navigate to <a href="https://airflow.192.168.49.2.nip.io">https://airflow.192.168.49.2.nip.io</a>. Note that the domain name is the host value of the <strong class="source-inline">ap-airflow2</strong> ingress. You should see the Airflow Web UI, as shown in <em class="italic">Figure 7.41</em>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer202" class="IMG---Figure">
+					<img src="image/B18332_07_041.jpg" alt="Figure 7.41 – Home screen of Apache Airflow&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.41 – Home screen of Apache Airflow</p>
+			<p>If you are able to load the Airflow landing page, it means that the Airflow installation is valid. You must have also noticed that in the table listing the DAGs, there are already existing DAGs<a id="_idIndexMarker626"/> currently in failing status. These are existing DAG files that are in <a href="https://github.com/airflow-dags/dags/">https://github.com/airflow-dags/dags/</a>, the default configured DAG repository. You will need to create your own DAG repository for your experiments. The next section will provide the details on how to do this.</p>
+			<h2 id="_idParaDest-111"><a id="_idTextAnchor110"/>Configuring the Airflow DAG repository</h2>
+			<p>A DAG repository is a<a id="_idIndexMarker627"/> Git repository where Airflow picks up the DAG files that represent your pipelines or workflows. To configure Airflow to point to your own DAG repository, you need to create a Git repository and point the Airflow Scheduler and Airflow Web to this Git repository. You will use <strong class="bold">GitHub</strong> to create this repository. The following steps will guide you through the process:</p>
+			<ol>
+				<li value="1">Create a GitHub repository by going to <a href="https://github.com">https://github.com</a>. This requires that you have an existing account with GitHub. For the purpose of this exercise, let's call this repository <strong class="source-inline">airflow-dags</strong>. Take note of the URL of your new Git repository. It should look like this: <a href="https://github.com/your-user-name/airflow-dags.git">https://github.com/your-user-name/airflow-dags.git</a>. We assume that you already know how to create a new repository on GitHub.</li>
+				<li>Edit your instance of ODH by editing the <strong class="source-inline">kfdef</strong> (<strong class="bold">Kubeflow definition</strong>) object. You can do this by executing the following command:<p class="source-code"><strong class="bold">kubectl edit kfdef opendatahub-ml-workshop -n ml-workshop</strong></p></li>
+			</ol>
+			<p>You should be <a id="_idIndexMarker628"/>presented with a <strong class="source-inline">vim</strong> editor showing the <strong class="source-inline">kfdef</strong> manifest file as shown in <em class="italic">Figure 7.42</em>. Press <em class="italic">i</em> to start editing.</p>
+			<div>
+				<div id="_idContainer203" class="IMG---Figure">
+					<img src="image/B18332_07_042.jpg" alt="Figure 7.42 – vim editor showing the section defining the Airflow instance&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.42 – vim editor showing the section defining the Airflow instance</p>
+			<ol>
+				<li value="3">Replace the value of the <strong class="source-inline">DAG_REPO</strong> parameter with the URL of the Git repository you created in <em class="italic">Step 1</em>. The edited file should look like the screenshot in <em class="italic">Figure 7.43</em>. Press <em class="italic">Esc</em>, then <em class="italic">:</em>, and type <strong class="source-inline">wq</strong> and press <em class="italic">Enter</em> to save the changes you made to the <strong class="source-inline">kfdef</strong> object.</li>
+			</ol>
+			<div>
+				<div id="_idContainer204" class="IMG---Figure">
+					<img src="image/B18332_07_043.jpg" alt="Figure 7.43 – Value of the DAG_REPO parameter after editing&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.43 – Value of the DAG_REPO parameter after editing</p>
+			<p>The changes will be picked up by the ODH operator and will be applied to the affected Kubernetes deployment objects, in this case, Airflow Web and Airflow Scheduler <a id="_idIndexMarker629"/>deployments. This process will take a couple of minutes to complete.</p>
+			<ol>
+				<li value="4">Validate the changes by inspecting the Airflow deployments. You can do this by running the following command to look into the applied manifest of the deployment object:<p class="source-code"><strong class="bold">kubectl get deployment app-aflow-airflow-scheduler -o yaml -n ml-workshop | grep value:.*airflow-dags.git</strong></p></li>
+			</ol>
+			<p>This should return a line containing the URL of your GitHub repository. </p>
+			<ol>
+				<li value="5">Because this repository is new and is empty, you should not see any DAG files when you open the Airflow Web UI. To validate the Airflow web application, navigate to your Airflow URL, or refresh your existing browser tab, and you should see an empty Airflow DAG list similar to the screenshot in <em class="italic">Figure 7.44</em>: </li>
+			</ol>
+			<div>
+				<div id="_idContainer205" class="IMG---Figure">
+					<img src="image/B18332_07_044.jpg" alt="Figure 7.44 – Empty Airflow DAG list&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.44 – Empty Airflow DAG list</p>
+			<p>Now that you <a id="_idIndexMarker630"/>have validated your Airflow installation and updated the DAG repository to your own <strong class="source-inline">git</strong> repository, it's time to put Airflow to good use.</p>
+			<h2 id="_idParaDest-112"><a id="_idTextAnchor111"/>Configuring Airflow runtime images</h2>
+			<p>Airflow<a id="_idIndexMarker631"/> pipelines, or DAGs, can be authored by writing Python files using the Airflow libraries. However, it is also possible to create DAGs graphically from an Elyra notebook. In this section, you will create an Airflow DAG from Elyra, push it to the DAG repository, and execute it in Airflow.</p>
+			<p>To further validate the Airflow setup and test the configuration, you will need to run a simple <strong class="source-inline">Hello world</strong> pipeline. Follow the steps to create a two-task pipeline. You will create Python files, a pipeline, and configure runtime images to be used throughout the process:</p>
+			<ol>
+				<li value="1">If you do not have a running notebook environment, start a notebook environment by navigating to JupyterHub, clicking <strong class="bold">Start My Server</strong>, and selecting a notebook image to run, as shown in <em class="italic">Figure 7.45</em>. Let's use <strong class="bold">Base Elyra Notebook Image</strong> this time as we do not require any special libraries.</li>
+			</ol>
+			<div>
+				<div id="_idContainer206" class="IMG---Figure">
+					<img src="image/B18332_07_045.jpg" alt="Figure 7.45 – JupyterHub landing page showing Base Elyra Notebook Image selected&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.45 – JupyterHub landing page showing Base Elyra Notebook Image selected</p>
+			<ol>
+				<li value="2">In your<a id="_idIndexMarker632"/> Elyra browser, navigate to the <strong class="source-inline">Machine-Learning-on-Kubernetes/chapter7/model_deploy_pipeline/</strong> directory.</li>
+				<li>Open a new pipeline editor. You can do this by selecting the menu item <strong class="bold">File&gt;New&gt;Pipeline Editor</strong>, as shown in <em class="italic">Figure 7.46</em>. A new file will appear in the left-hand browser, named <strong class="source-inline">untitled.pipeline</strong>.</li>
+			</ol>
+			<div>
+				<div id="_idContainer207" class="IMG---Figure">
+					<img src="image/B18332_07_046.jpg" alt="Figure 7.46 – Elyra notebook&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.46 – Elyra notebook</p>
+			<ol>
+				<li value="4">Right-click <a id="_idIndexMarker633"/>on the <strong class="source-inline">untitled.pipeline</strong> file and rename it to <strong class="source-inline">hello_world.pipeline</strong>. </li>
+				<li>Create two Python files with the same contents containing the following line: <strong class="source-inline">print('Hello airflow!')</strong>. You can do this by selecting the menu items <strong class="bold">File &gt; New Python</strong> File. Then, rename the files to <strong class="source-inline">hello.py</strong> and <strong class="source-inline">world.py</strong>. Your directory structure should look like the screenshot in <em class="italic">Figure 7.47</em>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer208" class="IMG---Figure">
+					<img src="image/B18332_07_047.jpg" alt="Figure 7.47 – Elyra directory structure showing the hello.pipeline file&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.47 – Elyra directory structure showing the hello.pipeline file</p>
+			<ol>
+				<li value="6">Create a pipeline with two tasks by dragging the <strong class="source-inline">hello.py</strong> file into the pipeline editor window. Do the same for <strong class="source-inline">world.py</strong>. Connect the tasks by dragging the tiny circle on the right of the task box to another box. The resulting pipeline topology should look like the illustration in <em class="italic">Figure 7.48</em>. Save the pipeline by<a id="_idIndexMarker634"/> clicking the <strong class="bold">Save</strong> icon in the top toolbar.</li>
+			</ol>
+			<div>
+				<div id="_idContainer209" class="IMG---Figure">
+					<img src="image/B18332_07_048.jpg" alt="Figure 7.48 – Task topology&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.48 – Task topology</p>
+			<ol>
+				<li value="7">Before we can run this pipeline, we need to configure each of the tasks. Because each task will run as a container in Kubernetes, we need to tell which container image that task will use. Select the <strong class="bold">Runtime Images</strong> icon on the toolbar on the left. Then, click the <strong class="bold">+</strong> button to add a new runtime image, as shown in <em class="italic">Figure 7.49</em>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer210" class="IMG---Figure">
+					<img src="image/B18332_07_049.jpg" alt="Figure 7.49 – Adding a new runtime image in Elyra&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.49 – Adding a new runtime image in Elyra</p>
+			<ol>
+				<li value="8">In<a id="_idIndexMarker635"/> the <strong class="bold">Add new Runtime Image</strong> dialog, add the details of the <strong class="bold">Kaniko Container Builder</strong> image, as shown in <em class="italic">Figure 7.50</em>, and hit the <strong class="bold">SAVE &amp; CLOSE</strong> button.</li>
+			</ol>
+			<p>This container image (<a href="https://quay.io/repository/ml-on-k8s/kaniko-container-builder">https://quay.io/repository/ml-on-k8s/kaniko-container-builder</a>) contains the tools required to build Docker files and push images to an image registry from within Kubernetes. This image can also pull ML models and metadata from the MLflow model registry. You will use this image to build containers that host your ML model in the next section. This container image was created for the purpose of this book. You can use any container image as a runtime image for your pipeline tasks as long as the image can run on Kubernetes.</p>
+			<div>
+				<div id="_idContainer211" class="IMG---Figure">
+					<img src="image/B18332_07_050.jpg" alt="Figure 7.50 – Add new Runtime Image dialog for Kaniko builder&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.50 – Add new Runtime Image dialog for Kaniko builder</p>
+			<ol>
+				<li value="9">Add another <a id="_idIndexMarker636"/>runtime image called <strong class="bold">Airflow Python Runner</strong>. The container image is located at <a href="https://quay.io/repository/ml-on-k8s/airflow-python-runner">https://quay.io/repository/ml-on-k8s/airflow-python-runner</a>. This image can run any Python 3.8 scripts, and interact with Kubernetes and Spark operators. You will use this image to deploy container images to Kubernetes in the next section. Refer to <em class="italic">Figure 7.51</em> for the <strong class="bold">Add new Runtime Image</strong> dialog field values, and then hit the <strong class="bold">SAVE &amp; CLOSE</strong> button:</li>
+			</ol>
+			<div>
+				<div id="_idContainer212" class="IMG---Figure">
+					<img src="image/B18332_07_051.jpg" alt="Figure 7.51 – Add new Runtime Image dialog for Airflow Python Runner&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.51 – Add new Runtime Image dialog for Airflow Python Runner</p>
+			<ol>
+				<li value="10">Pull the images from the remote repository to the local Docker daemon of your Kubernetes cluster. This will help speed up the start up times of tasks in Airflow by using a runtime image that is already pulled into the local Docker instance. </li>
+			</ol>
+			<p>You can do this by running the following command on the same machine where your Minikube is running. This command allows you to connect your Docker client to the Docker daemon inside your<a id="_idIndexMarker637"/> Minikube <strong class="bold">virtual machine</strong> (<strong class="bold">VM</strong>):</p>
+			<p class="source-code"><strong class="bold">eval $(minikube docker-env)</strong></p>
+			<ol>
+				<li value="11">Pull the <strong class="bold">Kaniko Container Builder</strong> image by running the following command in the same machine where your Minikube is running. This will pull the image from <a href="http://quay.io">quay.io</a> to the Docker daemon inside your Minikube:<p class="source-code"><strong class="bold">docker pull quay.io/ml-on-k8s/kaniko-container-builder:1.0.0</strong></p></li>
+				<li>Pull the <strong class="bold">Airflow Python Runner</strong> image by running the following command in the same<a id="_idIndexMarker638"/> machine where your Minikube is running:<p class="source-code"><strong class="bold">docker pull quay.io/ml-on-k8s/airflow-python-runner:0.0.11</strong></p></li>
+				<li>Assign <strong class="bold">Kaniko Container Builder</strong> runtime images to the <strong class="source-inline">hello.py</strong> task. You can do this by right-clicking the task box and selecting the <strong class="bold">Properties </strong>context menu item. The properties of the task will be displayed in the right pane of the pipeline editor, as shown in <em class="italic">Figure 7.52</em>. Using the <strong class="bold">Runtime Image</strong> drop-down box, select <strong class="bold">Kaniko Container Builder</strong>.</li>
+			</ol>
+			<div>
+				<div id="_idContainer213" class="IMG---Figure">
+					<img src="image/B18332_07_052.jpg" alt="Figure 7.52 – Setting the runtime image of a task in the pipeline editor&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.52 – Setting the runtime image of a task in the pipeline editor</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">If you do not see the newly added runtime images in the drop-down list, you need to close and reopen the pipeline editor. This will refresh the list of runtime images.</p>
+			<ol>
+				<li value="14">Assign the <strong class="bold">Airflow Python Runner</strong> runtime image to the <strong class="source-inline">world.py</strong> task. This is<a id="_idIndexMarker639"/> similar to <em class="italic">Step 10</em>, but for the <strong class="source-inline">world.py</strong> task. Refer to <em class="italic">Figure 7.53</em> for the <strong class="bold">Runtime Image</strong> value:</li>
+			</ol>
+			<div>
+				<div id="_idContainer214" class="IMG---Figure">
+					<img src="image/B18332_07_053.jpg" alt="Figure 7.53 – Setting the runtime image of a task in the pipeline editor&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.53 – Setting the runtime image of a task in the pipeline editor</p>
+			<ol>
+				<li value="15">You have just created an Airflow pipeline that has two tasks, where each task uses a different runtime. But, before we can run this pipeline in Airflow, we need to tell Elyra where Airflow is. To do this, select the <strong class="bold">Runtimes</strong> icon on the left toolbar of Elyra, as shown in <em class="italic">Figure 7.54</em>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer215" class="IMG---Figure">
+					<img src="image/B18332_07_054.jpg" alt="Figure 7.54 – Runtimes toolbar&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.54 – Runtimes toolbar</p>
+			<ol>
+				<li value="16">Hit the <strong class="bold">+</strong> button <a id="_idIndexMarker640"/>and select the <strong class="bold">New Apache Airflow runtime</strong> menu item. Fill in the details according to the following values or see <em class="italic">Figure 7.55</em>:<ol><li><strong class="bold">Apache Airflow UI Endpoint</strong> is where the Airflow UI is currently listening. This is not critical, as Elyra does not interact with Airflow UI directly. Set the value to the URL of your Airflow UI. This will look like <a href="https://airflow.192.168.49.2.nip.io">https://airflow.192.168.49.2.nip.io</a>, where the IP address part is the IP address of your Minikube.</li><li><strong class="bold">Apache Airflow User Namespace</strong> is the Kubernetes namespace where all the pods of the tasks will be created. Set this to <strong class="source-inline">ml-workshop</strong>. This is the namespace of all your ML platform workloads. </li><li><strong class="bold">GitHub DAG Repository</strong> is the DAG repository that you created in the previous section, <em class="italic">Configuring Airflow DAG Repository</em>. This follows the <strong class="source-inline">github-username/airflow-dags</strong> format. Replace <strong class="source-inline">github-username</strong> with your GitHub username.</li><li><strong class="bold">GitHub DAG Repository Branch</strong> is the branch in your GitHub repository where Elyra will push the DAG files. Set this to <strong class="bold">main</strong>.</li><li><strong class="bold">GitHub Personal Access Token</strong> is your GitHub user token with permission to push to your DAG repository. You can refer to the GitHub documentation for creating personal access tokens at <a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-a">https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token</a>. </li><li><strong class="bold">Cloud Object Storage Endpoint</strong> is the endpoint URL of any S3 storage API. Airflow uses this to publish artifacts and logs of the DAG executions. You will use the same Minio server for this. Set the value to <a href="http://minio-ml-workshop:900">http://minio-ml-workshop:900</a>. This is the URL of the Minio service. We did not use the Minio's<a id="_idIndexMarker641"/> ingress because the JupyterHub server is running on the same Kubernetes namespace as the Minio server, which means that the Minio service can be addressed by its name.</li><li><strong class="bold">Cloud Object Storage User name</strong> is the Minio username, which is <strong class="source-inline">minio</strong>.</li><li><strong class="bold">Cloud Object Storage Password</strong> is the Minio password, which is <strong class="source-inline">minio123</strong>.</li></ol></li>
+			</ol>
+			<p>Once all the fields are filled correctly, hit the <strong class="bold">SAVE &amp; CLOSE</strong> button.</p>
+			<div>
+				<div id="_idContainer216" class="IMG---Figure">
+					<img src="image/B18332_07_055.jpg" alt="Figure 7.55 – Adding a new Apache Airflow runtime configuration&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.55 – Adding a new Apache Airflow runtime configuration</p>
+			<ol>
+				<li value="17">Run the <a id="_idIndexMarker642"/>pipeline in Airflow by clicking the <strong class="bold">Play</strong> button in the top toolbar of the pipeline editor. This will bring up a <strong class="bold">Run pipeline</strong> dialog. Select <strong class="bold">Apache Airflow runtime</strong> as the runtime platform and <strong class="bold">MyAirflow</strong> as the runtime configuration, and then hit <strong class="bold">OK</strong>. Refer to <em class="italic">Figure 7.56</em>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer217" class="IMG---Figure">
+					<img src="image/B18332_07_056.jpg" alt="Figure 7.56 – Run pipeline dialog&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.56 – Run pipeline dialog</p>
+			<p>This action<a id="_idIndexMarker643"/> generates an Airflow DAG file and pushes the file to the GitHub repository configured as a DAG repository. You can verify this by checking your GitHub repository for newly pushed files.</p>
+			<ol>
+				<li value="18">Open the Airflow website. You should see the newly create DAG, as shown in <em class="italic">Figure 7.57</em>. If you do not see it, refresh the Airflow page a few times. Sometimes, it takes a few seconds before the DAGs appear in the UI.</li>
+			</ol>
+			<div>
+				<div id="_idContainer218" class="IMG---Figure">
+					<img src="image/B18332_07_057.jpg" alt="Figure 7.57 – Airflow showing a running DAG&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.57 – Airflow showing a running DAG</p>
+			<p>The DAG should succeed in a few minutes. If it does fail, you need to review the steps to make sure you set the correct values and that you did not miss any steps.</p>
+			<p>You have just created a basic Airflow DAG using Elyra's graphical pipeline editor. The generated DAG is, by default, configured to only run once, indicated by the <strong class="source-inline">@once</strong> annotation. In the real world, you may not want to run your DAGs directly from Elyra. You may want to add additional customizations to the DAG file. In this case, instead of running the DAG<a id="_idIndexMarker644"/> by clicking the play button, use the export feature. This will export the pipeline into a DAG file that you can further customize, such as setting the schedule. You can then push the customized DAG file to the DAG repository to submit it to Airflow.</p>
+			<p>You have just validated your Airflow setup, added Airflow runtime configuration, and integrated Elyra with Airflow. Now it is time to build a real deployment pipeline!</p>
+			<h1 id="_idParaDest-113"><a id="_idTextAnchor112"/>Automating ML model deployments in Airflow</h1>
+			<p>You have <a id="_idIndexMarker645"/>seen<a id="_idIndexMarker646"/> in the preceding sections how to manually package an ML model into a running HTTP service on Kubernetes. You have also seen how to create and run basic pipelines in Airflow. In this section, you will put this new knowledge together by creating an Airflow DAG to automate the model deployment process. You will create a simple Airflow pipeline for packaging and deploying an ML model from <a id="_idIndexMarker647"/>the<a id="_idIndexMarker648"/> MLflow model registry to Kubernetes.</p>
+			<h2 id="_idParaDest-114"><a id="_idTextAnchor113"/>Creating the pipeline by using the pipeline editor</h2>
+			<p>Similar to the <a id="_idIndexMarker649"/>previous section, you will use Elyra's pipeline editor to create the model build and deployment DAG: </p>
+			<ol>
+				<li value="1">If you do not have a running Elyra environment, start a notebook environment by navigating to JupyterHub, clicking <strong class="bold">Start My Server</strong>, and selecting a notebook image to run, as shown in <em class="italic">Figure 7.45</em>. Let's use <strong class="bold">Base Elyra Notebook Image</strong> because this time, we do not require any special libraries.</li>
+				<li>In your Elyra browser, navigate to the <strong class="source-inline">Machine-Learning-on-Kubernetes/chapter7/model_deploy_pipeline/</strong> directory.</li>
+				<li>Open a new pipeline editor. You can do this by selecting the menu item <strong class="bold">File&gt;New&gt;Pipeline Editor</strong>, as shown in <em class="italic">Figure 7.46</em>. A new file will appear in the left-hand browser, named <strong class="source-inline">untitled.pipeline</strong>.</li>
+				<li>Right-click on the <strong class="source-inline">untitled.pipeline</strong> file and rename it <strong class="source-inline">model_deploy.pipeline</strong>. Your directory structure should look like the screenshot in <em class="italic">Figure 7.58</em>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer219" class="IMG---Figure">
+					<img src="image/B18332_07_058.jpg" alt="Figure 7.58 – Elyra showing empty pipeline editor&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.58 – Elyra showing empty pipeline editor</p>
+			<ol>
+				<li value="5">You will <a id="_idIndexMarker650"/>build a pipeline with two tasks in it. The first task will pull the model artifacts from the MLflow model registry, package the model as a container using Seldon core, and then push the container image to an image repository. To create the first task, drag and drop the <strong class="source-inline">build_push_image.py</strong> file from the <strong class="source-inline">model_build_push</strong> directory to the pipeline editor's workspace. This action will create a new task in the pipeline editor window, as shown in <em class="italic">Figure 7.59</em>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer220" class="IMG---Figure">
+					<img src="image/B18332_07_059.jpg" alt="Figure 7.59 – Elyra pipeline editor showing the build_push_image task&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.59 – Elyra pipeline editor showing the build_push_image task</p>
+			<ol>
+				<li value="6">The second <a id="_idIndexMarker651"/>task will pull the container image from the image repository and deploy it to Kubernetes. Create the second task by dragging the <strong class="source-inline">deploy_model.py</strong> file from <strong class="source-inline">model_deploy directory</strong> and dropping it into the pipeline editor workspace. This action will create a second task in the pipeline editor, as shown in <em class="italic">Figure 7.60</em>:</li>
+			</ol>
+			<div>
+				<div id="_idContainer221" class="IMG---Figure">
+					<img src="image/B18332_07_060.jpg" alt="Figure 7.60 – Elyra pipeline editor showing the deploy_model task&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.60 – Elyra pipeline editor showing the deploy_model task</p>
+			<ol>
+				<li value="7">Connect the <a id="_idIndexMarker652"/>two tasks by dragging the tiny circle at the right-hand side of the <strong class="source-inline">build_push_image.py</strong> task to the <strong class="source-inline">deploy_model.py</strong> task box. The task topology should look like the illustration in <em class="italic">Figure 7.61</em>. Take note of the direction of the arrow highlighted in the red box.</li>
+			</ol>
+			<div>
+				<div id="_idContainer222" class="IMG---Figure">
+					<img src="image/B18332_07_061.jpg" alt="Figure 7.61 – Task topology of the DAG&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.61 – Task topology of the DAG</p>
+			<ol>
+				<li value="8">Configure the <strong class="source-inline">build_push_image.py</strong> task by right-clicking the box and selecting <strong class="bold">Properties</strong>. A property panel will appear on the right side of the editor, as shown in <em class="italic">Figure 7.62</em>. Select <strong class="bold">Kaniko Container Builder</strong> as the runtime image for this task.</li>
+			</ol>
+			<div>
+				<div id="_idContainer223" class="IMG---Figure">
+					<img src="image/B18332_07_062.jpg" alt="Figure 7.62 – Pipeline editor with the property panel displayed showing the Kaniko Builder runtime &#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.62 – Pipeline editor with the property panel displayed showing the Kaniko Builder runtime </p>
+			<ol>
+				<li value="9">Add file <a id="_idIndexMarker653"/>dependencies to <strong class="source-inline">build_push_image.py</strong> by clicking the <strong class="bold">Add Dependency</strong> button and selecting the following files. The file dependencies for this task are also shown in <em class="italic">Figure 7.62</em>. The following list describes what each file does:<ul><li><strong class="source-inline">Dockerfile</strong> – This is the Docker file that will be built to produce the container image that contains the ML model and the Predictor Python file.</li><li><strong class="source-inline">Predictor.py</strong> – This is the Python file used by Seldon to define the inference graph. You have seen this file in the preceding section.</li><li><strong class="source-inline">Base_requirements.txt</strong> – This is a regular text file that contains a list of Python packages required to run this model. This is used by the <strong class="source-inline">pip install</strong> command inside the Docker file.</li></ul></li>
+				<li>At this point, you should have an idea of what the entire pipeline does. Because the pipeline needs to push a container image to a registry, you will need a container registry to hold your ML model containers. Create a new repository in a container registry of your choice. For the exercises in this book, we will use <strong class="bold">Docker Hub</strong> as an example. We assume that you know how to create a new repository in <a href="https://hub.docker.com">https://hub.docker.com</a>. Call this new repository <strong class="source-inline">mlflowdemo</strong>.</li>
+				<li>Once you have the image repository created, set the <strong class="bold">Environment Variables</strong> for the <strong class="source-inline">build_push_image.py</strong> task, as shown in <em class="italic">Figure 7.63</em>. The following are the six variables you need to set:<ul><li><strong class="source-inline">MODEL_NAME</strong> is the name of the ML model registered in MLflow. You used the name <strong class="source-inline">mlflowdemo</strong> in the previous sections. Set the value of this variable to <strong class="source-inline">mlflowdemo</strong>.</li><li><strong class="source-inline">MODEL_VERSION</strong> is the version number of the ML model registered in MLflow. Set <a id="_idIndexMarker654"/>the value of this variable to <strong class="source-inline">1</strong>.</li><li><strong class="source-inline">CONTAINER_REGISTRY</strong> is the container registry API endpoint. For Docker Hub, this is available at <a href="https://index.docker.io/v1">https://index.docker.io/v1</a>. Set the value of this variable to <strong class="source-inline">https://index.docker.io/v1/</strong>.</li><li><strong class="source-inline">CONTAINER_REGISTRY_USER</strong> is the username of the user who will push images to the image registry. Set this to your Docker Hub username.</li><li><strong class="source-inline">CONTAINER_REGISTRY_PASSWORD</strong> is the password of your Docker Hub user. In production, you do not want to do this. You may use secret management tools to serve your Docker Hub password. However, to keep things simple for this exercise, you will put your Docker Hub password as an environment variable.</li><li><strong class="source-inline">CONTAINER_DETAILS</strong> is the name of the repository where the image will be pushed, along with the name and tag of the image. This includes the Docker Hub username in the <strong class="source-inline">your-username/mlflowdemo:latestv</strong> format.</li></ul></li>
+			</ol>
+			<p>Save the changes by clicking the <strong class="bold">Save</strong> icon from the top toolbar of the pipeline editor:</p>
+			<div>
+				<div id="_idContainer224" class="IMG---Figure">
+					<img src="image/B18332_07_063.jpg" alt="Figure 7.63 – Example environment variables of the build_push_image.py task&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.63 – Example environment variables of the build_push_image.py task</p>
+			<ol>
+				<li value="12">Configure<a id="_idIndexMarker655"/> the <strong class="source-inline">deploy_model.py</strong> task by setting the runtime image, the file dependencies, and the environment variables, as shown in <em class="italic">Figure 7.64</em>. There are four environment variables you need to set, as detailed in the following list:<ol><li><strong class="source-inline">MODEL_NAME</strong> is the name of the ML model registered in MLflow. You used the name <strong class="source-inline">mlflowdemo</strong> in the previous sections. Set the value of this variable to <strong class="source-inline">mlflowdemo</strong>.</li><li><strong class="source-inline">MODEL_VERSION</strong> is the version number of the ML model registered in MLflow. Set the value of this variable to <strong class="source-inline">1</strong>.</li><li><strong class="source-inline">CONTAINER_DETAILS</strong> is the name of the repository to where the image will be pushed and the image name and tag. This includes the Docker Hub username in the <strong class="source-inline">your-username/mlflowdemo:latest</strong> format.</li><li><strong class="source-inline">CLUSTER_DOMAIN_NAME</strong> is the DNS name of your Kubernetes cluster, in this case, the IP address of Minikube, which is <strong class="source-inline">&lt;Minikube IP&gt;.nip.io</strong>. For example, if the response of the <strong class="source-inline">minikube ip</strong> command is <strong class="source-inline">192.168.49.2</strong>, then the cluster domain name is <strong class="source-inline">192.168.49.2.nip.io</strong>. This is used to configure the ingress of the ML model HTTP service so that it is accessible outside the Kubernetes cluster.</li></ol></li>
+			</ol>
+			<p>Save the<a id="_idIndexMarker656"/> changes by clicking the <strong class="bold">Save</strong> icon from the top toolbar of the pipeline editor.</p>
+			<div>
+				<div id="_idContainer225" class="IMG---Figure">
+					<img src="image/B18332_07_064.jpg" alt="Figure 7.64 – Properties of the deploy_model.py task&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.64 – Properties of the deploy_model.py task</p>
+			<ol>
+				<li value="13">You are now ready to run the pipeline. Hit the <strong class="bold">Play</strong> button from the top toolbar of the pipeline editor. This will bring up the <strong class="bold">Run</strong> pipeline dialog, as shown in <em class="italic">Figure 7.65</em>. Select <strong class="bold">Apache Airflow runtime</strong> under <strong class="bold">Runtime Platform</strong>, and <strong class="bold">MyAirflow </strong>under<strong class="bold"> Runtime Configuration</strong>. Click the <strong class="bold">OK</strong> button. This will generate the Airflow DAG Python file and push it to the Git repository.</li>
+			</ol>
+			<div>
+				<div id="_idContainer226" class="IMG---Figure">
+					<img src="image/B18332_07_065.jpg" alt="Figure 7.65 – Run pipeline dialog&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.65 – Run pipeline dialog</p>
+			<ol>
+				<li value="14">Once the <a id="_idIndexMarker657"/>DAG is successfully generated and pushed to the <strong class="source-inline">git</strong> repository, you should see a dialog as shown in <em class="italic">Figure 7.66</em>. Click <strong class="bold">OK</strong>.</li>
+			</ol>
+			<div>
+				<div id="_idContainer227" class="IMG---Figure">
+					<img src="image/B18332_07_066.jpg" alt="Figure 7.66 – DAG submission confirmation dialog&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.66 – DAG submission confirmation dialog</p>
+			<ol>
+				<li value="15">Navigate to Airflow's GUI. You should see a new DAG, labeled <strong class="bold">model_deploy-some-number</strong>, appear in the DAGs table, and it should start running shortly, as shown in <em class="italic">Figure 7.67</em>. The mint green color of the job indicates that it is currently running. Dark green indicates that it is successful.<p class="callout-heading">Note</p><p class="callout">If you do not see the new DAG, refresh the page until you see it. It may take a few seconds for the Airflow to sync with the Git repository.</p></li>
+			</ol>
+			<div>
+				<div id="_idContainer228" class="IMG---Figure">
+					<img src="image/B18332_07_067.jpg" alt="Figure 7.67 – Airflow GUI showing the model_deploy DAG&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.67 – Airflow GUI showing the model_deploy DAG</p>
+			<ol>
+				<li value="16">Meanwhile, you <a id="_idIndexMarker658"/>can explore the DAG by clicking the DAG name and selecting the <strong class="bold">Graph View</strong> tab. It should display the topology of tasks as you designed it in Elyra's pipeline editor, as shown in <em class="italic">Figure 7.68</em>. You may explore the DAG further by selecting the <strong class="bold">&lt;&gt; Code</strong> tab. This will display the generated source code of the DAG.</li>
+			</ol>
+			<div>
+				<div id="_idContainer229" class="IMG---Figure">
+					<img src="image/B18332_07_068.jpg" alt="Figure 7.68 – Graph view of the model_deploy DAG in Airflow&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.68 – Graph view of the model_deploy DAG in Airflow</p>
+			<ol>
+				<li value="17">After a few <a id="_idIndexMarker659"/>minutes, the job should succeed and you should see the outline of all the tasks in <strong class="bold">Graph View</strong> turn to dark green. You can also explore the tasks by looking at the pods in Kubernetes. Run the following command and you should see two pods with the <strong class="bold">Completed</strong> status, as shown in <em class="italic">Figure 7.69</em>. These pods are the two tasks in the pipeline that have been executed successfully:<p class="source-code"><strong class="bold">kubectl get pods -n ml-workshop\</strong></p></li>
+			</ol>
+			<p>You should see the following response:</p>
+			<div>
+				<div id="_idContainer230" class="IMG---Figure">
+					<img src="image/B18332_07_069.jpg" alt="Figure 7.69 – Kubernetes pods with a Completed status&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.69 – Kubernetes pods with a Completed status</p>
+			<p>You have just created a complete ML model build and deployment pipeline using Seldon Core, Elyra's pipeline editor, orchestrated by Airflow, and deployed to Kubernetes.</p>
+			<p>Seldon Core and Airflow are big tools that have a lot more features that we have not covered and<a id="_idIndexMarker660"/> will not be entirely covered in this book. We have given you the essential knowledge and skills to start exploring these tools further as part of your ML platform.</p>
+			<h1 id="_idParaDest-115"><a id="_idTextAnchor114"/>Summary</h1>
+			<p>Congratulations! You made it this far!</p>
+			<p>As of this point, you have already seen and used JupyterHub, Elyra, Apache Spark, MLflow, Apache Airflow, Seldon Core, and Kubernetes. You have learned how these tools can solve the problems that MLOps is trying to solve. And, you have seen all these tools running well on Kubernetes.</p>
+			<p>There are a lot more things that we want to show you on the platform. However, we can only write so much, as the features of each of those tools that you have seen are enough to fill an entire book.</p>
+			<p>In the next chapter, we will take a step back to look at the big picture of what has been built so far. Then, you will start using the platform end-to-end on an example use case. You will be wearing different hats, such as data scientist, ML engineer, data engineer, and a DevOps person in the succeeding chapters. </p>
+		</div>
+	</body></html>

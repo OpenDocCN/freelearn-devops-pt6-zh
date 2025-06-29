@@ -1,0 +1,644 @@
+<html><head></head><body>
+  <div class="Basic-Text-Frame" id="_idContainer393">
+    <h1 class="chapterNumber">19</h1>
+    <h1 class="chapterTitle" id="_idParaDest-626">Advanced Techniques for Scheduling Pods</h1>
+    <p class="normal">At the beginning of the book, in <em class="chapterRef">Chapter 2</em>, <em class="italic">Kubernetes Architecture – from Container Images to Running Pods</em>, we explained the principles behind the Kubernetes scheduler (<code class="inlineCode">kube-scheduler</code>) control plane component and its crucial role in the cluster. In short, its responsibility is to schedule container workloads (Kubernetes Pods) and assign them to healthy nodes that fulfill the criteria required for running a particular workload.</p>
+    <p class="normal">This chapter will cover how you can control the criteria for scheduling Pods in the cluster. We will pay particular attention<a id="_idIndexMarker1717"/> to Node <strong class="keyWord">affinity</strong>, <strong class="keyWord">taints</strong>, and <strong class="keyWord">tolerations</strong> for Pods. We will <a id="_idIndexMarker1718"/>also take a closer look at <strong class="keyWord">scheduling policies</strong>, which give <a id="_idIndexMarker1719"/><code class="inlineCode">kube-scheduler</code> flexibility in how it prioritizes Pod workloads. You will find all of these concepts<a id="_idIndexMarker1720"/> important in running production clusters at the cloud scale.</p>
+    <p class="normal">In this chapter, we will cover the following topics:</p>
+    <ul>
+      <li class="bulletList">Refresher – What is kube-scheduler?</li>
+      <li class="bulletList">Managing Node affinity</li>
+      <li class="bulletList">Using Node taints and tolerations</li>
+      <li class="bulletList">Understanding Static Pods in Kubernetes</li>
+      <li class="bulletList">Extended Scheduler Configurations in Kubernetes</li>
+    </ul>
+    <h1 class="heading-1" id="_idParaDest-627">Technical requirements</h1>
+    <p class="normal">For this chapter, you will need the following:</p>
+    <ul>
+      <li class="bulletList">A <em class="italic">multi-node</em> Kubernetes cluster is required. Having a multi-node cluster will make understanding Node affinity, taints, and tolerations much easier.</li>
+      <li class="bulletList">The Kubernetes CLI (<code class="inlineCode">kubectl</code>) installed on your local machine and configured to manage your Kubernetes cluster.</li>
+    </ul>
+    <p class="normal">Basic Kubernetes cluster deployment (local and cloud-based) and <code class="inlineCode">kubectl</code> installation have been covered in <em class="chapterRef">Chapter 3</em>, <em class="italic">Installing Your First Kubernetes Cluster</em>. The previous chapters <em class="chapterRef">15</em>, <em class="chapterRef">16</em>, and <em class="chapterRef">17</em> have provided you an overview of how to deploy a fully functional Kubernetes cluster on different cloud platforms.</p>
+    <p class="normal">You can download the latest code samples for this chapter from the official GitHub repository: <a href="https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter19"><span class="url">https://github.com/PacktPublishing/The-Kubernetes-Bible-Second-Edition/tree/main/Chapter19</span></a>.</p>
+    <h1 class="heading-1" id="_idParaDest-628">Refresher – What is kube-scheduler?</h1>
+    <p class="normal">In Kubernetes clusters, kube-scheduler<a id="_idIndexMarker1721"/> is a critical component of the control plane. The main responsibility of this component is scheduling container workloads (Pods) and <strong class="keyWord">assigning</strong> them to healthy compute nodes (also known as worker nodes) that fulfill the criteria required for running a particular workload. To recap, a Pod is a group <a id="_idIndexMarker1722"/>of one or more containers with a shared network and storage and is the smallest <strong class="keyWord">deployment unit</strong> in the<a id="_idIndexMarker1723"/> Kubernetes system. You usually use different Kubernetes controllers, such as Deployment objects and StatefulSet objects, to manage your Pods, but it is kube-scheduler that eventually assigns the created Pods to particular Nodes in the cluster.</p>
+    <div class="note">
+      <p class="normal">For managed<a id="_idIndexMarker1724"/> Kubernetes clusters in the cloud, such as <strong class="keyWord">Azure Kubernetes Service</strong> (<strong class="keyWord">AKS</strong>) or Amazon <strong class="keyWord">Elastic Kubernetes Service</strong> (<strong class="keyWord">EKS</strong>), you <a id="_idIndexMarker1725"/>typically do not have access to the control plane or controller nodes as they are managed by the cloud service provider. This means you won’t have direct access to components like <code class="inlineCode">kube-scheduler</code> or control over its configuration, such as scheduling policies. However, you can still control all the parameters of Pods that influence their scheduling.</p>
+    </div>
+    <p class="normal">kube-scheduler<a id="_idIndexMarker1726"/> queries the <strong class="keyWord">Kubernetes API Server</strong> (<code class="inlineCode">kube-apiserver</code>) at regular intervals in order to list the Pods that have not been <em class="italic">scheduled</em>. At creation, Pods are marked as <em class="italic">not</em> scheduled – this means no Node was elected to run them. A Pod that is not scheduled will be registered in the <code class="inlineCode">etcd</code> cluster state but without any Node assigned to it and, thus, no running kubelet will be aware of this Pod. Ultimately, no container described in the Pod specification will run at this point.</p>
+    <p class="normal">Internally, the Pod object, as it is stored in <code class="inlineCode">etcd</code>, has a property called <code class="inlineCode">nodeName</code>. As the name suggests, this property should contain the name of the Node that will host the Pod. When this property is set, we say the Pod is in a <code class="inlineCode">scheduled</code> state; otherwise, the Pod is in a <code class="inlineCode">pending</code> state.</p>
+    <p class="normal">We need to find a way to fill this <code class="inlineCode">nodeName</code> value, and this is the role of kube-scheduler. For this, kube-scheduler polls kube-apiserver<a id="_idIndexMarker1727"/> at regular intervals. It looks for Pod resources with an empty <code class="inlineCode">nodeName</code> property. Once it finds such Pods, it will execute an algorithm to elect a Node and will update the <code class="inlineCode">nodeName</code> property in the Pod object by issuing a request to<a id="_idIndexMarker1728"/> kube-apiserver. When selecting a Node for the Pod, <code class="inlineCode">kube-scheduler</code> will take into account its internal scheduling policies and criteria that you defined for the Pods. Finally, the kubelet that is responsible for running Pods on the selected Node will notice that there is a new Pod in the <code class="inlineCode">scheduled</code> state for the Node and will attempt to start the Pod. These principles have been visualized in the following diagram:</p>
+    <figure class="mediaobject"><img alt="" src="image/B22019_19_01.png"/></figure>
+    <p class="packt_figref">Figure 19.1: Interactions of kube-scheduler and kube-apiserver</p>
+    <p class="normal">The scheduling <a id="_idIndexMarker1729"/>process for a Pod is performed in two phases:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Filtering</strong>: kube-scheduler determines the set of Nodes that are capable of running a given<a id="_idIndexMarker1730"/> Pod. This includes checking the actual state of the Nodes and verifying any resource requirements and criteria specified by the Pod definition. At this point, if there are no Nodes that can run a given Pod, the Pod cannot be scheduled and remains pending.</li>
+      <li class="bulletList"><strong class="keyWord">Scoring</strong>: kube-scheduler <a id="_idIndexMarker1731"/>assigns scores to each Node based on a set <a id="_idIndexMarker1732"/>of <strong class="keyWord">scheduling policies</strong>. Then, the Pod is assigned by the scheduler to the Node with the highest score. We will cover scheduling policies in a later section of this chapter.</li>
+    </ul>
+    <p class="normal"><code class="inlineCode">kube-scheduler</code> will <a id="_idIndexMarker1733"/>consider criteria and configuration values you can optionally pass in the Pod specification. By using these configurations, you can control precisely how kube-scheduler will elect a Node for the Pod. To control where a Pod runs, you can set constraints to restrict it to specific nodes or indicate preferred nodes. We have learned that, typically, Kubernetes will handle Pod placement effectively without any manual constraints, ensuring Pods are spread across Nodes to prevent resource shortages. However, there are times when you might need to influence Pod placement, such as ensuring a Pod runs on a Node with an SSD or co-locating Pods that communicate frequently within the same availability zone.</p>
+    <div class="note">
+      <p class="normal">The decisions of kube-scheduler are valid precisely at the point in time when the Pod is scheduled. Once the Pod is scheduled and running, kube-scheduler will not perform any rescheduling operations while it is running (which can be for days or even months). So, even if the Pod no longer matches the Node according to your rules, it will remain running. Rescheduling will only happen if the Pod is terminated, and a new Pod needs to be scheduled.</p>
+    </div>
+    <p class="normal">You can use the following methods to influence Pod scheduling<a id="_idIndexMarker1734"/> in Kubernetes:</p>
+    <ul>
+      <li class="bulletList">Use the <code class="inlineCode">nodeSelector</code><strong class="keyWord"> </strong>field to match against node labels.</li>
+      <li class="bulletList">Set affinity and anti-affinity rules.</li>
+      <li class="bulletList">Specify the <code class="inlineCode">nodeName</code> field.</li>
+      <li class="bulletList">Define Pod topology spread constraints.</li>
+      <li class="bulletList">Taints and tolerations.</li>
+    </ul>
+    <p class="normal">In the next sections, we will discuss these configurations to control the scheduling of Pods. Before we jump into the hands-on practices, make sure you have a multi-node Kubernetes cluster to experience the node scheduling scenarios.</p>
+    <p class="normal">In our case, we are using a multi-node Kubernetes cluster using <code class="inlineCode">minikube</code> as follows (you may change the driver to kvm2, Docker, or Podman):</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>minikube start \
+  --driver=virtualbox \
+  --nodes 3 \
+  --cni calico \
+  --cpus=2 \
+  --memory=2g \
+  --kubernetes-version=v1.30.0 \
+  --container-runtime=containerd
+</code></pre>
+    <p class="normal">The <code class="inlineCode">--nodes=3</code> argument will trigger <a id="_idIndexMarker1735"/>minikube to deploy a Kubernetes cluster with the first node as a controller node (or Master node) and the second and third nodes as compute nodes (or worker nodes), as shown below:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get nodes
+NAME           STATUS   ROLES           AGE     VERSION
+minikube       Ready    control-plane   3m34s   v1.30.0
+minikube-m02   Ready    &lt;none&gt;          2m34s   v1.30.0
+minikube-m03   Ready    &lt;none&gt;          87s     v1.30.0
+</code></pre>
+    <p class="normal">If you are using any other Kubernetes cluster for learning, then you may skip this minikube cluster setup.</p>
+    <p class="normal">Now, let’s take a look at Node affinity, together with Node name and Node selector.</p>
+    <h1 class="heading-1" id="_idParaDest-629">Managing Node affinity</h1>
+    <p class="normal">To understand how <strong class="keyWord">Node affinity</strong> works in<a id="_idIndexMarker1736"/> Kubernetes, we first need to take a look at the most basic scheduling options, which use <strong class="keyWord">Node name</strong> and <strong class="keyWord">Node selector</strong> for Pods.</p>
+    <h2 class="heading-2" id="_idParaDest-630">Using nodeName for Pods</h2>
+    <p class="normal">As we mentioned before, each <a id="_idIndexMarker1737"/>Pod object has a <code class="inlineCode">nodeName</code> field, which is usually <a id="_idIndexMarker1738"/>controlled by kube-scheduler. Nevertheless, it is possible to set this property directly in the YAML manifest when you create a Pod or create a controller that uses a Pod template. This is the simplest form of statically scheduling Pods on a given Node and is generally <em class="italic">not recommended</em> – it is not flexible and does not scale at all. The names of Nodes can change over time, and you risk running out of resources on the Node.</p>
+    <div class="packt_tip">
+      <p class="normal">You may find setting <code class="inlineCode">nodeName</code> explicitly useful in debugging scenarios when you want to run a Pod on a specific Node.</p>
+    </div>
+    <p class="normal">We are going to demonstrate all scheduling principles on an example Deployment object that we introduced in <em class="chapterRef">Chapter 11</em>, <em class="italic">Using Kubernetes Deployments for Stateless Workloads</em>. This is a simple Deployment that manages <em class="italic">five</em> Pod replicas of an <code class="inlineCode">nginx</code> webserver.</p>
+    <p class="normal">Before we use<a id="_idIndexMarker1739"/> <code class="inlineCode">nodeName</code> in the Deployment manifest, we need to know what Nodes we have in the cluster so that we can understand how they are scheduled and how we can influence the scheduling of Pods. You can get the list of Nodes <a id="_idIndexMarker1740"/>using the <code class="inlineCode">kubectl get nodes</code> command, as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get nodes
+NAME           STATUS   ROLES           AGE     VERSION
+minikube       Ready    control-plane   3m34s   v1.30.0
+minikube-m02   Ready    &lt;none&gt;          2m34s   v1.30.0
+minikube-m03   Ready    &lt;none&gt;          87s     v1.30.0
+</code></pre>
+    <p class="normal">In our example, we are running a three-Node cluster (remember to refer to your correct cluster Node names in the manifest later). For simplicity, let’s refer to <code class="inlineCode">minikube</code> as <code class="inlineCode">Node1</code>, <code class="inlineCode">minikube-m02</code> as <code class="inlineCode">Node2</code>, and <code class="inlineCode">minikube-m02</code> as <code class="inlineCode">Node3</code>.</p>
+    <p class="normal">For the demonstration, we want to schedule all five nginx Pods to <code class="inlineCode">minikube-m02</code>. Create the following YAML manifest named <code class="inlineCode">n01_nodename/nginx-deployment.yaml</code>:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># 01_nodename/nginx-deployment.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-app</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">5</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span>
+      <span class="hljs-attr">environment:</span> <span class="hljs-string">test</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span>
+        <span class="hljs-attr">environment:</span> <span class="hljs-string">test</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>
+          <span class="hljs-attr">image:</span> <span class="hljs-string">nginx:1.17</span>
+          <span class="hljs-attr">ports:</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-attr">containerPort:</span> <span class="hljs-number">80</span>
+</code></pre>
+    <p class="normal">Apply the <a id="_idIndexMarker1741"/>Deployment<a id="_idIndexMarker1742"/> YAML as usual:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f 01_nodename/nginx-deployment.yaml
+deployment.apps/nginx-app created
+</code></pre>
+    <p class="normal">The Deployment object will create five Pod replicas. Use <code class="inlineCode">kubectl get pods -o wide</code> to see the Pods and Node names. Let’s use a customized output as follows:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-7b547cfd87-4g9qx   Running   minikube
+nginx-app-7b547cfd87-m76l2   Running   minikube-m02
+nginx-app-7b547cfd87-mjf78   Running   minikube-m03
+nginx-app-7b547cfd87-vvrgk   Running   minikube-m02
+nginx-app-7b547cfd87-w7jcw   Running   minikube-m03
+</code></pre>
+    <p class="normal">As you can see, by default, the Pods have been distributed uniformly – Node1 has received one Pod, Node2 two Pods, and Node3 two Pods. This is a result of the default scheduling policies enabled in <code class="inlineCode">kube-scheduler</code> for filtering and scoring.</p>
+    <div class="packt_tip">
+      <p class="normal">If you are running a <strong class="keyWord">non-managed</strong> Kubernetes cluster, you can inspect the logs for the kube-scheduler Pod using the <code class="inlineCode">kubectl logs</code> command, or even directly in the control plane nodes in <code class="inlineCode">/var/log/kube-scheduler.log</code>. This may also require increased verbosity of logs for the kube-scheduler<a id="_idIndexMarker1743"/> process. You can read more at <a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/"><span class="url">https://kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/</span></a>.</p>
+    </div>
+    <p class="normal">At this point, the Pod template in <code class="inlineCode">.spec.template.spec</code> does not contain any configurations that affect the scheduling of the Pod replicas.</p>
+    <p class="normal">We will now <strong class="keyWord">forcefully</strong> assign all Pods in the Deployment to <strong class="keyWord">Node2</strong> (<code class="inlineCode">minikube-m02</code> in our case) in the cluster using the <code class="inlineCode">nodeName</code> field in the Pod template. Change the <code class="inlineCode">nginx-deployment.yaml</code> YAML manifest so that it has this property set with the correct Node name for <em class="italic">your</em> cluster:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-comment"># 01_nodename/nginx-deployment.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-app</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-string">...</span>
+  <span class="hljs-attr">template:</span>
+  <span class="hljs-string">...</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="code-highlight"><strong class="hljs-attr-slc">nodeName:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">minikube-m02</strong></span>
+<span class="hljs-string">...&lt;removed</span> <span class="hljs-string">for</span> <span class="hljs-string">brevity&gt;...</span>
+</code></pre>
+    <p class="normal">Notice the line <code class="inlineCode">nodeName: minikube-m02</code>; we are explicitly stating that <code class="inlineCode">minikube-m02</code> should be used as the Node for deploying our nginx Pods.</p>
+    <p class="normal">Apply the <a id="_idIndexMarker1744"/>manifest to the <a id="_idIndexMarker1745"/>cluster using the <code class="inlineCode">kubectl apply -f ./nginx-deployment.yaml</code> command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f 01_nodename/nginx-deployment.yaml
+deployment.apps/nginx-app created
+</code></pre>
+    <p class="normal">Now, inspect the Pod status and Node assignment again:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-85b577894f-8tqj7   Running   minikube-m02
+nginx-app-85b577894f-9c6hd   Running   minikube-m02
+nginx-app-85b577894f-fldxx   Running   minikube-m02
+nginx-app-85b577894f-jrnjc   Running   minikube-m02
+nginx-app-85b577894f-vs7c5   Running   minikube-m02
+</code></pre>
+    <p class="normal">As expected, <em class="italic">all five</em> Pods are now running on Node2 (<code class="inlineCode">minikube-m02</code>). These are all new Pods – when you change the Pod template in the Deployment specification, it causes an internal rollout using a new ReplicaSet object, while the old ReplicaSet object is scaled down, as explained in <em class="chapterRef">Chapter 11</em>, <em class="italic">Using Kubernetes Deployments for Stateless Workloads</em>.</p>
+    <div class="note">
+      <p class="normal">In this way, we have actually <em class="italic">bypassed</em> <code class="inlineCode">kube-scheduler</code>. If you inspect events for one of the Pods using the <code class="inlineCode">kubectl describe pod</code> command, you will see that it lacks any events with <code class="inlineCode">Scheduled</code> as a reason.</p>
+    </div>
+    <p class="normal">Next, we are going to take a look at another basic method of scheduling Pods, which is <code class="inlineCode">nodeSelector</code>.</p>
+    <h2 class="heading-2" id="_idParaDest-631">Using nodeSelector for Pods</h2>
+    <p class="normal">Pod specification has a special<a id="_idIndexMarker1746"/> field, <code class="inlineCode">.spec.nodeSelector</code>, that gives you<a id="_idIndexMarker1747"/> the ability to schedule your Pod only on Nodes that have certain label values. This concept is similar to <strong class="keyWord">label selectors</strong> for<a id="_idIndexMarker1748"/> Deployments and StatefulSets, but the difference is that it allows only simple <em class="italic">equality-based</em> comparisons for labels. You cannot do advanced <em class="italic">set-based</em> logic.</p>
+    <p class="normal">This is especially useful in:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Hybrid clusters</strong>: Ensure Windows containers run on Windows nodes and Linux containers run on Linux nodes by specifying the operating system as a scheduling criterion.</li>
+      <li class="bulletList"><strong class="keyWord">Resource allocation</strong>: Target Pods to nodes with specific resources (CPU, memory, storage) to optimize resource utilization.</li>
+      <li class="bulletList"><strong class="keyWord">Hardware requirements</strong>: Schedule Pods requiring special hardware (e.g., GPUs) only on nodes with those capabilities.</li>
+      <li class="bulletList"><strong class="keyWord">Security zones</strong>: Define security zones with labels and use <code class="inlineCode">nodeSelector</code> to restrict Pods to specific zones for enhanced security.</li>
+    </ul>
+    <p class="normal">Every Kubernetes Node comes by default with a set of labels, which include the following:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">kubernetes.io/arch</code>: Describes the Node’s processor architecture, for example, <code class="inlineCode">amd64</code> or <code class="inlineCode">arm</code>. This is also defined as <code class="inlineCode">beta.kubernetes.io/arch</code>.</li>
+      <li class="bulletList"><code class="inlineCode">kubernetes.io/os</code>: Has a value of <code class="inlineCode">linux</code> or <code class="inlineCode">Windows</code>. This is also defined as <code class="inlineCode">beta.kubernetes.io/os</code>.</li>
+      <li class="bulletList"><code class="inlineCode">node-role.kubernetes.io/control-plane</code>: The role of the node in the Kubernetes cluster.</li>
+    </ul>
+    <p class="normal">If you inspect the labels for one of the Nodes, you will see that there are plenty of them. In our case, some of them are specific to <code class="inlineCode">minikube</code> clusters:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl describe nodes minikube
+Name:               minikube
+Roles:              control-plane
+Labels:             beta.kubernetes.io/arch=amd64
+                    beta.kubernetes.io/os=linux
+                    kubernetes.io/arch=amd64
+                    kubernetes.io/hostname=minikube
+                    kubernetes.io/os=linux
+                    minikube.k8s.io/commit=5883c09216182566a63dff4c326a6fc9ed2982ff
+                    minikube.k8s.io/name=minikube
+                    minikube.k8s.io/primary=true
+                    minikube.k8s.io/updated_at=2024_07_21T16_40_25_0700
+                    minikube.k8s.io/version=v1.33.1
+                    node-role.kubernetes.io/control-plane=
+                    node.kubernetes.io/exclude-from-external-load-balancers=
+...&lt;removed for brevity&gt;...
+</code></pre>
+    <p class="normal">Of course, you can define your <em class="italic">own</em> labels for the Nodes and use them to control scheduling. Please note that in general you should use semantic labeling for your resources in Kubernetes, rather than give them special labels just for the purpose of scheduling. Let’s <a id="_idIndexMarker1749"/>demonstrate how <a id="_idIndexMarker1750"/>to do that by following these steps:</p>
+    <ol>
+      <li class="numberedList" value="1">Use the <code class="inlineCode">kubectl label nodes</code> command to add a <code class="inlineCode">node-type </code>label with a <code class="inlineCode">superfast</code> value to <code class="inlineCode">Node</code> <code class="inlineCode">1</code> and <code class="inlineCode">Node</code> <code class="inlineCode">2</code> in the cluster:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl label nodes minikube-m02 node-type=superfast
+node/minikube-m02 labeled
+<span class="hljs-con-meta">$ </span>kubectl label nodes minikube-m03 node-type=superfast
+node/minikube-m03 labeled
+</code></pre>
+      </li>
+      <li class="numberedList">Verify the node labels as follows:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get nodes --show-labels |grep superfast
+minikube-m02   Ready    &lt;none&gt;          2m59s   v1.31.0   beta.kubernetes.io/arch=amd64,beta.kubernetes.io/os=linux,kubernetes.io/arch=amd64,kubernetes.io/hostname=minikube-m02,kubernetes.io/os=linux,minikube.k8s.io/commit=5883c09216182566a63dff4c326a6fc9ed2982ff,minikube.k8s.io/name=minikube,minikube.k8s.io/primary=false,minikube.k8s.io/updated_at=2024_10_13T15_26_06_0700,minikube.k8s.io/version=v1.33.1,<span class="code-highlight"><strong class="hljs-slc">node-type=superfast</strong></span>
+minikube-m03   Ready    &lt;none&gt;          2m30s   v1.31.0   beta.kubernetes.io/arch=amd64,beta.kubernetes.io/os=linux,kubernetes.io/arch=amd64,kubernetes.io/hostname=minikube-m03,kubernetes.io/os=linux,minikube.k8s.io/commit=5883c09216182566a63dff4c326a6fc9ed2982ff,minikube.k8s.io/
+name=minikube,minikube.k8s.io/primary=false,minikube.k8s.io/updated_at=2024_10_13T15_26_34_0700,minikube.k8s.io/version=v1.33.1,<span class="code-highlight"><strong class="hljs-slc">node-type=superfast</strong></span>
+</code></pre>
+      </li>
+      <li class="numberedList">Edit the <code class="inlineCode">./nginx-deployment.yaml</code> Deployment manifest (or create another one<a id="_idIndexMarker1751"/> called <code class="inlineCode">02_nodeselector/nginx-deployment.yaml</code>) so <a id="_idIndexMarker1752"/>that <code class="inlineCode">nodeSelector</code> in the Pod template is set to <code class="inlineCode">node-type: superfast</code>, as follows:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># 02_nodeselector/nginx-deployment.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-app</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-string">...</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-string">...</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">nodeSelector:</span>
+        <span class="code-highlight"><strong class="hljs-attr-slc">node-type:</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">superfast</strong></span>
+<span class="hljs-string">...&lt;removed</span> <span class="hljs-string">for</span> <span class="hljs-string">brevity&gt;</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Apply the manifest to the cluster using the <code class="inlineCode">kubectl apply -f 02_nodeselector/nginx-deployment.yaml</code> command and inspect the Pod status and Node assignment again. You may need to wait a while for the Deployment rollout to finish:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                        STATUS    NODE
+nginx-app-6c5b8b758-2dcsc   Running   minikube-m02
+nginx-app-6c5b8b758-48c5t   Running   minikube-m03
+nginx-app-6c5b8b758-pfmvg   Running   minikube-m03
+nginx-app-6c5b8b758-v6rhj   Running   minikube-m02
+nginx-app-6c5b8b758-zqvqm   Running   minikube-m02
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">As you can see in the preceding output, Pods are now assigned to <code class="inlineCode">minikube-m02</code> and <code class="inlineCode">minikube-m03</code> (<code class="inlineCode">minikube-m02</code> has been assigned with three Pods and <code class="inlineCode">minikube-m02</code> with two Pods). The Pods have been distributed among Nodes that have the <code class="inlineCode">node-type=superfast</code> label.</p>
+    <ol>
+      <li class="numberedList" value="5">In <a id="_idIndexMarker1753"/>contrast, if you change the <code class="inlineCode">./nginx-deployment.yaml</code> manifest so that <code class="inlineCode">nodeSelector</code> in the Pod template is set to <code class="inlineCode">node-type: slow</code>, which no Node in the cluster has assigned, we will see that Pods could not be scheduled and the Deployment will be stuck. Edit the manifest (or copy to a <a id="_idIndexMarker1754"/>new file called <code class="inlineCode">02_nodeselector/nginx-deployment-slow.yaml</code>):
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># 02_nodeselector/nginx-deployment.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-app</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-string">...</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-string">...</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">nodeSelector:</span>
+        <span class="hljs-attr">node-type:</span> <span class="hljs-string">slow</span>
+<span class="hljs-string">...&lt;removed</span> <span class="hljs-string">for</span> <span class="hljs-string">brevity&gt;</span>
+</code></pre>
+      </li>
+      <li class="numberedList">Apply the manifest to the cluster as follows:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f  02_nodeselector/nginx-deployment-slow.yaml
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">Inspect the Pod status and Node assignment again:</p>
+    <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                        STATUS    NODE
+nginx-app-6c5b8b758-48c5t   Running   minikube-m03
+nginx-app-6c5b8b758-pfmvg   Running   minikube-m03
+nginx-app-6c5b8b758-v6rhj   Running   minikube-m02
+nginx-app-6c5b8b758-zqvqm   Running   minikube-m02
+nginx-app-9cc8544f4-7dwcd   Pending   &lt;none&gt;
+nginx-app-9cc8544f4-cz947   Pending   &lt;none&gt;
+nginx-app-9cc8544f4-lfqqj   Pending   &lt;none&gt;
+</code></pre>
+    <p class="normal-one">The reason why three new Pods are pending and four old Pods are still running is the default configuration of rolling updates in the Deployment object. By default, <code class="inlineCode">maxSurge</code> is set to <code class="inlineCode">25%</code> of Pod replicas (the absolute number is <em class="italic">rounded up</em>), so in our case, two Pods are allowed to be created above the desired number of five Pods. In total, we now have seven Pods. At the same time, <code class="inlineCode">maxUnavailable</code> is also <code class="inlineCode">25%</code> of Pod replicas (but the absolute number is <em class="italic">rounded down</em>), so in our case, one Pod out of five cannot be available. In other words, four Pods must be <code class="inlineCode">Running</code>. And because the new <code class="inlineCode">Pending</code> Pods cannot get a Node in the process of scheduling, the Deployment is stuck waiting and not progressing. Normally, in this case, you<a id="_idIndexMarker1755"/> need to either perform a rollback to the previous version for the Deployment or change <code class="inlineCode">nodeSelector</code> to one that matches existing Nodes properly. Of course, there is also an alternative of <a id="_idIndexMarker1756"/>adding a new Node with matching labels or adding missing labels to the existing ones without performing a rollback.</p>
+    <p class="normal">We will now continue the topic of scheduling Pods by looking at the first of some more advanced techniques: <strong class="keyWord">Node affinity</strong>.</p>
+    <h2 class="heading-2" id="_idParaDest-632">Using the nodeAffinity configuration for Pods</h2>
+    <p class="normal">The concept of Node affinity <a id="_idIndexMarker1757"/>expands the <code class="inlineCode">nodeSelector</code> approach and<a id="_idIndexMarker1758"/> provides a richer language for defining which Nodes are preferred or avoided for your Pod. In everyday life, the word “affinity” is defined as “<em class="italic">a natural liking for and understanding of someone or something</em>,” and this best describes the purpose of Node affinity for Pods. That is, you can control which Nodes your Pod will be <em class="italic">attracted</em> to or <em class="italic">repelled</em> by.</p>
+    <p class="normal">With Node affinity, represented in <code class="inlineCode">.spec.affinity.nodeAffinity</code> for the Pod, you get the following enhancements over simple <code class="inlineCode">nodeSelector</code>:</p>
+    <ul>
+      <li class="bulletList">You get a richer language for expressing the rules for matching Pods to Nodes. For example, you can use the <code class="inlineCode">In</code>, <code class="inlineCode">NotIn</code>, <code class="inlineCode">Exists</code>, <code class="inlineCode">DoesNotExist</code>, <code class="inlineCode">Gt</code>, and <code class="inlineCode">Lt</code> operators for labels.</li>
+      <li class="bulletList">Similar to <code class="inlineCode">nodeAffinity</code>, it is possible to do scheduling using <code class="inlineCode">inter-Pod</code> affinity (<code class="inlineCode">podAffinity</code>) and additionally <code class="inlineCode">anti-affinity</code> (<code class="inlineCode">podAntiAffinity</code>). Anti-affinity has the opposite effect of affinity – you can define rules that repel Pods. In this way, you can make your Pods be attracted to Nodes that <em class="italic">already run</em> certain Pods. This is especially useful if you want to collocate Pods to decrease latency.</li>
+      <li class="bulletList">It is possible to define <strong class="keyWord">soft</strong> affinity and anti-affinity rules that represent a <em class="italic">preference</em> instead of a <strong class="keyWord">hard</strong> rule. In other words, the scheduler can still schedule the Pod, even if it cannot match the soft rule. Soft rules are represented by the <code class="inlineCode">preferredDuringSchedulingIgnoredDuringExecution</code> field in the specification, whereas hard rules are represented by the <code class="inlineCode">requiredDuringSchedulingIgnoredDuringExecution</code> field.</li>
+      <li class="bulletList">Soft rules can be <strong class="keyWord">weighted</strong>, and it is possible to add multiple rules with different weight values. The scheduler will consider this weight value together with the other parameters to make a decision on the affinity.</li>
+    </ul>
+    <div class="packt_tip">
+      <p class="normal">Even though there is no Node anti-affinity field provided by a separate field in the spec, as in the case of inter-Pod anti-affinity you can still achieve similar results by using the <code class="inlineCode">NotIn</code> and <code class="inlineCode">DoesNotExist</code> operators. In this way, you can make Pods be repelled from Nodes with specific labels, also in a soft way. Refer to the documentation to learn more: <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity"><span class="url">https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity</span></a>.</p>
+    </div>
+    <p class="normal">The use cases and<a id="_idIndexMarker1759"/> scenarios for defining the Node affinity<a id="_idIndexMarker1760"/> and inter-Pod affinity/anti-affinity rules are <em class="italic">unlimited</em>. It is possible to express all kinds of requirements in this way, provided that you have enough labeling on the Nodes. For example, you can model requirements like scheduling the Pod only on a Windows Node with an Intel CPU and premium storage in the West Europe region but currently not running Pods for MySQL, or try not to schedule the Pod in availability zone 1, but if it is not possible, then availability zone 1 is still OK.</p>
+    <p class="normal">To demonstrate Node affinity, we will try to model the following requirements for our Deployment: “<em class="italic">Try</em> to schedule the Pod only on Nodes with a <code class="inlineCode">node-type</code> label with a <code class="inlineCode">fast</code> or <code class="inlineCode">superfast</code> value, but if this is not possible, use any Node but <em class="italic">strictly</em> not with a <code class="inlineCode">node-type</code> label with an <code class="inlineCode">extremelyslow</code> value.” For this, we need to use:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">A soft Node affinity</strong> rule<a id="_idIndexMarker1761"/> of type <code class="inlineCode">preferredDuringSchedulingIgnoredDuringExecution</code> to match <code class="inlineCode">fast</code> and <code class="inlineCode">superfast</code> Nodes.</li>
+      <li class="bulletList"><strong class="keyWord">A hard Node affinity</strong> rule<a id="_idIndexMarker1762"/> of type <code class="inlineCode">requiredDuringSchedulingIgnoredDuringExecution</code> to repel the Pod strictly from Nodes with <code class="inlineCode">node-type</code> as <code class="inlineCode">extremelyslow</code>. We need to use the <code class="inlineCode">NotIn</code> operator to get the anti-affinity effect.</li>
+    </ul>
+    <p class="normal">In our cluster, we <a id="_idIndexMarker1763"/>are going to first have the following labels for<a id="_idIndexMarker1764"/> Nodes:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">Node1</code>: <code class="inlineCode">slow</code></li>
+      <li class="bulletList"><code class="inlineCode">Node2</code>: <code class="inlineCode">fast</code></li>
+      <li class="bulletList"><code class="inlineCode">Node3</code>: <code class="inlineCode">superfast</code></li>
+    </ul>
+    <p class="normal">As you can see, according to our requirements, the Deployment Pods should be scheduled on Node2 and Node3, unless something is preventing them from being allocated there, like a lack of CPU or memory resources. In that case, Node1 would also be allowed as we use the soft affinity rule.</p>
+    <p class="normal">Next, we will relabel the Nodes in the following way:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">Node1</code>: <code class="inlineCode">slow</code></li>
+      <li class="bulletList"><code class="inlineCode">Node2</code>: <code class="inlineCode">extremelyslow</code></li>
+      <li class="bulletList"><code class="inlineCode">Node3</code>: <code class="inlineCode">extremelyslow</code></li>
+    </ul>
+    <p class="normal">Subsequently, we will need to redeploy our Deployment (for example, scale it down to zero and up to the original replica count, or use the <code class="inlineCode">kubectl rollout restart</code> command) to reschedule the Pods again. After that, looking at our requirements, kube-scheduler should assign all Pods to Node1 (because it is still allowed by the soft rule) but avoid <em class="italic">at all costs</em> Node2 and Node3. If, by any chance, Node1 has no resources to run the Pod, then the Pods will be stuck in the <code class="inlineCode">Pending</code> state.</p>
+    <div class="packt_tip">
+      <p class="normal">To solve the issue of rescheduling already running Pods (in other words, to make kube-scheduler consider them again), there is an incubating Kubernetes project named <strong class="keyWord">Descheduler</strong>. You can find <a id="_idIndexMarker1765"/>out more here: <a href="https://github.com/kubernetes-sigs/descheduler"><span class="url">https://github.com/kubernetes-sigs/descheduler</span></a>.</p>
+    </div>
+    <p class="normal">To do the demonstration, please follow these steps:</p>
+    <ol>
+      <li class="numberedList" value="1">Use the <code class="inlineCode">kubectl label nodes</code> command to add a <code class="inlineCode">node-type</code> label with a <code class="inlineCode">slow</code> value for Node1, a <code class="inlineCode">fast</code> value for Node2, and a <code class="inlineCode">superfast</code> value for Node3:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl label nodes --overwrite minikube node-type=slow
+node/minikube labeled
+<span class="hljs-con-meta">$ </span>kubectl label nodes --overwrite minikube-m02 node-type=fast
+node/minikube-m02 labeled
+<span class="hljs-con-meta">$ </span>kubectl label nodes --overwrite minikube-m03 node-type=superfast
+node/minikube-m03 not labeled
+<span class="hljs-con-meta"># </span>Note that this label was already present with this value
+</code></pre>
+      </li>
+      <li class="numberedList">Edit the <code class="inlineCode">03_affinity/nginx-deployment.yaml</code> Deployment manifest and define the <a id="_idIndexMarker1766"/>soft Node affinity rule as <a id="_idIndexMarker1767"/>follows:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># 03_affinity/nginx-deployment.yaml</span>
+<span class="hljs-string">...</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-string">...</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-string">...</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">affinity:</span>
+        <span class="hljs-attr">nodeAffinity:</span>
+          <span class="hljs-attr">requiredDuringSchedulingIgnoredDuringExecution:</span>
+            <span class="hljs-attr">nodeSelectorTerms:</span>
+            <span class="hljs-bullet">-</span> <span class="hljs-attr">matchExpressions:</span>
+              <span class="hljs-bullet">-</span> <span class="hljs-attr">key:</span> <span class="hljs-string">node-type</span>
+                <span class="hljs-attr">operator:</span> <span class="hljs-string">NotIn</span>
+                <span class="hljs-attr">values:</span>
+                <span class="hljs-bullet">-</span> <span class="hljs-string">extremelyslow</span>
+          <span class="hljs-attr">preferredDuringSchedulingIgnoredDuringExecution:</span>
+          <span class="hljs-bullet">-</span> <span class="hljs-attr">weight:</span> <span class="hljs-number">1</span>
+            <span class="hljs-attr">preference:</span>
+              <span class="hljs-attr">matchExpressions:</span>
+              <span class="hljs-bullet">-</span> <span class="hljs-attr">key:</span> <span class="hljs-string">node-type</span>
+                <span class="hljs-attr">operator:</span> <span class="hljs-string">In</span>
+                <span class="hljs-attr">values:</span>
+                <span class="hljs-bullet">-</span> <span class="hljs-string">fast</span>
+                <span class="hljs-bullet">-</span> <span class="hljs-string">superfast</span>
+<span class="hljs-string">...&lt;removed</span> <span class="hljs-string">for</span> <span class="hljs-string">brevity&gt;...</span>
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">As you can see, we have used <code class="inlineCode">nodeAffinity</code> (not <code class="inlineCode">podAffinity</code> or <code class="inlineCode">podAntiAffinity</code>) with <code class="inlineCode">preferredDuringSchedulingIgnoredDuringExecution</code> set so that it has only one soft rule: <code class="inlineCode">node-type</code> should have a <code class="inlineCode">fast</code> value or a <code class="inlineCode">superfast</code> value. This means that if there are no resources on such Nodes, they can still be scheduled on other Nodes. Additionally, we specify one hard anti-affinity rule in <code class="inlineCode">requiredDuringSchedulingIgnoredDuringExecution</code>, which says that <code class="inlineCode">node-type</code> <em class="italic">must not</em> be <code class="inlineCode">extremelyslow</code>. You can find the full specification of Pod’s <code class="inlineCode">.spec.affinity</code> in the official documentation: <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity"><span class="url">https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity</span></a>.</p>
+    <ol>
+      <li class="numberedList" value="3">Apply the <a id="_idIndexMarker1768"/>manifest to the cluster using the <code class="inlineCode">kubectl apply -f 03_affinity/nginx-deployment.yaml</code> command and<a id="_idIndexMarker1769"/> inspect the Pod status and Node assignment again. You may need to wait a while for the Deployment rollout to finish:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-7766c596cc-4d4sl   Running   minikube-m02
+nginx-app-7766c596cc-4h6k6   Running   minikube-m03
+nginx-app-7766c596cc-ksld5   Running   minikube-m03
+nginx-app-7766c596cc-nw9hx   Running   minikube-m02
+nginx-app-7766c596cc-tmwhm   Running   minikube-m03
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">Our Node affinity rules were defined to prefer Nodes that have <code class="inlineCode">node-type</code> set to either <code class="inlineCode">fast</code> or <code class="inlineCode">superfast</code>, and indeed the Pods were scheduled for Node2 and Node3 only.</p>
+    <p class="normal">Now, we will perform an experiment to demonstrate how the soft part of Node affinity works together with the hard part of Node anti-affinity. We will relabel the Nodes as described in the introduction, redeploy the Deployment, and observe what happens. Please follow these steps:</p>
+    <ol>
+      <li class="numberedList" value="1">Use the <code class="inlineCode">kubectl label nodes</code> command to add a <code class="inlineCode">node-type</code> label with a <code class="inlineCode">slow</code> value for <code class="inlineCode">Node 0</code>, an <code class="inlineCode">extremelyslow</code> value for <code class="inlineCode">Node1</code>, and an <code class="inlineCode">extremelyslow</code> value for <code class="inlineCode">Node2</code>:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl label nodes --overwrite minikube node-type=slow
+node/minikube not labeled
+<span class="hljs-con-meta"># </span>Note that this label was already present with this value
+<span class="hljs-con-meta">$ </span>kubectl label nodes --overwrite minikube-m02 node-type=extremelyslow
+node/minikube-m02 labeled
+<span class="hljs-con-meta">$ </span>kubectl label nodes --overwrite minikube-m03 node-type=extremelyslow
+node/minikube-m03 labeled
+</code></pre>
+      </li>
+      <li class="numberedList">At this point, if you were to check Pod assignments using <code class="inlineCode">kubectl get pods</code>, there would be no difference. This is because, as we explained before, a Pod’s assignment to Nodes is valid only at the time of scheduling, and after that, it is not changed unless they are restarted. To force the restart of Pods, we could scale the Deployment down to zero replicas and then back to five. But <a id="_idIndexMarker1770"/>there is an easier way, which is to use an imperative <code class="inlineCode">kubectl rollout restart</code> command. This<a id="_idIndexMarker1771"/> approach has the benefit of not making the Deployment unavailable, and it performs a rolling restart of Pods without a decrease in the number of available Pods. Execute the following command:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl rollout restart deployment nginx-app
+deployment.apps/nginx-app restarted
+</code></pre>
+      </li>
+      <li class="numberedList">Inspect the Pod status and Node assignment again. You may need to wait a while for the Deployment rollout to finish:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-7d8c65464c-5d9cc   Running   minikube
+nginx-app-7d8c65464c-b97g8   Running   minikube
+nginx-app-7d8c65464c-cqwh5   Running   minikube
+nginx-app-7d8c65464c-kh8bm   Running   minikube
+nginx-app-7d8c65464c-xhpss   Running   minikube
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">The output shows that, as expected, all Pods have been scheduled to Node1, which is labeled with <code class="inlineCode">node-type=slow</code>. We allow such Nodes if there is nothing better, and in this case, Node2 and Node3 have the <code class="inlineCode">node-type=extremelyslow</code> label, which is prohibited by the hard Node anti-affinity rule.</p>
+    <div class="packt_tip">
+      <p class="normal">To achieve even higher granularity and control of Pod scheduling, you can use <em class="italic">Pod topology spread constraints</em>. More details<a id="_idIndexMarker1772"/> are available in the official documentation: <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/"><span class="url">https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/</span></a>.</p>
+    </div>
+    <p class="normal">Congratulations, you have successfully configured Node affinity for our Deployment Pods! We will now explore another way of scheduling Pods – <em class="italic">T</em><em class="italic">aints and tolerations</em>.</p>
+    <h1 class="heading-1" id="_idParaDest-633">Using Node taints and tolerations</h1>
+    <p class="normal">Using the Node and inter-Pod affinity mechanism for scheduling Pods is very powerful, but sometimes you need a simpler way of specifying which Nodes should <em class="italic">repel</em> Pods. Kubernetes has two slightly older and simpler features for this purpose – <strong class="keyWord">taints</strong> and <strong class="keyWord">tolerations</strong>. You apply a<a id="_idIndexMarker1773"/> taint to a given<a id="_idIndexMarker1774"/> Node (which describes some kind of limitation) and the Pod must have a specific toleration defined to be schedulable on the tainted Node. If the Pod has a toleration, it does not mean that the taint is <em class="italic">required</em> on the Node. The definition of <em class="italic">taint</em> is “a trace of a bad or undesirable substance or quality,” and this reflects the idea pretty well – all Pods will <em class="italic">avoid</em> a Node if there is a taint set for them, but we can instruct Pods to <em class="italic">tolerate</em> a specific taint.</p>
+    <div class="packt_tip">
+      <p class="normal">If you look closely at how taints and tolerations are described, you can see that you can achieve similar results with Node labels and Node hard and soft affinity rules with the <code class="inlineCode">NotIn</code> operator. There is one catch – you can define taints with a <code class="inlineCode">NoExecute</code> effect, which will result in the termination of the Pod if it cannot tolerate it. You cannot get similar results with affinity rules unless you restart the Pod manually.</p>
+    </div>
+    <p class="normal">Taints for Nodes have the<a id="_idIndexMarker1775"/> following structure: <code class="inlineCode">&lt;key&gt;=&lt;value&gt;:&lt;effect&gt;</code>. The <strong class="keyWord">key</strong> and <strong class="keyWord">value</strong> pair <em class="italic">identifies</em> the taint and can be used for more granular tolerations, for example, tolerating all taints with a given key and any value. This is similar to labels, but please remember that taints are separate properties, and defining a taint does not affect Node labels. In our example demonstration, we will use our taint with a <code class="inlineCode">machine-check-exception</code> key and a <code class="inlineCode">memory</code> value. This is, of course, a theoretical example where we want to indicate that there is a hardware issue with memory on the host, but you could also have a taint with the same key and instead a <code class="inlineCode">cpu</code> or <code class="inlineCode">disk</code> value. </p>
+    <p class="normal">In general, your taints should <em class="italic">semantically</em> label the type of issue that the Node is experiencing. There is nothing preventing you from using any keys and values for creating taints, but if <a id="_idIndexMarker1776"/>they make semantic sense, it is much easier to manage them and define tolerations.</p>
+    <p class="normal">The taint can have different effects:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">NoSchedule</code> – kube-scheduler <em class="italic">will not schedule</em> Pods to this Node. Similar behavior can be achieved <a id="_idIndexMarker1777"/>using a hard Node affinity rule.</li>
+      <li class="bulletList"><code class="inlineCode">PreferNoSchedule</code> – kube-scheduler <em class="italic">will try to not schedule</em> Pods to this Node. Similar behavior can be achieved using a soft Node affinity rule.</li>
+      <li class="bulletList"><code class="inlineCode">NoExecute</code> – kube-scheduler <em class="italic">will not schedule</em> Pods to this Node and <em class="italic">evict</em> (terminate and reschedule) running Pods from this Node. You cannot achieve similar behavior using Node affinity rules. Note that when you define a toleration for a Pod for this type of taint, it is possible to control how long the Pod will tolerate the taint before it gets evicted, using <code class="inlineCode">tolerationSeconds</code>.</li>
+    </ul>
+    <p class="normal">Kubernetes manages quite a few <code class="inlineCode">NoExecute</code> taints automatically by monitoring the Node hosts. The following taints are built in and managed by <strong class="keyWord">NodeController</strong> or the <code class="inlineCode">kubelet</code>:</p>
+    <ul>
+      <li class="bulletList"><code class="inlineCode">node.kubernetes.io/not-ready</code>: Added when NodeCondition <code class="inlineCode">Ready</code> has a <code class="inlineCode">false</code> status.</li>
+      <li class="bulletList"><code class="inlineCode">node.kubernetes.io/unreachable</code>: Added when NodeCondition <code class="inlineCode">Ready</code> has an <code class="inlineCode">Unknown</code> status. This happens when <code class="inlineCode">NodeController</code> cannot reach the Node.</li>
+      <li class="bulletList"><code class="inlineCode">node.kubernetes.io/memory-pressure</code>: Node is experiencing memory pressure.</li>
+      <li class="bulletList"><code class="inlineCode">node.kubernetes.io/disk-pressure</code>: Node is experiencing disk pressure.</li>
+      <li class="bulletList"><code class="inlineCode">node.kubernetes.io/network-unavailable</code>: Network is currently down on the Node.</li>
+      <li class="bulletList"><code class="inlineCode">node.kubernetes.io/unschedulable</code>: Node is currently in an <code class="inlineCode">unschedulable</code> state.</li>
+      <li class="bulletList"><code class="inlineCode">node.cloudprovider.kubernetes.io/uninitialized</code>: Intended for Nodes that are prepared by an external cloud provider. When the Node gets initialized by <code class="inlineCode">cloud-controller-manager</code>, this taint is removed.</li>
+    </ul>
+    <p class="normal">To add a <a id="_idIndexMarker1778"/>taint on a Node, you use the <code class="inlineCode">kubectl taint node</code> command in the following way:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl taint node &lt;nodeName&gt; &lt;key&gt;=&lt;value&gt;:&lt;effect&gt;
+</code></pre>
+    <p class="normal">So, for example, if we want to use key <code class="inlineCode">machine-check-exception</code> and a <code class="inlineCode">memory</code> value with a <code class="inlineCode">NoExecute</code> effect for Node1, we will use the following command:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl taint node minikube machine-check-exception=memory:NoExecute
+node/minikube tainted
+</code></pre>
+    <p class="normal">To remove the same taint, you need to use the following command (bear in mind the - character at the end of the taint definition):</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl taint node minikube machine-check-exception=memory:NoExecute-
+node/minikube untainted
+</code></pre>
+    <p class="normal">You can also <a id="_idIndexMarker1779"/>remove all taints with a specified key:</p>
+    <pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl taint node minikube machine-check-exception:NoExecute-
+</code></pre>
+    <p class="normal">To counteract the effect of the taint on a Node for specific Pods, you can define tolerations in their specification. In other words, you can use<a id="_idIndexMarker1780"/> tolerations to ignore taints and still schedule the Pods to such Nodes. If a Node has multiple taints applied, the Pod must tolerate all of its taints. Tolerations are defined under <code class="inlineCode">.spec.tolerations</code> in the Pod specification and have the following structure:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">tolerations:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">key:</span> <span class="hljs-string">&lt;key&gt;</span>
+  <span class="hljs-attr">operator:</span> <span class="hljs-string">&lt;operatorType&gt;</span>
+  <span class="hljs-attr">value:</span> <span class="hljs-string">&lt;value&gt;</span>
+  <span class="hljs-attr">effect:</span> <span class="hljs-string">&lt;effect&gt;</span>
+</code></pre>
+    <p class="normal">The operator can be either <code class="inlineCode">Equal</code> or <code class="inlineCode">Exists</code>. <code class="inlineCode">Equal</code> means that the <code class="inlineCode">key</code> and <code class="inlineCode">value</code> of the taint must match exactly, whereas <code class="inlineCode">Exists</code> means that just <code class="inlineCode">key</code> must match and <code class="inlineCode">value</code> is not considered. In our example, if we want to ignore the taint, the toleration will need to look like this:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">tolerations:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">key:</span> <span class="hljs-string">machine-check-exception</span>
+  <span class="hljs-attr">operator:</span> <span class="hljs-string">Equal</span>
+  <span class="hljs-attr">value:</span> <span class="hljs-string">memory</span>
+  <span class="hljs-attr">effect:</span> <span class="hljs-string">NoExecute</span>
+</code></pre>
+    <div class="packt_tip">
+      <p class="normal">Please note, you can define multiple tolerations for a Pod to ensure the correct Pod placement.</p>
+    </div>
+    <p class="normal">In the case of <code class="inlineCode">NoExecute</code> tolerations, it is possible to define an additional field called <code class="inlineCode">tolerationSeconds</code>, which specifies how long the Pod will tolerate the taint until it gets evicted. So, this is a way of having partial toleration of taint with a timeout. Please note that if you use <code class="inlineCode">NoExecute</code> taints, you <a id="_idIndexMarker1781"/>usually also need to add a <code class="inlineCode">NoSchedule</code> taint. In this way, you can prevent any <strong class="keyWord">eviction loops</strong> from happening when the Pod has a <code class="inlineCode">NoExecute</code> toleration with <code class="inlineCode">tolerationSeconds</code> set. This is because the taint has no effect for a specified number of seconds, which also includes <em class="italic">not</em> preventing the Pod from being scheduled for the tainted Node.</p>
+    <div class="note">
+      <p class="normal">When Pods are created in the cluster, Kubernetes automatically adds two <code class="inlineCode">Exists</code> tolerations for <code class="inlineCode">node.kubernetes.io/not-ready</code> and <code class="inlineCode">node.kubernetes.io/unreachable</code> with <code class="inlineCode">tolerationSeconds</code> set to <code class="inlineCode">300</code>.</p>
+    </div>
+    <p class="normal">Now that we have learned about taints and tolerations, we will put this knowledge into practice with a few demonstrations. Please follow the next steps to go through the taints and tolerations exercise:</p>
+    <ol>
+      <li class="numberedList" value="1">If you have the <code class="inlineCode">nginx-app</code> Deployment with Node affinity defined still running from the previous section, it will currently have all Pods running on Node1 (<code class="inlineCode">minikube</code>). The Node affinity rules are constructed in such a way that the Pods cannot be scheduled on Node2 and Node3. Let’s see what happens if you taint Node1 with <code class="inlineCode">machine-check-exception=memory:NoExecute</code>:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl taint node minikube machine-check-exception=memory:NoExecute
+node/minikube tainted
+</code></pre>
+      </li>
+      <li class="numberedList">Check the Pod status and Node assignment:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-7d8c65464c-5j69n   Pending   &lt;none&gt;
+nginx-app-7d8c65464c-c8j58   Pending   &lt;none&gt;
+nginx-app-7d8c65464c-cnczc   Pending   &lt;none&gt;
+nginx-app-7d8c65464c-drpdh   Pending   &lt;none&gt;
+nginx-app-7d8c65464c-xss9b   Pending   &lt;none&gt;
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">All Deployment Pods are now in the <code class="inlineCode">Pending</code> state because kube-scheduler is unable to find a Node that can run them.</p>
+    <ol>
+      <li class="numberedList" value="3">Edit the <code class="inlineCode">./nginx-deployment.yaml</code> Deployment manifest (or check <code class="inlineCode">04_taints/nginx-deployment.yaml</code>) and remove <code class="inlineCode">affinity</code>. Instead, define taint toleration for <code class="inlineCode">machine-check-exception=memory:NoExecute</code> with a timeout of 60 seconds as<a id="_idIndexMarker1782"/> follows:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-comment"># 04_taints/nginx-deployment.yaml</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-app</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-string">...</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-string">...</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">tolerations:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">key:</span> <span class="hljs-string">machine-check-exception</span>
+          <span class="hljs-attr">operator:</span> <span class="hljs-string">Equal</span>
+          <span class="hljs-attr">value:</span> <span class="hljs-string">memory</span>
+          <span class="hljs-attr">effect:</span> <span class="hljs-string">NoExecute</span>
+          <span class="hljs-attr">tolerationSeconds:</span> <span class="hljs-number">60</span>
+<span class="hljs-string">...&lt;removed</span> <span class="hljs-string">for</span> <span class="hljs-string">brevity&gt;...</span>
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">When this manifest is applied to the cluster, the old Node affinity rules which prevented scheduling to Node2 and Node3 will be gone. The Pods will be able to schedule on Node2 and Node3, but Node1 has taint <code class="inlineCode">machine-check-exception=memory:NoExecute</code>. So, the Pods should <em class="italic">not</em> be scheduled to <code class="inlineCode">Node0</code>, as <code class="inlineCode">NoExecute</code> implies <code class="inlineCode">NoSchedule</code>, <em class="italic">right</em>? Let’s check that.</p>
+    <ol>
+      <li class="numberedList" value="4">Apply the manifest to the cluster using the <code class="inlineCode">kubectl apply -f 04_taints/nginx-deployment.yaml</code> command and inspect the Pod status and Node assignment again. You may need to wait a while for the Deployment rollout to finish:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-84d755f746-4zkjd   Running   minikube
+nginx-app-84d755f746-58qmh   Running   minikube-m02
+nginx-app-84d755f746-5h5vk   Running   minikube-m03
+nginx-app-84d755f746-psmgf   Running   minikube-m02
+nginx-app-84d755f746-zkbc6   Running   minikube-m03
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">This result may be a bit surprising. As you can see, we got Pods scheduled on Node2 and Node3, but at the same time Node1 has received Pods, and they are in an eviction loop every 60 seconds! The explanation for this is that <code class="inlineCode">tolerationSeconds</code> for the <code class="inlineCode">NoExecute</code> taint implies that the whole taint is ignored for 60 seconds. So, kube-scheduler can schedule the Pod on Node1, even though it will get evicted later.</p>
+    <ol>
+      <li class="numberedList" value="5">Let’s fix this <a id="_idIndexMarker1783"/>behavior by applying a recommendation to use a <code class="inlineCode">NoSchedule</code> taint whenever you use a <code class="inlineCode">NoExecute</code> taint. In this way, the evicted Pods will have no chance to be scheduled on the tainted Node again, unless, of course, they start tolerating this type of taint too. Execute the following command to taint <code class="inlineCode">Node0</code>:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl taint node minikube machine-check-exception=memory:NoSchedule
+node/minikube tainted
+</code></pre>
+      </li>
+      <li class="numberedList">Inspect the Pod status and Node assignment again:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-84d755f746-58qmh   Running   minikube-m02
+nginx-app-84d755f746-5h5vk   Running   minikube-m03
+nginx-app-84d755f746-psmgf   Running   minikube-m02
+nginx-app-84d755f746-sm2cm   Running   minikube-m03
+nginx-app-84d755f746-zkbc6   Running   minikube-m03
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">In the output, you can see that the Pods are now distributed between Node2 and Node3 – exactly as we wanted.</p>
+    <ol>
+      <li class="numberedList" value="7">Now, remove <em class="italic">both</em> taints from Node1:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl taint node minikube machine-check-exception-
+node/minikube untainted
+</code></pre>
+      </li>
+      <li class="numberedList">Restart the Deployment to reschedule the Pods using the following command:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl rollout restart deployment nginx-app
+deployment.apps/nginx-app restarted
+</code></pre>
+      </li>
+      <li class="numberedList">Inspect the Pod status and <a id="_idIndexMarker1784"/>Node assignment again:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-5bdd957558-fj7bk   Running   minikube-m02
+nginx-app-5bdd957558-mrddn   Running   minikube-m03
+nginx-app-5bdd957558-mz2pz   Running   minikube-m02
+nginx-app-5bdd957558-pftz5   Running   minikube-m03
+nginx-app-5bdd957558-vm6k9   Running   minikube
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">The Pods are again distributed evenly between all three Nodes.</p>
+    <ol>
+      <li class="numberedList" value="10">And finally, let’s see how the combination of the <code class="inlineCode">NoExecute</code> and <code class="inlineCode">NoSchedule</code> taints work, with <code class="inlineCode">tolerationSeconds</code> for <code class="inlineCode">NoExecute</code> set to <code class="inlineCode">60</code>. Apply two taints to Node1 again:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl taint node minikube machine-check-exception=memory:NoSchedule
+node/minikube tainted
+<span class="hljs-con-meta">$ </span>kubectl taint node minikube machine-check-exception=memory:NoExecute
+node/minikube tainted
+</code></pre>
+      </li>
+      <li class="numberedList">Immediately after that, start watching Pods with their Node assignments. Initially, you will see that the Pods are still running on Node1 for some time. But after 60 seconds, you will see:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pods --namespace default --output=custom-columns=<span class="hljs-con-string">"NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName"</span>
+NAME                         STATUS    NODE
+nginx-app-5bdd957558-7n42p   Running   minikube-m03
+nginx-app-5bdd957558-fj7bk   Running   minikube-m02
+nginx-app-5bdd957558-mrddn   Running   minikube-m03
+nginx-app-5bdd957558-mz2pz   Running   minikube-m02
+nginx-app-5bdd957558-pftz5   Running   minikube-m03
+</code></pre>
+      </li>
+    </ol>
+    <p class="normal-one">As we expected, the Pods were evicted after 60 seconds and there were no eviction-schedule loops.</p>
+    <p class="normal">This has demonstrated a more advanced use case for taints that you cannot easily substitute with Node affinity rules.</p>
+    <p class="normal">Let’s learn about static Pods in the next section.</p>
+    <h1 class="heading-1" id="_idParaDest-634">Understanding Static Pods in Kubernetes</h1>
+    <p class="normal">Static Pods<a id="_idIndexMarker1785"/> offer a different way to manage Pods within a Kubernetes cluster. Unlike regular Pods, which are controlled by the cluster’s Pod schedulers and API server, static Pods are managed directly by the kubelet daemon on a specific node. The API server isn’t aware of these Pods, except through mirror Pods that the kubelet creates for them.</p>
+    <p class="normal"><strong class="keyWord">Key characteristics</strong>:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Node-specific</strong>: Static Pods <a id="_idIndexMarker1786"/>are tied to a single node and can’t be moved elsewhere in the cluster.</li>
+      <li class="bulletList"><strong class="keyWord">Kubelet management</strong>: The kubelet on the designated node handles starting, stopping, and restarting static Pods.</li>
+      <li class="bulletList"><strong class="keyWord">Mirror Pods</strong>: The kubelet creates mirror Pods on the API server to reflect the state of static Pods, but these mirror Pods can’t be controlled through the API.</li>
+    </ul>
+    <p class="normal">Static Pods can be created using two main methods. The first method is the filesystem-hosted configuration, where you place Pod definitions in YAML or JSON format in a specific directory on the node. The kubelet scans this directory regularly and manages Pods based on the files present. The second method is the web-hosted configuration, where the Pod definition is hosted in a YAML file on a web server. The kubelet is configured with the URL of this file and periodically downloads it to manage the static Pods.</p>
+    <p class="normal">Static Pods <a id="_idIndexMarker1787"/>are often used for bootstrapping essential cluster components, like the API server or controller manager, on each node. However, for running Pods on every node in a cluster, DaemonSets are usually recommended. Static Pods have limitations, such as not being able to reference other Kubernetes objects like Secrets or ConfigMaps and not supporting ephemeral containers. Understanding static Pods can be useful in scenarios where tight control over Pod placement on individual nodes is needed.</p>
+    <p class="normal">So far, we have covered different mechanisms to control the Pod scheduling and placement. In the next section, we will give a short overview of other scheduler configurations and features.</p>
+    <h1 class="heading-1" id="_idParaDest-635">Extended scheduler configurations in Kubernetes</h1>
+    <p class="normal">In addition to the scheduler customizations, Kubernetes also supports some advanced scheduling configurations, which we will discuss in this section.</p>
+    <h2 class="heading-2" id="_idParaDest-636">Scheduler configuration</h2>
+    <p class="normal">You can customize this scheduling <a id="_idIndexMarker1788"/>behavior using a configuration file. This file defines how the scheduler prioritizes Nodes for Pods based on various criteria.</p>
+    <p class="normal"><strong class="keyWord">Key concepts</strong>:</p>
+    <ul>
+      <li class="bulletList"><strong class="keyWord">Scheduling profiles</strong>: The configuration file can specify multiple scheduling profiles. Each <a id="_idIndexMarker1789"/>profile has a distinct name and can be configured with its own set of plugins.</li>
+      <li class="bulletList"><strong class="keyWord">Scheduling plugins</strong>: Plugins are like building blocks that perform specific tasks during the scheduling process. They can filter Nodes based on resource availability, hardware compatibility, or other factors.</li>
+      <li class="bulletList"><strong class="keyWord">Extension points</strong>: These are stages within the scheduling process where plugins can be hooked in. Different plugins are suited for different stages, such as filtering unsuitable Nodes or scoring suitable Nodes.</li>
+    </ul>
+    <div class="note">
+      <p class="normal"><strong class="keyWord">IMPORTANT: Scheduling Policies (Pre-v1.23 Kubernetes)</strong></p>
+      <p class="normal">Kubernetes versions before v1.23 allowed specifying scheduling policies via kube-scheduler flags or ConfigMaps. These policies defined how the scheduler selected nodes for Pods using predicates (filtering criteria) and priorities (scoring functions). As of v1.23, this functionality is replaced by scheduler configuration. This new approach allows more flexibility and control over scheduling behavior.</p>
+    </div>
+    <p class="normal">The Kubernetes scheduler configuration file provides several benefits for managing Pod placement within your cluster. It provides the flexibility to tailor scheduling behavior to your needs. For instance, you can prioritize Pods requiring GPUs to land on Nodes with those resources. Additionally, you can develop custom plugins to handle unique scheduling requirements not addressed by default plugins. Finally, the ability to define multiple profiles allows you to create granular controls by assigning different scheduling profiles to different types of Pods.</p>
+    <p class="normal">Before we conclude the chapter, let’s look at the Node restrictions feature in Kubernetes scheduling.</p>
+    <h2 class="heading-2" id="_idParaDest-637">Node isolation and restrictions</h2>
+    <p class="normal">Kubernetes allows you to isolate<a id="_idIndexMarker1790"/> Pods on specific Nodes using node labels. These labels <a id="_idIndexMarker1791"/>can define properties like security requirements or regulatory compliance. This ensures Pods are only scheduled on Nodes that meet these criteria. To prevent a compromised node from manipulating labels for its own benefit, the <code class="inlineCode">NodeRestriction</code> admission plugin restricts the <code class="inlineCode">kubelet</code> from modifying labels with a specific prefix (e.g., <code class="inlineCode">node-restriction.kubernetes.io/</code>). To leverage this functionality, you’ll need to enable the <code class="inlineCode">NodeRestriction</code> plugin and <code class="inlineCode">Node authorizer</code>. Then, you can add labels with the restricted prefix to your Nodes and reference them in your Pod’s <code class="inlineCode">nodeSelector</code> configuration. This ensures your Pods only run on pre-defined, isolated environments.</p>
+    <h2 class="heading-2" id="_idParaDest-638">Tuning Kubernetes scheduler performance</h2>
+    <p class="normal">In large Kubernetes clusters, efficient<a id="_idIndexMarker1792"/> scheduler performance is crucial. Let’s explore a key tuning parameter: <code class="inlineCode">percentageOfNodesToScore</code>.</p>
+    <p class="normal">The <code class="inlineCode">percentageOfNodesToScore</code> setting determines how many Nodes the scheduler considers when searching for a suitable Pod placement. A higher value means the scheduler examines more Nodes, potentially finding a better fit but taking longer. Conversely, a lower value leads to faster scheduling but might result in suboptimal placement. You can configure this value in the kube-scheduler configuration file. The valid range is 1% to 100%, with a default calculated based on cluster size (50% for 100 nodes, 10% for 5,000 nodes).</p>
+    <p class="normal">To set <code class="inlineCode">percentageOfNodesToScore</code> to 50% for a cluster with hundreds of nodes, you’d include the following configuration in the scheduler file:</p>
+    <pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">kubescheduler.config.k8s.io/v1alpha1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">KubeSchedulerConfiguration</span>
+<span class="hljs-attr">algorithmSource:</span>
+  <span class="hljs-attr">provider:</span> <span class="hljs-string">DefaultProvider</span>
+<span class="hljs-string">...</span>
+<span class="hljs-attr">percentageOfNodesToScore:</span> <span class="hljs-number">50</span>
+</code></pre>
+    <p class="normal">The optimal value depends on your priorities. If fast scheduling is critical, a lower value might be acceptable. However, if ensuring the best possible placement outweighs speed concerns, a higher value is recommended. Avoid setting it too low to prevent the scheduler from <a id="_idIndexMarker1793"/>overlooking potentially better Nodes.</p>
+    <p class="normal">With this, we have finished this chapter, and we have learned about different mechanisms and strategies available in Kubernetes to control Pod placement on Nodes, including <code class="inlineCode">nodeName</code>, <code class="inlineCode">nodeSelector</code>, <code class="inlineCode">nodeAffinity</code>, taints and tolerations, and also other useful advanced scheduler configurations.</p>
+    <h1 class="heading-1" id="_idParaDest-639">Summary</h1>
+    <p class="normal">This chapter has given an overview of advanced techniques for Pod scheduling in Kubernetes. First, we recapped the theory behind kube-scheduler implementation and explained the process of scheduling Pods. Next, we introduced the concept of Node affinity in Pod scheduling. We discussed the basic scheduling methods, which use Node names and Node selectors, and based on that, we explained how more advanced Node affinity works. We also explained how to use the affinity concept to achieve anti-affinity, and what inter-Pod affinity/anti-affinity is. After that, we discussed taints for Nodes and tolerations specified by Pods. You learned about some different effects of taints, and put that knowledge into practice in an advanced use case involving <code class="inlineCode">NoExecute</code> and <code class="inlineCode">NoSchedule</code> taints on a Node. Lastly, we discussed some advanced scheduling features in Kubernetes such as scheduler configurations, Node isolation, and static pods.</p>
+    <p class="normal">In the next chapter, we are going to discuss the <strong class="keyWord">autoscaling</strong> of Pods and Nodes in Kubernetes. This is a topic that shows how flexibly Kubernetes can run workloads in cloud environments.</p>
+    <h1 class="heading-1" id="_idParaDest-640">Further reading</h1>
+    <ul>
+      <li class="bulletList">Kubernetes Scheduler: <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/ "><span class="url">https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/</span></a></li>
+      <li class="bulletList">Assigning Pods to Nodes: <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/ "><span class="url">https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/</span></a></li>
+      <li class="bulletList">Taints and Tolerations: <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/ "><span class="url">https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/</span></a></li>
+      <li class="bulletList">Scheduler Configuration: <a href="https://kubernetes.io/docs/reference/scheduling/config/ "><span class="url">https://kubernetes.io/docs/reference/scheduling/config/</span></a></li>
+    </ul>
+    <p class="normal">For more information regarding Pod scheduling in Kubernetes, please refer to the following PacktPub books:</p>
+    <ul>
+      <li class="bulletList"><em class="italic">The Complete Kubernetes Guide</em>, by <em class="italic">Jonathan Baier</em>, <em class="italic">Gigi Sayfan</em>, <em class="italic">Jesse White</em> (<a href="https://www.packtpub.com/en-in/product/the-complete-kubernetes-guide-9781838647346"><span class="url">https://www.packtpub.com/en-in/product/the-complete-kubernetes-guide-9781838647346</span></a>)</li>
+      <li class="bulletList"><em class="italic">Getting Started with Kubernetes – Third Edition</em>, by <em class="italic">Jonathan Baier</em>, <em class="italic">Jesse White</em> (<a href="https://www.packtpub.com/en-in/product/getting-started-with-kubernetes-9781788997263"><span class="url">https://www.packtpub.com/en-in/product/getting-started-with-kubernetes-9781788997263</span></a>)</li>
+      <li class="bulletList"><em class="italic">Kubernetes for Developers</em>, by <em class="italic">Joseph Heck</em> (<a href="https://www.packtpub.com/en-in/product/kubernetes-for-developers-9781788830607"><span class="url">https://www.packtpub.com/en-in/product/kubernetes-for-developers-9781788830607</span></a>)</li>
+    </ul>
+    <p class="normal">You can also refer to official documents:</p>
+    <ul>
+      <li class="bulletList">Kubernetes documentation (<a href="https://kubernetes.io/docs/home/"><span class="url">https://kubernetes.io/docs/home/</span></a>), which is always the most up-to-date source of knowledge about Kubernetes in general.</li>
+      <li class="bulletList">Node affinity is covered at <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/"><span class="url">https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/</span></a>.</li>
+      <li class="bulletList">Taint and tolerations are covered at <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/"><span class="url">https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/</span></a>.</li>
+      <li class="bulletList">Pod priorities and preemption (which we have not covered in this chapter) are described at <a href="https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/"><span class="url">https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/</span></a>.</li>
+      <li class="bulletList">Advanced kube-scheduler configuration using scheduling profiles (which we have not covered in this chapter) is described at <a href="https://kubernetes.io/docs/reference/scheduling/config"><span class="url">https://kubernetes.io/docs/reference/scheduling/config</span></a>.</li>
+    </ul>
+    <h1 class="heading-1" id="_idParaDest-641">Join our community on Discord</h1>
+    <p class="normal">Join our community’s Discord space for discussions with the authors and other readers:</p>
+    <p class="normal"><a href="https://packt.link/cloudanddevops"><span class="url">https://packt.link/cloudanddevops</span></a></p>
+    <p class="normal"><img alt="" src="image/QR_Code119001106479081656.png"/></p>
+  </div>
+</body></html>
