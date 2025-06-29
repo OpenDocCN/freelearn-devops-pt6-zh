@@ -1,0 +1,375 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div id="_idContainer355">
+<h1 class="chapter-number" id="_idParaDest-194"><a id="_idTextAnchor196"/>12</h1>
+<h1 id="_idParaDest-195"><a id="_idTextAnchor197"/>Implementing Service Mesh for Cross-Cutting Concerns</h1>
+<p>In the previous chapter, we looked at OpenEBS cloud-native storage solutions so that we can provide persistent storage for our container applications. We also looked at how <strong class="bold">Container Attached Storage</strong> (<strong class="bold">CAS</strong>) is swiftly gaining acceptance as a viable solution for managing stateful workloads and utilizing persistent, fault-tolerant stateful applications. MicroK8s comes with built-in support for OpenEBS, making it the ideal option for running Kubernetes clusters in air-gapped Edge/IoT environments. Using the OpenEBS storage engine, we configured and implemented a PostgreSQL stateful workload. We also went over some best practices to keep in mind when creating a persistent volume and while selecting OpenEBS data engines.</p>
+<p>The emergence of cloud-native applications is linked to the rise of the service mesh. In the cloud-native world, an application could be made up of hundreds of services, each of which could have thousands of instances, each of which could be constantly changing due to an orchestrator such as Kubernetes dynamically scheduling them. Not only is service-to-service communication tremendously complex, but it’s also a critical component of an application’s runtime behavior. It is critical to manage it to ensure end-to-end performance, dependability, and security.</p>
+<p>A service mesh, such as Linkerd or Istio, is a tool for transparently embedding observability, security, and reliability features into cloud-native applications at the infrastructure layer rather than the application layer. The service mesh is quickly becoming an essential component of the cloud-native stack, particularly among Kubernetes users. Typically, the service mesh is built as a scalable set of network proxies that run alongside application code (the sidecar pattern). These proxies mediate communication between microservices and serve as a point where service mesh functionalities can be implemented.</p>
+<p>The service mesh layer can run in a container alongside the application as a sidecar. Each of the applications has many copies of the same sidecar attached to it, as shown in the following diagram:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer329">
+<img alt="Figure 12.1 – The service mesh sidecar pattern " height="725" src="image/Figure_12.01_B18115.jpg" width="1586"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.1 – The service mesh sidecar pattern</p>
+<p>The sidecar proxy handles all incoming and outgoing network traffic from a single service. As a result, the sidecar controls traffic between microservices, collects telemetry data, and applies policies. In certain ways, the application service is unaware of the network and is just aware of the sidecar proxy connecting to it.</p>
+<p>Within a service mesh, there’s a data plane and a control plane:</p>
+<ul>
+<li>The <strong class="bold">data plane</strong> coordinates communication between the mesh’s services and performs functions such as service discovery, load balancing, traffic management, health checks, and so on.</li>
+<li>The <strong class="bold">control plane</strong> manages and configures sidecar proxies so that policies can be enforced and telemetry can be collected.</li>
+</ul>
+<p>The service mesh provides features for service discovery, automatic load balancing, fine-grained control of traffic behavior with routing rules, retries, failovers, and more. It also has a pluggable policy layer and API configuration that supports access controls, rate limits, and quotas. Finally, it provides service monitoring with automatic metrics, logs, and traces for all traffic, as well as secure service-to-service communication in the mesh.</p>
+<p>In this chapter, we will look at two popular service mesh providers to implement this pattern: Linkerd and Istio. We won’t be looking at all the capabilities of a service mesh; instead, we will touch upon the monitoring aspect using a sample application.</p>
+<p>In this chapter, we’re going to cover the following topics: </p>
+<ul>
+<li>Overview of the Linkerd service mesh</li>
+<li>Enabling the Linkerd add-on and running a sample application</li>
+<li>Overview of the Istio service mesh</li>
+<li>Enabling the Istio add-on and running a sample application</li>
+<li>Common use cases for a service mesh</li>
+<li>Guidelines on choosing a service mesh</li>
+<li>Best practices for configuring a service mesh </li>
+</ul>
+<h1 id="_idParaDest-196"><a id="_idTextAnchor198"/>Overview of the Linkerd service mesh</h1>
+<p>Linkerd is a<a id="_idIndexMarker1044"/> Kubernetes-based service mesh. It simplifies and secures how services operate by providing runtime debugging, observability, dependability, and security all without requiring any code changes.</p>
+<p>Each service instance is connected to Linkerd by a system of ultralight, transparent proxies. These proxies handle all traffic to and from the service automatically. These proxies function as highly instrumented out-of-process network stacks, sending telemetry to and receiving control signals from the control plane. Linkerd can also measure and manage traffic to and from the service without introducing unnecessary latency.</p>
+<p>As discussed in the previous chapter, Linkerd is made up of a control plane, which is a collection of services that control Linkerd as a whole, and a data plane, which is made up of transparent micro-proxies that run closer to each service instance in the pods as sidecar containers. These proxies handle all TCP traffic to and from the service automatically and communicate with the control plane for configuration.</p>
+<p>The following diagram shows the architecture of Linkerd:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer330">
+<img alt="Figure 12.2 – Linkerd service mesh components " height="943" src="image/Figure_12.02_B18115.jpg" width="1350"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.2 – Linkerd service mesh components</p>
+<p>Now that we’ve provided a high-level overview and looked at the architecture, let’s look at each component in <a id="_idIndexMarker1045"/>more detail:</p>
+<ul>
+<li><strong class="bold">Destination service</strong>: The data plane proxies use the destination service to determine various aspects of <a id="_idIndexMarker1046"/>their behavior. It is used to retrieve service discovery information, retrieve policy information about which types of requests are permitted, and retrieve service profile information that’s used to inform per-route metrics, retries, timeouts, and more.</li>
+<li><strong class="bold">Identity service</strong>: The identity <a id="_idIndexMarker1047"/>service functions as a TLS Certificate Authority, accepting CSRs from proxies and issuing signed certificates. These certificates are issued at proxy initialization time and are used to implement mTLS on proxy-to-proxy connections.</li>
+<li><strong class="bold">Proxy injector</strong>: Every time a pod is created, the proxy injector receives a webhook request from Kubernetes. This<a id="_idIndexMarker1048"/> injector looks for a Linkerd-specific annotation (<strong class="source-inline">linkerd.io/inject: enabled</strong>) in resources. When that annotation is present, the injector modifies the pod’s specification and adds the <strong class="source-inline">proxy-init</strong> and <strong class="source-inline">linkerd-proxy</strong> containers, as well as the relevant start-time configuration, to the pod.</li>
+<li><strong class="bold">Linkerd2-proxy</strong>: Linkerd2-proxy is an <a id="_idIndexMarker1049"/>ultralight, transparent micro-proxy that was created specifically for the service mesh use case and is not intended to be a general-purpose proxy.</li>
+<li><strong class="bold">Linkerd-init container</strong>: Each meshed pod <a id="_idIndexMarker1050"/>has the <strong class="source-inline">linkerd-init</strong> container added as a Kubernetes <strong class="source-inline">init</strong> container that runs before any other containers are started. All TCP traffic to and <a id="_idIndexMarker1051"/>from the pod is routed through the proxy using iptables.</li>
+</ul>
+<p>Now that we’ve grasped the fundamentals, let’s enable the Linkerd add-on and run a sample application.</p>
+<h1 id="_idParaDest-197"><a id="_idTextAnchor199"/>Enabling the Linkerd add-on and running a sample application</h1>
+<p>In this section, you will enable <a id="_idIndexMarker1052"/>the Linkerd add-on in your MicroK8s Kubernetes<a id="_idIndexMarker1053"/> cluster. Then, to demonstrate Linkerd’s capabilities, you will deploy a sample application.</p>
+<p class="callout-heading">Note</p>
+<p class="callout">I’ll be using an Ubuntu virtual machine for this section. The instructions for setting up a MicroK8s cluster are the same as those in <a href="B18115_05.xhtml#_idTextAnchor070"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Implementing Updates on Multi-Node Raspberry Pi Kubernetes Clusters</em>.</p>
+<h2 id="_idParaDest-198"><a id="_idTextAnchor200"/>Step 1 – Enabling the Linkerd add-on </h2>
+<p>Use the following command to enable the Cilium add-on:</p>
+<p class="source-code">microk8s enable linkerd </p>
+<p>The following output indicates that the Linkerd add-on has been enabled: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer331">
+<img alt="Figure 12.3 – Enabling the Linkerd add-on " height="446" src="image/Figure_12.03_B18115.jpg" width="967"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.3 – Enabling the Linkerd add-on</p>
+<p>It will take some time <a id="_idIndexMarker1054"/>to finish activating the add-on. The following output shows that Linkerd has been successfully enabled:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer332">
+<img alt="Figure 12.4 – Linkerd enabled successfully " height="287" src="image/Figure_12.04_B18115.jpg" width="912"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.4 – Linkerd enabled successfully</p>
+<p>Before we move on to the next step, let’s make sure that all of the Linkerd components are up and running by using the following command:</p>
+<p class="source-code">kubectl get pods –n linkerd</p>
+<p>The following output indicates that all the components are <strong class="source-inline">Running</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer333">
+<img alt="Figure 12.5 – The Linkerd pods are running " height="155" src="image/Figure_12.05_B18115.jpg" width="725"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.5 – The Linkerd pods are running</p>
+<p>Now that the Linkerd add-on has<a id="_idIndexMarker1055"/> been enabled, let’s deploy a sample Nginx application.</p>
+<h2 id="_idParaDest-199"><a id="_idTextAnchor201"/>Step 2 – Deploying the sample application</h2>
+<p>In this step, we will be <a id="_idIndexMarker1056"/>deploying a sample Nginx application from the Kubernetes sample repository.</p>
+<p>Use the following command to create a sample Nginx deployment:</p>
+<p class="source-code">kubectl apply –f https://k8s.io/examples/application/deployment.yaml</p>
+<p>The following output indicates that there is no error in the deployment. Now, we can ensure that the pods have been created:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer334">
+<img alt="Figure 12.6 – Sample Nginx application deployment " height="91" src="image/Figure_12.06_B18115.jpg" width="866"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.6 – Sample Nginx application deployment</p>
+<p>Now that the deployment is successful, let’s use the <strong class="source-inline">kubectl</strong> command to check if the pods are <strong class="source-inline">Running</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer335">
+<img alt="Figure 12.7 – Sample application pods " height="129" src="image/Figure_12.07_B18115.jpg" width="633"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.7 – Sample application pods</p>
+<p>Here, we can see that the sample application deployment has been successful and that all the pods are running. Our next <a id="_idIndexMarker1057"/>step is to inject Linkerd into it by piping the <strong class="source-inline">linkerd inject</strong> and <strong class="source-inline">kubectl apply</strong> commands together. Without any downtime, Kubernetes will perform a rolling deployment and update each pod with the data plane’s proxies.</p>
+<p>Use the following command to inject Linkerd into the sample application:</p>
+<p class="source-code">kubectl get deployment nginx-deployment –n default –o yaml | microk8s linkerd inject – | kubectl apply –f –</p>
+<p>The following output confirms that the <strong class="source-inline">linkerd inject</strong> command has succeeded and that the sample application deployment has been reconfigured:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer336">
+<img alt="Figure 12.8 – Injecting Linkerd into the sample application " height="203" src="image/Figure_12.08_B18115.jpg" width="788"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.8 – Injecting Linkerd into the sample application</p>
+<p>The <strong class="source-inline">linkerd inject</strong> command simply adds annotations to the pod spec instructing Linkerd to inject the proxy into pods when they are created. </p>
+<p>Congratulations! Linkerd has now been added to the sample Nginx application! We added Linkerd to sample application services without touching the original YAML. </p>
+<p>On the data plane side, it’s possible to double-check that everything is working properly. Examine the data plane with the following command:</p>
+<p class="source-code">microk8s linkerd check --proxy</p>
+<p>The Linkerd CLI (<strong class="source-inline">microk8s linkerd</strong>) is the main interface for working with Linkerd. It can set up the control plane on the cluster, add the proxy to the service(s), and offer thorough performance <a id="_idIndexMarker1058"/>metrics for the service(s).</p>
+<p>The following output confirms that the <strong class="source-inline">linkerd check</strong> command has started the checks for the data plane:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer337">
+<img alt="Figure 12.9 – Linkerd checks " height="489" src="image/Figure_12.09_B18115.jpg" width="579"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.9 – Linkerd checks</p>
+<p>It will take some time to finish the data plane checks. The following output shows that the Linkerd checks have been completed:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer338">
+<img alt="Figure 12.10 – Linkerd checks completed " height="445" src="image/Figure_12.10_B18115.jpg" width="572"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.10 – Linkerd checks completed</p>
+<p>Now that the data plane <a id="_idIndexMarker1059"/>checks have been completed, we can see if the Linkerd annotations have been added to the sample application deployment by using the <strong class="source-inline">kubectl describe</strong> command.</p>
+<p>The following output confirms that Linkerd annotations have been added:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer339">
+<img alt="Figure 12.11 – Linkerd annotations added " height="484" src="image/Figure_12.11_B18115.jpg" width="743"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.11 – Linkerd annotations added</p>
+<p>Furthermore, we have injected Linkerd without having to write any special configurations or<a id="_idIndexMarker1060"/> change the code of the application. If we can provide Linkerd with additional information, it will be able to impose a variety of restrictions, such as timeouts and retries. Then, it can provide stats for each route.</p>
+<p>Next, we will start retrieving vital information about how each of the services of the sample Nginx deployment is performing. Since Linkerd has been injected into the application, we will look at various metrics and dashboards</p>
+<h2 id="_idParaDest-200"><a id="_idTextAnchor202"/>Step 3 – Exploring the Linkerd dashboard</h2>
+<p>Linkerd offers an on-cluster metrics<a id="_idIndexMarker1061"/> stack that includes a web dashboard and pre-configured Grafana dashboards. In this step, we will learn how to launch the Linkerd and Grafana dashboards.</p>
+<p>Use the following command to launch the Linkerd dashboard:</p>
+<p class="source-code">microk8s linkerd viz dashboard</p>
+<p>The following output indicates that the Linkerd dashboard has been launched and that it’s available on port <strong class="source-inline">50750</strong>. </p>
+<p>To view those metrics, you can use the Grafana dashboard, which is available at <strong class="source-inline">http://localhost:50750/grafana</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer340">
+<img alt="Figure 12.12 – Launching the Linkerd dashboard " height="215" src="image/Figure_12.12_B18115.jpg" width="811"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.12 – Launching the Linkerd dashboard</p>
+<p>The Linkerd dashboard <a id="_idIndexMarker1062"/>gives you a bird’s-eye view of what’s going on with the services in real time. It can be used to see metrics such as the success rate, requests per second, and latency, as well as visualize service dependencies and understand the health of certain service routes:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer341">
+<img alt="Figure 12.13 – The Linkerd dashboard " height="589" src="image/Figure_12.13_B18115.jpg" width="1400"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.13 – The Linkerd dashboard</p>
+<p>While the Linkerd dashboard gives you a bird’s-eye view of what’s going on with the services in real-time, Grafana dashboards, which are also part of the Linkerd control plane, provide usable dashboards for the services out of the box. These can also be used to monitor the services. Even for pods, we can get high-level stats and dive into the details:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer342">
+<img alt="Figure 12. 14 – Linkerd Top Line metrics dashboard " height="707" src="image/Figure_12.14_B18115.jpg" width="1024"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12. 14 – Linkerd Top Line metrics dashboard</p>
+<p>To summarize, we have <a id="_idIndexMarker1063"/>enabled Linkerd on the MicroK8s Kubernetes cluster and used it to monitor the services of a sample Nginx application. We also gathered relevant telemetry data such as the success rate, throughput, and latency. After that, we looked into a few out-of-the-box Grafana dashboards to see high-level metrics and dig into the details.</p>
+<p>In the next section, we will look at Istio, another notable service mesh provider.</p>
+<h1 id="_idParaDest-201"><a id="_idTextAnchor203"/>Overview of the Istio service mesh</h1>
+<p>Istio is an open source<a id="_idIndexMarker1064"/> platform-independent service mesh that manages traffic, enforces policies, and collects telemetry. It is a platform for managing communication between microservices and applications. It also provides automated baseline traffic resilience, service metrics collection, distributed tracing, traffic encryption, protocol upgrades, and advanced routing functionality for all service-to-service communication without requiring changes to the underlying services.</p>
+<p>The following are some of the vital<a id="_idIndexMarker1065"/> features of Istio:</p>
+<ul>
+<li>Secure <em class="italic">service-to-service</em> communication via TLS encryption, strong identity-based authentication, and authorization </li>
+<li>Automatic load balancing for HTTP, gRPC, WebSocket, and TCP traffic </li>
+<li>Fine-grained traffic control via rich routing rules, retries, failovers, and fault injection</li>
+<li>A pluggable policy layer and configuration API that supports access controls, rate limits, and quotas</li>
+<li>Automatic metrics, logs, and traces for all cluster traffic, including cluster ingress and egress</li>
+</ul>
+<p>An Istio service mesh is logically divided into two planes: a data plane and a control plane.</p>
+<p>The data plane is made up of a collection of intelligent proxies that are deployed as sidecars. All network communication between microservices is mediated and controlled by these proxies. In addition, they collect and report telemetry on all mesh traffic.</p>
+<p>The control plane is in charge of managing and configuring the proxies that are used to route traffic.</p>
+<div>
+<div class="IMG---Figure" id="_idContainer343">
+<img alt="Figure 12.15 – Istio components " height="874" src="image/Figure_12.15_B18115.jpg" width="1640"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.15 – Istio components</p>
+<p>Now that we’ve provided a high-level overview and looked at the architecture, let’s look at each component in more<a id="_idIndexMarker1066"/> detail:</p>
+<ul>
+<li><strong class="bold">Istiod</strong>: This manages service <a id="_idIndexMarker1067"/>discovery, configuration, and certificates. It translates high-level routing rules that govern traffic behavior into Envoy-specific configurations and propagates them to sidecars at runtime. The Pilot component abstracts platform-specific service discovery mechanisms and synthesizes them into a standard format that can be consumed by any Envoy API-compliant sidecar. Istio also supports discovery for a variety of environments, including Kubernetes and virtual machines. </li>
+<li><strong class="bold">Envoy</strong>: This is a high-performance proxy<a id="_idIndexMarker1068"/> that mediates all inbound and outbound traffic for all services in the service mesh. The only Istio components that interact with data plane traffic are envoy proxies. Envoy proxies are deployed as service sidecars, logically augmenting the services with Envoy’s many built-in features, such as the following:<ul><li>Dynamic service discovery</li>
+<li>Load balancing</li>
+<li>TLS termination</li>
+<li>HTTP/2 and gRPC proxies</li>
+<li>Circuit breakers</li>
+<li>Health checks</li>
+<li>Staged rollouts with a percentage-based traffic split</li>
+<li>Fault injection</li>
+<li>Rich metrics</li>
+</ul></li>
+</ul>
+<p>The following are various<a id="_idIndexMarker1069"/> components of the Istio system, as well as the abstractions that it employs:</p>
+<ul>
+<li><strong class="bold">Traffic management</strong>: The traffic routing rules provided by Istio allow you to easily control the flow of traffic and <a id="_idIndexMarker1070"/>API calls between services. Istio makes it simple to configure service-level properties such as circuit breakers, timeouts, and retries, as well as important tasks such as A/B testing, canary rollouts, and staged rollouts with percentage-based traffic splits. It also includes out-of-the-box reliability features that aid in making the application more resilient to failures of dependent services or the network.</li>
+<li><strong class="bold">Observability</strong>: For all mesh service communications, Istio creates extensive telemetry. This telemetry lets users <a id="_idIndexMarker1071"/>observe service behavior, allowing them to debug, maintain, and optimize their applications without putting additional strain on service developers. Users can acquire a comprehensive picture of how monitored services interact with one another and with Istio components.</li>
+</ul>
+<p>Istio creates the following kinds of telemetry to give total service mesh observability:</p>
+<ul>
+<li><strong class="bold">Metrics</strong>: Based on the four monitoring attributes, Istio creates a set of service metrics (latency, traffic, errors, and saturation). In addition, Istio provides extensive mesh <a id="_idIndexMarker1072"/>control plane measurements. A basic set of mesh monitoring dashboards is supplied on top of these metrics.</li>
+<li><strong class="bold">Distributed tracing</strong>: Dispersed traces result in distributed trace spans for each service, providing users with a<a id="_idIndexMarker1073"/> comprehensive view of call flows and the service relationships inside a mesh.</li>
+<li><strong class="bold">Access logs</strong>: As traffic flows into the service within a mesh, Istio generates a complete record <a id="_idIndexMarker1074"/>of each request, including source and destination metadata. Users can utilize this information to examine service behavior down to individual workload instances.</li>
+</ul>
+<ul>
+<li><strong class="bold">Security</strong>: To protect hosted <a id="_idIndexMarker1075"/>services as well as data, Istio security includes strong identity, powerful policy management, transparent TLS encryption, authentication, and audit tools. </li>
+</ul>
+<p>Now that we have covered the <a id="_idIndexMarker1076"/>fundamentals, we can proceed to the next step, which is to enable the Istio add-on and run a sample application.</p>
+<h1 id="_idParaDest-202"><a id="_idTextAnchor204"/>Enabling the Istio add-on and running a sample application</h1>
+<p>In this section, you will enable the Istio add-on in your MicroK8s Kubernetes cluster. Then, you will launch a sample application to show off Istio’s capabilities.</p>
+<p class="callout-heading">Note</p>
+<p class="callout">I’ll be using an Ubuntu virtual machine for this section. The instructions for setting up a MicroK8s cluster are the same as those in <a href="B18115_05.xhtml#_idTextAnchor070"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Implementing Updates on Multi-Node Raspberry Pi Kubernetes Cluster</em>.</p>
+<h2 id="_idParaDest-203"><a id="_idTextAnchor205"/>Step 1 – Enabling the Istio add-on </h2>
+<p>Use the following command to <a id="_idIndexMarker1077"/>enable the Istio add-on:</p>
+<p class="source-code">microk8s enable istio</p>
+<p>The following output indicates that the Istio add-on has been enabled: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer344">
+<img alt="Figure 12.16 – Enabling the Istio add-on " height="326" src="image/Figure_12.16_B18115.jpg" width="592"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.16 – Enabling the Istio add-on</p>
+<p>It will take some time to finish activating the add-on. The following output shows that Istio has been successfully enabled:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer345">
+<img alt="Figure 12.17 – Istio add-on enabled " height="306" src="image/Figure_12.17_B18115.jpg" width="541"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.17 – Istio add-on enabled</p>
+<p>Before we move on to<a id="_idIndexMarker1078"/> the next step, let’s make sure that all of the Istio components are up and running by using the following command:</p>
+<p class="source-code">kubectl get pods –n istio-system</p>
+<p>The following output indicates that all the components are <strong class="source-inline">Running</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer346">
+<img alt="Figure 12.18 – The Istio pods are running " height="161" src="image/Figure_12.18_B18115.jpg" width="669"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.18 – The Istio pods are running</p>
+<p>Now that the Istio add-on has been enabled, let’s deploy the sample application.</p>
+<h2 id="_idParaDest-204"><a id="_idTextAnchor206"/>Step 2 – Deploying the sample application</h2>
+<p>Before deploying the sample Nginx application, we need to label the namespace as <strong class="source-inline">istio-injection=enabled</strong> so that Istio <a id="_idIndexMarker1079"/>can inject sidecars into the deployment’s pods. </p>
+<p>Use the following command to label the namespace:</p>
+<p class="source-code">microk8s kubectl label namespace default istio-injection=enabled</p>
+<p>The following output indicates that there is no error in the deployment. Now, we can deploy the sample application:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer347">
+<img alt="Figure 12.19 – Labeling the namespace " height="51" src="image/Figure_12.19_B18115.jpg" width="840"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.19 – Labeling the namespace</p>
+<p>Use the following command to create a sample Nginx deployment:</p>
+<p class="source-code">kubectl apply –f https://k8s.io/examples/application/deployment.yaml</p>
+<p>The following output indicates that there is no error in the deployment. Now, we can ensure that Istio has been injected into pods:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer348">
+<img alt="Figure 12.20 – Sample application deployment " height="87" src="image/Figure_12.20_B18115.jpg" width="853"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.20 – Sample application deployment</p>
+<p>With the deployment completed, we can check if the Istio labels have been added to the sample application deployment by using the <strong class="source-inline">kubectl describe</strong> command.</p>
+<p>The following output confirms that the Istio labels have been added:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer349">
+<img alt="Figure 12.21 – Istio annotations added " height="538" src="image/Figure_12.21_B18115.jpg" width="710"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.21 – Istio annotations added</p>
+<p>We can also use the <strong class="source-inline">istioctl</strong> CLI command to get<a id="_idIndexMarker1080"/> an overview of the Istio mesh:</p>
+<p class="source-code">microk8s istioctl proxy-status</p>
+<p>The following output indicates that our sample Nginx deployment has been <strong class="source-inline">SYNCED</strong> with the Istiod control plane:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer350">
+<img alt="Figure 12.22 – Istio proxy status " height="282" src="image/Figure_12.22_B18115.jpg" width="1154"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.22 – Istio proxy status</p>
+<p>If any of the sidecars aren’t receiving configuration or are out of sync, then you can use the <strong class="source-inline">proxy-status</strong> command.</p>
+<p>If a proxy isn’t listed, it’s because it’s not currently linked to an Istiod instance:</p>
+<ul>
+<li><strong class="source-inline">SYNCED</strong> indicates that the Envoy proxy has acknowledged the most recent configuration that’s been supplied to it by Istiod.</li>
+<li><strong class="source-inline">NOT SENT</strong> indicates that Istiod has not sent any messages to the Envoy proxy. This is frequently because Istiod has nothing to send.</li>
+<li><strong class="source-inline">STALE</strong> indicates that Istiod sent an update to the Envoy proxy but did not receive a response. This usually indicates a problem with networking between the Envoy proxy and Istiod, or a flaw with Istio itself.</li>
+</ul>
+<p>Congratulations! You have added Istio <a id="_idIndexMarker1081"/>proxies to the sample application! We added Istio to existing services without touching the original YAML. </p>
+<h2 id="_idParaDest-205"><a id="_idTextAnchor207"/>Step 3 – Exploring the Istio service dashboard</h2>
+<p>For all service <a id="_idIndexMarker1082"/>communication within a mesh, Istio creates extensive telemetry. This telemetry allows service behavior to be observed, allowing service mesh users to troubleshoot, maintain, and optimize their applications without adding to the workload for service developers.</p>
+<p>As we discussed previously, to enable overall service mesh observability, Istio creates the following forms of telemetry:</p>
+<ul>
+<li><strong class="bold">Metrics</strong>: Based on monitoring<a id="_idIndexMarker1083"/> performance, Istio generates a set of service metrics (latency, traffic, errors, and saturation). For the mesh control plane, Istio also provides detailed metrics. On top of these metrics, a default set of mesh monitoring dashboards is given:</li>
+</ul>
+<div>
+<div class="IMG---Figure" id="_idContainer351">
+<img alt="Figure 12.23 – The Istio service dashboard " height="547" src="image/Figure_12.23_B18115.jpg" width="1067"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.23 – The Istio service dashboard</p>
+<p>The resource usage <a id="_idIndexMarker1084"/>dashboard looks as follows. This is where we can get details about memory, CPU, and disk usage:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer352">
+<img alt="Figure 12.24 – Istio Resource Usage dashboard " height="535" src="image/Figure_12.24_B18115.jpg" width="1501"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.24 – Istio Resource Usage dashboard</p>
+<ul>
+<li><strong class="bold">Distributed traces</strong>: Istio creates distributed trace spans for each service, giving users a complete picture of <a id="_idIndexMarker1085"/>the call flows and service dependencies in a mesh:</li>
+</ul>
+<div>
+<div class="IMG---Figure" id="_idContainer353">
+<img alt="Figure 12.25 – Istio distributed traces " height="706" src="image/Figure_12.25_B18115.jpg" width="1262"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.25 – Istio distributed traces</p>
+<ul>
+<li><strong class="bold">Access logs</strong>: Istio generates a full record of each request as traffic flows into a service within a mesh, including source <a id="_idIndexMarker1086"/>and destination metadata. Users can audit service behavior down to the individual workload instance level using this data.</li>
+</ul>
+<p>To summarize, we deployed Istio <a id="_idIndexMarker1087"/>on the MicroK8s Kubernetes cluster and used it to monitor a sample Nginx application’s services. We also had a look at the Istio service dashboard, which allows us to examine telemetry data to debug, maintain, and improve applications. Finally, we looked at how metrics, distributed traces, and access logs can be used to enable overall service mesh observability.</p>
+<p>In short, a service mesh provides uniform discovery, security, tracing, monitoring, and failure management. So, if a Kubernetes cluster has a service mesh, you can have the following without changing the application code:</p>
+<ul>
+<li>Automatic load balancing</li>
+<li>Fine-grained control of traffic behavior with routing rules, retries, failovers, and more</li>
+<li>Pluggable policy layer</li>
+<li>A configuration API that supports access control, rate limits, and quotas</li>
+<li>Service discovery</li>
+<li>Service monitoring with automatic metrics, logs, and traces for all traffic</li>
+<li>Secure service-to-service communication</li>
+</ul>
+<p>In most implementations, the <a id="_idIndexMarker1088"/>service mesh serves as the single pane of glass for a microservices architecture. It’s where you go to troubleshoot problems, enforce traffic policies, set rate limits, and test new code. It serves as your central point for monitoring, tracing, and controlling the interactions of all services – that is, how they are connected, performed, and secured. In the next section, we will look at some of the most common use cases.</p>
+<h1 id="_idParaDest-206"><a id="_idTextAnchor208"/>Common use cases for a service mesh</h1>
+<p>A service mesh is useful for any type of microservices architecture from an operations standpoint. This is because it allows <a id="_idIndexMarker1089"/>you to control traffic, security, permissions, and observability. Here are some of the most common, standardized, and widely accepted use cases for service meshes today:</p>
+<ul>
+<li><strong class="bold">Improving the observability</strong>: Through service-level visibility, tracing, and monitoring, we may improve the <a id="_idIndexMarker1090"/>observability of distributed services. Some of the service mesh’s primary features boost visibility and your ability to troubleshoot and manage situations dramatically. For example, if one of the architecture’s services becomes a bottleneck, retrying is a frequent option, although this may exacerbate the bottleneck due to timeouts. With a service mesh, you can quickly break the circuit to failing services, disable non-functioning replicas, and maintain the API’s responsiveness.</li>
+<li><strong class="bold">Blue/Green deployments</strong>: A service mesh allows you to leverage Blue/Green deployments to successfully roll out new<a id="_idIndexMarker1091"/> application upgrades without them affecting services due to its traffic control features. You begin by exposing the new version to a limited group of users, testing it, and then rolling it out to all production instances.</li>
+<li><strong class="bold">Chaos monkey/production testing</strong>: To improve <a id="_idIndexMarker1092"/>deployment robustness, the ability to inject delays and errors is also available.</li>
+<li><strong class="bold">Modernizing your legacy applications</strong>: You can utilize a service mesh as an enabler while decomposing your <a id="_idIndexMarker1093"/>apps if you’re in the process of upgrading your old applications to<a id="_idIndexMarker1094"/> Kubernetes-based microservices. You can register your existing applications as services in the service catalog and then migrate them to Kubernetes over time without changing the communication style between them.</li>
+<li><strong class="bold">The API Gateway technique</strong>: With the help of a service mesh, you may leverage the API Gateway technique<a id="_idIndexMarker1095"/> for service-to-service connectivity and complicated API management schemes within your clusters. A service mesh acts as superglue, dynamically connecting microservices with traffic controls, restrictions, and testing capabilities.</li>
+</ul>
+<p>Many new and widely accepted use cases will join those listed previously as service meshes become more popular. Now, let’s look at the considerations for choosing a service mesh provider.</p>
+<h1 id="_idParaDest-207"><a id="_idTextAnchor209"/>Guidelines on choosing a service mesh</h1>
+<p>In this section, we will <a id="_idIndexMarker1096"/>provide a brief comparison of the features offered by service mesh providers. Choosing one that meets your fundamental requirements boils down to whether or not you want more than just the essentials. Istio provides the most features and versatility, but keep in mind that flexibility equals complexity. Linkerd may be the best option for a basic strategy that only supports Kubernetes:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer354">
+<img alt="" height="1600" src="image/Table_01.jpg" width="1425"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 12.1 – Comparison between the Istio and Linkerd service meshes</p>
+<p>Now that we’ve seen <a id="_idIndexMarker1097"/>some recommendations for selecting a service mesh, let’s look at the best practices for configuring one.</p>
+<h1 id="_idParaDest-208"><a id="_idTextAnchor210"/>Best practices for configuring a service mesh</h1>
+<p>Although a service mesh is<a id="_idIndexMarker1098"/> extremely beneficial to development teams, putting one in place requires some effort. A service mesh gives you a lot of flexibility and room to tailor it to your needs because it has so many moving pieces. Flexibility usually comes at the expense of complexity. While working with a service mesh, the following best practices will provide you with some useful guidelines:</p>
+<ul>
+<li><strong class="bold">Adopt a GitOps approach</strong>: Traffic regulations, rate limits, and networking setup are all part of the service mesh’s configuration. The configuration can be used to install the service mesh from the ground up, update its versions, and migrate between clusters. As a result, it is recommended that the configuration be regarded as code and that GitOps be utilized in conjunction with a continuous deployment pipeline.</li>
+<li><strong class="bold">Use fewer clusters</strong>: Fewer clusters with a big number of servers perform better than many clusters with fewer instances for service mesh products. As a result, it’s best to keep the number of redundant clusters as low as possible, allowing you to take advantage of your service mesh approach’s straightforward operation and centralized configuration.</li>
+<li><strong class="bold">Use appropriate monitoring alerts and request tracing</strong>: Service mesh apps are advanced applications that manage the traffic of increasingly complicated distributed <a id="_idIndexMarker1099"/>applications. For system observability, metric collection, visualization, and dashboards are essential. Using Prometheus or Grafana, which will be offered by your service mesh, you can create alerts according to your requirements.</li>
+<li><strong class="bold">Focus on comprehensive security</strong>: The majority of service mesh systems offer mutual TLS, certificate management, authentication, and authorization as security features. To limit communication across clustered apps, you can design and enforce network policies. However, it should be emphasized that designing network policies is not a simple operation. You must consider future scalability and cover all eventualities for currently running apps. As a result, using a service mesh to enforce network policies is inconvenient and prone to errors and security breaches. Who is transmitting or receiving data is unimportant to service mesh solutions. Any hostile or malfunctioning application can retrieve your sensitive data if network policies allow it. As a result, rather than depending exclusively on the security features of service mesh devices, it’s essential to think about the big picture.</li>
+</ul>
+<p>In conclusion, a service mesh allows you to decouple the application’s business logic from observability, network, and security policies. You can connect to, secure, and monitor your microservices with it.</p>
+<h1 id="_idParaDest-209"><a id="_idTextAnchor211"/>Summary</h1>
+<p>The number of services that make up an application grows dramatically as monolithic apps are split down into microservices. And managing a huge number of entities isn’t easy. By standardizing and automating communication between services, a Kubernetes native service mesh, such as Istio or Linkerd, tackles difficulties created by container and service sprawl in a microservices architecture. Security, service discovery, traffic routing, load balancing, service failure recovery, and observability are all standardized and automated by a service mesh. </p>
+<p>In this chapter, we learned how to enable the Linkerd and Istio add-ons and inject sidecars into sample applications. Then, we examined the respective dashboards, which allowed us to examine telemetry data to debug, maintain, and improve applications. We also examined how metrics, distributed traces, and access logs can be used to improve overall service mesh observability.</p>
+<p>After that, we looked at some of the most prevalent use cases for service meshes today, as well as some tips on how to pick the right service mesh. We also provided a list of service mesh configuration best practices.</p>
+<p>In the next chapter, you will learn how to set up a highly available cluster. A highly available Kubernetes cluster can withstand a component failure and continue to serve workloads without interruption.</p>
+</div>
+<div>
+<div id="_idContainer356">
+</div>
+</div>
+</div>
+</body></html>

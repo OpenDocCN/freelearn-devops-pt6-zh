@@ -1,0 +1,578 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer168">
+<h1 class="chapterNumber">9</h1>
+<h1 class="chapterTitle" id="_idParaDest-320">Building Multitenant Clusters with vClusters</h1>
+<p class="normal">We’ve alluded to multitenancy in previous chapters, but this is the first chapter where we will focus on the challenges of multitenancy in Kubernetes and how to approach them with a relatively new technology called “virtual clusters.” In this chapter, we’ll explore the use cases for virtual clusters, how they’re implemented, how to deploy them in an automated way, and how to interact with external services with your <code class="inlineCode">Pod's</code> identity. We’ll finish the chapter by building and deploying a self-service multitenant portal for Kubernetes.</p>
+<p class="normal">In this chapter, we’ll cover:</p>
+<ul>
+<li class="bulletList">The benefits and challenges of multitenancy</li>
+<li class="bulletList">Using vClusters for tenants</li>
+<li class="bulletList">Building a multitenant cluster with self service</li>
+</ul>
+<h1 class="heading-1" id="_idParaDest-321">Technical requirements</h1>
+<p class="normal">This chapter will involve a larger workload than previous chapters, so a more powerful cluster will be needed. This chapter has the following technical requirements:</p>
+<ul>
+<li class="bulletList">An Ubuntu 22.04+ server running Docker with a minimum of 8 GB of RAM, though 16 GB is suggested</li>
+<li class="bulletList">Scripts from the <code class="inlineCode">chapter9</code> folder from the repo, which you can access by going to this book’s GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition</span></a></li>
+</ul>
+<h1 class="heading-1" id="_idParaDest-322">Getting Help</h1>
+<p class="normal">We do our best to test everything, but there are sometimes half a dozen systems or more in our integration labs. Given the fluid nature of technology, sometimes things that work in our environment don’t work in yours. Don’t worry, we’re here to help! Open an issue on our GitHub repo at <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues</span></a> and we’ll be happy to help you out!</p>
+<h1 class="heading-1" id="_idParaDest-323">The Benefits and Challenges of Multitenancy</h1>
+<p class="normal">Before we dive into virtual clusters and the <strong class="keyWord">vCluster</strong> project, let’s first explore what makes multitenant Kubernetes valuable and so difficult to implement. So far, we’ve alluded to challenges with multitenancy, but our focus has been on configuring and building a single cluster. This is the first chapter where we’re going to directly address multitenancy and how to implement it. The first topic we will explore is what multitenant Kubernetes is, and why you should consider using it.</p>
+<h2 class="heading-2" id="_idParaDest-324">Exploring the Benefits of Multitenancy</h2>
+<p class="normal">Kubernetes orchestrates<a id="_idIndexMarker913"/> the allocation of resources for workloads through an API and a database. These workloads are typically comprised of Linux processes that require specific computing resources and memory. In the initial five to six years of Kubernetes’ evolution, a prevailing trend was to have a dedicated cluster for each “application.” It’s important to note that when we say “application,” it could refer<a id="_idIndexMarker914"/> to a single monolithic application, a collection of microservices, or several interrelated monolithic applications. This approach is notably inefficient and results in the proliferation of management complexities and potential wasted resources. To understand this better, let’s examine all of the elements<a id="_idIndexMarker915"/> within a single cluster:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">etcd Database</strong>: You should always have an odd number of <code class="inlineCode">etcd</code> instances;<strong class="keyWord"> </strong>at least three instances of <code class="inlineCode">etcd</code> are needed to maintain high availability.</li>
+<li class="bulletList"><strong class="keyWord">Control Plane Nodes</strong>: Similar to <code class="inlineCode">etcd</code>, you’ll want at least two control plane nodes, but more likely three for high availability.</li>
+<li class="bulletList"><strong class="keyWord">Worker Nodes</strong>: You’ll want a minimum of two nodes, regardless of the load you’re putting<a id="_idIndexMarker916"/> on your infrastructure.</li>
+</ul>
+<p class="normal">Your control plane requires resources, so even though most Kubernetes distributions don’t require dedicated control plane nodes anymore, it’s still additional components to manage. Looking at your worker nodes, how much utilization are the nodes using? If you have a heavily used system, you will get the most out of the hardware, but are all your applications always that heavily utilized? Allowing multiple “applications” to use a single infrastructure can vastly reduce your hardware utilization, requiring fewer clusters, whether you’re running on pre-paid infrastructure or pay-as-you-go infrastructure. Over-provisioning resources will increase power, cooling, rack space, etc., all of which will add additional costs. Fewer servers also means reducing the maintenance requirements for hardware, further reducing costs.</p>
+<p class="normal">In addition to hardware costs, there’s a human cost to the cluster-per-application approach. Kubernetes skills are very expensive and difficult to find in the market. It’s probably why you’re reading this book! If each application group needs to maintain its own Kubernetes expertise, that means duplicating skills that are difficult to obtain, also increasing costs. By pooling infrastructure resources, it becomes possible to establish a centralized team responsible for overseeing Kubernetes deployments, eliminating the necessity for other teams, whose primary focus lies outside infrastructure development, to duplicate these skills.</p>
+<p class="normal">There are major security benefits to multitenancy as well. With common infrastructure, it’s easier to centralize enforcement of security requirements. Taking authentication as an example, if every application gets its own cluster, how will you enforce common authentication requirements? How will you onboard new clusters in an automated way? If you’re using OIDC, are you going to integrate a provider for each cluster?</p>
+<p class="normal">Another example of the benefits of centralized infrastructure is secret management. If you have a centralized Vault deployment, do you want to integrate a new cluster for each application? In <em class="chapterRef">Chapter 8</em>, we integrated a cluster with Vault; if you have massive cluster sprawl, the same integration needs to be done to each individual cluster – how will that be automated and managed?</p>
+<p class="normal">Moving to a multitenant architecture<a id="_idIndexMarker917"/> reduces your long-term costs by reducing the amount of infrastructure needed to run your workload. It also cuts down on the number of administrators needed to manage infrastructure and makes it easier to centralize security and policy enforcement.</p>
+<p class="normal">While multitenancy provides a significant advantage, it does come with some challenges. Next, we’ll explore the challenges of implementing multitenant Kubernetes clusters.</p>
+<h2 class="heading-2" id="_idParaDest-325">The Challenges of Multitenant Kubernetes</h2>
+<p class="normal">We explored the benefits<a id="_idIndexMarker918"/> of multitenant Kubernetes, and while the adoption is growing for multitenancy, why isn’t it as common as the cluster-per-application approach?</p>
+<p class="normal">Creating a multitenant Kubernetes cluster requires several considerations for security, usability, and management. Implementing solutions for these challenges is often very implementation-specific and requires integration with third-party tools, which are outside the scope of most distributions.</p>
+<p class="normal">Most enterprises add an additional layer of complexity based on their management silos. Application owners are judged based on their own criteria and by their own management. Anyone whose pay is dependent on certain criteria will want to make sure they have as much control of those criteria as possible, even if it’s for the wrong reasons. This silo effect can have an adversely negative impact on any centralization effort that doesn’t afford appropriate control to application owners. Since these silos are unique to each enterprise, it’s impossible for a single distribution to account for them in a way that is easily marketable. Rather than deal with the additional complexities, it’s much easier for a vendor to market a cluster-per-application approach.</p>
+<p class="normal">With the fact that there are few multitenant Kubernetes distributions on the market, the next question becomes “What are the challenges of making a generic Kubernetes cluster multitenant?”</p>
+<p class="normal">We’re going to break down the answers to this question by impact:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Security</strong>: Most containers are just Linux processes. We’ll cover this in more detail in <em class="chapterRef">Chapter 12</em>, <em class="italic">Node Security with Gatekeeper</em>. What’s important to understand for now is that there is very little security that separates processes on a host. If you’re running processes from multiple applications, you want to make sure that a breakout doesn’t impact other processes.</li>
+<li class="bulletList"><strong class="keyWord">Container breakouts</strong>: While this is important for any cluster, it’s a necessity in multitenant clusters. We will cover securing our container runtimes in <em class="chapterRef">Chapter 13</em>, <em class="italic">KubeArmor Securing Your Runtime</em>.</li>
+<li class="bulletList"><strong class="keyWord">Impact</strong>: Any issues with centralized infrastructure will have adverse impacts on multiple applications. This is often referred to as “blast radius.” If there’s an upgrade that goes wrong or fails, who’s impacted? If there’s a container breakout, who’s impacted?</li>
+<li class="bulletList"><strong class="keyWord">Resource Bottlenecks</strong>: While it’s true that a centralized infrastructure gets better utilization of resources, it can also create bottlenecks. How quickly can you onboard a new tenant? How much control do application owners have in their own tenants? How difficult is it to grant or revoke access? If your multitenant solution can’t keep up with application owners, application owners will take on the infrastructure themselves. This will lead to wasted resources, configuration drift, and difficulty reporting and auditing all of the clusters.</li>
+<li class="bulletList"><strong class="keyWord">Restrictions</strong>: A centralized platform that is overly restrictive will result in application owners looking to either maintain their own infrastructure or outsource their infrastructure to third-party solutions. This is one of the most common issues with any centralized service that can be best illustrated by the continuous rise and fall of <strong class="keyWord">Platform as a Service</strong> (<strong class="keyWord">PaaS</strong>) implementations that fail<a id="_idIndexMarker919"/> to provide the flexibility needed for application workloads.</li>
+</ul>
+<p class="normal">While these issues can be applied<a id="_idIndexMarker920"/> to any centralized service, they do have some unique impacts on Kubernetes. For instance, if each application gets its own namespace, how can an application properly subdivide that namespace for different logical functions? Should you grant multiple namespace per application?</p>
+<p class="normal">Another major impact on Kubernetes cluster designs is the deployment and management of <strong class="keyWord">Custom Resource Definitions</strong> (<strong class="keyWord">CRDs</strong>). CRDs are cluster-level <a id="_idIndexMarker921"/>objects, and running multiple versions is nearly impossible in the same cluster; as we have pointed out in previous chapters, CRDs are growing in popularity as a way of storing configuration data. Multitenant clusters may have version conflicts that need to be managed.</p>
+<p class="normal">Many of these challenges will be addressed in later chapters, but in this chapter, we’re going to focus on two aspects:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Tenant Boundaries</strong>: What is the scope of a tenant? How much control within the boundary does the tenant have?</li>
+<li class="bulletList"><strong class="keyWord">Self-Service</strong>: How does a centralized Kubernetes service interact with users?</li>
+</ul>
+<p class="normal">Both aspects will be addressed by adding two components to our clusters. OpenUnison has already been introduced to handle authentication and will be extended for its self-service capabilities with namespace as a Service. The other external system will be vCluster, from Loft Labs.</p>
+<p class="normal">Since we have already used OpenUnison<a id="_idIndexMarker922"/> to demonstrate namespace as a Service, we can move on to the additional challenges, like CRD versioning issues in the next section using the vCluster project.</p>
+<h1 class="heading-1" id="_idParaDest-326">Using vClusters for Tenants</h1>
+<p class="normal">In the <em class="italic">KinD</em> chapter, we explained that KinD<a id="_idIndexMarker923"/> is nested in Docker to provide<a id="_idIndexMarker924"/> us with a full Kubernetes cluster. We compared this to nesting dolls, where components are embedded in other components, which can cause confusion to users who are newer to containers and Kubernetes. vCluster is a similar concept – it creates a virtual cluster in the main host clusters, and while it does appear to be a standard Kubernetes cluster, it is nested within the host clusters. Keep this in mind as you are reading the rest of the chapter.</p>
+<p class="normal">In the previous section, we walked through the benefits and challenges of multitenancy and how those challenges impact Kubernetes. In this section, we’re going to introduce the vCluster project from Loft Labs, which allows you to run a Kubernetes control plane inside of an unprivileged namespace. This allows each tenant to get their own “virtual” Kubernetes infrastructure that they can have complete control over without impacting other tenants’ own implementation or other workloads in the “main cluster.”</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="344" src="../Images/B21165_09_01.png" width="630"/></figure>
+<p class="packt_figref">Figure 9.1: Logical layout of a vCluster</p>
+<p class="normal">In the above diagram, each tenant gets their own namespace, which runs a vCluster. The vCluster is a combination of three<a id="_idIndexMarker925"/> components:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Database</strong>: Somewhere that can store the vCluster’s internal information. This may be <code class="inlineCode">etcd</code> or a relational database, depending on which cluster type you deploy vCluster with.</li>
+<li class="bulletList"><strong class="keyWord">API Server</strong>: The vCluster includes its own API server for its pods to interact with. This API server is backed by the database managed by the vCluster.</li>
+<li class="bulletList"><strong class="keyWord">Synchronization Engine</strong>: While a vCluster has its own API server, the pods are all run in the host cluster. To achieve this, the vCluster synchronizes certain objects between the host and vCluster. We’ll cover this in greater detail next.</li>
+</ul>
+<p class="normal">The benefit of the vCluster’s approach<a id="_idIndexMarker926"/> is that from the <code class="inlineCode">Pod's</code> perspective, it’s working<a id="_idIndexMarker927"/> within a private cluster while it’s really running in a main host cluster. The tenant can divide its own cluster into whatever namespace suit it and deploy CRDs, or operators, as needed.</p>
+<figure class="mediaobject"><img alt="A picture containing text  Description automatically generated" height="448" src="../Images/B21165_09_02.png" width="794"/></figure>
+<p class="packt_figref">Figure 9.2: Pod’s perspective of a vCluster</p>
+<p class="normal">In the above diagram, we see that the pod is deployed into our tenant’s namespace, but instead of communicating with the host cluster’s API server, it’s communicating with the vCluster’s API server. This is possible because the pod definition that gets synchronized from the vCluster into the host cluster has its environment variables and DNS overwritten to tell the pod that the host <code class="inlineCode">kubernetes.default.svc</code> points to the vCluster, not the host cluster’s API server.</p>
+<p class="normal">Since the pod runs in the host <a id="_idIndexMarker928"/>cluster, and the vCluster<a id="_idIndexMarker929"/> runs in the host cluster, all of the pods are subject to the <code class="inlineCode">ResourceQuotas</code> put in place on the namespace. This means that any pod deployed to a vCluster is bound by the same rules as a pod deployed directly into a namespace including any restrictions created by quotas, policies, or other admission controllers. In <em class="chapterRef">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>, you’ll learn about using admission controllers to enforce policies across your cluster. Since the pod is running in the host cluster, you only need to apply those policies to your host. This vastly simplifies our security implementation because, now, tenants can be given <code class="inlineCode">cluster-admin</code> access to their virtual clusters without compromising the security of the host cluster.</p>
+<p class="normal">Another important note is that because the host cluster is responsible for running your pod, it’s also responsible for all of the vClusters <code class="inlineCode">Ingress</code> traffic. You do not have to redeploy your <code class="inlineCode">Ingress</code> controller on each vCluster – they share the host <code class="inlineCode">Ingress</code> controller, reducing the need for maintaining <a id="_idIndexMarker930"/>additional <code class="inlineCode">Ingress</code> deployments or creating multiple wildcard<a id="_idIndexMarker931"/> domains for each vCluster.</p>
+<p class="normal">Now that we have a basic understanding of what a vCluster is and how it helps to address some of the challenges of multitenancy in Kubernetes, the next step is to deploy a vCluster and see how the internals work.</p>
+<h2 class="heading-2" id="_idParaDest-327">Deploying vClusters</h2>
+<p class="normal">In the previous section, we focused <a id="_idIndexMarker932"/>on the theory behind how a vCluster works and is implemented. In this section, we’re going to deploy a vCluster and a simple workload so that we can see what changes have occurred between a pod that runs in a vCluster and what is deployed into the host cluster.</p>
+<p class="normal">The first step is to create a new cluster – we will delete the existing KinD cluster and deploy a fresh one. We will then execute a script called <code class="inlineCode">deploy_vcluster_cli.sh</code> in the <code class="inlineCode">chapter9</code> directory:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kind delete cluster -n cluster01
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter2
+<span class="hljs-con-meta">$ </span>./create-cluster.sh
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> ../chapter9
+<span class="hljs-con-meta">$ </span>./deploy_vcluster_cli.sh
+</code></pre>
+<p class="normal">At this point, we have a fresh cluster and the CLI for deploying vClusters.</p>
+<p class="normal">The next step is to create a vCluster. First, we will create a new <code class="inlineCode">namespace</code> called <code class="inlineCode">tenant1</code>, and then use the vCluster utility to create a new vCluster called <code class="inlineCode">myvcluster</code> in the new namespace:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create ns tenant1
+<span class="hljs-con-meta">$ </span>vcluster create myvcluster --distro k3s -n tenant1
+</code></pre>
+<p class="normal">Once the <code class="inlineCode">vcluster</code> command has completed, we’ll have a running vCluster, built using <code class="inlineCode">k3s</code>, running on the host cluster. Logically, it is its own cluster and we can “connect” directly to it using the vClusters kubeconfig or the <code class="inlineCode">vcluster</code> utility.</p>
+<div class="packt_tip">
+<p class="normal"><code class="inlineCode">vCluster</code> is designed to support multiple Kubernetes cluster implementations. The default, and most common, is <code class="inlineCode">k3s</code>, which is a Kubernetes implementation that replaces <code class="inlineCode">etcd</code> with a relational database and replaces the multiple binaries with a single binary. It was originally developed for edge deployments but works well for single tenants too. We could use <code class="inlineCode">k0s</code> from <strong class="keyWord">Mirantis</strong> or even a vanilla Kubernetes, but <code class="inlineCode">k3s</code> does well for most situations.</p>
+</div>
+<p class="normal">Let’s disconnect and see what’s running<a id="_idIndexMarker933"/> in our host:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>vcluster disconnect
+info   Successfully disconnected from vcluster: myvcluster and switched back to the original context: kind-cluster01
+<span class="hljs-con-meta">$ </span>kubectl get pods -n tenant1
+NAME                                                  READY   STATUS    RESTARTS   AGE
+coredns-864d4658cb-mdcx5-x-kube-system-x-myvcluster   1/1     Running   0          4m45s
+myvcluster-0                                          2/2     Running   0          5m12s
+</code></pre>
+<p class="normal">As shown in the output above, there are two pods running in the <code class="inlineCode">tenant1</code> namespace: CoreDNS and our vCluster. If we look at the services in our namespace, you will see a list of services similar to the following:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get svc -n tenant1
+NAME                                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                         AGE
+kube-dns-x-kube-system-x-myvcluster   ClusterIP   10.96.142.24    &lt;none&gt;        53/UDP,53/TCP,9153/TCP          7m18s
+myvcluster                            NodePort    10.96.237.247   &lt;none&gt;        443:32489/TCP,10250:31188/TCP   7m45s
+myvcluster-headless                   ClusterIP   None            &lt;none&gt;        443/TCP                         7m45s
+myvcluster-node-cluster01-worker      ClusterIP   10.96.209.122   &lt;none&gt;        10250/TCP                       7m18s
+</code></pre>
+<p class="normal">There are several services set up to point to our vCluster’s API server and DNS server that provide access to the vCluster, making it logically appear as a “full” standard cluster.</p>
+<p class="normal">Now let’s connect to our vCluster and deploy a pod. In the <code class="inlineCode">chapter9/simple</code> directory, we have a pod manifest that we will use for our example. First, we will connect to the cluster and deploy the example pod using <code class="inlineCode">kubectl</code> in the <code class="inlineCode">chapter9/simple</code> directory:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>vcluster connect myvcluster -n tenant1
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter9/simple
+<span class="hljs-con-meta">$ </span>kubectl create -f ./virtual-pod.yaml
+<span class="hljs-con-meta">$ </span>kubectl logs -f virtual-pod
+Wed Sep 20 17:50:03 UTC 2023
+KUBERNETES_SERVICE_PORT_HTTPS=443
+KUBERNETES_SERVICE_PORT=443
+HOSTNAME=virtual-pod
+PWD=/
+HOME=/root
+KUBERNETES_PORT_443_TCP=tcp://10.96.237.247:443
+SHLVL=1
+KUBERNETES_PORT_443_TCP_PROTO=tcp
+<span class="code-highlight"><strong class="hljs-slc">KUBERNETES_PORT_443_TCP_ADDR=10.96.237.247</strong></span>
+KUBERNETES_SERVICE_HOST=10.96.237.247
+KUBERNETES_PORT=tcp://10.96.237.247:443
+KUBERNETES_PORT_443_TCP_PORT=443
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+_=/usr/bin/env
+search default.svc.cluster.local svc.cluster.local cluster.local
+<span class="code-highlight"><strong class="hljs-slc">nameserver 10.96.142.24</strong></span>
+</code></pre>
+<p class="normal">Notice that the <code class="inlineCode">Pod's</code> environment variables<a id="_idIndexMarker934"/> use <code class="inlineCode">10.96.237.247</code> as the IP address for the API server; this is the <code class="inlineCode">ClusterIP</code> from the <code class="inlineCode">mycluster</code> Service that’s running on the host. Also, the nameserver is <code class="inlineCode">10.96.142.24</code>, which is the <code class="inlineCode">ClusterIP</code> for our vCluster’s <code class="inlineCode">kube-dns Service </code>in the host. As far as the pod is concerned, it thinks it is running inside of the vCluster. It doesn’t know anything about the host cluster. Next, disconnect from the vCluster and take a look at the pods in our <code class="inlineCode">tenant1</code> namespace on the host cluster:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>vcluster disconnect
+<span class="hljs-con-meta">$ </span>kubectl get pods -n tenant1
+NAME                                                  READY   STATUS    RESTARTS   AGE
+coredns-864d4658cb-mdcx5-x-kube-system-x-myvcluster   1/1     Running   0          22m
+myvcluster-0                                          2/2     Running   0          22m
+<span class="code-highlight"><strong class="hljs-slc">virtual-pod-x-default-x-myvcluster                    1/1     Running   0          7m11s</strong></span>
+</code></pre>
+<p class="normal">Notice that your vCluster’s pod is running in your host cluster. The <code class="inlineCode">Pod</code>'s name on the host includes both the name of the pod and the namespace from the vCluster. Let’s take a look at the pod definition. We’re not going to put all of the output here because it would take up multiple pages. What we want to point out is that in addition to our original definition, the pod includes a hard-coded <code class="inlineCode">env</code> section:</p>
+<pre class="programlisting con"><code class="hljs-con">env:
+    - name: KUBERNETES_PORT
+      value: tcp://10.96.237.247:443
+    - name: KUBERNETES_PORT_443_TCP
+      value: tcp://10.96.237.247:443
+    - name: KUBERNETES_PORT_443_TCP_ADDR
+      value: 10.96.237.247
+    - name: KUBERNETES_PORT_443_TCP_PORT
+      value: "443"
+    - name: KUBERNETES_PORT_443_TCP_PROTO
+      value: tcp
+    - name: KUBERNETES_SERVICE_HOST
+      value: 10.96.237.247
+    - name: KUBERNETES_SERVICE_PORT
+      value: "443"
+    - name: KUBERNETES_SERVICE_PORT_HTTPS
+      value: "443"
+</code></pre>
+<p class="normal">It also includes its own <code class="inlineCode">hostAliases</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">hostAliases:
+  - hostnames:
+    - kubernetes
+    - kubernetes.default
+    - kubernetes.default.svc
+    ip: 10.96.237.247
+</code></pre>
+<p class="normal">So, while the <code class="inlineCode">Pod</code> is running in our host cluster, all of the things that tell the pod where it’s running are pointing to our vCluster.</p>
+<p class="normal">In this section, we launched our first vCluster<a id="_idIndexMarker935"/> and a pod in that vCluster to see how it gets mutated to run in our host cluster. In the next section, we’re going to look at how we can access our vCluster with an eye on the same enterprise security we’re required to use in our host cluster.</p>
+<h2 class="heading-2" id="_idParaDest-328">Securely Accessing vClusters</h2>
+<p class="normal">In the previous section, we deployed<a id="_idIndexMarker936"/> a simple vCluster and accessed the vCluster using the <code class="inlineCode">vcluster connect</code> command. This command first creates a port-forward to the vCluster’s API server <code class="inlineCode">Service</code> and then adds a context with a master certificate to our <code class="inlineCode">kubectl</code> configuration file, which is similar to our KinD cluster.</p>
+<p class="normal">We spent much of <em class="chapterRef">Chapter 6</em>, <em class="italic">Integrating Authentication into Your Cluster</em>, walking through why this is an anti-pattern, and those reasons still apply to vClusters. You’re still going to need to integrate enterprise authentication into your vCluster. Let’s look at two approaches:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Decentralized</strong>: You can leave authentication as an exercise to the cluster owner. This negates many of the advantages of multitenancy and will require that each cluster is treated as a new integration into your enterprise’s identity system.</li>
+<li class="bulletList"><strong class="keyWord">Centralized</strong>: If you host an <strong class="keyWord">identity provider</strong> (<strong class="keyWord">IdP</strong>) in your host cluster, you<a id="_idIndexMarker937"/> can tie each vCluster to that IdP instead of directly to the centralized identity store. In addition to providing centralized authentication, this approach makes it easier to automate the onboarding of new vClusters and limits the amount of secret information, such as credentials, that needs to be stored in the vCluster.</li>
+</ul>
+<p class="normal">The choice is clear when working in a multitenant environment; your host cluster should also host central authentication.</p>
+<p class="normal">The next issue to understand regarding vCluster access is the network path to your vCluster. The <code class="inlineCode">vcluster</code> command creates a local port-forward to your API server. This means that every time a user wants to use their API server, they’ll need to set up a port-forward to their API server. This<a id="_idIndexMarker938"/> isn’t a great <strong class="keyWord">user experience</strong> (<strong class="keyWord">UX</strong>) and can be error-prone. It would be better to set up a direct connection to our vCluster’s API server, as we would for any standard Kubernetes cluster. The challenge with setting up direct network access to our vCluster’s API server is that while it’s a <code class="inlineCode">NodePort</code>, nodes are rarely exposed directly to the network. They usually sit behind a load balancer and rely on <code class="inlineCode">Ingress</code> controllers to provide access to cluster resources.</p>
+<p class="normal">The answer is to use the application infrastructure our host cluster already provides for our vClusters.</p>
+<p class="normal">In <em class="chapterRef">Chapter 6</em>, <em class="italic">Integrating Authentication into Your Cluster</em>, we talked about using impersonating proxies with cloud-managed clusters. The same scenario can be applied to vClusters. While you can configure<a id="_idIndexMarker939"/> <code class="inlineCode">k3s</code> to use OIDC for authentication, using an impersonating proxy vastly simplifies the network management because we’re not creating new load balancers or infrastructure to support our vClusters.</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="367" src="../Images/B21165_09_03.png" width="822"/></figure>
+<p class="packt_figref">Figure 9.3: vCluster with authentication</p>
+<p class="normal">In the above diagram, we can see how the networking and authentication come together in our host cluster. The host cluster will have an OpenUnison that authenticates users to our Active Directory. Our vCluster will have its own OpenUnison with a trust established with our host cluster’s OpenUnison. The vCluster will use kube-oidc-proxy to translate the authentication tokens from OpenUnison into impersonation headers to our vCluster’s API server. This approach gives us a central authentication and networking system, while also making it easier for vCluster owners to incorporate their own management applications without having to get the host cluster team involved. Local cluster<a id="_idIndexMarker940"/> management<a id="_idIndexMarker941"/> applications such as <strong class="keyWord">ArgoCD</strong> and <strong class="keyWord">Grafana</strong> can all be integrated into the vCluster’s OpenUnison instead of the host cluster’s OpenUnison.</p>
+<p class="normal">To show our setup in action, the first thing we need to do is update our vCluster so that it will synchronize <code class="inlineCode">Ingress</code> objects from our vCluster into our host cluster, using the vcluster tool. In the <code class="inlineCode">chapter/host</code> directory, we have an updated values file called <code class="inlineCode">vcluster-values.yaml</code>; we will use this values file to upgrade the vCluster in the <code class="inlineCode">tenant1</code> namespace:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter9/host
+<span class="hljs-con-meta">$ </span>vcluster create myvcluster --upgrade -f ./vcluster-values.yaml -n tenant1
+</code></pre>
+<p class="normal">This command will update our vCluster to synchronize the <code class="inlineCode">Ingress</code> objects we create in our vCluster into our host cluster. Next, we’ll need OpenUnison running in our host cluster:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>vcluster disconnect
+<span class="hljs-con-meta">$ </span>./deploy_openunison_imp_impersonation.sh
+</code></pre>
+<p class="normal">Before deploying anything, we want to make sure that we’re running against the host, not our vCluster. The script we just ran is similar to what we ran in <em class="chapterRef">Chapter 6</em>, <em class="italic">Integrating Authentication into Your Cluster</em>; it will deploy our “Active Directory” and OpenUnison to the vCluster. Once OpenUnison has been deployed, the last step is to run the satellite deployment process for OpenUnison:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>vcluster disconnect
+<span class="hljs-con-meta">$ </span>./deploy_openunison_vcluster.sh
+</code></pre>
+<p class="normal">This script is like the host’s deployment script with some key differences:</p>
+<ul>
+<li class="bulletList">The values for our OpenUnison do not contain any authentication information.</li>
+<li class="bulletList">The values for our OpenUnison have a different cluster name from our host cluster.</li>
+<li class="bulletList">Instead of running <code class="inlineCode">ouctl install-auth-portal</code>, the script runs <code class="inlineCode">ouctl install-satelite</code>, which sets up OpenUnison to use OIDC between the satellite cluster and the host cluster. This command creates the <code class="inlineCode">oidc</code> section of the <code class="inlineCode">values.yaml</code> file for us.</li>
+</ul>
+<p class="normal">Once the script has completed<a id="_idIndexMarker942"/> executing, you can log in to OpenUnison just as you did in <em class="chapterRef">Chapter 6</em>. In your browser, go to <code class="inlineCode">https://k8sou.apps.X-X-X-X.nip.io</code>, where X-X-X-X is the IP address of your cluster, but with dashes instead of dots. Since our cluster is at <code class="inlineCode">192.168.2.82</code>, we use <code class="inlineCode">https://k8sou.apps.192-168-2-82.nip.io/</code>. To log in, use the user <code class="inlineCode">mmosley</code> with the password <code class="inlineCode">start123</code>. </p>
+<p class="normal">Once you’re logged in, you’ll see that there is now a tree with options for <strong class="screenText">Host Cluster</strong> and <strong class="screenText">tenant1</strong>. You can click on <strong class="screenText">tenant1</strong>, then click<a id="_idIndexMarker943"/> on the <strong class="screenText">tenant1 Tokens</strong> badge.</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application, website, Teams  Description automatically generated" height="467" src="../Images/B21165_09_04.png" width="878"/></figure>
+<p class="packt_figref">Figure 9.4: OpenUnison portal page</p>
+<p class="normal">Once the new page loads, you can grab your <code class="inlineCode">kubectl</code> configuration and paste it into your terminal:</p>
+<figure class="mediaobject"><code class="codeHighlighted" style="font-weight: bold;"><img alt="Graphical user interface, text, application  Description automatically generated" height="451" src="../Images/B21165_09_05.png" width="878"/></code></figure>
+<p class="packt_figref">Figure 9.5: OpenUnison kubectl configuration generator</p>
+<p class="normal">Depending on which client you’re running on, you can paste this command into a Windows or Linux/macOS terminal and start using your vCluster without having to distribute the <code class="inlineCode">vcluster</code> CLI tool and while using your enterprise’s authentication requirements.</p>
+<p class="normal">In this section, we looked at how to integrate<a id="_idIndexMarker944"/> enterprise authentication into our vClusters and how to provide consistent network access to our vClusters as well. In the next section, we’ll explore how to integrate our vClusters with external services, such as HashiCorp’s Vault.</p>
+<h2 class="heading-2" id="_idParaDest-329">Accessing External Services from a vCluster</h2>
+<p class="normal">In the previous chapter, we integrated<a id="_idIndexMarker945"/> a HashiCorp Vault instance<a id="_idIndexMarker946"/> into our cluster. Our pods communicated with Vault using the tokens projected into our pods, allowing us to authenticate to Vault without a pre-shared key or token and using short-lived tokens. Relying on short-lived tokens reduces the risk that a compromised token can be used against your cluster.</p>
+<p class="normal">The pod-based identity used with Vault gets more complex with vClusters because the keys used to create the <code class="inlineCode">Pod's</code> tokens are unique to the vCluster. Also, Vault needs to know about each vCluster in order to verify the projected tokens used in the vCluster.</p>
+<p class="normal">If we are running our own Vault<a id="_idIndexMarker947"/> in our host cluster, we could automate<a id="_idIndexMarker948"/> the onboarding so that each new vCluster is registered with Vault as its own cluster. The challenge with this approach is that Vault is a complex system that’s often run by its own team with its own onboarding process. Adding a new vCluster in a way that works for the team that owns Vault may not be as simple as calling some APIs. Therefore, before we can implement a strategy for integrating our vClusters into Vault, we need to examine how vClusters handle identity.</p>
+<p class="normal">A pod running in a vCluster has two distinct identities:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">vCluster Identity</strong>: The token that is projected<a id="_idIndexMarker949"/> into our pod from a vCluster is scoped to the API server for the vCluster. It was signed by a unique key that the host cluster has no knowledge of. It is associated with the <code class="inlineCode">ServiceAccount</code> the pod runs as inside of the vCluster’s API server.</li>
+<li class="bulletList"><strong class="keyWord">Host Cluster Identity</strong>: While the pod is defined<a id="_idIndexMarker950"/> on the vCluster, it’s executed in the host cluster. This means that the security context of the pod will run and it requires a distinct identity from the vCluster. It will have its own name and its own signing keys.</li>
+</ul>
+<p class="normal">If we inspect a pod from our vCluster as synchronized into our host cluster, we’ll see that there’s an annotation that contains a token in it:</p>
+<pre class="programlisting con"><code class="hljs-con">vcluster.loft.sh/token-ejijuegk: &gt;-
+      eyJhbGciOiJSUzI1NiIsImtpZCI6IkVOZDVhZnEzUzdtLXBSR2JUM3RJUkRHM0FqWkhzQV9KSkNZcm8yMHdNVUUifQ…
+</code></pre>
+<p class="normal">This token is injected into our pod via the <code class="inlineCode">fieldPath</code> configuration later in the pod. This could be a security issue since anything that logs the <code class="inlineCode">Pod</code>'s creation, such as an audit log, can now leak a token. The vCluster project has a configuration to generate <code class="inlineCode">Secret</code> objects in the host cluster for project tokens so that they’re not in the pod manifest. Adding the following to our <code class="inlineCode">values.yaml</code> file will fix this issue:</p>
+<pre class="programlisting con"><code class="hljs-con">syncer:
+  extraArgs:
+    - --service-account-token-secrets=true
+</code></pre>
+<p class="normal">With that done, let’s update our cluster and redeploy all the <code class="inlineCode">Pods</code>:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>vcluster disconnect
+<span class="hljs-con-meta">$ </span>vcluster create myvcluster --upgrade -f ./vcluster-values-secrets.yaml -n tenant1
+<span class="hljs-con-meta">$ </span>kubectl delete pods --all --all-namespaces --force
+</code></pre>
+<p class="normal">In a moment, the pods inside<a id="_idIndexMarker951"/> of the vCluster will come back. Inspecting<a id="_idIndexMarker952"/> the <code class="inlineCode">Pod</code>, we see that the token is no longer in the <code class="inlineCode">Pod</code>'s manifest but is now mounted to a <code class="inlineCode">Secret</code> in the host. This is certainly an improvement, as audit systems are generally more discreet about logging the contents of <code class="inlineCode">Secrets</code>. Next, let’s inspect our token’s claims.</p>
+<p class="normal">If we inspect this token, we’ll see some issues:</p>
+<pre class="programlisting con"><code class="hljs-con">{
+  "aud": [
+    "https://kubernetes.default.svc.cluster.local"
+  ],
+<span class="code-highlight"><strong class="hljs-slc">  "exp": 2010881742,</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">  "iat": 1695521742,</strong></span>
+  "iss": "https://kubernetes.default.svc.cluster.local",
+  "kubernetes.io": {
+    "namespace": "openunison",
+    "pod": {
+      "name": "openunison-orchestra-d7bc468bc-qhpts",
+      "uid": "fb6874f7-c01c-4ede-9062-ce5409509200"
+    },
+    "serviceaccount": {
+      "name": "openunison-orchestra",
+      "uid": "3d9c9147-d0e0-43f6-9e4d-a0d7db0c6b8c"
+    }
+  },
+  "nbf": 1695521742,
+  "sub": "system:serviceaccount:openunison:openunison-orchestra"
+}
+</code></pre>
+<p class="normal">The <code class="inlineCode">exp</code> and <code class="inlineCode">iat</code> claims are in bold because, when you translate this from Unix Epoch time to something a human can understand, this token is good from <code class="inlineCode">Sunday, September 24, 2023 2:15:42 AM</code> until <code class="inlineCode">Wednesday, September 21, 2033 2:15:42 AM</code>. That’s a ten-year token! This ignores the fact that the token was configured in the pod to only be good for ten minutes. This is a known issue in vCluster. The good news is that the tokens themselves are projected, so when the pod they’re projected into dies, the API server will no longer accept these tokens.</p>
+<p class="normal">The issue of vCluster token length comes into play when accessing external services because this will be true of any token we generate, not just tokens for the vCluster API server. When we integrated our clusters into Vault in the previous chapter, we did so using our <code class="inlineCode">Pod's</code> identity so that we could leverage shorter-lived tokens that aren’t static and have well-defined expirations. A ten-year token is effectively a token with no expiration. The main mitigation is that we configured Vault to verify the status of the token before accepting it, so a token bound to a destroyed pod will be rejected by Vault.</p>
+<p class="normal">The alternative to using the vCluster’s injected identity is to leverage the host cluster’s injected identity. This identity will be governed by the same rules as any other identity generated by the <code class="inlineCode">TokenRequest</code> API in the host cluster. There are two issues<a id="_idIndexMarker953"/> with this approach:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">vCluster disables host tokens</strong>: In the host synced pod, <code class="inlineCode">automountServiceAccountToken</code> is false. This is to prevent a collision between the vCluster and the host cluster because our pod shouldn’t know the host cluster exists! We can get around this by creating a mutating webhook that will add a <code class="inlineCode">TokenRequest</code> API projection in the host cluster that can be accessed by our pod.</li>
+<li class="bulletList"><strong class="keyWord">Host tokens don’t have vCluster namespaces</strong>: When we do generate a host token for our synced pod, the namespace will be embedded in the name of the <code class="inlineCode">ServiceAccount</code>, not as a claim in the token. This means that most external services’ policy languages will not be able to accept policies based on the host token, but configured via a namespace without creating a new policy for each vCluster namespace.</li>
+</ul>
+<p class="normal">These approaches both<a id="_idIndexMarker954"/> have benefits<a id="_idIndexMarker955"/> and drawbacks. The biggest benefit to using vCluster tokens is that you can easily create a policy that allows you to limit access to secrets based on namespaces inside of your vCluster without creating new policies for each namespace. The downside is the issues with vCluster tokens and the fact that you now need to onboard each individual vCluster into your Vault. Using host tokens better mitigates the issues with vCluster tokens, but you’re not able to easily create generic policies for each vCluster in Vault.</p>
+<p class="normal">In this section, we spent time understanding how vClusters manage pod identities and how those identities can be used to interact with external services, such as Vault. In the next section, we will spend time on what’s needed to create a highly available vCluster and manage operations.</p>
+<h2 class="heading-2" id="_idParaDest-330">Creating and Operating High-Availability vClusters</h2>
+<p class="normal">So far in this chapter, we’ve focused<a id="_idIndexMarker956"/> on the theory of how vClusters<a id="_idIndexMarker957"/> work, how to access a vCluster securely, and how vClusters handle pod identity to interact with external systems. In this section, we’ll focus on how to deploy and manage vClusters for high availability. Much of the documentation and examples for vCluster focuses on vCluster as a development or testing tool. For the use cases discussed earlier in this chapter, we want to focus on creating vClusters that can run production workloads. The first part of building production-ready vClusters is to understand how to run a vCluster in a way that allows for failures or downtime of individual components without hampering the vCluster’s ability to run.</p>
+<h3 class="heading-3" id="_idParaDest-331">Understanding vCluster High Availability</h3>
+<p class="normal">Let’s define the goal of a highly available vCluster<a id="_idIndexMarker958"/> and the gap between our current deployments and that goal. When you have a highly available vCluster, you want to make sure that:</p>
+<ul>
+<li class="bulletList">You can continue to interact with the API server during an upgrade or migration to another physical node in either the host cluster or the vCluster.</li>
+<li class="bulletList">If there’s a catastrophic issue, you can restore from a backup.</li>
+</ul>
+<p class="normal">When running a vCluster, the first point about being able to interact with an API server becomes clear while upgrading the host cluster’s nodes. During that upgrade process, you want your API server to be able to continue to run. You want to be able to continue syncing objects from your virtual API server into your host; you also want pods that interact with the API server to still be able to do so during a physical host upgrade. For instance, if you’re using OpenUnison, then you want it to be able to create session objects so users can interact with their vClusters while host cluster operations are happening.</p>
+<p class="normal">The second point about disaster recovery is also important. We hope to never need it, but what happens if we’ve irrevocably broken our vCluster? Can we restore back to a point that we know was functional?</p>
+<p class="normal">The first aspect of understanding how to run a highly available vCluster is that it will need multiple instances of pods that run the API server, syncer, and CoreDNS. If we look at our <code class="inlineCode">tenant1</code> namespace, we’ll see that our vCluster has one pod that is associated with a <code class="inlineCode">StatefulSet</code> that hosts the vCluster’s API server and syncer. There is also a pod that is synced from inside the vCluster for CoreDNS. We’d want there to be at least two (better if three) instances of each of these pods so that we can tell our API server to use <code class="inlineCode">PodDisruptionBudget</code> to make sure we have a minimum number of instances running so that one can be brought down for whatever event is occurring.</p>
+<p class="normal">The second aspect to understand<a id="_idIndexMarker959"/> is how vCluster manages data. Our current deployment uses <code class="inlineCode">k3s</code>, which uses a local SQLite database with data stored on a <code class="inlineCode">PersistentVolume</code>. This works well for development, but for a production cluster, we want each component of our vCluster to be working off the same data. For <code class="inlineCode">k3s</code>-based vClusters, this means using one of the supported relational databases or <code class="inlineCode">etcd</code>. We could deploy <code class="inlineCode">etcd</code>, but a relational database is generally easier to manage. We’re going to deploy our database in-cluster, but it wouldn’t be unusual to use an external database as well. In our exercises, we’ll use MySQL. We won’t worry about building a highly available database for our examples, since each database has its own mechanisms for high availability. If this were a production deployment though, you’d want to make sure that your database is built using the project’s recommended HA deployment and that you have a regular backup and recovery plan in place. With that said, let’s start by tearing down our current cluster and creating a new one:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kind delete cluster -n cluster01
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter2/HAdemo
+<span class="hljs-con-meta">$ </span>./create-multinode.sh
+</code></pre>
+<p class="normal">Wait for the new multi-node cluster to finish launching. Once it’s running, deploy MySQL:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> ../../chapter9/ha
+<span class="hljs-con-meta">$ </span>./deploy_mysql.sh
+</code></pre>
+<p class="normal">If the <code class="inlineCode">deploy_mysql.sh</code> script fails with “Can’t connect to local MySQL server through socket,” wait a moment and rerun it. It’s safe to rerun. This script:</p>
+<ol>
+<li class="numberedList" value="1">Deploys the cert-manager project with self-signed <code class="inlineCode">ClusterIssuers</code>.</li>
+<li class="numberedList">Creates TLS keypairs for MySQL.</li>
+<li class="numberedList">Installs MySQL as a <code class="inlineCode">StatefulSet</code> and configures it to accept TLS authentication.</li>
+<li class="numberedList">Creates a database for our cluster and a user that’s configured to authenticate via TLS.</li>
+</ol>
+<p class="normal">With MySQL deployed and configured for TLS authentication, we’ll next create the <code class="inlineCode">tenant</code> namespace and a certificate that will map to our database user:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create -f ./vcluster-tenant1.yaml
+</code></pre>
+<p class="normal">Finally, we can deploy our vCluster:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>vcluster create tenant1 --distro k3s --upgrade -f ./vcluster-ha-tenant1-vaules.yaml -n tenant1 --connect=<span class="hljs-con-literal">false</span>
+</code></pre>
+<p class="normal">It will take a few minutes, but you’ll have four pods in the <code class="inlineCode">tenant1</code> namespace:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME                                               READY   STATUS    RESTARTS   AGE
+coredns-6ccdd78696-r5kmd-x-kube-system-x-tenant1   1/1     Running   0          88s
+coredns-6ccdd78696-rw9lv-x-kube-system-x-tenant1   1/1     Running   0          88s
+tenant1-0                           2/2     Running   0          2m16s
+tenant1-1   0          2m16s
+</code></pre>
+<p class="normal">We can now leverage <code class="inlineCode">PodDisruptionBudget</code> to tell Kubernetes<a id="_idIndexMarker960"/> to keep one of the vCluster pods running during upgrades.</p>
+<p class="normal">Speaking of upgrades, the next question is how to upgrade our vCluster. Now that we have a highly available vCluster, we can look to upgrade our vCluster to a new version.</p>
+<h3 class="heading-3" id="_idParaDest-332">Upgrading vClusters</h3>
+<p class="normal">It’s important that you know<a id="_idIndexMarker961"/> how to upgrade your vClusters. You’ll want to make sure that your vCluster and host cluster don’t drift too far apart. While the pods that are synced into your host cluster will communicate with your vCluster’s API server, any impact on the synchronized pods (and other synchronized objects) could impact your workloads.</p>
+<p class="normal">Given the importance of staying up to date, it is great to report that upgrading a vCluster is incredibly easy. It’s important to remember that vCluster orchestrates the clusters and synchronizes objects, but the clusters themselves are managed by their own implementation. In our deployments, we’re using <code class="inlineCode">k3s</code>, which will upgrade its data storage in the database when the new pods are deployed. Since the <code class="inlineCode">vcluster create</code> command is a wrapper for Helm, all we need to do is update our values with the new image and redeploy:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pod tenant1-0 -n tenant1 -o json | jq -r <span class="hljs-con-string">'.spec.initContainers[0].image'</span>
+rancher/k3s:v1.29.5-k3s1
+<span class="hljs-con-meta">$ </span>vcluster create tenant1 --upgrade -f ./vcluster-ha-tenant1-vaules-upgrade.yaml -n tenant1 --connect=<span class="hljs-con-literal">false</span>
+</code></pre>
+<p class="normal">This command upgrades our vCluster to use a <code class="inlineCode">k3s 1.30</code> image, which is just running a Helm upgrade on our installed chart. You’re leveraging the power of Kubernetes to simplify upgrades! Once it’s done running, you can check that the pods are now running <code class="inlineCode">k3s 1.30</code>:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pod tenant1-0 -n tenant1 -o json | jq -r <span class="hljs-con-string">'.spec.initContainers[0].image'</span>
+rancher/k3s:v1.30.1-k3s1
+</code></pre>
+<p class="normal">We’ve covered creating highly available clusters<a id="_idIndexMarker962"/> and how to upgrade our vClusters. This is enough to embark on building a multitenant cluster. In the next section, we’ll integrate what we have learned to build out a multitenant cluster where each tenant gets their own vCluster.</p>
+<h1 class="heading-1" id="_idParaDest-333">Building a Multitenant Cluster with Self Service</h1>
+<p class="normal">In the previous sections, we explored<a id="_idIndexMarker963"/> how multitenancy works, how the vCluster project helps to address multitenancy challenges, and how to configure a vCluster with secure access and high availability. Each of these individual components was addressed as a separate component. The next question is how to integrate all these components into a single service. In this section, we’ll walk through creating a self-service platform for a multitenant cluster.</p>
+<p class="normal">One of the most important aspects of multitenancy is repeatability. Can you create each tenant the same way consistently? In addition to making sure that your approach is repeatable, what’s the amount of work that a customer needs to go through to get a new tenant? Remember that this book has a focus on enterprise, and enterprises almost always have compliance requirements. You also need to consider how to integrate your compliance requirements into the onboarding process.</p>
+<p class="normal">The combination of needing repeatability and compliance often leads to the need for a self-service portal for onboarding new tenants. Creating a self-service portal has become the focus of many projects, often as part of a “Platform Engineering” initiative. We’re going to build our self-service platform from OpenUnison’s namespace as a Service portal. Using OpenUnison as our starting point, let’s us focus on how the components will integrate, rather than diving into the specifics of writing the code for the integrations. This multitenant self-service onboarding portal will serve as a starting point that we’ll add to as we explore more aspects of multitenancy through this book.</p>
+<p class="normal">We’re going to approach our multitenant cluster<a id="_idIndexMarker964"/> first by defining our requirements, then analyze how each of those requirements will be fulfilled, and finally, we’ll roll out our cluster and portal. Once we’re done with this section, you’ll have the start of a multitenant platform you can build from.</p>
+<h2 class="heading-2" id="_idParaDest-334">Analyzing Requirements</h2>
+<p class="normal">Our requirements for each individual<a id="_idIndexMarker965"/> tenant will be like requirements for a physical cluster. We’re going to want to:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Isolate tenants by authorization</strong>: Who should have access to make updates to each tenant? What drives access? So far, we’ve been mainly concerned with cluster administrators, but now we need to worry about tenant administrators.</li>
+<li class="bulletList"><strong class="keyWord">Enforce enterprise authentication</strong>: When a developer or admin accesses a tenant, we’ll need to ensure that we’re doing so using our enterprise authentication.</li>
+<li class="bulletList"><strong class="keyWord">Externalized Secrets</strong>: We want to make sure our source of truth for secret data is outside of our cluster. This will make it easier for our security team to audit usage.</li>
+<li class="bulletList"><strong class="keyWord">High Availability and Disaster Recovery</strong>: There are going to be times that we need to impact if a tenant’s API server is running. We’ll need to rely on Kubernetes to make sure that, even during those times, there’s a way for tenants to do their work.</li>
+<li class="bulletList"><strong class="keyWord">Encryption in Transit</strong>: All connections between components need to be encrypted.</li>
+<li class="bulletList"><strong class="keyWord">No Secrets in Helm Charts</strong>: Keeping secret data in a chart would mean that it’s stored as a <code class="inlineCode">Secret</code> in our namespace, violating the requirement to externalize secret data.</li>
+</ul>
+<p class="normal">We’ve worked with most of these requirements<a id="_idIndexMarker966"/> already in this chapter. The key question is, “How do we pull everything together and automate it?” Having read through this chapter and looked through the scripts, you can probably see where this implementation is going. Just like any enterprise project, we need to understand how silos are going to impact our implementation. For our platform, we’re going to assume that:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Active Directory cannot be automatically updated</strong>: It’s not unusual that you won’t be given the ability to create your own groups via an API to <strong class="keyWord">Active Directory</strong> (<strong class="keyWord">AD</strong>). While interacting with AD<a id="_idIndexMarker967"/> only requires LDAP capabilities, compliance requirements often dictate that a formal process is followed for creating groups and adding members to those groups.</li>
+<li class="bulletList"><strong class="keyWord">Vault can be automated</strong>: Since Vault is API enabled and we have a good relationship with the Vault team, they’ll let us automate the onboarding of new tenants directly.</li>
+<li class="bulletList"><strong class="keyWord">Intra-Cluster Communication does not require the Enterprise CA</strong>: Enterprises often have their own <strong class="keyWord">certificate authorities</strong> (<strong class="keyWord">CAs</strong>) for generating TLS certificates. These CAs<a id="_idIndexMarker968"/> are generally not exposed to an external facing API and are not able to issue intermediate CAs that can be used by a local cert-manager instance. We’ll use a CA specific to our cluster for issuing all certificates for use within the cluster.</li>
+<li class="bulletList"><strong class="keyWord">Host Cluster-Managed MySQL</strong>: We’re going to host our MySQL instance on the cluster, but we won’t dive into operations around MySQL. We’ll assume that it’s been deployed as highly available. Database administration is its own discipline, and we won’t pretend to be able to cover it in this section.</li>
+</ul>
+<p class="normal">With these requirements and assumptions in hand, the next step is to plan out how to implement our multitenant platform.</p>
+<h2 class="heading-2" id="_idParaDest-335">Designing the Multitenant Platform</h2>
+<p class="normal">In the previous section, we defined<a id="_idIndexMarker969"/> our requirements. Now, let’s construct a matrix of tools that will tell us what each component will be responsible for:</p>
+<table class="table-container" id="table001-6">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Requirement</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Component</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Notes</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Portal Authentication</p>
+</td>
+<td class="table-cell">
+<p class="normal">OpenUnison + Active Directory</p>
+</td>
+<td class="table-cell">
+<p class="normal">OpenUnison will capture credentials; Active Directory will verify them.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Tenant</p>
+</td>
+<td class="table-cell">
+<p class="normal">Kubernetes namespace + vCluster</p>
+</td>
+<td class="table-cell">
+<p class="normal">Each tenant will receive their own namespace in the host cluster, with a vCluster deployed to it.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Tenant Authentication</p>
+</td>
+<td class="table-cell">
+<p class="normal">OpenUnison</p>
+</td>
+<td class="table-cell">
+<p class="normal">Each tenant will receive its own OpenUnison instance.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Authorization</p>
+</td>
+<td class="table-cell">
+<p class="normal">OpenUnison with Active Directory Groups</p>
+</td>
+<td class="table-cell">
+<p class="normal">Each tenant will have a unique Active Directory group that will provide administrative capabilities.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Certificate Generation</p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">cert-manager</code> Project</p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">cert-manager</code> will generate the keys needed to communicate between vCluster and MySQL.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Secrets Management</p>
+</td>
+<td class="table-cell">
+<p class="normal">Centralized Vault</p>
+</td>
+<td class="table-cell">
+<p class="normal">Each tenant will receive its own Vault database that will be enabled with Kubernetes authentication.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Orchestration</p>
+</td>
+<td class="table-cell">
+<p class="normal">OpenUnison</p>
+</td>
+<td class="table-cell">
+<p class="normal">We’ll use OpenUnison’s workflow engine for onboarding new tenants.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 9.1: Implementation matrix</p>
+<p class="normal">Given our requirements and implementation matrix, our multitenant platform will look like this:</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="578" src="../Images/B21165_09_06.png" width="868"/></figure>
+<p class="packt_figref">Figure 9.6: Multitenant platform design</p>
+<p class="normal">Using the above diagram, let’s walk through<a id="_idIndexMarker970"/> the steps that will need to occur to implement our platform:</p>
+<ol>
+<li class="numberedList" value="1">OpenUnison will create a namespace and RoleBinding to our Active Directory group to the <code class="inlineCode">admin</code> <code class="inlineCode">ClusterRole</code>.</li>
+<li class="numberedList">OpenUnison will generate a <code class="inlineCode">Certificate</code> object in our tenant’s namespace, which will be used by our vCluster to communicate with MySQL.</li>
+<li class="numberedList">OpenUnison will create a database in MySQL for the vCluster and a user tied to the certificate generated in Step 2.</li>
+<li class="numberedList">OpenUnison will deploy a <code class="inlineCode">Job</code> that will run the <code class="inlineCode">vcluster</code> command and deploy the tenant’s vCluster.</li>
+<li class="numberedList">OpenUnison will deploy a <code class="inlineCode">Job</code> that will deploy the Kubernetes Dashboard, deploy OpenUnison, and integrate the vCluster OpenUnison into the host cluster’s OpenUnison.</li>
+<li class="numberedList">OpenUnison will create an authentication policy in Vault that will allow tokens from our tenant’s vCluster to authenticate to Vault using local pod identities. It will also run a <code class="inlineCode">Job</code> that will install the vault sidecar into our cluster.</li>
+</ol>
+<p class="normal">We’re giving our vCluster capabilities in the centralized Vault for retrieving secrets. In an enterprise deployment, you’d also want to control who can log in to Vault using the CLI and web interface using the same authentication and authorization as our clusters to tailor access, but that’s beyond the scope of this chapter (and book).</p>
+<p class="normal">Finally, you could use any automation <a id="_idIndexMarker971"/>engine you’d like<a id="_idIndexMarker972"/> to perform<a id="_idIndexMarker973"/> these tasks, such as <strong class="keyWord">Terraform</strong> or <strong class="keyWord">Pulumi</strong>. If you want to use one of these tools instead, the same concepts can be used and translated into the implementation-specific details. Now that we’ve designed our onboarding process, let’s deploy it.</p>
+<h2 class="heading-2" id="_idParaDest-336">Deploying Our Multitenant Platform</h2>
+<p class="normal">The previous section focused<a id="_idIndexMarker974"/> on the requirements and design of our multitenant platform. In this section, we’re going to deploy the platform and walk through deploying a tenant. The first step is to start with a fresh cluster:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kind delete cluster -n cluster01
+<span class="hljs-con-meta">$ </span>kind delete cluster -n multinode
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter2
+<span class="hljs-con-meta">$ </span>./create-cluster.sh
+</code></pre>
+<p class="normal">Once your cluster is running, the next step is to deploy the portal. We scripted everything:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter9/multitenant/setup/
+<span class="hljs-con-meta">$ </span>./deploy_openunison.sh
+</code></pre>
+<p class="normal">This script does quite a bit:</p>
+<ol>
+<li class="numberedList" value="1">Deploys <code class="inlineCode">cert-manager</code> with internal CAs for our cluster</li>
+<li class="numberedList">Deploys MySQL configured with our internal CA</li>
+<li class="numberedList">Deploys OpenUnison, using impersonation, and deploys our customizations for vCluster</li>
+<li class="numberedList">Deploys Vault</li>
+<li class="numberedList">Integrates Vault and our control plane cluster</li>
+<li class="numberedList">Enables OpenUnison to create new authentication mechanisms and policies in Vault</li>
+</ol>
+<p class="normal">Depending on how much horsepower<a id="_idIndexMarker975"/> your infrastructure has, this script can take ten to fifteen minutes to run. Once deployed, the first step will be to log in to the portal at <code class="inlineCode">https://k8sou.apps.IP.nip.io/</code>, where IP is your IP address with the dots changed to dashes. My cluster’s IP is <code class="inlineCode">192.168.2.82</code>, so the URL is <code class="inlineCode">https://k8sou.apps.192-168-2-102.nip.io/</code>. Use the user <code class="inlineCode">mmosley</code> with the password <code class="inlineCode">start123</code>. You’ll notice a new badge called <strong class="screenText">New Kubernetes Namespace</strong>. Click on that badge.</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="493" src="../Images/B21165_09_07.png" width="878"/></figure>
+<p class="packt_figref">Figure 9.7: OpenUnison front page with the New Kubernetes Namespace badge</p>
+<p class="normal">On the next screen, you’ll be asked to provide some information for the new namespace (and tenant). We created two groups in our “Active Directory” for managing access to our tenant. While, out of the box, OpenUnison supports both the admin and view <code class="inlineCode">ClusterRole</code> for mappings, we’re going to focus on the admin <code class="inlineCode">ClusterRole</code> mapping. The admin group for our namespace will also be the <code class="inlineCode">cluster-admin</code> for our tenant vCluster. This means any user that is added to this group in Active Directory will gain <code class="inlineCode">cluster-admin</code> access to our vCluster for this tenant. Fill out the form as you see in <em class="italic">Figure 9.8</em> and click <strong class="screenText">SAVE</strong>.</p>
+<figure class="mediaobject"><img alt="Graphical user interface, text, application, email  Description automatically generated" height="377" src="../Images/B21165_09_08.png" width="878"/></figure>
+<p class="packt_figref">Figure 9.8: New Namespace</p>
+<p class="normal">Once saved, close this tab to return<a id="_idIndexMarker976"/> to the main portal and hit Refresh. You’ll see that there is a new menu option on the left-hand side called <strong class="screenText">Open Approvals</strong>. OpenUnison is designed around self-service, so the assumption is that the tenant owners will request that a new tenant be deployed. In this case, mmosley will be both the tenant owner and the approver. Click on <strong class="screenText">Open Approvals</strong> and click <strong class="screenText">Act on Request</strong></p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="596" src="../Images/B21165_09_09.png" width="878"/></figure>
+<p class="packt_figref">Figure 9.9: Approval screen</p>
+<p class="normal">Fill in the <strong class="screenText">Justification</strong> field<a id="_idIndexMarker977"/> and click on <strong class="screenText">APPROVE REQUEST</strong> and <strong class="screenText">CONFIRM APPROVAL</strong>. This will approve the user’s request and launch a workflow that implements the steps we designed in <em class="italic">Figure 9.6</em>. This workflow will take five to ten minutes, depending on the horsepower of your cluster. Usually, OpenUnison will send the requestor an email once a workflow is complete, but we’re using an SMTP blackhole here to pull in all emails that are generated to make the lab implementation easier. You’ll have to wait until the <code class="inlineCode">tenant1</code> namespace is created and the OpenUnison instance is running. If you look in the <code class="inlineCode">tenant1</code> namespace on the host cluster, you’ll see that the <code class="inlineCode">vault-agent-injector</code> pod is running. This lets you know the rollout is complete.</p>
+<div class="note">
+<p class="normal">To track your vCluster’s deployment, there are three pods to look at:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">onboard-vcluster-openunison-tenant1 </code>– The pod from this Job contains the logs for creating and deploying vCluster into your tenant’s namespace.</li>
+<li class="bulletList"><code class="inlineCode">deploy-helm-vcluster-teant1</code> – The pod from this Job integrates Vault.</li>
+<li class="bulletList"><code class="inlineCode">openunison-orchestra</code> – The pod from this deployment runs OpenUnison’s onboarding workflows.</li>
+</ul>
+<p class="normal">If there are any errors in the process, you’ll find them here.</p>
+</div>
+<p class="normal">Now that our tenant <a id="_idIndexMarker978"/>has been deployed, we can log in and deploy a pod. Log out of OpenUnison, and log back in using the user name <code class="inlineCode">jjackson</code> and the password <code class="inlineCode">start123</code>. The <code class="inlineCode">jjackson</code> user is a member of our admin group in Active Directory, so they’ll immediately be able to access and administer the vCluster in the <code class="inlineCode">tenant1</code> namespace.</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application, website, Teams  Description automatically generated" height="493" src="../Images/B21165_09_10.png" width="877"/></figure>
+<p class="packt_figref">Figure 9.10: Access to tenant1 vCluster</p>
+<p class="normal">The <code class="inlineCode">jjackson</code> user is able to interact with our vCluster the same way they would with the host cluster, using either the dashboard or directly via the CLI. We’re going to use <code class="inlineCode">jjackson</code>'s session to log in to our <code class="inlineCode">tenant</code> vCluster and deploy a pod that uses secret data from our Vault. First, <code class="inlineCode">ssh</code> into your cluster’s host on a new session and create a secret in our Vault for our pod to consume:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>ssh ubuntu@192.168.2.82
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter9/multitenant/setup/vault
+<span class="hljs-con-meta">$ </span>. ./vault_cli.sh
+<span class="hljs-con-meta">$ </span>vault kv put secret/data/vclusters/tenant1/ns/default/config some-password=mysupersecretp@ssw0rd
+</code></pre>
+<p class="normal">The last command creates our secret data in the Vault. Note that the path that we created specifies that we’re working with the <code class="inlineCode">tenant1</code> vCluster in the <code class="inlineCode">default</code> <code class="inlineCode">namespace</code>. The way our cluster is deployed, only pods with <code class="inlineCode">ServiceAccounts</code> in the <code class="inlineCode">default</code> <code class="inlineCode">namespace</code> for our <code class="inlineCode">tenant1</code> vCluster will be able to access the <code class="inlineCode">some-password</code> value.</p>
+<p class="normal">Next, let’s log in to our vCluster<a id="_idIndexMarker979"/> using <code class="inlineCode">jjackson</code>. First, set your <code class="inlineCode">KUBECONFIG</code> variable to a temporary file and set <code class="inlineCode">jjackson</code>'s session up using the <code class="inlineCode">tenant1</code> token:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">export</span> KUBECONFIG=$(<span class="hljs-con-built_in">mktemp</span>)$ <span class="hljs-con-built_in">export</span> TMP_CERT=$(<span class="hljs-con-built_in">mktemp</span>)…Cluster <span class="hljs-con-string">"</span><span class="hljs-con-string">tenant1"</span> <span class="hljs-con-built_in">set</span>.
+Context "tenant1" created.
+User "jjackson@tenant1" set.
+Switched to context "tenant1".
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> ../../examples
+<span class="hljs-con-meta">$ </span>./create-vault.sh
+<span class="hljs-con-meta">$ </span>kubectl logs test-vault-vault-watch -n default
+Defaulted container "test" out of: test, vault-agent, vault-agent-init (init)
+Wed Oct 11 16:30:37 UTC 2023
+MY_SECRET_PASSWORD="mysupersecretp@ssw0rd"
+</code></pre>
+<p class="normal">The pod was able to authenticate to our Vault using its own <code class="inlineCode">ServiceAccount</code>'s identity to retrieve the secret! We did have to make two updates to our pod for our vCluster to connect to Vault:</p>
+<pre class="programlisting con"><code class="hljs-con">annotations:
+ vault.hashicorp.com/service: "https://vault.apps.192-168-2-82.nip.io"
+ <span class="code-highlight"><strong class="hljs-slc">vault.hashicorp.com/auth-path: "auth/vcluster-tenant1"</strong></span>
+ vault.hashicorp.com/agent-inject: "true"
+ vault.hashicorp.com/log-level: trace
+<span class="code-highlight"><strong class="hljs-slc"> vault.hashicorp.com/role: cluster-read</strong></span>
+ vault.hashicorp.com/tls-skip-verify: "true"
+ vault.hashicorp.com/agent-inject-secret-myenv: <span class="code-highlight"><strong class="hljs-slc">'secret/data/vclusters/tenant1/ns/default/config'</strong></span>
+ vault.hashicorp.com/secret-volume-path-myenv: '/etc/secrets'
+ vault.hashicorp.com/agent-inject-template-myenv: |
+   {{- with secret "<span class="code-highlight"><strong class="hljs-slc">secret/data/vclusters/tenant1/ns/default/config"</strong></span> -}}
+   MY_SECRET_PASSWORD="{{ index .Data "some-password" }}"
+   {{- end }}
+</code></pre>
+<p class="normal">We had to add a new <code class="inlineCode">annotation</code> to tell the Vault sidecar where to authenticate. The <code class="inlineCode">auth/vcluster-tenant1</code> authentication path was created by our onboarding workflow. We also needed to set the requested role to <code class="inlineCode">cluster-read</code>, which was also created by the onboarding workflow. Finally, we needed to tell the sidecar where to look up our secret data.</p>
+<p class="normal">With that, we’ve now built the start of a self-service<a id="_idIndexMarker980"/> multitenant portal! We’re going to expand on this portal as we dive into more topics that are important to multitenancy. If you want to dive into the code for how we automated the vCluster onboarding, <code class="inlineCode">chapter9/multitenant/vlcluster-multitenant</code> is the Helm chart that holds the custom workflows and <code class="inlineCode">templates/workflows/onboard-vcluster.yaml</code> is the starting point for all the work that gets done. We broke up each major step in its own workflow to make it easier to read.</p>
+<h1 class="heading-1" id="_idParaDest-337">Summary</h1>
+<p class="normal">Multitenancy is an important topic in modern Kubernetes deployments. Providing a shared infrastructure for multiple tenants cuts down on resource utilization and can provide more flexibility while creating the isolation needed to maintain both security and compliance. In this chapter, we worked through the benefits and challenges of multitenancy in Kubernetes, introduced the vCluster project, and learned how to deploy vClusters to support multiple tenants. Finally, we walked through implementing a self-service multitenant portal and integrated our Vault deployment so tenants could have their own secrets management.</p>
+<p class="normal">In the next chapter, we’ll dive into the security of the Kubernetes Dashboard. We’ve used it and deployed it in the last few chapters, and now we’re going to understand how its security works and how those lessons learned apply to other cluster management systems too.</p>
+<h1 class="heading-1" id="_idParaDest-338">Questions</h1>
+<ol>
+<li class="numberedList" value="1">Kubernetes Custom Resource Definitions can support multiple versions.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">What is the security boundary in Kubernetes?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">pods</li>
+<li class="alphabeticList level-2">Containers</li>
+<li class="alphabeticList level-2">NetworkPolicies</li>
+<li class="alphabeticList level-2">Namespaces</li>
+</ol>
+</li>
+<li class="numberedList">Where do the pods in a vCluster run?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">In the vCluster</li>
+<li class="alphabeticList level-2">In the host cluster</li>
+<li class="alphabeticList level-2">There are no pods</li>
+</ol>
+</li>
+<li class="numberedList">vClusters have their own <code class="inlineCode">Ingress</code> controllers.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">vClusters share keys with host clusters.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-339">Answers</h1>
+<ol>
+<li class="numberedList" value="1">b – False – There’s some version management, but generally you can only have one version of a CRD.</li>
+<li class="numberedList">d – Namespaces are the security boundary in Kubernetes.</li>
+<li class="numberedList">b – When a pod is created in a vCluster, the syncer creates a matching pod in the host cluster for scheduling.</li>
+<li class="numberedList">b – False – Generally, the <code class="inlineCode">Ingress</code> object is synced into the host cluster.</li>
+<li class="numberedList">b – False – Each vCluster gets its own unique keys to identify it.</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-340">Join our book’s Discord space</h1>
+<p class="normal">Join the book’s Discord workspace for a monthly <em class="italic">Ask Me Anything</em> session with the authors:</p>
+<p class="normal"><a href="https://packt.link/K8EntGuide"><span class="url">https://packt.link/K8EntGuide</span></a></p>
+<p class="normal"><img alt="" height="176" src="../Images/QR_Code965214276169525265.png" width="176"/></p>
+</div>
+</div></body></html>

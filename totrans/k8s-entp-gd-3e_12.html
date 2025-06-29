@@ -1,0 +1,472 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer182">
+<h1 class="chapterNumber">12</h1>
+<h1 class="chapterTitle" id="_idParaDest-386">Node Security with Gatekeeper</h1>
+<p class="normal">Most of the security discussed so far has focused on protecting Kubernetes APIs. <strong class="keyWord">Authentication</strong> has meant the authentication<a id="_idIndexMarker1093"/> of API calls. <strong class="keyWord">Authorization</strong> has meant authorizing access<a id="_idIndexMarker1094"/> to certain APIs. Even the discussion on the dashboard centered mostly around how to securely authenticate to the API server by way of the dashboard.</p>
+<p class="normal">This chapter will be different, as we will now shift our focus to securing our nodes. We will learn how to use the <strong class="keyWord">Gatekeeper</strong> project to protect the nodes of a Kubernetes cluster. Our focus will be on how containers run on the nodes of your cluster and how to keep those containers from having more access than they should. We’ll go into the details of impacts in this chapter, by looking at how exploits can be used to gain access to a cluster when nodes aren’t protected. We’ll also explore how these scenarios can be exploited even in code that doesn’t need node access.</p>
+<p class="normal">In this chapter, we will cover the following topics:</p>
+<ul>
+<li class="bulletList">Technical requirements</li>
+<li class="bulletList">What is node security?</li>
+<li class="bulletList">Enforcing node security with Gatekeeper</li>
+<li class="bulletList">Using pod security standards to enforce node security</li>
+</ul>
+<p class="normal">By the end of this chapter, you’ll have a better understanding of how Kubernetes interacts with the nodes that run your workloads and how they can be better protected.</p>
+<h1 class="heading-1" id="_idParaDest-387">Technical requirements</h1>
+<p class="normal">To complete the hands-on exercises in this chapter, you will require an Ubuntu 22.04 server.</p>
+<p class="normal">You can access the code for this chapter in the following GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter12"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter12</span></a>.</p>
+<h1 class="heading-1" id="_idParaDest-388">What is node security?</h1>
+<p class="normal">Each pod that is launched<a id="_idIndexMarker1095"/> in your cluster runs on a node. That node could be a VM, a “bare metal” server, or even another kind of compute service that is itself a container. Every process started by a pod runs on that node and, depending on how it is launched, can have a surprising set of capabilities on that node, such as talking to the filesystem, breaking out of the container to get a shell on the node, or even accessing the secrets used by the node to communicate with the API server. It’s important to make sure that processes that are going to request special privileges do so only when authorized and, even then, for specific purposes.</p>
+<p class="normal">Many people have experience with physical and virtual servers, and most know how to secure the workloads running on them. Containers need to be considered differently when you talk about securing each workload. To understand why Kubernetes<a id="_idIndexMarker1096"/> security tools such as the <strong class="keyWord">Open Policy Agent</strong> (<strong class="keyWord">OPA</strong>) exist, you need to understand how a container<a id="_idIndexMarker1097"/> is different from a <strong class="keyWord">virtual machine</strong> (<strong class="keyWord">VM</strong>).</p>
+<h2 class="heading-2" id="_idParaDest-389">Understanding the difference between containers and VMs</h2>
+<p class="normal">“<em class="italic">A container is a lightweight VM</em>” is often how containers<a id="_idIndexMarker1098"/> are described to those new <a id="_idIndexMarker1099"/>to containers and Kubernetes. While this makes for a simple analogy, from a security standpoint, it’s a dangerous comparison. A container at runtime is a process that runs on a node. On a Linux system, these processes are isolated by a series of Linux technologies that limit their visibility to the underlying system.</p>
+<p class="normal">Go to any node in a Kubernetes cluster and run the <code class="inlineCode">top</code> command, and all of the processes from containers will be listed. As an example, even though Kubernetes runs in KinD, running <code class="inlineCode">ps -A -elf | grep java</code> will show the OpenUnison and operator container processes:</p>
+<pre class="programlisting con"><code class="hljs-con">4 S k8s      1193507 1193486  1  80   0 - 3446501 -    Oct07 ?        06:50:33 java -classpath /usr/local/openunison/work/webapp/
+WEB-INF/lib/*:/usr/local/openunison/work/webapp/WEB-INF/classes:/tmp/quartz -Djava.awt.headless=true -Djava.security.egd=file:/dev/./urandom -DunisonEnvironmentFile=/etc/openunison/ou.env -Djavax.net.ssl.trustStore=/etc/openunison/cacerts.jks com.tremolosecurity.openunison.undertow.OpenUnisonOnUndertow /etc/openunison/openunison.yaml
+0 S k8s      2734580 2730582  0  80   0 -  1608 pipe_w 13:13 pts/0    00:00:00 grep --color=auto java
+</code></pre>
+<p class="normal">In contrast, a VM is, as the name implies, a complete virtual system. It emulates its own hardware, has an isolated kernel, and so on. The hypervisor provides isolation for VMs down to the silicon layer, whereas, by comparison, there is very little isolation between every container on a node.</p>
+<p class="normal">There are container technologies that will run a container on their own VM. The container is still just a process.</p>
+<p class="normal">When containers aren’t running, they’re simply a “tarball of tarballs,” where each layer of the filesystem is stored in a file. The image is still stored on the host system, multiple host systems, or wherever the container has been run or pulled previously.</p>
+<p class="normal">If you are new to the term “tarball,” it is a file created<a id="_idIndexMarker1100"/> by the <code class="inlineCode">tar</code> Unix command, which archives and compresses multiple files into a single file. The term “tarball” is a combination of the command used to create the file, tar, which is short for <strong class="keyWord">Tape Archive</strong>, and the ball, which<a id="_idIndexMarker1101"/> is a bundle of files.</p>
+<p class="normal">Conversely, a VM has its own virtual disk that stores the entire OS. While there are some very lightweight VM technologies, there’s often an order of magnitude difference between the size of a VM and that of a container.</p>
+<p class="normal">While some people refer to containers as lightweight VMs, that couldn’t be further from the truth. They aren’t isolated in the same way and require more attention to be paid to the details of how they are run on a node.</p>
+<p class="normal">From this section, you may think that we are implying<a id="_idIndexMarker1102"/> that containers<a id="_idIndexMarker1103"/> are not secure. Nothing could be further from the truth. Securing a Kubernetes cluster, and the containers running on it, requires attention to detail and an understanding of how containers differ from VMs. Since so many people do understand VMs, it’s easy to try to compare them to containers, but doing so puts you at a disadvantage, since they are very different technologies.</p>
+<p class="normal">Once you understand the limitations of a default configuration and the potential dangers that come from it, you can remediate the “issues.”</p>
+<h2 class="heading-2" id="_idParaDest-390">Container breakouts</h2>
+<p class="normal">A container breakout <a id="_idIndexMarker1104"/>is when the process of your container gets access to the underlying node. Once on the node, an attacker has access to all the other pods and any capability that the node has in your environment. A breakout can also be a matter of mounting the local filesystem in your container. An example from <a href="https://securekubernetes.com"><span class="url">https://securekubernetes.com</span></a>, originally pointed out<a id="_idIndexMarker1105"/> by Duffie Cooley, Field CTO at Isovalent, uses a container to mount the local filesystem. Running this on a KinD cluster opens both reads and writes to the node’s filesystem:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl run r00t --restart=Never -ti --rm --image lol --overrides '{"spec":{"hostPID": true, "containers":[{"name":"1","image":"alpine","command":["nsenter","--mount=/proc/1/ns/mnt","--","/bin/bash"],"stdin": true,"tty":true,"imagePullPolicy":"IfNotPresent","securityContext":{"privileged":true}}]}}'
+If you don't see a command prompt, try pressing Enter.
+</code></pre>
+<p class="normal">The <code class="inlineCode">run</code> command in the preceding code started a container that added an option that is key to this example, <code class="inlineCode">hostPID: true</code>, which allows the container to share the host’s process namespace. You can see a few other options, such as <code class="inlineCode">--mount</code> and a security context setting that sets <code class="inlineCode">privileged</code> to <code class="inlineCode">true</code>. All of the options combined will allow us to write to the host’s filesystem.</p>
+<p class="normal">Now that you are in the container, execute the <code class="inlineCode">ls</code> command to look at the filesystem. Notice how the prompt is <code class="inlineCode">root@r00t:/#</code>, confirming that you are in the container and not on the host:</p>
+<pre class="programlisting con"><code class="hljs-con">root@r00t:/# ls
+bin  boot  build  dev  etc  home  kind  lib  lib32  lib64  libx32  media  mnt  opt  proc  root  run  sbin  srv  sys  tmp  usr  var
+</code></pre>
+<p class="normal">To prove that we have mapped the host’s filesystem to our container, create a file called <code class="inlineCode">this_is_from_a_container</code> and exit the container:</p>
+<pre class="programlisting con"><code class="hljs-con">root@r00t:/# touch this_is_from_a_container
+root@r00t:/# exit
+</code></pre>
+<p class="normal">Finally, let’s look at the host’s filesystem to see whether the container created the file. Since we are running KinD with a single worker node, we need to use Docker to <code class="inlineCode">exec</code> into the worker node. If you are using the KinD cluster from the book, the worker node is called <code class="inlineCode">cluster01-worker</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">docker exec -ti cluster01-worker ls /
+bin  boot  build  dev  etc  home  kind  lib  lib32  lib64  libx32  media  mnt  opt  proc  root  run  sbin  srv  sys  this_is_from_a_container  tmp  usr  var
+</code></pre>
+<p class="normal">There it is! In this example, a container was run that mounted the local filesystem. From inside the pod, the <code class="inlineCode">this_is_from_a_container</code> file was created. After exiting the pod and entering the node container, the file was there. Once an attacker has access to a node’s filesystem, they also have access to the kubelet’s credentials, which can open the entire cluster up.</p>
+<p class="normal">It’s not hard to envision<a id="_idIndexMarker1106"/> a string of events that can lead to a Bitcoin miner (or worse) running on a cluster. A phishing attack gets the credentials that a developer uses for their cluster. Even though those credentials only have access to one namespace, a container is created to get the kubelet’s credentials, and from there, containers are launched to stealthily deploy miners across the environment. There are certainly multiple mitigations that could be used to prevent this attack, including the following:</p>
+<ul>
+<li class="bulletList">Multi-factor authentication, which would have kept the phished credentials from being used</li>
+<li class="bulletList">Pre-authorizing only certain containers</li>
+<li class="bulletList">A Gatekeeper policy, which would have prevented this attack by stopping a container from running as <code class="inlineCode">privileged</code></li>
+<li class="bulletList">A properly secured image</li>
+</ul>
+<p class="normal">It’s important to note that none of these mitigations are provided by default in Kubernetes, but that’s one of the main reasons you’re reading this book!</p>
+<p class="normal">We’ve already talked about authentication in previous chapters and the importance of multi-factor authentication. We even used port forwarding to set up a miner through our dashboard! This is another example of why authentication is such an important topic in Kubernetes.</p>
+<p class="normal">The next two approaches listed can be done using Gatekeeper. We covered pre-authorizing containers and registries in <em class="italic">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>. This chapter will focus on using Gatekeeper to enforce node-centric policies, such as whether a pod should run as privileged.</p>
+<p class="normal">Finally, at the core of security is a properly designed image. In the case of physical machines and VMs, this is accomplished by securing the base OS. When you install an OS, you don’t select every possible option during installation. It is considered poor practice to have anything running on a server that is not required for its role or function. This same practice needs to be carried over to the images that will run on your clusters, which should only contain the necessary binaries that are required for your application.</p>
+<p class="normal">Given how important<a id="_idIndexMarker1107"/> it is to properly secure images on your cluster, the next section explores container design from a security standpoint. While not directly related to Gatekeeper’s policy enforcement, it’s an important starting point for node security. It’s also important to understand how to build containers securely in order to better debug and manage your node security policies. Building a locked-down container makes managing the security of nodes much easier.</p>
+<h2 class="heading-2" id="_idParaDest-391">Properly designing containers</h2>
+<p class="normal">Before exploring how to protect<a id="_idIndexMarker1108"/> your nodes using Gatekeeper, it’s important to address how containers are designed. Often, the hardest part of using a policy to mitigate attacks on a node is the fact that so many containers are built and run as root. Once a restricted policy is applied, the container won’t start on reload even if it was running fine after the policy was applied. This is problematic on multiple levels. System administrators have learned over the decades of networked computing not to run processes as root, especially services such as web servers that are accessed anonymously over untrusted networks.</p>
+<p class="normal">All networks should be considered “untrusted.” Assuming that all networks are hostile leads to a more secure approach to implementation. It also means that services that need security need to be authenticated. This<a id="_idIndexMarker1109"/> concept is called zero trust. It has been used and advocated by identity experts for years, but it was popularized in the DevOps and cloud-native<a id="_idIndexMarker1110"/> worlds by Google’s BeyondCorp whitepaper (<a href="https://cloud.google.com/beyondcorp"><span class="url">https://cloud.google.com/beyondcorp</span></a>). The concept of zero trust should apply inside your clusters too!</p>
+<p class="normal">Bugs in code can lead to access to underlying compute resources, which can then lead to breakouts from a container. Running as root in a privileged container when not needed can lead to a breakout if exploited via a code bug.</p>
+<p class="normal">The Equifax breach in 2017 used a bug in the Apache Struts web application framework to run code on the server, which was then used to infiltrate and extract data. Had this vulnerable web application been running on Kubernetes with a privileged container, the bug could have led to the attackers gaining access to the cluster.</p>
+<p class="normal">When building containers, at a minimum, the following should be observed:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Run as a user other than root</strong>: The vast majority <a id="_idIndexMarker1111"/>of applications, especially microservices, don’t need root. Don’t run as root.</li>
+<li class="bulletList"><strong class="keyWord">Only write to volumes</strong>: If you don’t write to a container, you don’t need write access. Volumes can be controlled by Kubernetes. If you need to write temporary data, use an <code class="inlineCode">emptyVolume</code> object instead of writing to the container’s filesystem. This makes it easier to detect something malicious that is trying to make changes to a container at runtime, such as replacing a binary or a file.</li>
+<li class="bulletList"><strong class="keyWord">Minimize binaries in your container</strong>: This can be tricky. There are those that advocate for “distroless” containers that only contain the binary for the application, statically compiled – no shells, no tools. This can be problematic when trying to debug why an application isn’t running as expected. It’s a delicate balance. In Kubernetes 1.25, ephemeral containers were introduced to make this easier. We’ll cover this later in the section.</li>
+<li class="bulletList"><strong class="keyWord">Scan containers for known Common Vulnerabilities and Exposures (CVEs), and rebuild often</strong>: One of the benefits of a container<a id="_idIndexMarker1112"/> is that it can be easily scanned for known CVEs. There are several tools and registries<a id="_idIndexMarker1113"/> that will do this for you, such as <strong class="keyWord">Grype</strong> from Anchor (<a href="https://github.com/anchore/grype"><span class="url">https://github.com/anchore/grype</span></a>) or <strong class="keyWord">Trivy</strong> (<a href="https://github.com/aquasecurity/trivy"><span class="url">https://github.com/aquasecurity/trivy</span></a>) from Aqua Security. Once<a id="_idIndexMarker1114"/> CVEs have been patched, rebuild. A container that hasn’t been rebuilt in months, or years even, is every bit as dangerous as a server that hasn’t been patched.</li>
+</ul>
+<p class="normal">Let’s delve more into debugging “distroless” images and scanning containers.</p>
+<h2 class="heading-2" id="_idParaDest-392">Using and Debugging Distroless Images</h2>
+<p class="normal">The idea of a “distroless” image<a id="_idIndexMarker1115"/> is not new. Google<a id="_idIndexMarker1116"/> was one of the first to really popularize their use (<a href="https://github.com/GoogleContainerTools/distroless"><span class="url">https://github.com/GoogleContainerTools/distroless</span></a>), and recently, Chainguard has begun releasing and maintaining distroless images built on their <em class="italic">Wolfi</em> (<a href="https://github.com/wolfi-dev"><span class="url">https://github.com/wolfi-dev</span></a>) distribution of Linux. The idea is that your base image isn’t an Ubuntu, Red Hat, or other common Linux distribution but is, instead, a minimum set of binaries to run the system. For instance, the Java 17 image only includes OpenJDK. No tools. No utilities. Just the JDK. From a security standpoint, this is great because there are fewer “things” that can be used to compromise your environment. When an attacker doesn’t need a shell to run a command, why make their lives easier?</p>
+<p class="normal">There are two main drawbacks<a id="_idIndexMarker1117"/> to this approach:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Debugging Running Containers</strong>: Without dig or nslookup, how do you know the issue is DNS? We might know it’s always DNS, but you still need to prove it. You may also need to debug network services, connections, etc. Without the common tools needed to debug those services, how can you determine the issue?</li>
+<li class="bulletList"><strong class="keyWord">Support and Compatibility</strong>: One of the benefits of using a common distro as your base image is that it’s likely that your enterprise already has a support contract with the distro vendor. Google’s Distroless is based on Debian Linux, which has no official vendor support. Wolfi is built on Alpine, which doesn’t have its own support either (although Chainguard does offer commercial support for its images). If your container breaks and you suspect the issue is in your base image, you’re not going to get much help from another distro’s vendor.</li>
+</ul>
+<p class="normal">The issues with support<a id="_idIndexMarker1118"/> and compatibility aren’t really technical issues; they<a id="_idIndexMarker1119"/> are risk management issues that need to be addressed by your team. If you’re using a commercial product, that’s generally something that is covered by your support contract. If you’re talking about home-grown containers, it’s important to understand the risks and potential mitigations.</p>
+<p class="normal">Debugging a distroless container is now much easier than it once was. In version 1.25, Kubernetes introduced the concept of ephemeral containers that allow you to attach a container to a running pod. This ephemeral container can include all those debugging utilities that you don’t have in your distroless image. The <code class="inlineCode">kubectl</code> debug command was added to make it easier to use.</p>
+<p class="normal">First, in a new cluster, launch the Kubernetes Dashboard, and then try to attach a shell to it:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+.
+.
+.
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">export</span> K8S_DB_POD=$(kubectl get pods -l k8s-app=kubernetes-dashboard -n kubernetes-dashboard -o json | jq -r <span class="hljs-con-string">'.items[0].metadata.name'</span>)
+<span class="hljs-con-meta">$ </span>kubectl <span class="hljs-con-built_in">exec</span> -ti <span class="hljs-con-variable">$K8S_DB_POD</span> -n kubernetes-dashboard -- sh
+error: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "24b9dba21332299828b4d8f46c360c8afe0cadfd693e6651694a63917d28b910": OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH: unknown
+</code></pre>
+<p class="normal">The last line shows us that there’s no shell<a id="_idIndexMarker1120"/> in the <code class="inlineCode">kubernetes-dashboard</code> pod. When we try to <code class="inlineCode">exec</code><a id="_idIndexMarker1121"/> into the pod, it fails because the executable isn’t found. Now, we can attach a debug pod that lets us use our debugging tools:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl debug -it --attach=<span class="hljs-con-literal">true</span> -c debugger --image=busybox <span class="hljs-con-variable">$K8S_DB_POD</span> -n kubernetes-dashboard
+If you don't see a command prompt, try pressing enter.
+/ # ps -A
+PID   USER     TIME  COMMAND
+    1 root      0:00 sh
+   14 root      0:00 ps -A
+/ # ping
+BusyBox v1.36.1 (2023-07-17 18:29:09 UTC) multi-call binary.
+Usage: ping [OPTIONS] HOST
+.
+.
+.
+/ # nslookup
+BusyBox v1.36.1 (2023-07-17 18:29:09 UTC) multi-call binary.
+Usage: nslookup [-type=QUERY_TYPE] [-debug] HOST [DNS_SERVER]
+Query DNS about HOST
+QUERY_TYPE: soa,ns,a,aaaa,cname,mx,txt,ptr,srv,any
+</code></pre>
+<p class="normal">We were able to attach our busybox image to the dashboard pod and use our tools!</p>
+<p class="normal">This certainly helps with debugging, but what if we need to get into the dashboard process? Notice that when I ran the <code class="inlineCode">ps</code> command, there was no dashboard process. That’s because the containers in a pod all run their own process space with limited shared points (like <code class="inlineCode">volumeMounts</code>). So while this might help with testing network resources, it isn’t as close to our workload as possible. We can add the <code class="inlineCode">shareProcessNamespace: true</code> option to our Deployment, but now our containers all share the same process space and lose a level of isolation. You could patch a running Deployment when needed, but now you’re relaunching your pods, which may clear the issue on its own.</p>
+<p class="normal">Distroless images are minimal images that can lower your security exposure by making it harder for attackers to leverage your pods as an attack vector. Minimizing the images does have trade-offs, and it’s important to keep those trade-offs in mind. While you will get a smaller image that’s harder to compromise, it can make debugging operations harder and may have impacts<a id="_idIndexMarker1122"/> on your vendor support<a id="_idIndexMarker1123"/> agreements.</p>
+<p class="normal">Next, we’ll look at how scanning images for known exploits should be incorporated into your build process.</p>
+<h2 class="heading-2" id="_idParaDest-393">Scanning Images for Known Exploits</h2>
+<p class="normal">How do you know if your image<a id="_idIndexMarker1124"/> has a vulnerability? There’s a common place to report vulnerabilities<a id="_idIndexMarker1125"/> in software, called the <strong class="keyWord">Common Vulnerabilities and Exposures</strong> (<strong class="keyWord">CVE</strong>) database from MITRE. This is, in theory, a common place where researchers and users can report vulnerabilities to vendors. In theory, this is a place where a user could go to learn if they have a known vulnerability in the software they’re running.</p>
+<p class="normal">This is a vast oversimplification of the issue of looking for vulnerabilities. In the past few years, there’s been an extremely critical view of the quality of CVE data due to the way that the CVE database is managed and maintained. Unfortunately, this is really the only common database there is. With that said, it’s common practice to scan containers and compare the software versions in your containers against what is contained in the CVE database. If you find a vulnerability, this creates an action for the team to remediate.</p>
+<p class="normal">On the one hand, quickly patching known exploits is one of the best ways to cut down your security risk. On the other hand, quickly patching exploits that may not need patching can lead to broken systems. It’s a difficult balancing act that requires not only understanding how scanners work but also having automation and testing that gives you confidence in updating your infrastructure.</p>
+<p class="normal">Scanning for CVEs is a standard way to report security issues. Application and OS vendors will update CVEs with patches to their code that fix the issues. This information is then used by security scanning tools to take action when a container has a known issue that has been patched.</p>
+<p class="normal">There are several open source scanning options. I like to use Grype from Anchore, but Trivvy from AquaSecurity is another great option. What’s important here is that both of these scanners will pull in your container, compare the installed packages and libraries against the CVE database, and tell you what CVEs there are and if they’ve been patched. For instance, if you were to scan two OpenUnison images, we’d see slightly different results. When scanning <a href="https://ghcr.io/openunison/openunison-k8s:1.0.37-a207c4"><span class="url">ghcr.io/openunison/openunison-k8s:1.0.37-a207c4</span></a>, there were 43 known vulnerabilities. This image was about six days old, so there were about 15 medium CVEs that had patches. Tonight, when our process runs (which I’ll explain in a moment), a new container will be generated to patch these CVEs. If we run Grype against a container that was built two weeks ago, there will be 45 known CVEs, with 2 that were patched in the latest build.</p>
+<p class="normal">The point of this exercise is that scanners are very useful for container hygiene. At Tremolo Security, we scan our published images every night, and if there’s a new OS-level CVE that’s been patched, we rebuild. This keeps our images up to date.</p>
+<p class="normal">Container scanning isn’t the only scanning. We also use <code class="inlineCode">snyk.io</code> to scan our builds and dependencies for known vulnerabilities, bumping them to fixed versions that are available. We’re confident that we can do this because our automated testing includes hundreds of automated tests that will catch issues with these upgrades. Our goal is to have zero patchable CVEs at release time. Unless there’s an absolutely critical vulnerability, like the <strong class="keyWord">Log4J fiasco</strong> from 2021, we generally release four to five releases a year.</p>
+<p class="normal">As an open source project maintainer, I have to mention what is often seen as a sore spot in the community. The container scanners will tell you that a library is present, but they will not tell you if the library is vulnerable. There’s quite a bit of nuance to what constitutes a vulnerability. Once you’ve found a “hit” in your scanner to a project, please do not immediately open an issue on GitHub. This causes quite a bit of work for project maintainers that is of little value.</p>
+<p class="normal">Finally, you can be too reliant on scanners. Some very talented security gooses (Brad Geesaman, Ian Coldwater, Rory McCune, and Duffie Cooley) talked about faking out scanners at KubeCon EU 2023 in <em class="italic">Malicious Compliance: Reflections on Trusting Container Scanners</em>: <a href="https://kccnceu2023.sched.com/event/1Hybu/malicious-compliance-reflections-on-trusting-container-scanners-ian-coldwater-independent-duffie-cooley-isovalent-brad-geesaman-ghost-security-rory-mccune-datadog"><span class="url">https://kccnceu2023.sched.com/event/1Hybu/malicious-compliance-reflections-on-trusting-container-scanners-ian-coldwater-independent-duffie-cooley-isovalent-brad-geesaman-ghost-security-rory-mccune-datadog</span></a>. I highly recommend taking the time to watch this video and the issues it raises on scanner reliance.</p>
+<p class="normal">Once you’ve scanned your containers<a id="_idIndexMarker1126"/> and restricted how the containers run, how do you know they’ll work? It’s important to test in a restrictive environment. At the time of writing, the most restrictive defaults for any Kubernetes distribution on the market belong to Red Hat’s OpenShift. In addition to sane default policies, OpenShift runs pods with a random user ID, unless the pod definition specifies a specific ID.</p>
+<p class="normal">It’s a good idea to test your containers on OpenShift, even if it’s not your distribution for production use. If a container runs on OpenShift, it’s likely to work with almost any security policy that a cluster can throw at it. The easiest way to do this is with Red Hat’s CodeReady Containers (<a href="https://developers.redhat.com/products/codeready-containers"><span class="url">https://developers.redhat.com/products/codeready-containers</span></a>). This tool can run on your local laptop and launches a minimal OpenShift environment that can be used to test containers.</p>
+<p class="normal">While OpenShift has very tight<a id="_idIndexMarker1127"/> security controls out of the box, it doesn’t use <strong class="keyWord">Pod Security Policies </strong>(<strong class="keyWord">PSPs</strong>), Pod Security Standards, or Gatekeeper. It has its own policy system<a id="_idIndexMarker1128"/> that pre-dates PSPs, called <strong class="keyWord">Security Context Constraints</strong> (<strong class="keyWord">SCCs</strong>). SCCs are similar to PSPs but don’t use RBAC<a id="_idIndexMarker1129"/> to associate with pods.</p>
+<p class="normal">Now that we’ve explored how to create secure container images, the next step is to make sure our clusters are built, ensuring that images that don’t follow these standards are prevented from running.</p>
+<h1 class="heading-1" id="_idParaDest-394">Enforcing node security with Gatekeeper</h1>
+<p class="normal">So far, we’ve seen what can happen<a id="_idIndexMarker1130"/> when containers are allowed<a id="_idIndexMarker1131"/> to run on a node without any security policies in place. We’ve also examined what goes into building a secure container, which will make enforcing node security much easier. The next step is to examine how to design and build policies using Gatekeeper to lock down your containers.</p>
+<h2 class="heading-2" id="_idParaDest-395">What about Pod Security Policies?</h2>
+<p class="normal">Doesn’t Kubernetes<a id="_idIndexMarker1132"/> have a built-in mechanism to enforce node security? Yes! In 2018, the Kubernetes project decided that the <strong class="keyWord">Pod Security Policies </strong>(<strong class="keyWord">PSP</strong>) API would never leave beta. The configuration was too confusing, being a hybrid of Linux-focused configuration options and RBAC assignments. It was determined that the fix would likely mean an incompatible final release from the current release. Instead of marking a complex and difficult-to-manage API as generally available, the project made a difficult decision to deprecate and remove the API.</p>
+<p class="normal">At the time, it was stated that the PSP API would not be removed until a replacement was ready for release. This changed in 2020 when the Kubernetes project adopted a new policy that no API can stay in beta for more than three releases. This forced the project to re-evaluate how to move forward with replacing PSPs. In April 2021, Tabitha Sable wrote a blog post on the future of PSPs (<a href="https://kubernetes.io/blog/2021/04/06/podsecuritypolicy-deprecation-past-present-and-future/"><span class="url">https://kubernetes.io/blog/2021/04/06/podsecuritypolicy-deprecation-past-present-and-future/</span></a>). To cut a long story short, they are officially deprecated as of 1.21 and were removed in 1.25. Their<a id="_idIndexMarker1133"/> replacement, called <strong class="keyWord">Pod Security Standards</strong>, became GA in 1.26. We’ll cover these after we walk through using Gatekeeper to protect<a id="_idIndexMarker1134"/> your nodes from your pods.</p>
+<h2 class="heading-2" id="_idParaDest-396">What are the differences between PSPs, PSA, and Gatekeeper?</h2>
+<p class="normal">Before diving into the implementation<a id="_idIndexMarker1135"/> of node security<a id="_idIndexMarker1136"/> with Gatekeeper, let’s look at how<a id="_idIndexMarker1137"/> the legacy PSPs, the new <strong class="keyWord">Pod Security Admission</strong> (<strong class="keyWord">PSA</strong>), and Gatekeeper are different. If you’re familiar<a id="_idIndexMarker1138"/> with PSPs, this will<a id="_idIndexMarker1139"/> be a helpful guide for migrating. If you<a id="_idIndexMarker1140"/> have never worked with PSPs, this can give you a good idea as to where to look when things don’t work as expected.</p>
+<p class="normal">The one area that all three technologies have in common is that they’re implemented as admission controllers. As we learned in <em class="chapterRef">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>, an admission controller is used to provide additional checks beyond what the API server provides natively. In the case of Gatekeeper, PSPs, and PSA, the admission controller makes sure that the pod definition has the correct configuration to run with the least privileges needed. This usually means running as a non-root user, limiting access to the host, and so on. If the required security level isn’t met, the admission controller fails, stopping a pod from running.</p>
+<p class="normal">While all three technologies run as admission controllers, they implement their functionality in very different ways. PSPs are applied by first defining a <code class="inlineCode">PodSecurityPolicy</code> object, and then defining RBAC <code class="inlineCode">Role</code> and <code class="inlineCode">RoleBinding</code> objects to allow a <code class="inlineCode">ServiceAccount</code> to run with a policy. The PSP admission controller will make a decision based on whether the “user” who created the pod or the <code class="inlineCode">ServiceAccount</code> that the pod runs on is authorized, based on the RBAC bindings. This leads to difficulties in designing and debugging the policy application. It’s difficult to authorize if a user can submit a pod because users usually don’t create pod objects anymore. They create <code class="inlineCode">Deployments</code>, <code class="inlineCode">StatefulSets,</code> or <code class="inlineCode">Jobs</code>. Then, there are controllers that run with their own <code class="inlineCode">ServiceAccounts</code>, which then create pods. The PSP admission controller never knows who submitted the original object. In the last chapter, we covered how Gatekeeper binds policies via namespace and label matching; this doesn’t change with node security policies. Later on, we’ll do a deep dive into how to assign policies.</p>
+<p class="normal">PSA is implemented at the namespace level, not at the individual pod level. It’s assumed that since the namespace is the security boundary for a cluster, then any pods that run in a namespace should share the same security context. This can often work, but there are limitations. For instance, if you need an <code class="inlineCode">init</code> container that needs to change file permissions on a mount, you could run into issues with PSA.</p>
+<p class="normal">In addition to assigning policies differently, Gatekeeper, PSPs, and PSA handle overlapping policies differently. PSPs will try to take the <em class="italic">best</em> policy based on the account and capabilities being requested. This allows you to define a high-level blanket policy that denies all privileges and then create specific policies for individual use cases, such as letting the NGINX <code class="inlineCode">Ingress Controller</code> run on port <code class="inlineCode">443</code>. Gatekeeper, conversely, requires all policies to pass. There’s no such thing as a <em class="italic">best</em> policy; all policies must pass. This means that you can’t apply a blanket policy and then carve out exceptions. You have to explicitly define your policies for each use case. PSA is universal across the namespace, so there are no exceptions at the API level and nothing to vary. You can set up specific exemptions for users, runtime classes, or namespaces, but these are global and static.</p>
+<p class="normal">Another difference between the three approaches is how policies are defined. The PSP specification is a Kubernetes object that is mostly based on Linux’s built-in security model. The object itself has been assembled with new properties as needed, in an inconsistent way. This led to a confusing object that didn’t complement the addition of Windows containers. Conversely, Gatekeeper has a series of policies that have been pre-built and are available from their GitHub repo: <a href="https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/pod-security-policy"><span class="url">https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/pod-security-policy</span></a>. Instead of having one policy, each policy needs to be applied separately. The PSA defines profiles that are based on common security patterns. There really isn’t much to define.</p>
+<p class="normal">Finally, the PSP admission controller had some built-in mutations. For instance, if your policy didn’t allow root and your pod didn’t define what user to run as, the PSP admission controller would set a user ID of <code class="inlineCode">1</code>. Gatekeeper has a mutating capability (which we covered in <em class="chapterRef">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>), but that <a id="_idIndexMarker1141"/>capability needs<a id="_idIndexMarker1142"/> to be explicitly configured<a id="_idIndexMarker1143"/> to set defaults. PSA<a id="_idIndexMarker1144"/> has no mutation<a id="_idIndexMarker1145"/> capabilities.</p>
+<p class="normal">Having examined the differences between PSPs, PSA, and Gatekeeper, let’s next dive into how to authorize node security policies in your cluster.</p>
+<h2 class="heading-2" id="_idParaDest-397">Authorizing node security policies</h2>
+<p class="normal">In the previous section, we discussed <a id="_idIndexMarker1146"/>the differences between authorizing policies between Gatekeeper, PSPs, and PSA. Now, we’ll look at how to define your authorization model for policies. Before we get ahead of ourselves, we should discuss what we mean by “authorizing policies.”</p>
+<p class="normal">When you create a pod, usually through a <code class="inlineCode">Deployment</code> or <code class="inlineCode">StatefulSet</code>, you choose what node-level capabilities you want, with settings on your pod inside of the <code class="inlineCode">securityContext</code> sections. You may request specific capabilities or a host mount. Gatekeeper examines your pod definition and decides, or authorizes, that your pod definition meets the policy’s requirements by matching an applicable <code class="inlineCode">ConstraintTemplate</code> via its constraint’s <code class="inlineCode">match</code> section. Gatekeeper’s <code class="inlineCode">match</code> section lets you match on the namespace, kind of object, and labels on the object. At a minimum, you’ll want to include namespaces and object types. Labels can be more complicated.</p>
+<p class="normal">A large part of deciding whether labels are an appropriate way to authorize a policy is based on who can set the labels and why. In a single-tenant cluster, labels are a great way to create constrained deployments. You can define specific constraints that can be applied directly via a label. For instance, you may have an operator in a namespace that you don’t want to have access to a host mount but a pod that does. Creating a policy with specific labels will let you apply more stringent policies to the operator than the pod.</p>
+<p class="normal">The risk with this approach lies in multi-tenant clusters where you, as the cluster owner, cannot limit what labels can be applied to a pod. Kubernetes’ RBAC implementation doesn’t provide any mechanism for authorizing specific labels. You could implement something using Gatekeeper, but that would be 100% custom. Since you can’t stop a namespace owner from labeling a pod, a compromised namespace administrator’s account can be used to launch a privileged pod without there being any checks in place from Gatekeeper.</p>
+<p class="normal">You could, of course, use Gatekeeper to limit labels. The trick is that, similar to issues with PSPs, Gatekeeper won’t know who created the label at the pod level because the pod is generally created by a controller. You could enforce at the Deployment or <code class="inlineCode">StatefulSet</code> level, but that will mean that other controller types won’t be supported. This is why PSA uses the namespace as the label point. Namespaces are the security boundary for clusters. You could also carve out specific exceptions for <code class="inlineCode">init</code> containers if needed.</p>
+<p class="normal">In <em class="chapterRef">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>, we learned how to build policies in Rego and deploy them using Gatekeeper. In this chapter, we’ve discussed the importance of securely building images, the differences between PSPs and Gatekeeper for node security, and finally, how to authorize policies<a id="_idIndexMarker1147"/> in your clusters. Next, we’ll lock down our testing cluster.</p>
+<h2 class="heading-2" id="_idParaDest-398">Deploying and debugging node security policies</h2>
+<p class="normal">Having gone through<a id="_idIndexMarker1148"/> much of the theory in building node security policies<a id="_idIndexMarker1149"/> in Gatekeeper, let’s dive into locking down our test cluster. The first step is to start with a clean cluster and deploy Gatekeeper:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/master/deploy/gatekeeper.yaml
+</code></pre>
+<p class="normal">Next, we’ll want to deploy our node’s <code class="inlineCode">ConstraintTemplate</code> objects. The Gatekeeper project builds and maintains a library of templates that replicate the existing <code class="inlineCode">PodSecurityPolicy</code> object at <a href="https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/pod-security-policy"><span class="url">https://github.com/open-policy-agent/gatekeeper-library/tree/master/library/pod-security-policy</span></a>. For our cluster, we’re going to deploy all of the policies, except the read-only filesystem <code class="inlineCode">seccomp</code>, <code class="inlineCode">selinux</code>, <code class="inlineCode">apparmor</code>, <code class="inlineCode">flexvolume</code>, and host volume policies. I chose to not deploy the read-only filesystem because it’s still really common to write to a container’s filesystem, even though the data is ephemeral, and enforcing this would likely cause more harm than good. The <code class="inlineCode">seccomp</code>, <code class="inlineCode">apparmor</code>, and <code class="inlineCode">selinux</code> policies weren’t included because we’re running on a KinD cluster. Finally, we ignored the volumes because it’s not a feature we plan on worrying about. However, it’s a good idea to look at all these policies to see whether they should be applied to your cluster. The <code class="inlineCode">chapter12</code> folder has a script that will deploy all our templates for us. Run <code class="inlineCode">chapter12/deploy_gatekeeper_psp_policies.sh</code>. Once that’s done, we have our <code class="inlineCode">ConstraintTemplate</code> objects deployed, but they’re not being enforced because we haven’t set up any policy implementation objects. Before we do that, we should set up some sane defaults.</p>
+<h3 class="heading-3" id="_idParaDest-399">Generating security context defaults</h3>
+<p class="normal">In <em class="chapterRef">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>, we discussed<a id="_idIndexMarker1150"/> the trade-offs between having a mutating webhook generating sane defaults for your cluster versus explicit configuration.</p>
+<p class="normal">I’m a fan of sane defaults, since they lead to a better developer experience and make it easier to keep things secure. The Gatekeeper project has a set of example mutations for this purpose at <a href="https://github.com/open-policy-agent/gatekeeper-library/tree/master/mutation/pod-security-policy"><span class="url">https://github.com/open-policy-agent/gatekeeper-library/tree/master/mutation/pod-security-policy</span></a>. For this chapter, I took them and tweaked them a bit. Let’s deploy them and then recreate all our pods so that they have our “sane defaults” in place, before rolling out our constraint implementations:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create -f chapter12/default_mutations.yaml
+assign.mutations.gatekeeper.sh/k8spspdefaultallowprivilegeescalation created
+assign.mutations.gatekeeper.sh/k8spspfsgroup created
+assign.mutations.gatekeeper.sh/k8spsprunasnonroot created
+assign.mutations.gatekeeper.sh/k8spsprunasgroup created
+assign.mutations.gatekeeper.sh/k8spsprunasuser created
+assign.mutations.gatekeeper.sh/k8spspsupplementalgroups created
+assign.mutations.gatekeeper.sh/k8spspcapabilities created
+<span class="hljs-con-meta">$ </span>sh chapter12/delete_all_pods_except_gatekeeper.sh
+calico-system
+pod "calico-kube-controllers-7f58dbcbbd-ckshb" deleted
+pod "calico-node-g5cwp" deleted
+</code></pre>
+<p class="normal">Now, we can deploy an NGINX <code class="inlineCode">pod</code> and see how<a id="_idIndexMarker1151"/> it now has a default security context:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create ns test-mutations
+<span class="hljs-con-meta">$ </span>kubectl create deployment test-nginx --image=ghcr.io/openunison/openunison-k8s-html:latest -n test-mutations
+<span class="hljs-con-meta">$ </span>kubectl get pods -l app=test-nginx -o jsonpath=<span class="hljs-con-string">'</span><span class="hljs-con-string">{.items[0].spec.securityContext}'</span> -n test-mutations
+{"fsGroup":3000,"supplementalGroups":[3000]}
+</code></pre>
+<p class="normal">Our NGINX pod now has a <code class="inlineCode">securityContext</code> that determines what user the container should run as if it’s privileged, and if it needs any special capabilities. If, for some reason in the future, we want containers to run as a different process, instead of changing every manifest, we can now change our mutation configuration. Now that our defaults are in place and applied, the next step is to implement instances of our <code class="inlineCode">ConstraintTemplates</code> to enforce our policies.</p>
+<h3 class="heading-3" id="_idParaDest-400">Enforcing cluster policies</h3>
+<p class="normal">With our mutations<a id="_idIndexMarker1152"/> deployed, we can now deploy<a id="_idIndexMarker1153"/> our constraint implementations. Just as with the <code class="inlineCode">ConstraintTemplate</code> objects, the Gatekeeper project provides example template implementations for each template. I put together a condensed version for this chapter in <code class="inlineCode">chapter12/minimal_gatekeeper_constraints.yaml</code> that is designed to have a minimum set of privileges across a cluster, ignoring <code class="inlineCode">kube-system</code> and <code class="inlineCode">calico-system</code>. Deploy this YAML file and wait a few minutes:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f chapter12/minimal_gatekeeper_constraints.yaml
+k8spspallowprivilegeescalationcontainer.constraints.gatekeeper.sh/privilege-escalation-deny-all created
+k8spspcapabilities.constraints.gatekeeper.sh/capabilities-drop-all created
+k8spspforbiddensysctls.constraints.gatekeeper.sh/psp-forbid-all-sysctls created
+k8spsphostfilesystem.constraints.gatekeeper.sh/psp-deny-host-filesystem created
+k8spsphostnamespace.constraints.gatekeeper.sh/psp-bloack-all-host-namespace created
+k8spsphostnetworkingports.constraints.gatekeeper.sh/psp-deny-all-host-network-ports created
+k8spspprivilegedcontainer.constraints.gatekeeper.sh/psp-deny-all-privileged-container created
+k8spspprocmount.constraints.gatekeeper.sh/psp-proc-mount-default created
+k8spspallowedusers.constraints.gatekeeper.sh/psp-pods-allowed-user-ranges created
+</code></pre>
+<p class="normal">Remember from <em class="chapterRef">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>, that a key feature of Gatekeeper over generic OPA<a id="_idIndexMarker1154"/> is its ability to not just<a id="_idIndexMarker1155"/> act as a validating webhook but also audit existing objects against policies. We’re waiting so that Gatekeeper has a chance to run its audit against our cluster. Audit violations are listed in the status of each implementation of each <code class="inlineCode">ConstraintTemplate</code>.</p>
+<p class="normal">To make it easier to see how compliant our cluster is, I wrote a small script that will list the number of violations per <code class="inlineCode">ConstraintTemplate</code>:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>sh chapter12/show_constraint_violations.sh
+k8spspallowedusers.constraints.gatekeeper.sh 16
+k8spspallowprivilegeescalationcontainer.constraints.gatekeeper.sh 2
+k8spspcapabilities.constraints.gatekeeper.sh 2
+k8spspforbiddensysctls.constraints.gatekeeper.sh 0
+k8spsphostfilesystem.constraints.gatekeeper.sh 1
+k8spsphostnamespace.constraints.gatekeeper.sh 0
+k8spsphostnetworkingports.constraints.gatekeeper.sh 1
+k8spspprivilegedcontainer.constraints.gatekeeper.sh 0
+k8spspprocmount.constraints.gatekeeper.sh 0
+k8spspreadonlyrootfilesystem.constraints.gatekeeper.sh null
+</code></pre>
+<p class="normal">We have several violations. If you don’t have the exact number, that’s OK. The next step is debugging and correcting them.</p>
+<h3 class="heading-3" id="_idParaDest-401">Debugging constraint violations</h3>
+<p class="normal">With our constraint implementations<a id="_idIndexMarker1156"/> in place, we have several violations<a id="_idIndexMarker1157"/> that need to be remediated. Let’s take a look at the privilege escalation policy violation:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get k8spspallowprivilegeescalationcontainer.constraints.gatekeeper.sh -o jsonpath=<span class="hljs-con-string">'{$.items[0].status.violations}'</span> | jq -r
+[
+  {
+    "enforcementAction": "deny",
+    "kind": "Pod",
+    "message": "Privilege escalation container is not allowed: controller",
+    "name": "ingress-nginx-controller-744f97c4f-msmkz",
+    "namespace": "ingress-nginx"
+  }
+]
+</code></pre>
+<p class="normal">Gatekeeper tells us that the <code class="inlineCode">ingress-nginx-controller-744f97c4f-msmkz</code> pod in the <code class="inlineCode">ingress-nginx</code> namespace is attempting to elevate its privileges. Looking at its <code class="inlineCode">SecurityContext</code> reveals the following:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get pod ingress-nginx-controller-744f97c4f-msmkz -n ingress-nginx -o jsonpath=<span class="hljs-con-string">'{$.spec.containers[0].securityContext}'</span> | jq -r
+{
+  "allowPrivilegeEscalation": true,
+  "capabilities": {
+    "add": [
+      "NET_BIND_SERVICE"
+    ],
+    "drop": [
+      "all"
+    ]
+  },
+  "runAsGroup": 2000,
+  "runAsNonRoot": true,
+  "runAsUser": 101
+}
+</code></pre>
+<p class="normal">Nginx is requesting to be able to escalate its privileges and add the <code class="inlineCode">NET_BIND_SERVICE</code> privilege so that it can run on port <code class="inlineCode">443</code> without being a root user. Going back to our list of constraint violations, in addition to having a privilege escalation violation, there was also a capabilities violation. Let’s inspect that violation:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl get k8spspcapabilities.constraints.gatekeeper.sh -o jsonpath=<span class="hljs-con-string">'{$.items[0].status.violations}'</span> | jq -r
+[
+  {
+    "enforcementAction": "deny",
+    "kind": "Pod",
+    "message": "container &lt;controller&gt; has a disallowed capability. Allowed
+capabilities are []",
+    "name": "ingress-nginx-controller-744f97c4f-msmkz",
+    "namespace": "ingress-nginx"
+  }
+]
+</code></pre>
+<p class="normal">It’s the same container violating both constraints. Having determined which pods are out of compliance, we’ll fix their configurations next.</p>
+<p class="normal">Earlier in this chapter, we discussed<a id="_idIndexMarker1158"/> the difference between PSPs and Gatekeeper, with one of the key differences being that while PSPs<a id="_idIndexMarker1159"/> attempt to apply the “best” policy, Gatekeeper will evaluate against all applicable constraints. This means that while in PSP<a id="_idIndexMarker1160"/> you can create a “blanket” policy (often referred to as a “Default Restrictive” policy) and then create more relaxed policies for specific pods, Gatekeeper will not let you do that. In order to keep these violations from stopping Nginx from running the constraint implementations, they must be updated to ignore our Nginx pods. The easiest way to do this is to add <code class="inlineCode">ingress-nginx</code> to our list of <code class="inlineCode">excludednamespaces</code>.</p>
+<p class="normal">I did this for all of our constraint implementations in <code class="inlineCode">chapter12/make_cluster_work_policies.yaml</code>. Deploy using the <code class="inlineCode">apply</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl apply -f chapter12/make_cluster_work_policies.yaml
+k8spsphostnetworkingports.constraints.gatekeeper.sh/psp-deny-all-host-network-ports configured
+k8spsphostfilesystem.constraints.gatekeeper.sh/psp-deny-host-filesystem configured
+k8spspcapabilities.constraints.gatekeeper.sh/capabilities-drop-all configured
+k8spspallowprivilegeescalationcontainer.constraints.gatekeeper.sh/privilege-escalation-deny-all configured
+</code></pre>
+<p class="normal">After a few minutes, let’s run our violation check:</p>
+<pre class="programlisting con"><code class="hljs-con">sh ./chapter12/show_constraint_violations.sh
+k8spspallowedusers.constraints.gatekeeper.sh 12
+k8spspallowprivilegeescalationcontainer.constraints.gatekeeper.sh 0
+k8spspcapabilities.constraints.gatekeeper.sh 0
+k8spspforbiddensysctls.constraints.gatekeeper.sh 0
+k8spsphostfilesystem.constraints.gatekeeper.sh 0
+k8spsphostnamespace.constraints.gatekeeper.sh 0
+k8spsphostnetworkingports.constraints.gatekeeper.sh 0
+k8spspprivilegedcontainer.constraints.gatekeeper.sh 0
+k8spspprocmount.constraints.gatekeeper.sh 0
+k8spspreadonlyrootfilesystem.constraints.gatekeeper.sh null
+</code></pre>
+<p class="normal">The only violations left are for our allowed users’ constraints. These violations all come from <code class="inlineCode">gatekeeper-system</code> because the Gatekeeper pods don’t have users specified in their <code class="inlineCode">SecurityContext</code>. These pods haven’t received any of our sane defaults because, in the Gatekeeper <code class="inlineCode">Deployment</code>, the <code class="inlineCode">gatekeeper-system</code> namespace is ignored. Despite being ignored, it’s still listed as a violation, even though it won’t be enforced.</p>
+<p class="normal">Now that we have eliminated <a id="_idIndexMarker1161"/>the violations, we’re<a id="_idIndexMarker1162"/> done, right? Not quite. Even though Nginx isn’t generating any errors, we aren’t making sure it’s running with the least privilege. If someone were to launch a pod in the <code class="inlineCode">ingress-nginx</code> namespace, it could request privileges and additional capabilities without being blocked by Gatekeeper. We’ll want to make sure that any pod launched in the <code class="inlineCode">ingress-nginx</code> namespace can’t escalate beyond what it needs. In addition to eliminating the <code class="inlineCode">ingress-nginx</code> namespace from our cluster-wide policy, we need to create a new constraint implementation that limits which capabilities can be requested by pods in the <code class="inlineCode">ingress-nginx</code> namespace.</p>
+<p class="normal">We know that Nginx requires the ability to escalate privileges and to request <code class="inlineCode">NET_BIND_SERVICE</code> so that we can create a constraint implementation:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">constraints.gatekeeper.sh/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">K8sPSPCapabilities</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">capabilities-ingress-nginx</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">match:</span>
+    <span class="hljs-attr">kinds:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">apiGroups:</span> [<span class="hljs-string">""</span>]
+        <span class="hljs-attr">kinds:</span> [<span class="hljs-string">"Pod"</span>]
+    <span class="hljs-attr">namespaces:</span> [<span class="hljs-string">"ingress-nginx"</span>]
+  <span class="hljs-attr">parameters:</span>
+    <span class="hljs-attr">requiredDropCapabilities:</span> [<span class="hljs-string">"all"</span>]
+    <span class="hljs-attr">allowedCapabilities:</span> [<span class="hljs-string">"NET_BIND_SERVICE"</span>]
+</code></pre>
+<p class="normal">We created a constraint implementation that mirrors the <code class="inlineCode">Deployment</code>'s required <code class="inlineCode">securityContext</code> section. We didn’t create a separate constraint implementation for privilege escalation because that <code class="inlineCode">ConstraintTemplate</code> has no parameters. It’s either enforced or it isn’t. There’s no additional work to be done for that constraint in the <code class="inlineCode">ingress-nginx</code> namespace once the namespace has been removed from the blanket policy.</p>
+<p class="normal">I repeated this debugging process for the other violations and added them to <code class="inlineCode">chapter12/enforce_node_policies.yaml</code>. You can deploy them to finish the process.</p>
+<p class="normal">You may be wondering why we are enforcing at the namespace level and not with specific labels to isolate individual pods. We discussed authorization strategies earlier in this chapter, and continuing the themes here, I don’t see additional label-based enforcement as adding much value. Anyone who can create a pod in this namespace can set the labels. Limiting the scope more doesn’t add much in the way of security.</p>
+<p class="normal">The process for deploying<a id="_idIndexMarker1163"/> and debugging policies<a id="_idIndexMarker1164"/> is very detail-oriented. In a single-tenant cluster, this may be a one-time action or a rare action, but in a multi-tenant cluster, the process does not scale. Next, we’ll look at strategies to apply node security in multi-tenant clusters.</p>
+<h3 class="heading-3" id="_idParaDest-402">Scaling policy deployment in multi-tenant clusters</h3>
+<p class="normal">In the previous examples, we took<a id="_idIndexMarker1165"/> a “small batch” approach<a id="_idIndexMarker1166"/> to our node security. We created a single cluster-wide policy and then added exceptions as needed. This approach doesn’t scale in a multi-tenant environment for a few reasons:</p>
+<ul>
+<li class="bulletList">The <code class="inlineCode">excludedNamespaces</code> attribute in a constraint’s <code class="inlineCode">match</code> section is a list and is difficult to patch in an automated way. Lists need to be patched, including the original, so it’s more than a simple “apply this JSON” operation.</li>
+<li class="bulletList">You don’t want to make changes to global objects in multi-tenant systems. It’s easier to add new objects and link them to a source of truth. It’s easier to trace why a new constraint implementation was created using labels than to figure out why a global object was changed.</li>
+<li class="bulletList">You want to minimize the likelihood of a change on a global object being able to affect other tenants. Adding new objects specifically for each tenant minimizes that risk.</li>
+</ul>
+<p class="normal">In an ideal world, we’d create a single global policy and then create objects that can be more specific for individual namespaces that need elevated privileges.</p>
+<figure class="mediaobject"><img alt="Diagram, shape  Description automatically generated" height="506" src="../Images/B21165_12_01.png" width="823"/></figure>
+<p class="packt_figref">Figure 12.1: Ideal policy design for a multi-tenant cluster</p>
+<p class="normal">The above diagram illustrates<a id="_idIndexMarker1167"/> what I mean by having<a id="_idIndexMarker1168"/> a blanket policy. The large, dashed box with rounded corners is a globally restrictive policy that minimizes what a pod is capable of. Then, the smaller, dashed rounded-corner boxes are carveouts for specific exceptions. As an example, the <code class="inlineCode">ingress-nginx</code> namespace would be created with restrictive rights, and a new policy would be added that is scoped specifically to the <code class="inlineCode">ingress-nginx</code> namespace, which would grant Nginx the ability to run with the <code class="inlineCode">NET_BIND_SERVICES</code> capabilities. By adding an exception for a specific need to a cluster-wide restrictive policy, you’re decreasing the likelihood that a new namespace will expose the entire cluster to a vulnerability if a new policy isn’t added. The system is built to fail “closed.”</p>
+<p class="normal">The above scenario is not how Gatekeeper works. Every policy that matches must succeed; there’s no way to have a global policy. In order to effectively manage a multi-tenant environment, we need to:</p>
+<ol>
+<li class="numberedList" value="1">Have policies for system-level namespaces that cluster administrators can own</li>
+<li class="numberedList">Create policies for each namespace that can be adjusted as needed</li>
+<li class="numberedList">Ensure that namespaces have policies before pods can be created</li>
+</ol>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="382" src="../Images/B21165_12_02.png" width="876"/></figure>
+<p class="packt_figref">Figure 12.2: Gatekeeper policy design for a multi-tenant cluster</p>
+<p class="normal">I visualized these goals in <em class="italic">Figure 12.2</em>. The policies we already created need to be adjusted to be “system-level” policies. Instead of saying that they need to apply globally and then make exceptions, we apply them specifically to our system-level namespaces. The policies that grant NGINX the ability to bind to port <code class="inlineCode">443</code> are part of the system-level policies because the ingress is a system-level capability.</p>
+<p class="normal">For individual tenants, goal #2 requires that each tenant<a id="_idIndexMarker1169"/> gets its own set of constraint<a id="_idIndexMarker1170"/> implementations. These individual constraint template implementation objects are represented by the rounded-corner dashed boxes circling each tenant. This seems repetitive because it is. You are likely to have very repetitive objects that grant the same capabilities to each namespace. There are multiple strategies you can put in place to make this easier to manage:</p>
+<ol>
+<li class="numberedList" value="1">Define a base restrictive set of constraint template implementations, and add each new namespace to the <code class="inlineCode">namespaces</code> list of the <code class="inlineCode">match</code> section. This cuts down on the clutter but makes it harder to automate because of having to deal with patches on lists. It is also harder to track because you can’t add any metadata to a single property like you can an object.</li>
+<li class="numberedList">Automate the creation of constraint template implementations when namespaces are created. This is the approach we will take in <em class="chapterRef">Chapter 19</em>, <em class="italic">Provisioning a Platform</em>. In that chapter, we will automate the creation of namespaces from a self-service portal. The workflow will provision namespaces, RBAC bindings, pipelines, keys, and so on. It will also provide the constraint templates needed to ensure restricted access.</li>
+<li class="numberedList">Create a controller to replicate constraint templates based on labels. This is similar to how Fairwinds RBAC Manager (<a href="https://github.com/FairwindsOps/rbac-manager"><span class="url">https://github.com/FairwindsOps/rbac-manager</span></a>) generates RBAC bindings, using a custom resource definition. I’ve not seen a tool directly for Gatekeeper constraint implementations, but the same principle would work here.</li>
+</ol>
+<p class="normal">When it comes to managing this automation, the above three options are not mutually exclusive. At KubeCon EU 2021, I presented a session called “I Can RBAC and So Can You!” (<a href="https://www.youtube.com/watch?v=k6J9_P-gnro"><span class="url">https://www.youtube.com/watch?v=k6J9_P-gnro</span></a>), where I demoed using options #2 and #3 together to make “teams” that had multiple namespaces, cutting down on the number of RBAC bindings that needed to be created with each namespace.</p>
+<p class="normal">Finally, we’ll want to ensure<a id="_idIndexMarker1171"/> that every namespace<a id="_idIndexMarker1172"/> that isn’t a system-level namespace has constraint implementations created. Even if we’re automating the creation of namespaces, we don’t want a rogue namespace to get created that doesn’t have node security constraints in place. That’s represented by the large, dashed, round-cornered box around all of the tenants. Now that we’ve explored the theory behind building node security policies for a multi-tenant cluster, let’s build our policies out.</p>
+<p class="normal">The first step is to clear out our old policies:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl delete -f chapter12/enforce_node_policies.yaml
+<span class="hljs-con-meta">$ </span>kubectl delete -f chapter12/make_cluster_work_policies.yaml
+<span class="hljs-con-meta">$ </span>kubectl delete -f chapter12/minimal_gatekeeper_constraints.yaml
+</code></pre>
+<p class="normal">This will get us back to a state where there are no policies. The next step is to create our system-wide policies:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create -f chapter12/multi-tenant/yaml/minimal_gatekeeper_constraints.yaml
+k8spspallowprivilegeescalationcontainer.constraints.gatekeeper.sh/system-privilege-escalation-deny-all created
+k8spspcapabilities.constraints.gatekeeper.sh/system-capabilities-drop-all created
+k8spspforbiddensysctls.constraints.gatekeeper.sh/system-psp-forbid-all-sysctls created
+k8spsphostfilesystem.constraints.gatekeeper.sh/system-psp-deny-host-filesystem created
+k8spsphostnamespace.constraints.gatekeeper.sh/system-psp-bloack-all-host-namespace created
+k8spsphostnetworkingports.constraints.gatekeeper.sh/system-psp-deny-all-host-network-ports created
+k8spspprivilegedcontainer.constraints.gatekeeper.sh/system-psp-deny-all-privileged-container created
+k8spspprocmount.constraints.gatekeeper.sh/system-psp-proc-mount-default created
+k8spspallowedusers.constraints.gatekeeper.sh/system-psp-pods-allowed-user-ranges created
+k8spsphostfilesystem.constraints.gatekeeper.sh/psp-tigera-operator-allow-host-filesystem created
+k8spspcapabilities.constraints.gatekeeper.sh/capabilities-ingress-nginx created
+</code></pre>
+<p class="normal">Take a look at the policies<a id="_idIndexMarker1173"/> in <code class="inlineCode">chapter12/multi-tenant/yaml/minimal_gatekeeper_constraints.yaml</code>, and you’ll see<a id="_idIndexMarker1174"/> that instead of excluding namespaces in the <code class="inlineCode">match</code> section, we’re explicitly naming them:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">constraints.gatekeeper.sh/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">K8sPSPAllowPrivilegeEscalationContainer</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">system-privilege-escalation-deny-all</span>
+<span class="hljs-attr">spec:</span>
+  <span class="code-highlight"><strong class="hljs-attr-slc">match:</strong></span>
+    <span class="hljs-attr">kinds:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">apiGroups:</span> [<span class="hljs-string">""</span>]
+        <span class="hljs-attr">kinds:</span> [<span class="hljs-string">"Pod"</span>]
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-attr-slc">namespaces:</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-bullet-slc">-</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">default</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-bullet-slc">-</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">kube-node-lease</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-bullet-slc">-</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">kube-public</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-bullet-slc">-</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">kubernetes-dashboard</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-bullet-slc">-</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">local-path-storage</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-bullet-slc">-</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">tigera-operator</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-bullet-slc">-</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">openunison</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">    </strong><strong class="hljs-bullet-slc">-</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">activedirectory</strong></span>
+</code></pre>
+<p class="normal">With our system constraint implementations in place, we’ll next want to enforce the fact that all tenant namespaces have node security policies in place before any pods can be created. There are no pre-existing <code class="inlineCode">ConstraintTemplates</code> to implement this policy, so we will need to build our own. Our Rego for our <code class="inlineCode">ConstraintTemplate</code> will need to make sure that all of our required <code class="inlineCode">ConstraintTemplate</code> implementations (in other words, privilege escalation, capabilities, and so on) have at least one instance for a namespace before a pod is created in that namespace. The full code and test cases for the Rego are in <code class="inlineCode">chapter12/multi-tenant/opa</code>. Here’s a snippet:</p>
+<pre class="programlisting code"><code class="hljs-code"># capabilities
+violation[{<span class="hljs-string">"msg"</span>: msg, <span class="hljs-string">"</span><span class="hljs-string">details"</span>: {}}] {
+  checkForCapabilitiesPolicy
+  msg := <span class="hljs-string">"No applicable K8sPSPCapabilities for this namespace"</span>
+}
+checkForCapabilitiesPolicy {
+    policies_for_namespace = [policy_for_namespace |
+                              data.<span class="hljs-property">inventory</span>.<span class="hljs-property">cluster</span>[<span class="hljs-string">"constraints.gatekeeper.sh/v1beta1"</span>].<span class="hljs-property">K8sPSPCapabilities</span>[j].<span class="hljs-property">spec</span>.<span class="hljs-property">match</span>.<span class="hljs-property">namespaces</span>[_] == input.<span class="hljs-property">review</span>.<span class="hljs-property">object</span>.<span class="hljs-property">metadata</span>.<span class="hljs-property">namespace</span> ;
+                              policy_for_namespace = data.<span class="hljs-property">inventory</span>.<span class="hljs-property">cluster</span>[<span class="hljs-string">"constraints.gatekeeper.sh/v1beta1"</span>].<span class="hljs-property">K8sPSPCapabilities</span>[j] ]
+    <span class="hljs-title">count</span>(policies_for_namespace)  == <span class="hljs-number">0</span>
+}
+# sysctls
+violation[{<span class="hljs-string">"msg"</span>: msg, <span class="hljs-string">"</span><span class="hljs-string">details"</span>: {}}] {
+  checkForSysCtlsPolicy
+  msg := <span class="hljs-string">"No applicable K8sPSPForbiddenSysctls for this namespace"</span>
+}
+checkForSysCtlsPolicy {
+    policies_for_namespace = [policy_for_namespace |
+                       data.<span class="hljs-property">inventory</span>.<span class="hljs-property">cluster</span>[<span class="hljs-string">"constraints.gatekeeper.sh/v1beta1"</span>].<span class="hljs-property">K8sPSPForbiddenSysctls</span>[j].<span class="hljs-property">spec</span>.<span class="hljs-property">match</span>.<span class="hljs-property">namespaces</span>[_] == input.<span class="hljs-property">review</span>.<span class="hljs-property">object</span>.<span class="hljs-property">metadata</span>.<span class="hljs-property">namespace</span> ;
+                              policy_for_namespace = data.<span class="hljs-property">inventory</span>.<span class="hljs-property">cluster</span>[<span class="hljs-string">"constraints.gatekeeper.sh/v1beta1"</span>].<span class="hljs-property">K8sPSPForbiddenSysctls</span>[j]
+]
+    <span class="hljs-title">count</span>(policies_for_namespace)  == <span class="hljs-number">0</span>
+}
+</code></pre>
+<p class="normal">The first thing to note is that each constraint<a id="_idIndexMarker1175"/> template check<a id="_idIndexMarker1176"/> is in its own rule and has its own violation. Putting all of these rules in one <code class="inlineCode">ConstraintTemplate</code> will result in them all having to pass in order for the entire <code class="inlineCode">ConstraintTemplate</code> to pass.</p>
+<p class="normal">Next, let’s look at <code class="inlineCode">checkForCapabilitiesPolicy</code>. The rule creates a list of all <code class="inlineCode">K8sPSPCapabilities</code> that list the namespace from our pod in the <code class="inlineCode">match.namespaces</code> attribute. If this list is empty, the rule will continue to the violation and the pod will fail to create. To create this template, we first need to sync our constraint templates into Gatekeeper. Then, we create our constraint template and implementation:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f chapter12/multi-tenant/yaml/gatekeeper-config.yaml
+<span class="hljs-con-meta">$ </span>kubectl create -f chapter12/multi-tenant/yaml/require-psp-for-namespace-constrainttemplate.yaml
+<span class="hljs-con-meta">$ </span>kubectl create -f chapter12/multi-tenant/yaml/require-psp-for-namespace-constraint.yaml
+</code></pre>
+<p class="normal">With our new policy in place, let’s attempt to create a namespace and launch a pod:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create ns check-new-pods
+namespace/check-new-pods created
+<span class="hljs-con-meta">$ </span>kubectl run echo-test -ti -n check-new-pods --image busybox --restart=Never --<span class="hljs-con-built_in">command</span> -- <span class="hljs-con-built_in">echo</span> <span class="hljs-con-string">"hello world"</span>
+Error from server ([k8srequirepspfornamespace] No applicable K8sPSPAllowPrivilegeEscalationContainer for this namespace
+[k8srequirepspfornamespace] No applicable K8sPSPCapabilities for this namespace
+[k8srequirepspfornamespace] No applicable K8sPSPForbiddenSysctls for this namespace
+.
+.
+</code></pre>
+<p class="normal">Our requirement that namespaces have node security policies in place stopped the pod from being created! Let’s fix this by applying restrictive node security policies from <code class="inlineCode">chapter12/multi-tenant/yaml/check-new-pods-psp.yaml</code>:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create -f chapter12/multi-tenant/yaml/check-new-pods-psp.yaml
+<span class="hljs-con-meta">$ </span>kubectl run echo-test -ti -n check-new-pods --image busybox --restart=Never --<span class="hljs-con-built_in">command</span> -- <span class="hljs-con-built_in">echo</span> <span class="hljs-con-string">"hello world"</span>
+hello world
+</code></pre>
+<p class="normal">Now, whenever a new namespace<a id="_idIndexMarker1177"/> is created on our cluster, node security<a id="_idIndexMarker1178"/> policies must be in place before we can launch any pods.</p>
+<p class="normal">In this section, we looked at the theory behind designing node security policies using Gatekeeper, putting that theory into practice for both a single-tenant and a multi-tenant cluster. We also built out sane defaults for our <code class="inlineCode">securityContexts</code> using Gatekeeper’s built-in mutation capabilities. With this information, you have what you need to begin deploying node security policies to your clusters using Gatekeeper.</p>
+<h1 class="heading-1" id="_idParaDest-403">Using Pod Security Standards to enforce Node Security</h1>
+<p class="normal">The Pod Security Standards<a id="_idIndexMarker1179"/> are the “replacement” for Pod Security<a id="_idIndexMarker1180"/> Policies. I put the term “replacement” in quotes because the PSA isn’t a feature comparable replacement to PSPs, but it aligns with a new strategy defined<a id="_idIndexMarker1181"/> in the Pod Security Standards guide (<a href="https://kubernetes.io/docs/concepts/security/pod-security-standards/"><span class="url">https://kubernetes.io/docs/concepts/security/pod-security-standards/</span></a>). The basic principle of PSA is that since the namespace is the security boundary in Kubernetes, that is where it should be determined whether pods should run in a privileged or restricted mode.</p>
+<p class="normal">At first glance, this makes a great deal of sense. When we talked about multitenancy and RBAC, everything was defined at the namespace level. Much of the difficulties of PSPs came from trying to determine how to authorize a policy, so this eliminates that problem.</p>
+<p class="normal">The concern though is that there are scenarios where you need a privileged container, but you don’t want it to be the main container. For instance, if you need a volume to have its permissions changed in an <code class="inlineCode">init</code> container but you want your main containers to be restricted, you can’t use PSA.</p>
+<p class="normal">If these restrictions aren’t an issue for you, then PSA is turned on by default, and all you need to do is enable it. For instance, to make sure a root container can’t run in a namespace:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create namespace nopriv
+<span class="hljs-con-meta">$ </span>kubectl label namespace nopriv pod-security.kubernetes.io/enforce=restricted
+<span class="hljs-con-meta">$ </span>kubectl run echo-test -ti -n nopriv --image busybox --restart=Never --<span class="hljs-con-built_in">command</span> -- <span class="hljs-con-built_in">id</span>
+Error from server (Forbidden): pods "echo-test" is forbidden: violates PodSecurity "restricted:latest": allowPrivilegeEscalation != false (container "echo-test" must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container "echo-test" must set securityContext.capabilities.drop=["ALL"]), runAsNonRoot != true (pod or container "echo-test" must set securityContext.runAsNonRoot=true), seccompProfile (pod or container "echo-test" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")
+</code></pre>
+<p class="normal">Since we didn’t set anything to keep our container from running in a privileged way, our pod failed to launch. PSA is simple but effective. If you don’t need the flexibility of a more complex admission<a id="_idIndexMarker1182"/> controller like Gatekeeper<a id="_idIndexMarker1183"/> or Kvyrno, it’s a great option!</p>
+<h1 class="heading-1" id="_idParaDest-404">Summary</h1>
+<p class="normal">In this chapter, we began by exploring the importance of protecting nodes, the differences between containers and VMs from a security standpoint, and how easy it is to exploit a cluster when nodes aren’t protected. We also looked at secure container design, implemented and debugged node security policies using Gatekeeper, and finally, used the new Pod Security Admission feature to restrict pod capabilities.</p>
+<p class="normal">Locking down the nodes of your cluster provides one less vector for attackers. Encapsulating a policy makes it easier to explain to your developers how to design their containers and also makes it easier to build secure solutions.</p>
+<p class="normal">So far, all of our security has been built to prevent workloads from being malicious. What happens when those measures fail? How do you know what’s going on inside of your pods? In the next chapter, we’ll find out!</p>
+<h1 class="heading-1" id="_idParaDest-405">Questions</h1>
+<ol>
+<li class="numberedList" value="1">True or false – containers are “lightweight VMs.”<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">Can a container access resources from its host?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">No, it’s isolated.</li>
+<li class="alphabeticList level-2">If marked as privileged, yes.</li>
+<li class="alphabeticList level-2">Only if explicitly granted by a policy.</li>
+<li class="alphabeticList level-2">Sometimes.</li>
+</ol>
+</li>
+<li class="numberedList">How could an attacker gain access to a cluster through a container?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">A bug in the container’s application can lead to a remote code execution, which can be used in a breakout of a vulnerable container, and it is then used to get the kubelet’s credentials.</li>
+<li class="alphabeticList level-2">Compromised credentials with the ability to create a container in one namespace can be used to create a container that mounts the node’s filesystem to get the kubelet’s credentials.</li>
+<li class="alphabeticList level-2">Both of the above.</li>
+</ol>
+</li>
+<li class="numberedList">What mechanism enforces <code class="inlineCode">ConstraintTemplates</code>?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">An admission controller that inspects all pods upon creation and updating</li>
+<li class="alphabeticList level-2">The <code class="inlineCode">PodSecurityPolicy</code> API</li>
+<li class="alphabeticList level-2">The OPA</li>
+<li class="alphabeticList level-2">Gatekeeper</li>
+</ol>
+</li>
+<li class="numberedList">True or false – containers should generally run as root.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-406">Answers</h1>
+<ol>
+<li class="numberedList" value="1">b – false; containers are processes.</li>
+<li class="numberedList">b – a privileged container can be granted access to host resources such as process IDs, the filesystem, and networking.</li>
+<li class="numberedList">c - Both of the above.</li>
+<li class="numberedList">d - Gatekeeper</li>
+<li class="numberedList">b - False</li>
+</ol>
+</div>
+</div></body></html>

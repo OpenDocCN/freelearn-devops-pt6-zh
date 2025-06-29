@@ -1,0 +1,493 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div id="_idContainer176">
+<h1 class="chapter-number" id="_idParaDest-106"><a id="_idTextAnchor107"/>7</h1>
+<h1 id="_idParaDest-107"><a id="_idTextAnchor108"/>Setting Up MetalLB and Ingress for Load Balancing</h1>
+<p>In the last chapter, we have looked at how Kubernetes network model works and learned how to use Calico, Cilium, and Flannel CNI plugins to network the cluster. We've also gone through some of the most important factors to consider when choosing a CNI provider.</p>
+<p>We should revisit the Kubernetes Service abstraction mechanism from the first chapter before diving into <strong class="bold">MetalLB</strong> load-balancer and Ingress concepts for load balancing. Kubernetes <strong class="bold">Services</strong>, in simple terms, connect a group<a id="_idIndexMarker475"/> of Pods to an abstracted Service name and IP address. Discovery and routing between Pods are provided by the Services. Services, for example, connect an application's frontend to its backend, which are both deployed in different cluster deployments. </p>
+<p>The most common types of Services are listed here:</p>
+<ul>
+<li><strong class="bold">ClusterIP</strong>: This is the default<a id="_idIndexMarker476"/> type, which exposes<a id="_idIndexMarker477"/> the Service via the cluster's internal IP address. These Services are only accessible within the cluster.</li>
+<li><strong class="bold">NodePort</strong>: A static port on each<a id="_idIndexMarker478"/> node's IP address is used to expose<a id="_idIndexMarker479"/> a Service. To route traffic to the <strong class="source-inline">NordPort</strong> service, a <strong class="source-inline">ClusterIP</strong> Service is automatically created.</li>
+<li><strong class="bold">LoadBalancer</strong>: The <strong class="source-inline">LoadBalancer</strong> type of service<a id="_idIndexMarker480"/> will create a load balancer<a id="_idIndexMarker481"/> and expose the Service externally. It will also automatically create <strong class="source-inline">ClusterIP</strong> and <strong class="source-inline">NodePort</strong> Services<a id="_idIndexMarker482"/> and route traffic accordingly.</li>
+<li><strong class="bold">ExternalName</strong>: Maps a Service<a id="_idIndexMarker483"/> to a predefined <strong class="source-inline">externalName ex.sampleapp.test.com</strong> field<a id="_idIndexMarker484"/> by returning a value<a id="_idIndexMarker485"/> for the <strong class="bold">Canonical Name</strong> (<strong class="bold">CNAME</strong>) record.</li>
+</ul>
+<p>The most common types of Services are depicted in the following diagram: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer142">
+<img alt="Figure 7.1 – Common types of Services " height="775" src="image/Figure_7.01_B18115.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.1 – Common types of Services</p>
+<p>Let's get into the intricacies of MetalLB and Ingress configuration now that we've covered the basics. In this chapter, we're going to cover the following main topics: </p>
+<ul>
+<li>Overview of MetalLB and Ingress</li>
+<li>Configuring MetalLB to load balance across the cluster</li>
+<li>Configuring Ingress to expose Services outside the cluster</li>
+<li>Guidelines on choosing the right load balancer for your applications</li>
+</ul>
+<h1 id="_idParaDest-108"><a id="_idTextAnchor109"/>Overview of MetalLB and Ingress</h1>
+<p>Despite its widespread<a id="_idIndexMarker486"/> adoption, Kubernetes<a id="_idIndexMarker487"/> does not offer a load balancer implementation. If your Kubernetes cluster<a id="_idIndexMarker488"/> is running on a cloud platform such as Azure, <strong class="bold">Amazon Web Services</strong> (<strong class="bold">AWS</strong>), or <strong class="bold">Google Cloud Platform</strong> (<strong class="bold">GCP</strong>), the cluster can use the underlying cloud<a id="_idIndexMarker489"/> platform's load balancer implementation through the cloud-controller-manager API. However, not all Kubernetes clusters are hosted in the cloud. Kubernetes may be installed on bare-metal machines as well, which is most common in the edge computing world. When load balancers are created in this situation, they will remain in a <strong class="source-inline">Pending</strong> status indefinitely.</p>
+<p>The <strong class="source-inline">NodePort</strong> and <strong class="source-inline">externalIPs</strong> Services are the only options for bringing user traffic into bare-metal clusters. Both strategies have considerable drawbacks when it comes to output. MetalLB solves this problem by providing an implementation of a network load balancer that connects with conventional network equipment, allowing external Services on bare-metal clusters.</p>
+<p>In a nutshell, MetalLB enables you to establish <strong class="source-inline">LoadBalancer</strong> Kubernetes Services in clusters that aren't hosted on a cloud provider. Address allocation and external announcement are two characteristics that work together to deliver this Service. We will now see these in more detail, as follows:</p>
+<ul>
+<li><strong class="bold">Address allocation</strong>: MetalLB cannot generate IP addresses on its own; instead, we must provide it with IP address<a id="_idIndexMarker490"/> pools from which it can draw. As Services come and go, MetalLB will take care of assigning and unassigning individual addresses, but it will only ever distribute IPs that are part of its preset pools. Setting up IP address pools is based on the environment we have; for example, if you're running a bare-metal cluster in a colocation facility, your hosting provider may provide IP addresses for lease, or if you're running on a private <strong class="bold">local area network</strong> (<strong class="bold">LAN</strong>), you could choose a range of IPs from one of the private addresses spaces.</li>
+<li><strong class="bold">External announcement</strong>: After assigning an external IP address<a id="_idIndexMarker491"/> to a Service, MetalLB must notify the network outside the cluster that the IP address is residing in the cluster. MetalLB accomplishes this using conventional routing protocols such as <strong class="bold">Address Resolution Protocol</strong> (<strong class="bold">ARP</strong>), <strong class="bold">Neighbor Discovery Protocol</strong> (<strong class="bold">NDP</strong>), or <strong class="bold">Border Gateway Protocol</strong> (<strong class="bold">BGP</strong>). In a <strong class="bold">Layer 2</strong> (<strong class="bold">L2</strong>) mode such as<a id="_idIndexMarker492"/> ARP/NDP, one node<a id="_idIndexMarker493"/> in the cluster takes ownership<a id="_idIndexMarker494"/> of the Service and makes<a id="_idIndexMarker495"/> those IPs visible on the local network<a id="_idIndexMarker496"/> using standard address discovery protocols (ARP for IPv4; NDP for IPv6); whereas in the BGP mode, all nodes in the cluster create BGP peering sessions with adjacent routers that you control in BGP mode and inform those routers how to forward traffic to the Service IPs. BGP's policy mechanisms enable genuine load balancing across several nodes as well as fine-grained traffic control.</li>
+</ul>
+<p>Another option is to utilize <strong class="bold">Ingress</strong> (Kubernetes object) to expose<a id="_idIndexMarker497"/> your Service. Although it acts<a id="_idIndexMarker498"/> as the cluster's entrance point, Ingress is not a Service type.</p>
+<p>The workings of Ingress are depicted in the following diagram: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer143">
+<img alt="Figure 7.2 – Workings of Ingress " height="507" src="image/Figure_7.02_B18115.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.2 – Workings of Ingress</p>
+<p>The Ingress controller aids in the consolidation of various applications' routing rules into a single entity. With the help of <strong class="source-inline">NodePort</strong> or <strong class="source-inline">LoadBalancer</strong>, the Ingress controller is exposed<a id="_idIndexMarker499"/> to the outside world. It's more<a id="_idIndexMarker500"/> suited for internal load balancing of <strong class="bold">HyperText Transfer Protocol</strong> (<strong class="bold">HTTP</strong>) or <strong class="bold">HTTP Secure</strong> (<strong class="bold">HTTPS</strong>) traffic to your deployed Services utilizing load balancers such as <strong class="source-inline">nginx</strong> or <strong class="source-inline">HAProxy</strong>. For <strong class="bold">Transmission Control Protocol</strong> (<strong class="bold">TCP</strong>) or <strong class="bold">User Datagram Protocol</strong> (<strong class="bold">UDP</strong>) traffic, we may still utilize<a id="_idIndexMarker501"/> a <strong class="source-inline">LoadBalancer</strong> kind of service, and MetalLB comes to our rescue<a id="_idIndexMarker502"/> in such situations. </p>
+<p>In the next section, we'll go over how to set up MetalLB as a load balancer for your cluster. </p>
+<h1 id="_idParaDest-109"><a id="_idTextAnchor110"/>Configuring MetalLB to load balance across the cluster</h1>
+<p>Now that we are clear<a id="_idIndexMarker503"/> on MetalLB concepts, we will dive<a id="_idIndexMarker504"/> into the steps of configuring MetalLB to load balance across the cluster. The following diagram depicts our Raspberry Pi cluster setup:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer144">
+<img alt="Figure 7.3 – MicroK8s Raspberry Pi cluster " height="588" src="image/Figure_7.03_B18115.jpg" width="1353"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.3 – MicroK8s Raspberry Pi cluster</p>
+<p>Now that we know what we want to do, let's look at the requirements.</p>
+<h2 id="_idParaDest-110"><a id="_idTextAnchor111"/>Requirements </h2>
+<p>Before you begin, here are the prerequisites<a id="_idIndexMarker505"/> that are needed for building a Raspberry Pi Kubernetes cluster and for the configuration of a MetalLB load balancer:</p>
+<ul>
+<li>A microSD card (4 <strong class="bold">gigabytes</strong> (<strong class="bold">GB</strong>) minimum; 8 GB recommended)</li>
+<li>A computer with a microSD card drive</li>
+<li>A Raspberry Pi 2, 3, or 4 (one or more)</li>
+<li>A micro-USB power cable (USB-C for the Pi 4)</li>
+<li>A Wi-Fi network or an Ethernet cable with an internet connection</li>
+<li>(Optional) A monitor with a <strong class="bold">High-Definition Multimedia Interface</strong> (<strong class="bold">HDMI</strong>) interface</li>
+<li>(Optional) An HDMI cable for the Pi 2 and 3 and a micro-HDMI cable for the Pi 4</li>
+<li>(Optional) A <strong class="bold">Universal Serial Bus</strong> (<strong class="bold">USB</strong>) keyboard</li>
+</ul>
+<p>Now that we've established what the requirements are, we'll go on to the step-by-step instructions on how to complete the process.</p>
+<h2 id="_idParaDest-111"><a id="_idTextAnchor112"/>Step 1 – Creating a MicroK8s Raspberry Pi cluster </h2>
+<p>Please follow the steps<a id="_idIndexMarker506"/> that we covered<a id="_idIndexMarker507"/> in <a href="B18115_05.xhtml#_idTextAnchor070"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Implementing Updates on Multi-Node Raspberry Pi Kubernetes Clusters</em>, to create a MicroK8s Raspberry Pi cluster. Here's a quick refresher:</p>
+<ol>
+<li value="1">Installing the <strong class="bold">operating system</strong> (<strong class="bold">OS</strong>) image to a <strong class="bold">Secure Digital</strong> (<strong class="bold">SD</strong>) card:<ol><li>Configuring Wi-Fi access settings</li>
+<li>Configuring remote access settings</li>
+<li>Configuring control group settings</li>
+<li>Configuring hostname</li>
+</ol></li>
+<li>Installing and configuring MicroK8s</li>
+<li>Adding a worker node</li>
+</ol>
+<p>A fully functional multi-node Kubernetes<a id="_idIndexMarker508"/> cluster should look like<a id="_idIndexMarker509"/> the one shown in the following screenshot. To summarize, we have installed MicroK8s on the Raspberry Pi boards and joined multiple deployments to form a cluster. We have also added nodes to the cluster:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer145">
+<img alt="Figure 7.4 – Fully functional MicroK8s Raspberry Pi cluster " height="570" src="image/Figure_5.22_B18115.jpg" width="1264"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.4 – Fully functional MicroK8s Raspberry Pi cluster</p>
+<p>We can now go to the next step of enabling the MetalLB add-on, as we have a fully functional cluster.</p>
+<h2 id="_idParaDest-112"><a id="_idTextAnchor113"/>Step 2 – Enabling the MetalLB add-on </h2>
+<p>MicroK8s supports<a id="_idIndexMarker510"/> a variety of add ons (<a href="https://microk8s.io/docs/addons">https://microk8s.io/docs/addons</a>) which are pre-packaged<a id="_idIndexMarker511"/> components that provide additional capabilities for your Kubernetes cluster.</p>
+<p>These are easy to set up with the following command:</p>
+<p class="source-code">microk8s enable &lt;&lt;add-on&gt;&gt;</p>
+<p>Use the following command<a id="_idIndexMarker512"/> to enable the MetalLB load balancer:</p>
+<p class="source-code">microk8s enable metallb &lt;&lt;list of IP address&gt;&gt;</p>
+<p>The following command execution output indicates the MetalLB add-on has been enabled successfully: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer146">
+<img alt="Figure 7.5 – Enabling MetalLB add-on " height="452" src="image/Figure_7.05_B18115.jpg" width="892"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.5 – Enabling MetalLB add-on</p>
+<p>We've instructed MetalLB to give out addresses in the <strong class="source-inline">192.168.1.10</strong> - <strong class="source-inline">192.168.1.15</strong> range with this command. To check a list of available and installed add-ons, use the <strong class="source-inline">status</strong> command, as follows:</p>
+<p class="source-code">microk8s status</p>
+<p class="callout-heading">Note</p>
+<p class="callout">Alternatively, you can use <strong class="bold">Classless Inter-Domain Routing</strong> (<strong class="bold">CIDR</strong>) notation. For example, in my <a id="_idIndexMarker513"/>network, I use the <strong class="source-inline">192.168.2.1/24</strong> subnet, and I opted to give MetalLB half of the IPs. IP numbers <strong class="source-inline">192.168.2.1</strong> to <strong class="source-inline">192.168.2.126</strong> make up the first part of the subnet. A /25 subnet can be used to represent this range: <strong class="source-inline">192.168.2.1</strong>/<strong class="source-inline">25</strong>.</p>
+<p class="callout">A /25 subnet can also be used to represent the second half of the network—for example, <strong class="source-inline">192.168.2.128</strong>/<strong class="source-inline">25</strong>. Each half has 126 IP addresses. </p>
+<p class="callout">Make sure you choose subnets that are appropriate for your network and that your router and MetalLB are configured correctly.</p>
+<p>The following command execution output<a id="_idIndexMarker514"/> indicates (refer to the highlighted portions) that the MetalLB add-on has been enabled:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer147">
+<img alt="Figure 7.6 – MicroK8s status " height="238" src="image/Figure_7.06_B18115.jpg" width="761"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.6 – MicroK8s status</p>
+<p>For its components, MetalLB uses the <strong class="source-inline">metallb-system</strong> namespace. To verify all components are running, use the following command: </p>
+<p class="source-code">kubectl get all -n metallb-system</p>
+<p>The following command execution output indicates that all components are in a <strong class="source-inline">Running</strong> state:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer148">
+<img alt=" Figure 7.7 – Components of MetalLB and their status " height="268" src="image/Figure_7.07_B18115.jpg" width="1141"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US"> Figure 7.7 – Components of MetalLB and their status</p>
+<p>The components that you can see in the preceding<a id="_idIndexMarker515"/> command execution output of MetalLB are outlined in more detail here:</p>
+<ul>
+<li><strong class="source-inline">metallb-system/controller</strong> (deployment): This is the IP address assignment controller for the entire cluster.</li>
+<li><strong class="source-inline">metallb-system/speaker</strong> (DaemonSet): This component communicates with Services using the protocol(s) of your choice.</li>
+</ul>
+<p>Now that we've activated the MetalLB add-on, the next step is to launch an example application and see whether it can load balance.</p>
+<p>Add-ons that have been enabled can be disabled at any time by utilizing the <strong class="source-inline">disable</strong> command, as follows:</p>
+<p class="source-code">microk8s disable &lt;&lt;add-on&gt;&gt;</p>
+<p>At this point, you have a fully functional multi-node Kubernetes cluster with the MetalLB add-on enabled.</p>
+<p class="callout-heading">Note</p>
+<p class="callout">Between nodes, port <strong class="source-inline">7946</strong> (TCP and UDP) must be permitted. Additionally, ensure that no other software is running on port <strong class="source-inline">7946</strong> on the nodes before installing MetalLB.</p>
+<h2 id="_idParaDest-113"><a id="_idTextAnchor114"/>Step 3 – Deploying a sample containerized application</h2>
+<p>In this step, we will be deploying<a id="_idIndexMarker516"/> the following Apache web server deployment on our multi-node MicroJ8s cluster setup, as follows:</p>
+<pre class="source-code">apiVersion: v1
+kind: Namespace
+metadata:
+  name: web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-server
+  namespace: web
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: httpd
+        image: httpd:2.4-alpine
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-server-service
+  namespace: web
+spec:
+  selector:
+    app: web
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: LoadBalancer</pre>
+<p>Before we deploy the web server, let's verify the cluster<a id="_idIndexMarker517"/> nodes are ready by using the following command:</p>
+<p class="source-code">kubectl get nodes</p>
+<p>The following command execution output shows that all the nodes are in a <strong class="source-inline">Ready</strong> state. We are now ready to start:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer149">
+<img alt="Figure 7.8 – Checking whether nodes are in a Ready state " height="111" src="image/Figure_7.08_B18115.jpg" width="694"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.8 – Checking whether nodes are in a Ready state</p>
+<p>The following command will deploy the web server application:</p>
+<p class="source-code">kubectl apply -f webserver-deploy.yaml</p>
+<p>The following command execution<a id="_idIndexMarker518"/> output indicates that there is no error in the deployment, and in the next steps, we can verify the same using the <strong class="source-inline">get deployments</strong> command:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer150">
+<img alt="Figure 7.9 – Deploying the web server " height="102" src="image/Figure_7.09_B18115.jpg" width="706"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.9 – Deploying the web server</p>
+<p>Check the status of the deployment to verify the application has been deployed and is running by using the following command:</p>
+<p class="source-code">kubectl get deployments -n web</p>
+<p>The following command execution output confirms that the deployment is <strong class="source-inline">Ready</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer151">
+<img alt="Figure 7.10 – Confirming that the deployment is ready " height="90" src="image/Figure_7.10_B18115.jpg" width="664"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.10 – Confirming that the deployment is ready</p>
+<p>Now that we have the sample web server application ready, we can test the load-balancing mechanism in the next part.</p>
+<h2 id="_idParaDest-114"><a id="_idTextAnchor115"/>Step 4 – Verifying the load balancer mechanism </h2>
+<p>To summarize, we've deployed<a id="_idIndexMarker519"/> a sample web server<a id="_idIndexMarker520"/> application. We'll now test the load-balancer mechanism in this section.</p>
+<p>Use the following command to see whether your load balancer has been allocated an external IP and port:</p>
+<p class="source-code">kubectl get all -n web</p>
+<p>The following command execution<a id="_idIndexMarker521"/> output (refer to the highlighted portions) shows that an external IP<a id="_idIndexMarker522"/> and port have been allocated:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer152">
+<img alt="Figure 7.11 – Checking whether external IP and port have been allocated " height="240" src="image/Figure_7.11_B18115.jpg" width="963"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.11 – Checking whether external IP and port have been allocated</p>
+<p>Now that an external IP has been allocated, we can access the application using the external IP address from any of the nodes or from the external network, as follows:</p>
+<p class="source-code">curl 192.168.1.10 </p>
+<p>If you have followed the preceding steps, you should be able to see the <strong class="source-inline">&lt;html&gt;&lt;body&gt;&lt;h1&gt;It works!&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;</strong> Apache web server output, as in the following command execution output:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer153">
+<img alt="Figure 7.12 – Apache web server output " height="75" src="image/Figure_7.12_B18115.jpg" width="629"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.12 – Apache web server output</p>
+<p>Let's scale the deployment to see whether our load balancer is still working properly. To do so, run the <strong class="source-inline">kubectl scale</strong> command, as follows:</p>
+<p class="source-code">kubectl scale deployments/web-server --replicas=5 -n web</p>
+<p>The following command execution output confirms that there is no error in the deployment, and in the next steps, we can verify that the deployment has five Pods:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer154">
+<img alt="Figure 7.13 – Scaling the deployment " height="72" src="image/Figure_7.13_B18115.jpg" width="806"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.13 – Scaling the deployment</p>
+<p>Use the following command<a id="_idIndexMarker523"/> to check the status<a id="_idIndexMarker524"/> of the deployment:</p>
+<p class="source-code">kubectl get deployments -n web</p>
+<p>The following command output shows that the command was successfully run, and the deployment has been updated:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer155">
+<img alt="Figure 7.14 – Checking deployment state " height="91" src="image/Figure_7.14_B18115.jpg" width="681"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.14 – Checking deployment state</p>
+<p>Now that the deployment has been updated, let's check how the Pods are distributed across the nodes, using the following command:</p>
+<p class="source-code">kubectl get pods -n web -o wide</p>
+<p>The following command execution output indicates that three Pods are running on the <strong class="source-inline">master</strong> node, and two of them are running on <strong class="source-inline">worker1</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer156">
+<img alt="Figure 7.15 – How Pods are distributed across the nodes " height="146" src="image/Figure_7.15_B18115.jpg" width="1164"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.15 – How Pods are distributed across the nodes</p>
+<p>Let's check whether there is any change in the external IP and ports using the following command:</p>
+<p class="source-code">kubectl get all -n web</p>
+<p>The following command execution output shows that there is no change in the allocated external IP and port:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer157">
+<img alt="Figure 7.17 – Apache web server output " height="317" src="image/Figure_7.16_B18115.jpg" width="968"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.16 – Rechecking for any change in external IP and port</p>
+<p>Let's use the same <strong class="source-inline">curl</strong> command<a id="_idIndexMarker525"/> to access the application<a id="_idIndexMarker526"/> and verify it's working, as follows:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer158">
+<img alt="" height="75" src="image/Figure_7.17_B18115.jpg" width="597"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.17 – Apache web server output</p>
+<p>The command execution output confirms that the load balancer is working properly. Even though the Pods are spread throughout the nodes, our web server application is able to effectively serve user requests.</p>
+<p>The following diagram depicts the MetalLB load-balancing functionality. MetalLB implements the <strong class="source-inline">LoadBalancer</strong> Kubernetes Service. When a <strong class="source-inline">LoadBalancer</strong> Service is requested externally, MetalLB assigns an IP address from the preset range to the client and informs the network that the IP is residing in the cluster:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer159">
+<img alt="Figure 7.18 – MetalLB load-balancing functionality " height="777" src="image/Figure_7.18_B18115.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.18 – MetalLB load-balancing functionality</p>
+<p>MetalLB is configured in L2 mode<a id="_idIndexMarker527"/> by default in MicroK8s. The following command<a id="_idIndexMarker528"/> can be used to confirm this:</p>
+<p class="source-code">kubectl describe configmap config -n metallb-system</p>
+<p>The following command execution output confirms that MetalLB is in L2 mode, and we can see the IP range as well:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer160">
+<img alt="Figure 7.19 – MetalLB ConfigMap " height="405" src="image/Figure_7.19_B18115.jpg" width="809"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.19 – MetalLB ConfigMap</p>
+<p>To set the MetalLB in BGP<a id="_idIndexMarker529"/> mode, <strong class="source-inline">ConfigMap config</strong> needs to be reconfigured to set the operation<a id="_idIndexMarker530"/> mode as <strong class="source-inline">BGP</strong> and the external IP address range. </p>
+<p>The speakers in BGP mode create a BGP peering with routers outside of the cluster and instruct those routers on how to redirect traffic to the Service IPs. BGP's policy mechanisms enable genuine load balancing across several nodes, as well as fine-grained traffic control.</p>
+<p>You can utilize ordinary router hardware with BGP as a load-balancing method. It does, however, have some drawbacks. More information regarding these limits, as well as ways to overcome<a id="_idIndexMarker531"/> them, may be found on the MetalLB BGP documentation page (<a href="https://metallb.universe.tf/configuration/#bgp-configuration">https://metallb.universe.tf/configuration/#bgp-configuration</a>).</p>
+<p>To summarize, MetalLB enables you to establish Kubernetes <strong class="source-inline">LoadBalancer</strong> Services without requiring your cluster to be deployed on a cloud platform. MetalLB provides two modes of operation: a basic L2 mode that requires no external hardware or configuration, and a BGP mode that is more robust and production-ready but necessitates more network setup tasks. In the next section, we will look at how to use the <strong class="source-inline">Ingress</strong> method for load-balancing configuration.</p>
+<h1 id="_idParaDest-115"><a id="_idTextAnchor116"/>Configuring Ingress to expose Services outside the cluster</h1>
+<p>As we discussed in the <em class="italic">Overview of MetalLB and Ingress</em> section, Ingress offers HTTP and HTTPS routes to Services<a id="_idIndexMarker532"/> within the cluster from outside the cluster. Rules defined on Ingress control traffic routing. NGINX Ingress Controller is a common Kubernetes Ingress and the default Ingress controller for MicroK8s as well.</p>
+<p>Another option is employing a load balancer such as MetalLB that can be deployed in the same Kubernetes cluster, and the Services can then be exposed to an external network. </p>
+<p>A diagrammatic illustration of both approaches is shown here:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer161">
+<img alt="Figure 7.20 – Ingress load-balancing functionality " height="1197" src="image/Figure_7.20_B18115.jpg" width="1295"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.20 – Ingress load-balancing functionality</p>
+<p>Both options are discussed in more depth in the following sections. </p>
+<h2 id="_idParaDest-116"><a id="_idTextAnchor117"/>Option 1 – Using the Ingress NodePort method</h2>
+<p>For this option and the next, we'll use<a id="_idIndexMarker533"/> the same MicroK8s Raspberry Pi cluster that we built for the MetalLB setup.</p>
+<h3>Step 1 – Enabling the Ingress add-on </h3>
+<p>The Ingress add-on can be enabled<a id="_idIndexMarker534"/> using the same command that we used to enable MetalLB, as illustrated here:</p>
+<p class="source-code">microk8s enable ingress</p>
+<p>The following command execution<a id="_idIndexMarker535"/> output indicates the Ingress add-on has been enabled successfully: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer162">
+<img alt="Figure 7.21 – Enabling Ingress add-on " height="294" src="image/Figure_7.21_B18115.jpg" width="809"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.21 – Enabling Ingress add-on</p>
+<p>Now that the Ingress add-on has been enabled, the next step is to deploy a sample application to test the load-balancing functionality.</p>
+<h3>Step 2 – Deploying a sample containerized application</h3>
+<p>We'll apply the following <strong class="source-inline">whoami</strong> deployment<a id="_idIndexMarker536"/> on our multi-node MicroK8s cluster, which is a Tiny Go web server that prints OS information and HTTP requests to output:</p>
+<pre class="source-code">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: whoami
+  template:
+    metadata:
+      labels:
+        app: whoami
+    spec:
+      containers:
+      - name: whoami-container
+        image: containous/whoami
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whoami-service
+spec:
+  ports:
+  - name: http
+    targetPort: 80
+    port: 80
+  selector:
+    app: whoami
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whoami-ingress
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /whoami
+        pathType: Exact
+        backend:
+          service:
+            name: whoami-service
+            port:
+              number: 80</pre>
+<p>The following command will deploy the <strong class="source-inline">whoami</strong> application:</p>
+<p class="source-code">kubectl apply -f whoami-deployment.yaml</p>
+<p>The following command execution<a id="_idIndexMarker537"/> output indicates that there is no error in the deployment, and in the next steps, we can verify this by using the <strong class="source-inline">get deployments</strong> command:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer163">
+<img alt="Figure 7.22 – Deploying the whoami application " height="106" src="image/Figure_7.22_B18115.jpg" width="706"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.22 – Deploying the whoami application</p>
+<p>Check the status of the deployment to verify the application has been deployed and is running by using the following command:</p>
+<p class="source-code">kubectl get deployments</p>
+<p>The following command execution output indicates that the deployment is <strong class="source-inline">Ready</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer164">
+<img alt="Figure 7.23 – Checking the deployment status " height="92" src="image/Figure_7.23_B18115.jpg" width="728"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.23 – Checking the deployment status</p>
+<p>Use the following command to check whether an Ingress object has been created:</p>
+<p class="source-code">kubectl get ingress</p>
+<p>The output of the preceding command<a id="_idIndexMarker538"/> indicates that an Ingress object with the name <strong class="source-inline">whoami-ingress</strong> has been created:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer165">
+<img alt="Figure 7.24 – Checking the Ingress object that we created " height="91" src="image/Figure_7.24_B18115.jpg" width="590"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.24 – Checking the Ingress object that we created</p>
+<p>Use the <strong class="source-inline">describe</strong> command to view detailed information about the Ingress object we just created:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer166">
+<img alt="Figure 7.25 – Ingress describe command to check details on Ingress object created " height="268" src="image/Figure_7.25_B18115.jpg" width="1023"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.25 – Ingress describe command to check details on Ingress object created</p>
+<p>From the command execution output, here is what each field represents:</p>
+<ul>
+<li><strong class="source-inline">Host</strong>: Because no host is mentioned in the previous output, the rule applies to all inbound HTTP traffic via the provided<a id="_idIndexMarker539"/> IP address. The rules apply to that site if a host (for example, <strong class="source-inline">foo.com</strong>) is supplied.</li>
+<li><strong class="source-inline">Path</strong>: List of routes (for example, <strong class="source-inline">/whoami</strong>) with a backend described by a <strong class="source-inline">service.name</strong> and a <strong class="source-inline">service.port.name</strong> or <strong class="source-inline">service.port.number</strong>. Before the load balancer distributes traffic to the specified Service, the host and path must match the content of an incoming request.</li>
+<li><strong class="source-inline">Backends</strong>: The Service describes a backend as a combination of Service and port names. The mentioned backend receives HTTP (and HTTPS) requests to the Ingress object that matches the rule's host and path.</li>
+</ul>
+<p>For more information<a id="_idIndexMarker540"/> on Ingress, please refer to the Ingress Kubernetes documentation at the following link: <a href="https://kubernetes.io/docs/concepts/services-networking/ingress/">https://kubernetes.io/docs/concepts/services-networking/ingress/</a>.</p>
+<h3>Step 3 – Verifying the load balancer mechanism </h3>
+<p>Use the <strong class="source-inline">curl</strong> command to check<a id="_idIndexMarker541"/> whether you can access the application, as illustrated here:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer167">
+<img alt="Figure 7.26 – Accessing the deployed application " height="358" src="image/Figure_7.26_B18115.jpg" width="682"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.26 – Accessing the deployed application</p>
+<p>Let's scale the deployment to see whether our load balancer is working properly. To do so, run the <strong class="source-inline">kubectl scale</strong> command, as follows:</p>
+<p class="source-code">kubectl scale deployments/whoami-deployment --replicas=5</p>
+<p>The following command<a id="_idIndexMarker542"/> execution output confirms that there is no error in the deployment, and in the next steps, let's check how the Pods are distributed across the nodes:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer168">
+<img alt="Figure 7.27 – Scaling the deployment " height="70" src="image/Figure_7.27_B18115.jpg" width="797"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.27 – Scaling the deployment</p>
+<p>The following command execution output indicates that two Pods are running on the <strong class="source-inline">master</strong> node, and three of them are running on <strong class="source-inline">worker1</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer169">
+<img alt="Figure 7.28 – Checking how the Pods are distributed across nodes " height="158" src="image/Figure_7.28_B18115.jpg" width="1223"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.28 – Checking how the Pods are distributed across nodes</p>
+<p>Let's use the same <strong class="source-inline">curl</strong> command <a id="_idIndexMarker543"/>to access the application and verify it's working, as follows:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer170">
+<img alt="Figure 7.29 – Rechecking whether the load balancer is working properly " height="355" src="image/Figure_7.29_B18115.jpg" width="655"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.29 – Rechecking whether the load balancer is working properly</p>
+<p>The command execution output confirms that the load balancer is working properly. Even though the Pods are spread throughout the nodes, our <strong class="source-inline">whoami</strong> application is able to effectively serve user requests.</p>
+<h2 id="_idParaDest-117"><a id="_idTextAnchor118"/>Option 2 – Using Ingress and a load balancer </h2>
+<p>In this method, we must have a load balancer<a id="_idIndexMarker544"/> for the Kubernetes cluster in order to proceed. Since we already<a id="_idIndexMarker545"/> have an installed MetalLB load balancer configured, we will be reusing it. However, we will have to define a simple load balancer Service for our sample <strong class="source-inline">whoami</strong> application to make sure it's acquiring the external IP and port. </p>
+<p>Here is the code for the simple load balancer Service deployment of the <strong class="source-inline">whoami </strong>application:</p>
+<pre class="source-code">apiVersion: v1
+kind: Service
+metadata:
+  name: metallb-load-balancer
+spec:
+  selector:
+    app: whoami
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: LoadBalancer</pre>
+<p>The following command will deploy the preceding application:</p>
+<p class="source-code">kubectl apply -f loadbalancer.yaml</p>
+<p>The following command <a id="_idIndexMarker546"/>output shows that the command was successfully run and a load balancer<a id="_idIndexMarker547"/> has been created. We will confirm the same in the next steps:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer171">
+<img alt="Figure 7.30 – Created load-balancer Service " height="65" src="image/Figure_7.30_B18115.jpg" width="580"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.30 – Created load-balancer Service</p>
+<p>Use the following command to check whether a load balancer Service has been created and an external IP and port have been allocated. You won't acquire an IP address for <strong class="source-inline">EXTERNAL-IP</strong> if a load balancer isn't available. Instead, it's marked as <strong class="source-inline">&lt;pending&gt;</strong>. In this situation, check the availability of your load balancer:</p>
+<p class="source-code">kubectl get svc</p>
+<p>The following command output shows that an external IP and port have been allocated:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer172">
+<img alt="Figure 7.31 – Load balancer has allocated external IP and port " height="140" src="image/Figure_7.31_B18115.jpg" width="1028"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.31 – Load balancer has allocated external IP and port</p>
+<p>Now that an external IP<a id="_idIndexMarker548"/> has been allocated, we can<a id="_idIndexMarker549"/> access the application from any of the nodes or from an external network, as follows:</p>
+<p class="source-code">curl 192.168.1.11/whoami </p>
+<p>The following command output shows that the command was successfully run and the load balancer is working properly. Though the application is spread throughout the nodes, our <strong class="source-inline">whoami</strong> application is able to effectively serve user requests:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer173">
+<img alt="Figure 7.32 – Checking whether the load balancer is working properly " height="286" src="image/Figure_7.32_B18115.jpg" width="685"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.32 – Checking whether the load balancer is working properly</p>
+<p>To summarize, Kubernetes provides several ways to expose Services to the outside world. <strong class="source-inline">LoadBalancer</strong> and Ingress controllers are the most common choices. We have explored both options with examples in this chapter.</p>
+<h1 id="_idParaDest-118"><a id="_idTextAnchor119"/>Guidelines on how to choose the right load balancer for your applications</h1>
+<p>Now that we've gone<a id="_idIndexMarker550"/> over choices, it would be useful to have a cheat sheet to rapidly compare some crucial features to assist us in deciding which one to utilize. </p>
+<p>In the following table, we will cover some of the important parameters in choosing the right option:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer174">
+<img alt="Table 7.1 – How to choose the right load balancer " height="536" src="image/B18115_07_Table_7.1a.jpg" width="1636"/>
+</div>
+</div>
+<div>
+<div class="IMG---Figure" id="_idContainer175">
+<img alt="Table 7.1 – How to choose the right load balancer " height="622" src="image/B18115_07_Table_7.1b.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 7.1 – How to choose the right load balancer</p>
+<p>In conclusion, it all boils<a id="_idIndexMarker551"/> down to a few choices. When using <strong class="source-inline">LoadBalancer</strong>, especially on bare metal, it works great because the Service can choose which port it wishes to use. The disadvantage is that it can be costly, as each Service will have its own load balancer and external IP address, both of which cost money in the cloud environment. Ingress is becoming the most popular Service when connected with a MetalLB load balancer because it reduces the number of IPs used while still allowing each service<a id="_idIndexMarker552"/> to have its own name and/or <strong class="bold">Uniform Resource Identifier</strong> (<strong class="bold">URI</strong>) routing.</p>
+<h1 id="_idParaDest-119"><a id="_idTextAnchor120"/>Summary</h1>
+<p>In this chapter, we looked at techniques for exposing Services outside the cluster and we've seen how load balancers can expose applications to the outside network. Incoming requests are routed to your application using a load balancer's single IP address. MetalLB implements the <strong class="source-inline">LoadBalancer</strong> Kubernetes service. When a <strong class="source-inline">LoadBalancer</strong> Service is requested, MetalLB assigns an IP address from a preset range to the client and informs the network that the IP resides in the cluster. </p>
+<p>We have also seen the NGINX Ingress Controller option, which is a common Kubernetes Ingress option. MetalLB, which can be deployed in the same Kubernetes cluster along with Ingress, can also be used as a load balancer. <strong class="source-inline">NodePort</strong> is another way to expose the Ingress controller to the outside world. Both options were discussed in this chapter, along with different examples.</p>
+<p>In the next chapter, we will be covering how to monitor the health of infrastructure and applications using tools such as Prometheus, Grafana, Elastic, Fluentd, Kibana, and Jaeger. You will also learn how to configure and access the various dashboards/metrics.</p>
+</div>
+</div>
+</body></html>

@@ -1,0 +1,1165 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer107">
+<h1 class="chapterNumber">4</h1>
+<h1 class="chapterTitle" id="_idParaDest-156">Services, Load Balancing, and Network Policies</h1>
+<p class="normal">In the previous chapter, we kicked off our Kubernetes Bootcamp to give you a quick but thorough introduction to Kubernetes basics and objects. We started by breaking down the main parts of a Kubernetes cluster, focusing on the control plane and worker nodes. The control plane is the brain of the cluster, managing everything including scheduling tasks, creating deployments, and keeping track of Kubernetes objects. The worker nodes are used to run the applications, including components like the <code class="inlineCode">kubelet</code> service, keeping the containers healthy, and <code class="inlineCode">kube-proxy</code> to handle the network connections.</p>
+<p class="normal">We looked at how you interact with a cluster using the <code class="inlineCode">kubectl</code> tool, which lets you run commands directly or use YAML or JSON manifests to declare what you want Kubernetes to do. We also explored most Kubernetes resources. Some of the more common resources we discussed included <code class="inlineCode">DaemonSets</code>, which ensure a pod runs on all or specific nodes, <code class="inlineCode">StatefulSets</code> to manage stateful applications with stable network identities and persistent storage, and <code class="inlineCode">ReplicaSets</code> to keep a set number of pod replicas running.</p>
+<p class="normal">The Bootcamp chapter should have helped to provide a solid understanding of Kubernetes architecture, its key components and resources, and basic resource management. Having this base knowledge sets you up for the more advanced topics in the next chapters.</p>
+<p class="normal">In this chapter, you’ll learn how to manage and route network traffic to your Kubernetes services. We’ll begin by explaining the fundamentals of load balancers and how to set them up to handle incoming requests to access your applications. You’ll understand the importance of using service objects to ensure reliable connections to your pods, despite their ephemeral IP addresses.</p>
+<p class="normal">Additionally, we’ll cover how to expose your web-based services to external traffic using an Ingress controller, and how to use <code class="inlineCode">LoadBalancer</code> services for more complex, non-HTTP/S workloads. You’ll get hands-on experience by deploying a web server to see these concepts in action.</p>
+<p class="normal">Since many readers are unlikely to have a DNS infrastructure to facilitate name resolution, which is required for Ingress to work, we will manage DNS names using a free internet service, nip.io.</p>
+<p class="normal">Finally, we’ll explore how to secure your Kubernetes services using network policies, ensuring both internal and external communications are protected.</p>
+<p class="normal">The following topics will be covered in this chapter:</p>
+<ul>
+<li class="bulletList">Introduction to load balancers and their role in routing traffic.</li>
+<li class="bulletList">Understanding service objects in Kubernetes and their importance.</li>
+<li class="bulletList">Exposing web-based services using an Ingress controller.</li>
+<li class="bulletList">Using <code class="inlineCode">LoadBalancer</code> services for complex workloads.</li>
+<li class="bulletList">Deploying an NGINX Ingress controller and setting up a web server.</li>
+<li class="bulletList">Utilizing the nip.io service for managing DNS names.</li>
+<li class="bulletList">Securing services with network policies to protect communications.</li>
+</ul>
+<p class="normal">As this chapter ends, you will understand deeply the various methods to expose and secure your workloads in a Kubernetes cluster. </p>
+<h1 class="heading-1" id="_idParaDest-157">Technical requirements</h1>
+<p class="normal">This chapter has the following technical requirements:</p>
+<ul>
+<li class="bulletList">An Ubuntu 22.04+ server running Docker with a minimum of 4 GB of RAM, though 8 GB is suggested.</li>
+<li class="bulletList">Scripts from the <code class="inlineCode">chapter4</code> folder from the repository, which you can access by going to this book’s GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition</span></a>.</li>
+</ul>
+<h1 class="heading-1" id="_idParaDest-158">Exposing workloads to requests</h1>
+<p class="normal">Through our experience, we’ve come<a id="_idIndexMarker342"/> to realize that there are three concepts in Kubernetes that people may find confusing: <strong class="keyWord">Services, Ingress controllers, and LoadBalancer Services</strong>. These are important to know in order to make your workloads accessible to the outside world. Understanding how each of these objects function and the various options you have, is crucial. So, let’s start our deep dive into each of these topics.</p>
+<h2 class="heading-2" id="_idParaDest-159">Understanding how Services work</h2>
+<p class="normal">As we mentioned earlier, when a workload<a id="_idIndexMarker343"/> is running in a pod, it gets assigned an IP address. However, there are situations where a pod might restart, and when that happens, it will get a new IP address. So, it’s not a good idea to directly target a pod’s workload because its IP address can change.</p>
+<p class="normal">One of the coolest things about Kubernetes is its ability to scale your Deployments. When you scale a Deployment, Kubernetes adds more pods to handle the increased resource requirements. Each of these pods gets its own unique IP address. But here’s the thing: most applications are designed to target only one IP address or name.</p>
+<p class="normal">Imagine if your application went from running just one pod to suddenly running 10 pods due to scaling. How would you make use of these additional pods since you can only target a single IP address? That’s what we’re going to explore next.</p>
+<p class="normal"><code class="inlineCode">Services</code> in Kubernetes utilize labels to create a connection between the service and the pods handling the workload. When pods start up, they are assigned labels, and all pods with the same label, as defined in the deployment, are grouped together.</p>
+<p class="normal">Let’s take an NGINX web server as an example. In our <code class="inlineCode">Deployment</code>, we would create a manifest like this:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">apps/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Deployment</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">run:</span> <span class="hljs-string">nginx-frontend</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-frontend</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">replicas:</span> <span class="hljs-number">3</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">run:</span> <span class="hljs-string">nginx-frontend</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">run:</span> <span class="hljs-string">nginx-frontend</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">containers:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-attr">image:</span> <span class="hljs-string">bitnami/nginx</span>
+        <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-frontend</span>
+</code></pre>
+<p class="normal">This deployment will create three NGINX servers and each pod will be labeled with <code class="inlineCode">run=nginx-frontend</code>. We can verify whether the pods are labeled correctly by listing the pods using <code class="inlineCode">kubectl</code>, and adding the <code class="inlineCode">--show-labels</code> option, <code class="inlineCode">kubectl get pods --show-labels</code>.</p>
+<p class="normal">This will list each pod and any associated labels:</p>
+<pre class="programlisting con"><code class="hljs-con">nginx-frontend-6c4dbf86d4-72cbc           1/1     Running            0          19s    pod-template-hash=6c4dbf86d4,run=nginx-frontend
+nginx-frontend-6c4dbf86d4-8zlwc           1/1     Running            0          19s    pod-template-hash=6c4dbf86d4,run=nginx-frontend
+nginx-frontend-6c4dbf86d4-xfz6m           1/1     Running            0          19s    pod-template-hash=6c4dbf86d4,run=nginx-frontend
+</code></pre>
+<p class="normal">In the example, each pod is given a label called <code class="inlineCode">run=nginx-frontend</code>. This label plays a crucial role when configuring the service for your application. By leveraging this label in the service configuration, the service will automatically generate the required endpoints without manual<a id="_idIndexMarker344"/> intervention.</p>
+<h3 class="heading-3" id="_idParaDest-160">Creating a Service</h3>
+<p class="normal">In Kubernetes, a <code class="inlineCode">Service</code> is a way to make<a id="_idIndexMarker345"/> your application accessible to other programs or users. Think of it like a gateway or an entry point to your application.</p>
+<p class="normal">There are four different types of services in Kubernetes, and each type serves a specific purpose. We will go into the details of each type in this chapter, but for now, let’s take a look at them in simple terms:</p>
+<table class="table-container" id="table001-4">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Service Type</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">ClusterIP</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Creates a service that is accessible from inside of the cluster.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">NodePort</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Creates a service that is accessible from inside or outside of the cluster using an assigned port.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">LoadBalancer</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Creates a service that is accessible from inside or outside of the cluster. For external access, an additional component is required to create the load-balanced object.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">ExternalName</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Creates a service that does not target an endpoint in the cluster. Instead, it is used to provide a service name that targets any external DNS name as an endpoint.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 4.1: Kubernetes service types</p>
+<p class="normal">There is an additional service type<a id="_idIndexMarker346"/> that can be created, known as a headless service. A Kubernetes Headless Service is a service type that enables direct communication with individual pods instead of distributing traffic across them like other services. Unlike regular <code class="inlineCode">Services</code> that assign a single, fixed IP address to a group of pods, a <code class="inlineCode">Headless Service </code>doesn’t assign a cluster IP.</p>
+<p class="normal">A <code class="inlineCode">Headless Service</code> is created by specifying <code class="inlineCode">none</code> for the <code class="inlineCode">clusterIP</code> spec in the <code class="inlineCode">Service</code> definition.</p>
+<p class="normal">To create a service, you need to create<a id="_idIndexMarker347"/> a <code class="inlineCode">Service</code> object that includes <code class="inlineCode">kind</code>, <code class="inlineCode">selector</code>, <code class="inlineCode">type</code>, and any ports that will be used to connect to the service. For our NGINX <code class="inlineCode">Deployment</code> example, we want to expose the <code class="inlineCode">Service</code> on ports <code class="inlineCode">80</code> and <code class="inlineCode">443</code>. We labeled the deployment with <code class="inlineCode">run=nginx-frontend</code>, so when we create a manifest, we will use that name as our selector:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">run:</span> <span class="hljs-string">nginx-frontend</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-frontend</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">run:</span> <span class="hljs-string">nginx-frontend</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">http</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-number">80</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">80</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">https</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-number">443</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">443</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">ClusterIP</span>
+</code></pre>
+<p class="normal">If a type is not defined in a service manifest, Kubernetes will assign a default type of <code class="inlineCode">ClusterIP</code>.</p>
+<p class="normal">Now that a service has been created, we can verify that it was correctly defined using a few <code class="inlineCode">kubectl</code> commands. The first check we will perform is to verify that the service object was created. To check our service, we use the <code class="inlineCode">kubectl get services</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME              TYPE        CLUSTER-IP    EXTERNAL-IP     PORT(S)           AGE
+nginx-frontend    ClusterIP   10.43.142.96  &lt;none&gt;          80/TCP,443/TCP    3m49s
+</code></pre>
+<p class="normal">After verifying that the service has been created, we can verify that the <code class="inlineCode">Endpoints</code>/<code class="inlineCode">Endpointslices</code> were created. Remember from the Bootcamp chapter that <code class="inlineCode">Endpoints</code> are any pod that have a matching label that we used in our service. Using <code class="inlineCode">kubectl</code>, we can verify the <code class="inlineCode">Endpoints</code> by executing <code class="inlineCode">kubectl get ep &lt;service name&gt;</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME              ENDPOINTS
+nginx-frontend    10.42.129.9:80,10.42.170.91:80,10.42.183.124:80 + 3 more...
+</code></pre>
+<p class="normal">We can see that the <code class="inlineCode">Service</code> shows<a id="_idIndexMarker348"/> three <code class="inlineCode">Endpoints</code>, but it also shows <code class="inlineCode">+3 more</code> in the endpoint list. Since the output is truncated, the output from a <code class="inlineCode">get</code> is limited and it cannot show all of the endpoints. Since we cannot see the entire list, we can get a more detailed list if we describe the endpoints. Using <code class="inlineCode">kubectl</code>, you can execute the <code class="inlineCode">kubectl describe ep &lt;service name&gt;</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">Name:         nginx-frontend
+Namespace:    default
+Labels:       run=nginx-frontend
+Annotations:  endpoints.kubernetes.io/last-change-trigger-time: 2020-04-06T14:26:08Z
+Subsets:
+  Addresses:          10.42.129.9,10.42.170.91,10.42.183.124
+  NotReadyAddresses:  &lt;none&gt;
+  Ports:
+    Name        Port  Protocol
+    ----        ----  --------
+    http        80    TCP
+    https       443   TCP
+Events:  &lt;none&gt;
+</code></pre>
+<p class="normal">If you compare the output from our <code class="inlineCode">get</code> and <code class="inlineCode">describe</code> commands, it may appear that there is a mismatch in the <code class="inlineCode">Endpoints</code>. The <code class="inlineCode">get</code> command showed a total of six <code class="inlineCode">Endpoints</code>: it showed three IP <code class="inlineCode">Endpoints</code> and, because it was truncated, it also listed <code class="inlineCode">+3</code>, for a total of six <code class="inlineCode">Endpoints</code>. The output from the <code class="inlineCode">describe</code> command shows only three IP addresses, and not six. Why do the two outputs appear to show different results?</p>
+<p class="normal">The <code class="inlineCode">get</code> command will list each endpoint and port in the list of addresses. Since our service is defined to expose two ports, each address will have two entries, one for each exposed port. The address list will always contain every socket for the service, which may list the endpoint addresses multiple times, once for each socket.</p>
+<p class="normal">The <code class="inlineCode">describe</code> command handles the output differently, listing the addresses on one line with all of the ports listed below the addresses. At first glance, it may look like the <code class="inlineCode">describe</code> command is missing three addresses, but since it breaks the output into multiple sections, it will only list the addresses once. All ports are broken out below the address list; in our example, it shows ports <code class="inlineCode">80</code> and <code class="inlineCode">443</code>.</p>
+<p class="normal">Both commands show similar data, but it is presented in a different format.</p>
+<p class="normal">Now that the service is exposed to the cluster, you could use the assigned service IP address to connect to the application. While this would work, the address may change if the <code class="inlineCode">Service</code> object is deleted and recreated. So, rather than targeting an IP address, you should use the DNS<a id="_idIndexMarker349"/> that was assigned to the service when it was created.</p>
+<p class="normal">In the next section, we will explain how to use internal DNS names to resolve services.</p>
+<h3 class="heading-3" id="_idParaDest-161">Using DNS to resolve services</h3>
+<p class="normal">So far, we have shown<a id="_idIndexMarker350"/> you that when you create<a id="_idIndexMarker351"/> certain objects in Kubernetes, the object will be assigned an IP address. The problem is that when you delete an object like a pod or service, there is a high likelihood that when you redeploy that object, it will receive a different IP address. Since IPs are transient in Kubernetes, we need a way to address objects with something other than a changing IP address. This is where the built-in DNS service in Kubernetes clusters comes in. </p>
+<p class="normal">When a service is created, an internal DNS record is automatically generated, allowing other workloads within the cluster to query it by name. If all pods reside in the same namespace, we can conveniently access the services using a simple, short name like <code class="inlineCode">mysql-web</code>. However, in cases where services are utilized by multiple namespaces, and workloads need to communicate with a service in a different namespace, the service must be targeted using its full name.</p>
+<p class="normal">The following table provides an example of how a service may be accessed from various namespaces:</p>
+<table class="table-container" id="table002-3">
+<tbody>
+<tr>
+<td class="table-cell" colspan="2">
+<p class="normal">Cluster name: <code class="inlineCode">cluster.local</code></p>
+<p class="normal">Target Service: <code class="inlineCode">mysql-web</code></p>
+<p class="normal">Target Service <code class="inlineCode">Namespace: database</code></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Pod Namespace</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Valid Names to Connect to the MySQL Service</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">database</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">mysql-web</code></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">kube-system</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">mysql-web.database.svc mysql-web.database.svc.cluster.local</code></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">productionweb</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">mysql-web.database.svc</code></p>
+<p class="normal"><code class="inlineCode">mysql-web.database.svc.cluster.local</code></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 4.2: Internal DNS examples</p>
+<p class="normal">As you can see from the preceding table, you can target a service that is in another namespace by using a standard naming convention, <code class="inlineCode">.&lt;namespace&gt;.svc.&lt;cluster name&gt;</code>. In most cases, when you are accessing a service in a different namespace, you do not need to add the cluster name, since it should be appended automatically.</p>
+<p class="normal">To expand on the overall concept<a id="_idIndexMarker352"/> of services, let’s dive into the specifics<a id="_idIndexMarker353"/> of each service type and explore how they can be used to access our workloads.</p>
+<h2 class="heading-2" id="_idParaDest-162">Understanding different service types</h2>
+<p class="normal">When you create<a id="_idIndexMarker354"/> a service, you can specify a service type, but if you do not specify a type, the <code class="inlineCode">ClusterIP</code> type will be used by default. The service type that is assigned will configure how the service is exposed to either the cluster itself or external traffic.</p>
+<h3 class="heading-3" id="_idParaDest-163">The ClusterIP service</h3>
+<p class="normal">The most commonly used, and often<a id="_idIndexMarker355"/> misunderstood, service type is <code class="inlineCode">ClusterIP</code>. If you look back at <em class="italic">Table 4.1</em>, you can see that the description for the <code class="inlineCode">ClusterIP</code> type states that the service allows connectivity to the service from within the cluster. The <code class="inlineCode">ClusterIP</code> type does not allow any external communication to the exposed service.</p>
+<p class="normal">The idea of exposing a service to only internal cluster workloads can be a confusing concept. In the next example, we will describe a use case where exposing a service to just the cluster itself makes sense and also increases security.</p>
+<p class="normal">For a moment, let’s set aside external traffic and focus on our current deployment. Our main goal is to understand how each component works together to form our application. Taking the NGINX example, we will enhance the deployment by adding a backend database that is used by the web server.</p>
+<p class="normal">So far, this is a simple application: we have our deployments created, a service for the NGINX<a id="_idIndexMarker356"/> servers called <code class="inlineCode">web frontend</code>, and a database service called <code class="inlineCode">mysql-web</code>. To configure the database connection from the web servers, we have decided to use a <code class="inlineCode">ConfigMap</code> that will target the database service.</p>
+<p class="normal">You may be thinking that since we are using a single database server, we could simply use the IP address of the pod. While this would initially work, any restarts to the pod would change the address and the web servers would fail to connect to the database. Since pod IPs are ephemeral, a service should always be used, even if you are only targeting a single pod.</p>
+<p class="normal">While we may want to expose the web server to external traffic at some point, why would we need to expose the <code class="inlineCode">mysql-web</code> database service? Since the web server is in the same cluster, and in this case, the same namespace, we only need to use a <code class="inlineCode">ClusterIP</code> address type so the web server can connect to the database server. Since the database is not accessible from outside of the cluster, it’s more secure since it doesn’t allow any traffic from outside the cluster. </p>
+<p class="normal">By using the service name instead of the pod IP address, we will not run into issues when the pod is restarted since the service targets the labels rather than an IP address. Our web servers will simply query the <strong class="keyWord">Kubernetes DNS server</strong> for the <code class="inlineCode">mysql-web</code> service name, which will contain<a id="_idIndexMarker357"/> the endpoints of any pod that matches the <code class="inlineCode">mysql-web</code> label.</p>
+<h3 class="heading-3" id="_idParaDest-164">The NodePort service</h3>
+<p class="normal">A <code class="inlineCode">NodePort</code> service provides<a id="_idIndexMarker358"/> both internal and external access to your service within the cluster. At first, it may seem like the ideal choice for exposing a service since it makes it accessible to everyone. However, it achieves this by assigning a port on the node (which, by default uses a port in the range of <code class="inlineCode">30000-32767</code>). Relying on a <code class="inlineCode">NodePort</code> can be confusing for users when they need to access a service over the network since they need to remember the specific port that was assigned to the service. You will see how you access a service on a <code class="inlineCode">NodePort</code> shortly, demonstrating why we do not suggest using it for production workloads.</p>
+<p class="normal">While in most enterprise environments, you shouldn’t use a <code class="inlineCode">NodePort</code> service for any production workloads, there are some valid reasons to use them, primarily, to troubleshoot accessing a workload. When we receive a call from an application that has an issue, and the Kubernetes platform or Ingress controller is being blamed, we may temporarily change the service from <code class="inlineCode">ClusterIP</code> to <code class="inlineCode">NodePort</code> to test connectivity without using an Ingress Controller. By accessing the application using a <code class="inlineCode">NodePort</code>, we bypass the Ingress controller, taking that component out of the equation as a potential source causing the issue. If we are able to access the workload using the <code class="inlineCode">NodePort</code> and it works, we know the issue isn’t with the application itself and can direct engineering resources to look at the Ingress controller or other potential root causes.</p>
+<p class="normal">To create a service that uses<a id="_idIndexMarker359"/> the <code class="inlineCode">NodePort</code> type, you just need to set the type to <code class="inlineCode">NodePort</code> in your manifest. We can use the same manifest that we used earlier to expose an NGINX deployment from the <code class="inlineCode">ClusterIP</code> example, only changing <code class="inlineCode">type</code> to <code class="inlineCode">NodePort</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">run:</span> <span class="hljs-string">nginx-frontend</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-frontend</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">run:</span> <span class="hljs-string">nginx-frontend</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">http</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-number">80</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">80</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">https</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-number">443</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">443</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">NodePort</span>
+</code></pre>
+<p class="normal">We can view the endpoints in the same way that we did for a <code class="inlineCode">ClusterIP</code> service, using <code class="inlineCode">kubectl</code>. Running <code class="inlineCode">kubectl get services</code> will show you the newly created service:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME              TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)                       AGE
+nginx-frontend    NodePort   10.43.164.118   &lt;none&gt;        80:31574/TCP,443:32432/TCP    4s
+</code></pre>
+<p class="normal">The output shows that the type is <code class="inlineCode">NodePort</code> and that we have exposed the service IP address and the ports. If you look at the ports, you will notice that, unlike a <code class="inlineCode">ClusterIP</code> service, a <code class="inlineCode">NodePort</code> service shows two ports rather than one. The first port is the exposed port that the internal cluster services can target, and the second port number is the randomly generated port that is accessible from outside of the cluster.</p>
+<p class="normal">Since we exposed both ports <code class="inlineCode">80</code> and <code class="inlineCode">443</code> for the service, we will have two <code class="inlineCode">NodePorts</code> assigned. If someone needs to target the service from outside of the cluster, they can target any worker node with the supplied port to access the service.</p>
+<figure class="mediaobject"><img alt="Figure 6.1 – NGINX service using NodePort " height="272" src="../Images/B21165_04_01.png" width="796"/></figure>
+<p class="packt_figref">Figure 4.1: NGINX service using NodePort</p>
+<p class="normal">Each node maintains a list<a id="_idIndexMarker360"/> of the <code class="inlineCode">NodePorts</code> and their assigned services. Since the list is shared with all nodes, you can target any functioning node using the port and Kubernetes will route it to a running pod.</p>
+<p class="normal">To visualize the traffic flow, we have created a graphic showing the web request to our NGINX pod:</p>
+<figure class="mediaobject"><img alt="Figure 6.2 – NodePort traffic flow overview " height="690" src="../Images/B21165_04_02.png" width="878"/></figure>
+<p class="packt_figref">Figure 4.2: NodePort traffic flow overview</p>
+<p class="normal">There are some issues<a id="_idIndexMarker361"/> to consider when using a <code class="inlineCode">NodePort</code> to expose a service:</p>
+<ul>
+<li class="bulletList">If you delete and recreate the service, the assigned <code class="inlineCode">NodePort</code> will change.</li>
+<li class="bulletList">If you target a node that is offline or having issues, your request will fail.</li>
+<li class="bulletList">Using <code class="inlineCode">NodePort</code> for too many services may get confusing. You need to remember the port for each service and remember that there are no <em class="italic">external</em> names associated with the service. This may get confusing for users who are targeting services in the cluster.</li>
+</ul>
+<p class="normal">Because of the limitations listed here, you should limit using <code class="inlineCode">NodePort</code> services.</p>
+<h3 class="heading-3" id="_idParaDest-165">The LoadBalancer service</h3>
+<p class="normal">Many people starting<a id="_idIndexMarker362"/> in Kubernetes read about services and discover that the <code class="inlineCode">LoadBalancer</code> type will assign an external IP address to a service. Since an external IP address can be addressed directly by any machine on the network, this is an attractive option for a service, which is why many people try to use it first. Unfortunately, since many users may start by using an on-premises Kubernetes cluster, they run into failures trying to create a <code class="inlineCode">LoadBalancer</code> service.</p>
+<p class="normal">The <code class="inlineCode">LoadBalancer</code> service relies on an external component that integrates with Kubernetes to create the IP address assigned to the service. Most on-premises Kubernetes installations do not include this type of service. Without the additional components, when you try to use a <code class="inlineCode">LoadBalancer</code> service, you will find that your service shows <code class="inlineCode">&lt;pending&gt;</code> in the <code class="inlineCode">EXTERNAL-IP</code> status column.</p>
+<p class="normal">We will explain the <code class="inlineCode">LoadBalancer</code> service and how to implement it later in the chapter.</p>
+<h3 class="heading-3" id="_idParaDest-166">The ExternalName service</h3>
+<p class="normal">The <code class="inlineCode">ExternalName</code> service<a id="_idIndexMarker363"/> is a unique service type with a specific use case. When you query a service that uses an <code class="inlineCode">ExternalName</code> type, the final endpoint is not a pod that is running in the cluster, but an external DNS name.</p>
+<p class="normal">To use an example that you may be familiar with outside of Kubernetes, this is similar to using <code class="inlineCode">c-name</code> to alias a host record. When you query a <code class="inlineCode">c-name</code> record in DNS, it resolves to a host record rather than an IP address.</p>
+<p class="normal">Before using this service type, you need to understand the potential issues that it may cause for your application. You may run into issues if the target endpoint is using SSL certificates. Since the hostname you are querying may not be the same as the name on the destination server’s certificate, your connection may not succeed because of the name mismatch. If you find yourself in this situation, you may be able to use a certificate that has <strong class="keyWord">subject alternative names</strong> (<strong class="keyWord">SANs</strong>) added to the certificate. Adding alternative names to a certificate allows you to associate multiple names with a certificate.</p>
+<p class="normal">To explain why you may want to use an <code class="inlineCode">ExternalName</code> service, let’s use the following example:</p>
+<div class="note">
+<p class="normal"><strong class="keyWord">FooWidgets application requirements</strong></p>
+<p class="normal">FooWidgets is running an application<a id="_idIndexMarker364"/> on their Kubernetes cluster that needs to connect to a database server running on a Windows 2019 server called <code class="inlineCode">sqlserver1.foowidgets.com</code> (<code class="inlineCode">192.168.10.200</code>).</p>
+<p class="normal">The current application is deployed to a namespace called <code class="inlineCode">finance</code>.</p>
+<p class="normal">The SQL server will be migrated to a container in the next quarter.</p>
+<p class="normal">You have two requirements:</p>
+<ul>
+<li class="bulletList">Configure the application<a id="_idIndexMarker365"/> to use the external database server using only the cluster’s DNS server.</li>
+<li class="bulletList">FooWidgets cannot make any configuration changes to the applications after the SQL server is migrated.</li>
+</ul>
+</div>
+<p class="normal">Based on the requirements, using an <code class="inlineCode">ExternalName</code> service<a id="_idIndexMarker366"/> is the perfect solution. So, how would we accomplish the requirements? (This is a theoretical exercise; you do not need to execute anything on your KinD cluster.) Here are the steps:</p>
+<ol>
+<li class="numberedList" value="1">The first step is to create a manifest that will create the <code class="inlineCode">ExternalName</code> service for the database server:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">sql-db</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">finance</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">ExternalName</span>
+  <span class="hljs-attr">externalName:</span> <span class="hljs-string">sqlserver1.foowidgets.com</span>
+</code></pre>
+</li>
+<li class="numberedList">With the service created, the next step is to configure the application to use the name of our new service. Since the service and the application are in the same namespace, you can configure the application to target the <code class="inlineCode">sql-db</code> name.</li>
+<li class="numberedList">Now, when the application queries for <code class="inlineCode">sql-db</code>, it will resolve to <code class="inlineCode">sqlserver1.foowidgets.com</code>, which will forward the DNS request to an external DNS server where the name is resolved to the IP address of <code class="inlineCode">192.168.10.200</code>.</li>
+</ol>
+<p class="normal">This accomplishes the initial requirement, connecting the application to the external database server using only the Kubernetes DNS server.</p>
+<p class="normal">You may be wondering why we didn’t simply configure the application to use the database server name directly. The key is the second requirement; limiting any reconfiguration when the SQL server is migrated to a container.</p>
+<p class="normal">Since we cannot reconfigure the application once the SQL server is migrated to the cluster, we will not be able to change the name of the SQL server in the application settings. If we configured the application to use the original name, <code class="inlineCode">sqlserver1.foowidgets.com</code>, the application would not work after the migration. By using the <code class="inlineCode">ExternalName</code> service, we can change the internal DNS service name by replacing the <code class="inlineCode">ExternalHost</code> service name with a standard Kubernetes service that points to the SQL server.</p>
+<p class="normal">To accomplish the second goal, go through the following steps:</p>
+<ol>
+<li class="numberedList" value="1">Since we have created<a id="_idIndexMarker367"/> a new entry in DNS for the <code class="inlineCode">sql-db</code> name, we should delete the <code class="inlineCode">ExternalName</code> service, since it is no longer needed. </li>
+<li class="numberedList">Create a new service using the name <code class="inlineCode">sql-db</code> that uses <code class="inlineCode">app=sql-app</code> as the selector. The manifest would look like the one shown here:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">sql-db</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">sql-db</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">finance</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span> <span class="hljs-number">1433</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">1433</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">sql</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">sql-app</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">ClusterIP</span>
+</code></pre>
+</li>
+</ol>
+<p class="normal">Since we are using the same service name for the new service, no changes need to be made to the application. The app will still target the <code class="inlineCode">sql-db</code> name, which will now use the SQL server deployed in the cluster.</p>
+<p class="normal">Now that you know about services, we can move on to load balancers, which will allow you to expose services externally using standard URL names and ports.</p>
+<h1 class="heading-1" id="_idParaDest-167">Introduction to load balancers</h1>
+<p class="normal">In this second section, we will discuss<a id="_idIndexMarker368"/> the basics between utilizing layer 7 and layer 4 load balancers. To understand the differences between the types of load balancers, it’s<a id="_idIndexMarker369"/> important to understand the <strong class="keyWord">Open Systems Interconnection</strong> (<strong class="keyWord">OSI</strong>) model. Understanding the different layers of the OSI model will help you to understand how different solutions handle incoming requests.</p>
+<h2 class="heading-2" id="_idParaDest-168">Understanding the OSI model</h2>
+<p class="normal">There are various approaches<a id="_idIndexMarker370"/> for exposing an application in Kubernetes, and you’ll frequently come across mentions of layer 7 or layer 4 load balancing. These terms indicate the positions they hold in the OSI model, with each layer providing a distinct functionality. Each component that operates in layer 7 will offer different capabilities compared to those at layer 4.</p>
+<p class="normal">To begin, let’s look at a brief overview of the seven layers and a description of each. For this chapter, we are interested in the two highlighted sections, <strong class="keyWord">layer 4</strong> and <strong class="keyWord">layer 7</strong>:</p>
+<table class="table-container" id="table003-3">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">OSI Layer</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Name</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">7</p>
+</td>
+<td class="table-cell">
+<p class="normal">Application</p>
+</td>
+<td class="table-cell">
+<p class="normal">Provides application traffic, including HTTP and HTTPS</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">6</p>
+</td>
+<td class="table-cell">
+<p class="normal">Presentation</p>
+</td>
+<td class="table-cell">
+<p class="normal">Forms data packets and encryption</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">5</p>
+</td>
+<td class="table-cell">
+<p class="normal">Session</p>
+</td>
+<td class="table-cell">
+<p class="normal">Controls traffic flow</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">4</p>
+</td>
+<td class="table-cell">
+<p class="normal">Transport</p>
+</td>
+<td class="table-cell">
+<p class="normal">Communication traffic between devices, including TCP and UDP</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">3</p>
+</td>
+<td class="table-cell">
+<p class="normal">Network</p>
+</td>
+<td class="table-cell">
+<p class="normal">Routing between devices, including IP</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">2</p>
+</td>
+<td class="table-cell">
+<p class="normal">Data Link</p>
+</td>
+<td class="table-cell">
+<p class="normal">Performs error checking for physical connection (MAC address)</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">1</p>
+</td>
+<td class="table-cell">
+<p class="normal">Physical</p>
+</td>
+<td class="table-cell">
+<p class="normal">Physical connection of devices</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 4.3: OSI model layers</p>
+<p class="normal">You don’t need to be an expert in the OSI layers, but you should understand what layer 4 and layer 7 load balancers provide and how each may be used with a cluster.</p>
+<p class="normal">Let’s go deeper into the details of layers 4 and 7:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Layer 4</strong>: As the description states in the chart, layer 4 is responsible for the communication of traffic between devices. Devices that run at layer 4 have access to TCP/UDP information. Load balancers that are layer-4-based provide your applications with the ability to service incoming requests for any TCP/UDP port.</li>
+<li class="bulletList"><strong class="keyWord">Layer 7</strong>: Layer 7 is responsible for providing network services to applications. When we say application traffic, we are not referring to applications such as Excel or Word; instead, we are referring to the protocols that support the applications, such as HTTP and HTTPS.</li>
+</ul>
+<p class="normal">This may be very new for some people and to completely understand each of the layers would require multiple chapters – which is beyond the scope of this book. The main point we want you to take away from this introduction is that applications like databases cannot be exposed externally using a layer 7 load balancer. To expose an application that does not use HTTP/S traffic<a id="_idIndexMarker371"/> requires the use of a layer 4 load balancer.</p>
+<p class="normal">In the next section, we will explain each load balancer type and how to use them in a Kubernetes cluster to expose your services.</p>
+<h1 class="heading-1" id="_idParaDest-169">Layer 7 load balancers</h1>
+<p class="normal">Kubernetes offers Ingress<a id="_idIndexMarker372"/> controllers as layer 7 load balancers, which provide a means of accessing your applications. Various options are available for enabling Ingress in your Kubernetes clusters, including the following:</p>
+<ul>
+<li class="bulletList">NGINX</li>
+<li class="bulletList">Envoy</li>
+<li class="bulletList">Traefik</li>
+<li class="bulletList">HAProxy</li>
+</ul>
+<p class="normal">You can think of a layer 7 load balancer as a traffic director for networks. Its role is to distribute incoming requests to multiple servers hosting a website or application.</p>
+<p class="normal">When you access a website or use an app, your device sends a request to the server asking for the specific web page or data you want. With a layer 7 load balancer, your request doesn’t directly reach a single server, instead, it sends the traffic through the load balancer. The layer 7 load balancer examines the content of your request and understands what web page or data is being requested. Using factors like backend server health, current workload, and even your location, the load balancer intelligently selects the best servers to handle your request.</p>
+<p class="normal">A layer 7 load balancer ensures that all servers are utilized efficiently, and users receive a smooth and responsive experience. Think of this like being at a store that has multiple checkout counters where a store manager guides customers to the least busy checkout, minimizing waiting times and ensuring everyone gets served promptly.</p>
+<p class="normal">To recap, layer 7 load balancers<a id="_idIndexMarker373"/> optimize the overall system performance and reliability.</p>
+<h2 class="heading-2" id="_idParaDest-170">Name resolution and layer 7 load balancers</h2>
+<p class="normal">To handle layer 7 traffic<a id="_idIndexMarker374"/> in a Kubernetes cluster, you deploy an Ingress controller. Ingress controllers are dependent on incoming names to route traffic to the correct service. This is much easier and faster than in a legacy server deployment model where you would need to create a DNS entry and map it to an IP address before users could access the application externally by name.</p>
+<p class="normal">Applications that are deployed on a Kubernetes cluster are no different—the users will use an assigned DNS name to access the application. The most common implementation is to create a new wildcard domain that will target the <code class="inlineCode">Ingress</code> controller via an external load balancer, such as an <strong class="keyWord">F5</strong>, <strong class="keyWord">HAProxy</strong>, or <strong class="keyWord">Seesaw</strong>. A wildcard domain will direct all traffic for a given domain to the same destination. For example, if your wildcard domain name is <code class="inlineCode">foowidgets.com</code>, your main entry in the domain would be <code class="inlineCode">*.foowidgets.com</code>. Any ingress URL name that is assigned using the wildcard domain will have the traffic directed to the external load balancer, where it will be directed to the defined service using your ingress rule URL.</p>
+<p class="normal">Using the <a href="http://foowidgets.com"><span class="url">foowidgets.com</span></a> domain as an example, we have three Kubernetes clusters, fronted by an external load balancer with multiple Ingress controller endpoints. Our DNS server would have entries for each cluster, using a wildcard domain that points to the load balancer’s virtual IP address:</p>
+<table class="table-container" id="table004-1">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Domain Name</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">IP Address</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">K8s Cluster</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">*.clusterl.foowidgets.com</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">192.168.200.100</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Production001</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">*.cluster2.foowidgets.com</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">192.168.200.101</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Production002</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">*.cluster3.foowidgets.com</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">192.168.200.102</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Development001</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 4.4: Example of wildcard domain names for Ingress</p>
+<p class="normal">The following diagram shows the entire flow of the request:</p>
+<figure class="mediaobject"><img alt="Figure 6.3 – Multiple-name Ingress traffic flow " height="640" src="../Images/B21165_04_03.png" width="878"/></figure>
+<p class="packt_figref">Figure 4.3: Multiple-name Ingress traffic flow</p>
+<p class="normal">Each of the steps in <em class="italic">Figure 4.3</em> is detailed here:</p>
+<ol>
+<li class="numberedList" value="1">Using a browser, the user requests this URL: <code class="inlineCode">https://timesheets.cluster1.foowidgets.com</code>.</li>
+<li class="numberedList">The DNS query is sent to a DNS server. The DNS<a id="_idIndexMarker375"/> server looks up the zone details for <code class="inlineCode">cluster1.foowidgets.com</code>. There is a single entry in the DNS<a id="_idIndexMarker376"/> zone that resolves to the <strong class="keyWord">virtual IP</strong> (<strong class="keyWord">VIP</strong>) address, assigned on the load balancer for the domain.</li>
+<li class="numberedList">The load balancer’s VIP for <code class="inlineCode">cluster1.foowidgets.com</code> has three backend servers assigned, pointing to three worker nodes where we have deployed Ingress controllers.</li>
+<li class="numberedList">Using one of the endpoints, the request is sent to the Ingress controller.</li>
+<li class="numberedList">The Ingress controller will compare the requested URL to a list of Ingress rules. When a matching request is found, the Ingress controller will forward the request to the service that was assigned to the Ingress rule.</li>
+</ol>
+<p class="normal">To help reinforce how Ingress<a id="_idIndexMarker377"/> works, it will help to create Ingress rules on a cluster to see them in action. Right now, the key takeaway is that ingress uses the requested URL to direct traffic to the correct Kubernetes services.</p>
+<h2 class="heading-2" id="_idParaDest-171">Using nip.io for name resolution</h2>
+<p class="normal">Many personal development<a id="_idIndexMarker378"/> clusters, such as our KinD installation, may not have access to a DNS infrastructure or the necessary permissions to add records. To test Ingress rules, we need to target unique hostnames that are mapped to Kubernetes services by the Ingress controller. Without a DNS server, you need to create a localhost file with multiple names pointing to the IP address of the Ingress controller.</p>
+<p class="normal">For example, if you deployed four web servers, you would need to add all four names to your local hosts. An example of this is shown here:</p>
+<pre class="programlisting con"><code class="hljs-con">192.168.100.100 webserver1.test.local
+192.168.100.100 webserver2.test.local
+192.168.100.100 webserver3.test.local
+192.168.100.100 webserver4.test.local
+</code></pre>
+<p class="normal">This can also be represented on a single line rather than multiple lines:</p>
+<pre class="programlisting con"><code class="hljs-con">192.168.100.100 webserver1.test.local webserver2.test.local webserver3.test.local webserver4.test.local
+</code></pre>
+<p class="normal">If you use multiple machines to test your deployments, you will need to edit the host file on every machine that you plan to use for testing. Maintaining multiple files on multiple machines is an administrative nightmare and will lead to issues that will make testing a challenge.</p>
+<p class="normal">Luckily, there are free DNS services available that we can use without configuring a complex DNS infrastructure for our KinD cluster.</p>
+<p class="normal">nip.io is the service that we will use for our KinD cluster name resolution requirements. Using our previous web server example, we will not need to create any DNS records. We still need to send the traffic for the different servers to the NGINX server running on <code class="inlineCode">192.168.100.100</code> so that Ingress can route the traffic to the appropriate service. nip.io uses a naming format that includes the IP address in the hostname to resolve the name to an IP. For example, say that we have four web servers that we want to test called <code class="inlineCode">webserver1</code>, <code class="inlineCode">webserver2</code>, <code class="inlineCode">webserver3</code>, and <code class="inlineCode">webserver4</code>, with Ingress rules on an Ingress controller running on <code class="inlineCode">192.168.100.100</code>.</p>
+<p class="normal">As we mentioned earlier, we do not need to create any records to accomplish this. Instead, we can use the naming convention to have nip.io resolve the name for us. Each of the web servers would use a name with the following naming standard:</p>
+<p class="normal"><code class="inlineCode">&lt;desired name&gt;.&lt;INGRESS IP&gt;.nip.io</code></p>
+<p class="normal">The names for all four web servers<a id="_idIndexMarker379"/> are listed in the following table:</p>
+<table class="table-container" id="table005-1">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Web Server Name</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Nip.io DNS Name</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">webserverl</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">webserver1.192.168.100.100.nip.io</code></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">webserver2</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">webserver2.192.168.100.100.nip.io</code></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">webserver3</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">webserver3.192.168.100.100.nip.io</code></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">webserver4</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">webserver4.192.168.100.100.nip.io</code></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 4.5: nip.io example domain names</p>
+<p class="normal">When you use any of the preceding names, <code class="inlineCode">nip.io</code> will resolve them to <code class="inlineCode">192.168.100.100</code>. You can see an example ping for each name in the following screenshot:</p>
+<figure class="mediaobject"><img alt="Figure 6.4 – Example name resolution using nip.io " height="202" src="../Images/B21165_04_04.png" width="877"/></figure>
+<p class="packt_figref">Figure 4.4: Example name resolution using nip.io</p>
+<p class="normal">Keep in mind that Ingress rules require unique names to properly route traffic to the correct service. Although knowing the IP address of the server might not be required in some scenarios, it becomes essential for Ingress rules. Each name should be unique and typically uses the first part of the full name. In our example, the unique names are <code class="inlineCode">webserver1</code>, <code class="inlineCode">webserver2</code>, <code class="inlineCode">webserver3</code>, and <code class="inlineCode">webserver4</code>.</p>
+<p class="normal">By providing this service, <code class="inlineCode">nip.io</code> allows you to use any name for Ingress rules without the need to have a DNS server<a id="_idIndexMarker380"/> in your development cluster.</p>
+<p class="normal">Now that you know how to use <code class="inlineCode">nip.io</code> to resolve names for your cluster, let’s explain how to use a nip.io name in an Ingress rule.</p>
+<h2 class="heading-2" id="_idParaDest-172">Creating Ingress rules</h2>
+<p class="normal">Remember, ingress rules<a id="_idIndexMarker381"/> use names to route the incoming request to the correct service.</p>
+<p class="normal">The following is a graphical representation of an incoming request showing how Ingress routes the traffic:</p>
+<figure class="mediaobject"><img alt="Figure 6.5 – Ingress traffic flow " height="698" src="../Images/B21165_04_05.png" width="877"/></figure>
+<p class="packt_figref">Figure 4.5: Ingress traffic flow</p>
+<p class="normal"><em class="italic">Figure 4.5</em> shows a high-level overview of how Kubernetes handles incoming Ingress requests. To help explain each step in more depth, let’s go over the five steps in greater detail. Using the graphic provided in <em class="italic">Figure 4.5</em>, we will explain each numbered step in detail to show how ingress processes the request:</p>
+<ol>
+<li class="numberedList" value="1">The user requests a URL in their browser named <code class="inlineCode">http://webserver1.192.168.200.20.nio.io</code>. A DNS request is sent to the local DNS server, which is ultimately sent to the <code class="inlineCode">nip.io</code> DNS server.</li>
+<li class="numberedList">The <code class="inlineCode">nip.io</code> server resolves the domain name to the <code class="inlineCode">192.168.200.20</code> IP address, which is returned to the client.</li>
+<li class="numberedList">The client sends the request to the Ingress controller, which is running on <code class="inlineCode">192.168.200.20</code>. The request contains the complete URL name, <code class="inlineCode">webserver1.192.168.200.20.nio.io</code>.</li>
+<li class="numberedList">The Ingress controller looks up the requested URL name in the configured rules and matches the URL name to a service.</li>
+<li class="numberedList">The service endpoints will be used to route traffic to the assigned pods.</li>
+<li class="numberedList">The request is routed to an endpoint pod running the web server.</li>
+</ol>
+<p class="normal">Using the preceding example traffic flow, let’s create an NGINX pod, service, and Ingress rule to see this in action. In the <code class="inlineCode">chapter4/ingress</code> directory, we have provided<a id="_idIndexMarker382"/> a script called <code class="inlineCode">nginx-ingress.sh</code>, which will deploy the web server and expose it using an ingress rule of <code class="inlineCode">webserver.w.x.y.nip.io</code>. When you execute the script, it will output the complete URL you can use to test the ingress rule.</p>
+<p class="normal">The script will execute<a id="_idIndexMarker383"/> the following steps to create our new NGINX deployment and expose it using an ingress rule:</p>
+<ol>
+<li class="numberedList" value="1">A new NGINX deployment called <code class="inlineCode">nginx-web</code> is deployed, using port <code class="inlineCode">8080</code> for the web server.</li>
+<li class="numberedList">We create a service, called <code class="inlineCode">nginx-web,</code> using a <code class="inlineCode">ClusterIP</code> service (the default) on port <code class="inlineCode">8080</code>.</li>
+<li class="numberedList">The IP address of the host is discovered and used to create a new ingress rule that will use the hostname <code class="inlineCode">webserver.w.x.y.z.nip.io</code>.<code class="inlineCode"> </code>The <code class="inlineCode">w.x.y.z</code> web server will be replaced with the IP address of your host.</li>
+</ol>
+<p class="normal">Once deployed, you can test the web server by browsing to it from any machine on your local network using the URL that is provided by the script. In our example, the host’s IP address is <code class="inlineCode">192.168.200.20</code>, so our URL will be <code class="inlineCode">webserver.192.168.200.20.nip.io</code>.</p>
+<figure class="mediaobject"><img alt="Figure 6.6 – NGINX web server using nip.io for Ingress " height="273" src="../Images/B21165_04_06.png" width="823"/></figure>
+<p class="packt_figref">Figure 4.6: NGINX web server using nip.io for Ingress</p>
+<p class="normal">With the details provided in this section, it is possible to generate ingress rules for multiple containers utilizing unique hostnames. It’s important to note that you aren’t restricted to using a service like <code class="inlineCode">nip.io</code> for name resolution; you can employ any name resolution method that is accessible in your environment. In a production cluster, you would typically have an enterprise DNS infrastructure. However, in a lab environment, like our KinD cluster, nip.io serves as an excellent tool for testing scenarios that demand accurate<a id="_idIndexMarker384"/> naming conventions.</p>
+<p class="normal">Since we, will use nip.io naming standards throughout the book, so it’s important to understand the naming convention before moving on to the next chapter.</p>
+<h2 class="heading-2" id="_idParaDest-173">Resolving Names in Ingress Controllers</h2>
+<p class="normal">As discussed earlier, <code class="inlineCode">Ingress</code> controllers<a id="_idIndexMarker385"/> are primarily level 7 load balancers and are mostly concerned with HTTP/S. How does an <code class="inlineCode">Ingress</code> controller get the name of the host? You might think it’s included in the network requests, but it isn’t. A DNS name is used by the client, but at the networking layer, there are no names, only IP addresses. </p>
+<p class="normal">So, how does the <code class="inlineCode">Ingress</code> controller know what host you want to connect to? It depends on whether you’re using HTTP or HTTPS. If you’re using HTTP, your <code class="inlineCode">Ingress</code> controller will get the hostname from the <code class="inlineCode">Host</code> HTTP header. For instance, here’s a simple request from an HTTP client to a cluster:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-string">GET</span> <span class="hljs-string">/</span> <span class="hljs-string">HTTP/1.1</span>
+<span class="hljs-attr">Host:</span> <span class="hljs-string">k8sou.apps.192-168-2-14.nip.io</span>
+<span class="hljs-attr">User-Agent:</span> <span class="hljs-string">curl/7.88.1</span>
+<span class="hljs-attr">Accept:</span> <span class="hljs-string">*/*</span>
+</code></pre>
+<p class="normal">The second line tells the <code class="inlineCode">Ingress</code> controller which host, and which <code class="inlineCode">Service</code>, you want the request to go to. This is trickier with HTTPS because the connection is encrypted and the decryption needs to happen before you can read the <code class="inlineCode">Host</code> header. </p>
+<p class="normal">You’ll find that when using HTTPS, your <code class="inlineCode">Ingress</code> controller will serve different certificates based on which <code class="inlineCode">Service</code> you want to connect to, also based on hostnames. In order to route without yet having access to the <code class="inlineCode">Host</code> HTTP header, your Ingress controller<a id="_idIndexMarker386"/> will use a protocol called <strong class="keyWord">Server Name Indication </strong>(<strong class="keyWord">SNI</strong>), which includes the requested hostname as part of the TLS key exchange. Using SNI, your <code class="inlineCode">Ingress</code> controller is able to determine which <code class="inlineCode">Ingress</code> configuration object applies to a request before the request<a id="_idIndexMarker387"/> is decrypted.</p>
+<h2 class="heading-2" id="_idParaDest-174">Using Ingress Controllers for non-HTTP traffic</h2>
+<p class="normal">The use of SNI offers an interesting<a id="_idIndexMarker388"/> side effect, which means<a id="_idIndexMarker389"/> that <code class="inlineCode">Ingress</code> controllers can sort of pretend to be level 4 load balancers when using TLS. Most <code class="inlineCode">Ingress</code> controllers<a id="_idIndexMarker390"/> offer a feature called TLS passthrough, where instead of decrypting the traffic, the <code class="inlineCode">Ingress</code> controller simply routes it to a <code class="inlineCode">Service</code> based on the request’s SNI. Using our earlier example of a web server’s backend database, if you were to configure your <code class="inlineCode">Ingress</code> object with a TLS passthrough annotation (which is different for each controller) you could then expose your database through your <code class="inlineCode">Ingress</code>.</p>
+<p class="normal">Given how easy it is to create <code class="inlineCode">Ingress</code> objects, you may think this is a security issue. That’s why so much of this book is dedicated to security. It’s quite easy to misconfigure your environment!</p>
+<p class="normal">A major disadvantage to using TLS passthrough, outside of potential security issues, is that you lose many of your <code class="inlineCode">Ingress</code> controller’s native routing and control functions. For instance, if you’re deploying a web application that maintains its own session state, you generally will configure your <code class="inlineCode">Ingress</code> object to use sticky sessions so that each user’s request goes back to the same container. This is accomplished by embedding cookies into HTTP responses, but if the controller is just passing the traffic through, it can’t do that.</p>
+<p class="normal">Layer 7 load balancers, like NGINX Ingress, are commonly deployed for various workloads, including web servers. However, other deployments might require a more sophisticated load balancer, operating at a lower layer of the OSI model. As we move down the model, we gain access to additional lower-level features that certain workloads require.</p>
+<p class="normal">Before moving on to layer 4 load balancers, if you deployed the NGINX example on your cluster, you should delete all of the objects before moving on. To easily remove the objects, you can execute the <code class="inlineCode">ngnix-ingress-remove.sh</code> script<a id="_idIndexMarker391"/> in the <code class="inlineCode">chapter4/ingress</code> directory. This script<a id="_idIndexMarker392"/> will delete the deployment, service, and ingress rule.</p>
+<h1 class="heading-1" id="_idParaDest-175">Layer 4 load balancers</h1>
+<p class="normal">Similar, to layer 7 load balancers, a layer 4 load balancer<a id="_idIndexMarker393"/> is also a traffic controller for a network, but with a number of differences compared to a layer 7 load balancer.</p>
+<p class="normal">The layer 7 load balancer understands the content of incoming requests, making decisions based on specific information like web pages or data being requested. A layer 4 load balancer works at a lower level, looking at the basic information contained in the incoming network traffic, such as IP addresses and ports, without inspecting the actual data.</p>
+<p class="normal">When you access a website or use an app, your device sends a request to the server with a unique IP address<a id="_idIndexMarker394"/> and a specific port number – also called a <strong class="keyWord">socket</strong>. The layer 4 load balancer observes this address and port to efficiently distribute incoming traffic across multiple servers. To help visualize how layer 4 load balancers work, think of it as a traffic cop that efficiently directs incoming cars to different lanes on a highway. The load balancer doesn’t know the exact destination or purpose of each car; it just looks at their license plate numbers and directs them to the appropriate lane to ensure smooth traffic flow.</p>
+<p class="normal">In this way, the layer 4 load balancer ensures that the servers receive a fair share of incoming requests and that the network operates efficiently. It’s an essential tool to make sure that websites and applications can handle a large number of users without getting overwhelmed, helping to maintain a stable and reliable network.</p>
+<p class="normal">There are lower-level networking operations in the process that are beyond the scope of this book. HAProxy has a good summary of the terminology and example configurations on its website at <a href="https://www.haproxy.com/fr/blog/loadbalancing-faq/"><span class="url">https://www.haproxy.com/fr/blog/loadbalancing-faq/</span></a>.</p>
+<p class="normal">In summary, a layer 4 load balancer is a network tool that distributes incoming traffic based on IP addresses and port numbers, allowing websites and applications to perform efficiently and deliver a seamless user experience.</p>
+<h2 class="heading-2" id="_idParaDest-176">Layer 4 load balancer options</h2>
+<p class="normal">There are multiple options<a id="_idIndexMarker395"/> available to you if you want to configure a layer 4 load balancer for a Kubernetes cluster. Some of the options include the following:</p>
+<ul>
+<li class="bulletList">HAProxy</li>
+<li class="bulletList">NGINX Pro</li>
+<li class="bulletList">Seesaw</li>
+<li class="bulletList">F5 Networks</li>
+<li class="bulletList">MetalLB</li>
+</ul>
+<p class="normal">Each option provides layer 4 load balancing, but for the purpose of this book, we will use <strong class="keyWord">MetalLB</strong>, which has become a popular choice for providing a layer 4 load balancer to a Kubernetes cluster.</p>
+<h2 class="heading-2" id="_idParaDest-177">Using MetalLB as a layer 4 load balancer</h2>
+<p class="normal">Remember that in <em class="chapterRef">Chapter 2</em>, <em class="italic">Deploying Kubernetes Using KinD</em>, we had<a id="_idIndexMarker396"/> a diagram showing the flow<a id="_idIndexMarker397"/> of traffic between a workstation and the KinD nodes. Because KinD was running in a nested Docker container, a layer 4 load balancer would have had certain limitations when it came to networking connectivity. Without additional network configuration on the Docker host, you will not be able to target the services that use the <code class="inlineCode">LoadBalancer</code> type outside of the Docker host itself. However, if you deploy <strong class="keyWord">MetalLB</strong> to a standard Kubernetes<a id="_idIndexMarker398"/> cluster running on a host, you will not be limited to accessing services outside of the host itself.</p>
+<p class="normal">MetalLB is a free, easy-to-configure layer 4 load balancer. It includes powerful configuration options that give it the ability to run in a development lab or an enterprise cluster. Since it is so versatile, it has become a very popular choice for clusters requiring layer 4 load balancing.</p>
+<p class="normal">We will focus on installing MetalLB in layer 2 mode. This is an easy installation and works for development or small Kubernetes clusters. MetalLB also offers the option to deploy using BGP mode, which allows you to establish peering partners to exchange networking routes. If you would<a id="_idIndexMarker399"/> like to read about <strong class="keyWord">MetalLB’s BGP mode</strong>, you can read about it on MetalLB’s site at <a href="https://metallb.universe.tf/concepts/bgp/"><span class="url">https://metallb.universe.tf/concepts/bgp/</span></a>.</p>
+<h3 class="heading-3" id="_idParaDest-178">Installing MetalLB</h3>
+<p class="normal">Before we deploy <code class="inlineCode">MetalLB</code> to see it in action, we should start with a new cluster. While this isn’t required, it will limit any issues from any resources you may have been testing from prvious chapter. To delete the cluster and redeploy a fresh cluster, follow the steps below:</p>
+<ol>
+<li class="numberedList" value="1">Delete the cluster using the <code class="inlineCode">kind delete</code> command.
+        <pre class="programlisting con-one"><code class="hljs-con">kind delete cluster --name cluster01
+</code></pre>
+</li>
+<li class="numberedList">To redeploy a new cluster, change your directory to the <code class="inlineCode">chapter2</code> directory where you cloned the repo</li>
+<li class="numberedList">Create a new cluster using the <code class="inlineCode">create-cluster.sh</code> in the root of the <code class="inlineCode">chapter2</code> directory</li>
+<li class="numberedList">Once deployed, change your directory to the <code class="inlineCode">chapter4/metallb</code> directory</li>
+</ol>
+<p class="normal">We have included a script called <code class="inlineCode">install-metallb.sh</code> in the <code class="inlineCode">chapter4/metallb</code> directory. The script will deploy <code class="inlineCode">MetalLB v0.13.10</code> using a pre-built configuration file called <code class="inlineCode">metallb-config.yaml</code>. Once completed, the cluster will have the MetalLB components deployed, including the controller and the speakers.</p>
+<p class="normal">The script, which you can look at, to understand what each step does by looking at the comments, execute the following steps to deploy MetalLB in your cluster:</p>
+<ol>
+<li class="numberedList" value="1">MetalLB is deployed into the cluster. The script will wait until the MetalLB controller is fully deployed.</li>
+<li class="numberedList">The script will find the IP range used on the Docker network. These will be used to create two different pools to use for LoadBalancer services.</li>
+<li class="numberedList">Using the values for the address pools, the script will inject the IP ranges into two resources - <code class="inlineCode">metallb-pool.yaml</code> and <code class="inlineCode">metallb-pool-2.yaml</code>.</li>
+<li class="numberedList">The first pool is deployed using <code class="inlineCode">kubectl apply</code> and it also deploys the <code class="inlineCode">l2advertisement</code> resource.</li>
+<li class="numberedList">The script will show the pods from the MetalLB namespace to confirm they have been deployed.</li>
+<li class="numberedList">Finally, a NGINX web server pod will be deployed called <code class="inlineCode">nginx-lb</code> and a LodBalancer service to provide access to the deployment using a MetallLB IP address.</li>
+</ol>
+<p class="normal">MetalLB resources like address pools and the <code class="inlineCode">l2advertisement</code> resource will be explained in the upcoming sections.</p>
+<p class="normal">If you want to read about the available options when you deploy MetalLB, you can visit the installation<a id="_idIndexMarker400"/> page on the MetalLB site: <a href="https://metallb.universe.tf/installation/"><span class="url">https://metallb.universe.tf/installation/</span></a>.</p>
+<p class="normal">Now that MetalLB has been deployed to the cluster, let’s explain the MetalLB configuration file that configures how MetalLB will handle requests.</p>
+<h3 class="heading-3" id="_idParaDest-179">Understanding MetalLB’s custom resources</h3>
+<p class="normal"><strong class="keyWord">MetalLB</strong> is configured using two custom resources<a id="_idIndexMarker401"/> that contain MetalLB’s configuration. We will be using MetalLB in layer 2 mode, and we will create two custom resources: the first<a id="_idIndexMarker402"/> is for the IP address range called <code class="inlineCode">IPAddressPool</code> and the second configures what pools<a id="_idIndexMarker403"/> are advertised, known as an <code class="inlineCode">L2Advertisement resource</code>.</p>
+<p class="normal">The OSI model and the layers may be new to many readers – layer 2 refers to the layer<a id="_idIndexMarker404"/> of the OSI model; it plays a crucial role in enabling communication within a local network. It’s the layer where devices determine how to utilize the network infrastructure, like ethernet cables, and establish how to identify other devices. Layer 2 only deals with the local network segment; it doesn’t handle the task of directing traffic between different networks. That is the responsibility of layer 3 (the network layer) in the OSI model.</p>
+<p class="normal">To put it simply, you can view layer 2 as the facilitator for devices within the same network to communicate. It achieves this by assigning MAC addresses (unique addresses) to devices and providing a method for sending and receiving data, which are organized into network packets. We have provided pre-configured resources in the <code class="inlineCode">chapter4/metallb</code> directory called <code class="inlineCode">metallb-pool.yaml</code> and <code class="inlineCode">l2advertisement.yaml</code>. These files will configure MetalLB in layer 2 mode with an IP address range that is part of the Docker network, which will be advertised through the L2Advertisement resource.</p>
+<p class="normal">To keep the configuration simple, we will use a small range from the Docker subnet in which KinD is running. If you were running MetalLB on a standard Kubernetes cluster, you could assign any range that is routable in your network, but we are limited in how KinD clusters deal with network traffic.</p>
+<p class="normal">Let’s get into the details of how we created the custom resources. To begin, we need the IP range we want to advertise, and for our KinD cluster, that means we need to know what network range Docker is using. We can get the subnet by inspecting the KinD bridge network that KinD uses, using the <code class="inlineCode">docker</code> <code class="inlineCode">network inspect</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">docker network inspect kind | grep -i subnet
+</code></pre>
+<p class="normal">In the output, you will see the assigned subnet, similar to the following:</p>
+<pre class="programlisting con"><code class="hljs-con">"Subnet": "172.18.0.0/16"
+</code></pre>
+<p class="normal">This is an entire <strong class="keyWord">Class B</strong> address range. We know<a id="_idIndexMarker405"/> that we will not use all of the IP addresses for running containers, so we will use a small range from the subnet in our MetalLB configuration.</p>
+<div class="note">
+<p class="normal">Note: The term <strong class="keyWord">Class B</strong> is a reference to how IP <a id="_idIndexMarker406"/>addresses are divided into classes to define the range and structure of addresses for different network sizes. The primary classes are <strong class="keyWord">Class A</strong>, <strong class="keyWord">Class B</strong>, and <strong class="keyWord">Class C</strong>. Each class has a specific range of addresses and is used for different purposes. </p>
+<p class="normal">These classes help organize and allocate IP addresses efficiently, ensuring that networks of different sizes have appropriate address spaces. For private networks, which are networks not directly connected to the internet, each class has a specific IP range reserved for this internal use:</p>
+<ul>
+<li class="bulletList">Class A Private Range: <code class="inlineCode">10.0.0.0</code> to <code class="inlineCode">10.255.255.255</code></li>
+<li class="bulletList">Class B Private Range: <code class="inlineCode">172.16.0.0</code> to <code class="inlineCode">172.31.255.255</code></li>
+<li class="bulletList">Class C Private Range: <code class="inlineCode">192.168.0.0</code> to <code class="inlineCode">192.168.255.255</code></li>
+</ul>
+</div>
+<p class="normal">Understanding subnets and class ranges is very important but it is beyond the scope of this book. If you are new to TCP/IP, you should consider reading about subnetting and class ranges.</p>
+<p class="normal">If we look at our <code class="inlineCode">metallb-pool.yaml</code> configuration file, we will see the configuration for <code class="inlineCode">IPAddressPool</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">metallb.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">IPAddressPool</span>
+<span class="hljs-string">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">pool-01</span>
+<span class="hljs-attr">  namespace:</span> <span class="hljs-string">metallb-system</span>
+<span class="hljs-string">spec:</span>
+  <span class="hljs-string">addresses:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-number">172.18.200.100-172.18.200.125</span>
+</code></pre>
+<p class="normal">This manifest defines a new <code class="inlineCode">IPAddressPool</code> called <code class="inlineCode">pool-01</code> in the <code class="inlineCode">metallb-system</code> namespace, with an IP range set to <code class="inlineCode">172.18.200.100</code> – <code class="inlineCode">172.18.200.125</code>.</p>
+<p class="normal"><code class="inlineCode">IPAddressPool</code> only defines the IP addresses that will be assigned to <code class="inlineCode">LoadBalancer</code> services. To advertise the addresses, you need to associate the pools with an <code class="inlineCode">L2Advertisement</code> resource. In the <code class="inlineCode">chapter4/metallb</code> directory, we have a pre-defined <code class="inlineCode">L2Advertisement</code> called <code class="inlineCode">l2advertisement.yaml</code>, which is linked to the address pool we created, as shown here:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">metallb.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">L2Advertisement</span>
+<span class="hljs-string">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">l2-all-pools</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">metallb-system</span>
+</code></pre>
+<p class="normal">When examining the preceding manifest, you might notice that there is minimal configuration involved. As we mentioned earlier, <code class="inlineCode">IPAddressPool</code> needs to be associated with <code class="inlineCode">L2Advertisement</code>, but in our current configuration, we haven’t specified any linking to the address pool we created. So, the question now is, how will our <code class="inlineCode">L2Advertisement</code> announce or make use of the <code class="inlineCode">IPAddressPool</code> we’ve created?</p>
+<p class="normal">If you do not specify any pools in an <code class="inlineCode">L2Advertisement</code> resource, each <code class="inlineCode">IPAddressPool</code> that is created will be exposed. However, if you had a scenario where you only needed to advertise a few address pools, you could add the pool names to the <code class="inlineCode">L2Advertisement</code> resource so that only the assigned pools would be advertised. For example, if we had three pools named <code class="inlineCode">pool1</code>, <code class="inlineCode">pool2</code>, and <code class="inlineCode">pool3</code> in a cluster, and we only wanted to advertise <code class="inlineCode">pool1</code> and <code class="inlineCode">pool3</code>, we would create an <code class="inlineCode">L2Advertisement</code> resource like the following example:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">metallb.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">L2Advertisement</span>
+<span class="hljs-string">metadata:</span>
+<span class="hljs-attr">  name:</span> <span class="hljs-string">l2-all-pools</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">metallb-system</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ipAddressPools:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">pool1</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">pool3</span>
+</code></pre>
+<p class="normal">With configuration<a id="_idIndexMarker407"/> out of the way, we will move on to explain how MetalLB’s components interact to assign IP addresses to services.</p>
+<h3 class="heading-3" id="_idParaDest-180">MetalLB components</h3>
+<p class="normal">Our deployment, which uses<a id="_idIndexMarker408"/> the standard manifest provided by the MetalLB project, will create a <code class="inlineCode">Deployment</code> that will install the MetalLB controller and a <code class="inlineCode">DaemonSet</code> that will deploy the second component<a id="_idIndexMarker409"/> to all nodes, called the speaker.</p>
+<h4 class="heading-4">The Controller</h4>
+<p class="normal">The controller will receive announcements<a id="_idIndexMarker410"/> from the speaker on each worker node. These announcements show each service that has requested a <code class="inlineCode">LoadBalancer</code> service, showing the assigned IP address that the controller assigned to the service:</p>
+<pre class="programlisting con"><code class="hljs-con">{"caller":"main.go:49","event":"startUpdate","msg":"start of service update","service":"my-grafana-operator/grafana-operator-metrics","ts":"2020-04-21T21:10:07.437701161Z"}
+{"caller":"service.go:98","event":"ipAllocated","ip":"10.2.1.72","msg":"IP address assigned by controller","service":"my-grafana-operator/grafana-operator-metrics","ts":"2020-04-21T21:10:07.438079774Z"}
+{"caller":"main.go:96","event":"serviceUpdated","msg":"updated service object","service":"my-grafana-operator/grafana-operator-metrics","ts":"2020-04-21T21:10:07.467998702Z"}
+</code></pre>
+<p class="normal">In the preceding example output, a <code class="inlineCode">Service</code> called <code class="inlineCode">my-grafana-operator/grafana-operator-metrics</code> has been deployed<a id="_idIndexMarker411"/> and MetalLB has assigned the IP address <code class="inlineCode">10.2.1.72</code>.</p>
+<h4 class="heading-4">The Speaker</h4>
+<p class="normal">The speaker component<a id="_idIndexMarker412"/> is what MetalLB uses to announce<a id="_idIndexMarker413"/> the <code class="inlineCode">LoadBalancer</code> service’s IPs to the local network. This component runs on each node and ensures that the network configuration and the routers in your network are aware of the IP addresses assigned to the <code class="inlineCode">LoadBalancer</code> services. This allows the <code class="inlineCode">LoadBalancer</code> to receive traffic on its assigned IP address without needing additional network interface configurations on each node.</p>
+<p class="normal">The speaker component in MetalLB is responsible for telling the local network how to access the services you’ve set up within your Kubernetes cluster. Think of it as the messenger that tells other devices on the network about the route they should take to send data meant for your applications.</p>
+<p class="normal">It is primarily responsible<a id="_idIndexMarker414"/> for four tasks:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Service detection</strong>: When a service is created in Kubernetes, the speaker component is always watching for <code class="inlineCode">LoadBalancer</code> services.</li>
+<li class="bulletList"><strong class="keyWord">IP address management</strong>: The speaker is in charge of managing IP addresses. It decides which IP addresses should be assigned to make the services accessible to external communication.</li>
+<li class="bulletList"><strong class="keyWord">Route announcements</strong>: After MetalLB’s speaker identifies the services that require external access and assigns the IP addresses, it communicates the route throughout your local network. It provides instructions to the network on how to connect to the services using the designated IP addresses.</li>
+<li class="bulletList"><strong class="keyWord">Load balancing</strong>: MetalLB performs network load balancing. If you have multiple pods, which all applications should, the speaker will distribute incoming network traffic among the pods, ensuring that the load is balanced for performance<a id="_idIndexMarker415"/> and reliability.</li>
+</ul>
+<p class="normal">By default, it is deployed as a <code class="inlineCode">DaemonSet</code> for redundancy – regardless of how many speakers are deployed, only one is active at any given time. The main speaker will announce all <code class="inlineCode">LoadBalancer</code> service requests to the controller and if that speaker pod experiences a failure, another speaker instance will take over the announcements.</p>
+<p class="normal">If we look at the speaker log from a node, we can see announcements, similar to the following example:</p>
+<pre class="programlisting con"><code class="hljs-con">{"caller":"main.go:176","event":"startUpdate","msg":"start of service update","service":"my-grafana-operator/grafana-operator-metrics","ts":"2020-04-21T21:10:07.437231123Z"}
+{"caller":"main.go:189","event":"endUpdate","msg":"end of service update","service":"my-grafana-operator/grafana-operator-metrics","ts":"2020-04-21T21:10:07.437516541Z"}
+{"caller":"main.go:176","event":"startUpdate","msg":"start of service update","service":"my-grafana-operator/grafana-operator-metrics","ts":"2020-04-21T21:10:07.464140524Z"}
+{"caller":"main.go:246","event":"serviceAnnounced","ip":"10.2.1.72","msg":"service has IP, announcing","pool":"default","protocol":"layer2","service":"my-grafana-operator/grafana-operator-metrics","ts":"2020-04-21T21:10:07.464311087Z"}
+{"caller":"main.go:249","event":"endUpdate","msg":"end of service update","service":"my-grafana-operator/grafana-operator-metrics","ts":"2020-04-21T21:10:07.464470317Z"}
+</code></pre>
+<p class="normal">The preceding announcement is for a <code class="inlineCode">Grafana</code> component. In the announcement, you can see that the service has been assigned an IP address of <code class="inlineCode">10.2.1.72</code> – this announcement will also go to the MetalLB controller, as we showed<a id="_idIndexMarker416"/> in the previous section.</p>
+<p class="normal">Now that you have installed MetalLB and understand how the components create the services, let’s create our first <code class="inlineCode">LoadBalancer</code> service on our KinD cluster.</p>
+<h2 class="heading-2" id="_idParaDest-181">Creating a LoadBalancer service</h2>
+<p class="normal">In the layer 7 load balancer<a id="_idIndexMarker417"/> section, we created a deployment running NGINX that we exposed by creating a service and an Ingress rule. At the end of the section, we deleted all of the resources to prepare for this test. If you followed the steps in the Ingress section and have not deleted the service and Ingress rule, please do so before creating the <code class="inlineCode">LoadBalancer</code> service.</p>
+<p class="normal">The MetalLB deployment script included an NGINX server with a <code class="inlineCode">LoadBalancer</code> service. It will create an NGINX <code class="inlineCode">Deployment</code> with a <code class="inlineCode">LoadBalancer</code> service on port <code class="inlineCode">80</code>. The <code class="inlineCode">LoadBalancer</code> service will be assigned an IP address from our defined pool, and since it’s the first service to use the address pool, it will likely be assigned <code class="inlineCode">172.18.200.100</code>.</p>
+<p class="normal">You can test the service by using <code class="inlineCode">curl</code> on the Docker host. Using the IP address that was assigned to the service, enter the following command:</p>
+<pre class="programlisting con"><code class="hljs-con">curl 172.18.200.100
+</code></pre>
+<p class="normal">You will receive the following output:</p>
+<figure class="mediaobject"><img alt="" height="503" src="../Images/B21165_04_07.png" width="877"/></figure>
+<p class="packt_figref">Figure 4.7: Curl output to the LoadBalancer service running NGINX</p>
+<p class="normal">Adding MetalLB to a cluster allows<a id="_idIndexMarker418"/> you to expose applications that otherwise could not be exposed using a layer 7 balancer. Adding both layer 7 and layer 4 services to your clusters allows you to expose almost any application type you can think of, including databases.</p>
+<p class="normal">In the next section, we will explain some of the advanced options that are available to create advanced <code class="inlineCode">IPAddressPool</code> configurations.</p>
+<h2 class="heading-2" id="_idParaDest-182">Advanced pool configurations</h2>
+<p class="normal">The MetalLB <code class="inlineCode">IPAddressPool</code> resource<a id="_idIndexMarker419"/> offers a number of advanced options that are useful in different scenarios, including the ability to disable automatic assignments of addresses, use static IP addresses and multiple address pools, scope a pool to a certain namespace or service, and handle buggy networks.</p>
+<h3 class="heading-3" id="_idParaDest-183">Disabling automatic address assignments</h3>
+<p class="normal">When a pool is created, it will automatically<a id="_idIndexMarker420"/> start to assign addresses to any service that requests a <code class="inlineCode">LoadBalancer</code> type. While this is a common implementation, you may have special use cases where a pool should only assign an address if it is explicitly requested. </p>
+<h3 class="heading-3" id="_idParaDest-184">Assigning a static IP address to a service</h3>
+<p class="normal">When a service is assigned<a id="_idIndexMarker421"/> an IP address from the pool, it will keep the IP until the service is deleted and recreated. Depending on the number of <code class="inlineCode">LoadBalancer</code> services being created, it is possible that the same IP address could be assigned when it is re-created, but there is no guarantee and we have to assume that the IP may change.</p>
+<p class="normal">If we have an add-on like <code class="inlineCode">external-dns</code>, which will be covered in the next chapter, you may not care that the IP address changes on a service since you would be able to use a name that is registered with the assigned IP address. In some scenarios, you may have little choice in deciding whether you can use the IP or name for a service and may experience issues if the address were to change during a redeployment. </p>
+<p class="normal">As of the time of this writing, Kubernetes includes the ability to assign an IP address that a service will be assigned by adding <code class="inlineCode">spec.loadBalancerIP</code> to the service resource, with the desired IP address. By using this option, you can “statically” assign the IP address to your service and if the service is deleted and redeployed, it will stay the same. This becomes useful in multiple scenarios, including<a id="_idIndexMarker422"/> the ability to add the known IP to other systems like <strong class="keyWord">Web Application Firewalls</strong> (<strong class="keyWord">WAFs</strong>) and firewall rules.</p>
+<p class="normal">Starting in <code class="inlineCode">Kubernetes 1.24</code>, the <code class="inlineCode">loadBalancerIP</code> spec has been deprecated and while it will work in <code class="inlineCode">Kubernetes 1.27</code>, the field may be removed in a future K8s release. Since the option will be removed at some point, it is suggested to use a solution that is included in the layer 4 load balancer you have deployed. In the case of MetalLB, they have added an annotation to assign an IP called <code class="inlineCode">metallb.universe.tf/loadBalancerIPs</code>. Setting this field to the desired IP address will accomplish the same goal of using the deprecated <code class="inlineCode">spec.loadBalancerIP</code>.</p>
+<p class="normal">You may be thinking that assigning a static IP may come with some potential risks like conflicting IP assignments, which cause connectivity issues. Luckily, MetalLB has some features to mitigate these potential risks. If MetalLB is not the owner of the requested address or if the address is already being utilized by another service, the IP assignment will fail. If this failure occurs, MetalLB will generate a warning event, which can be viewed by running the <code class="inlineCode">kubectl describe service &lt;service name&gt;</code> command.</p>
+<p class="normal">The following manifest shows how to use both the native<a id="_idIndexMarker423"/> Kubernetes <code class="inlineCode">loadBalancerIP</code> and MetalLB’s annotation to assign a static IP address to a service. The first example shows the deprecated <code class="inlineCode">spec.loadBalancerIP</code>, assigning an IP address of <code class="inlineCode">172.18.200.210</code> to the service:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-web</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span> <span class="hljs-number">80</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">8080</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">nginx-web</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">LoadBalancer</span>
+  <span class="hljs-attr">loadBalancerIP:</span> <span class="hljs-number">172.18.200.210</span>
+</code></pre>
+<p class="normal">The following example shows how to set MetalLB’s annotation to assign the same IP address:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-web</span>
+  <span class="hljs-attr">annotations:</span>
+    <span class="hljs-attr">metallb.universe.tf/loadBalancerIPs:</span> <span class="hljs-number">172.18.200.210</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span> <span class="hljs-number">80</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">8080</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">nginx-web</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">LoadBalancer</span>
+</code></pre>
+<p class="normal">The next section will discuss how to add additional address pools to your MetalLB configuration and how to use the new pools to assign an IP address to a service.</p>
+<h3 class="heading-3" id="_idParaDest-185">Using multiple address pools</h3>
+<p class="normal">In our original example, we created<a id="_idIndexMarker424"/> a single node pool<a id="_idIndexMarker425"/> for our cluster. It’s not uncommon to have a single address pool for a cluster, but in a more complex environment, you may need to add additional pools to direct traffic to a certain network, or you may need to simply add an additional pool due to simply running out of address in your original pool.</p>
+<p class="normal">You can create as many address pools as you require in a cluster. We assigned a handful of addresses in our first pool, and now we need to add an additional pool to handle the number of workloads on the cluster. To create a new pool, we simply need to deploy a new <code class="inlineCode">IPAddressPool</code>, as shown in the following:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">metallb.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">IPAddressPool</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">pool-02</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">metallb-system</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">addresses:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-number">172.18.201.200-172.18.201.225</span>
+</code></pre>
+<div class="note">
+<p class="normal">The current release of MetalLB will require a restart of the MetalLB controller for the new address pool to be available.</p>
+</div>
+<p class="normal">Notice the name of this pool is <code class="inlineCode">pool-01</code>, with a range <code class="inlineCode">of 172.18.201.200</code> – <code class="inlineCode">172.18.201.225</code>, whereas our original pool was <code class="inlineCode">pool-01</code> with a range of <code class="inlineCode">172.18.200.200</code> – <code class="inlineCode">172.18.200.225.</code> Since we have deployed an <code class="inlineCode">L2Advertisement</code> resource that exposes <code class="inlineCode">IPAddressPools</code>, we do not need to create anything for the new pool to be announced.</p>
+<p class="normal">Now that we have two active pools in our cluster, we can use a MetalLB annotation called <code class="inlineCode">metallb.universe.tf/address-pool</code> in a service to assign the pool we want to pull an IP address from, as shown in the following example:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-web</span>
+  <span class="hljs-attr">annotations:</span> 
+    <span class="hljs-attr">metallb.universe.tf/address-pool:</span> <span class="hljs-string">pool-02</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span> <span class="hljs-number">80</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">8080</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">nginx-web</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">LoadBalancer</span>
+</code></pre>
+<p class="normal">If we deploy this service manifest and then look at the services in the namespace, we will see that it has been assigned an IP address from the new pool, <code class="inlineCode">pool-02</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-string">NAME</span>              <span class="hljs-string">TYPE</span>         <span class="hljs-string">CLUSTER-IP</span>      <span class="hljs-string">EXTERNAL-IP</span>        <span class="hljs-string">PORT(S)</span>       <span class="hljs-string">AGE</span>
+<span class="hljs-string">nginx-lb-pool02</span>   <span class="hljs-string">LoadBalancer</span> <span class="hljs-number">10.96.52.153</span>    <span class="hljs-number">172.18.201.200</span>     <span class="hljs-number">80</span><span class="hljs-string">:30661/TCP</span>  <span class="hljs-string">3m8s</span>
+</code></pre>
+<p class="normal">Our cluster now offers <code class="inlineCode">LoadBalancer</code> services the option of using either <code class="inlineCode">pool-01</code> or <code class="inlineCode">pool-02</code>, based on the workload requirements. </p>
+<p class="normal">You may be wondering how multiple address pools<a id="_idIndexMarker426"/> work if a service request does not explicitly define which<a id="_idIndexMarker427"/> pool to use. This is a great question, and we can control that by setting a value, known as a priority, to an address pool when created, defining the order of the pool that will assign the IP address.</p>
+<p class="normal">Pools are a powerful feature, offering a highly configurable and flexible solution to provide the appropriate IP address pools to specific services.</p>
+<p class="normal">MetalLB’s flexibility doesn’t stop with address pools. You may find that you have a requirement to create a pool that only a certain namespace or namespaces are allowed to use. This is called <strong class="keyWord">IP pool scoping</strong> and in the next<a id="_idIndexMarker428"/> section, we will discuss how to configure a scope to limit a pool’s usage based on a namespace.</p>
+<p class="normal">When multiple <code class="inlineCode">IPAddressPools</code> are available, MetalLB determines the availability of IPs by sorting the matching pools based on their priorities. The sorting starts with the highest priority (lowest priority number) and then proceeds to lower priority pools. If multiple <code class="inlineCode">IPAddressPools</code> have the same priority, MetalLB selects one of them randomly. If a pool lacks a specific priority or is set to 0, it is considered the lowest priority and is used for assignment only when pools with defined priorities cannot be utilized.</p>
+<p class="normal">In the following example, we have created a new pool called <code class="inlineCode">pool-03</code> and set a priority of <code class="inlineCode">50</code> and another pool called <code class="inlineCode">pool-04</code> with a priority of <code class="inlineCode">70</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">metallb.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">IPAddressPool</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">pool-03</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">metallb-system</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">addresses:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-number">172.168.210.0</span><span class="hljs-string">/24</span>
+   <span class="hljs-attr">serviceAllocation:</span>
+    <span class="hljs-attr">priority:</span> <span class="hljs-number">50</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">metallb.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">IPAddressPool</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">pool-04</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">metallb-system</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">addresses:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-number">172.168.211.0</span><span class="hljs-string">/24</span>
+   <span class="hljs-attr">serviceAllocation:</span>
+    <span class="hljs-attr">priority:</span> <span class="hljs-number">70</span>
+</code></pre>
+<p class="normal">If you create a service without selecting a pool, the request will match both of the pools shown previously. Since <code class="inlineCode">pool-03</code> has a lower priority number, it has a higher priority and will be used before <code class="inlineCode">pool-04</code> unless the pool is out of address, which will cause the request to use an IP from the <code class="inlineCode">pool-04</code> address pool.</p>
+<p class="normal">As you can see, pools are powerful and flexible, providing a number of options to address different workload requirements. We have discussed how to select the pool using annotation and how different pools with priorities work. In the next section, we will discuss how we can link a pool to certain namespaces, limiting the workloads that can request an IP address<a id="_idIndexMarker429"/> from certain<a id="_idIndexMarker430"/> address pools.</p>
+<h3 class="heading-3" id="_idParaDest-186">IP pool scoping</h3>
+<p class="normal">Multitenant clusters<a id="_idIndexMarker431"/> are common in enterprise<a id="_idIndexMarker432"/> environments and, by default, a MetalLB address pool is available to any deployed <code class="inlineCode">LoadBalancer</code> service. While this may not be an issue for many organizations, you may need to limit a pool, or pools, to only certain namespaces to limit what workloads can use certain address pools.</p>
+<p class="normal">To scope an address pool, we need to add some fields to our <code class="inlineCode">IPAddressPool</code> resource. For our example, we want to deploy an address pool that has the entire <strong class="keyWord">Class C</strong> range available to only two namespaces, <code class="inlineCode">web</code> and <code class="inlineCode">sales</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">metallb.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">IPAddressPool</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">ns-scoped-pool</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">metallb-system</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">addresses:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-number">172.168.205.0</span><span class="hljs-string">/24</span>
+   <span class="hljs-attr">serviceAllocation:</span>
+    <span class="hljs-attr">priority:</span> <span class="hljs-number">50</span>
+    <span class="hljs-attr">namespaces:</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-string">web</span>
+      <span class="hljs-bullet">-</span> <span class="hljs-string">sales</span>
+</code></pre>
+<p class="normal">When we deploy this resource, the only services that can request an address from the pool must exist in either the <code class="inlineCode">web</code> or <code class="inlineCode">sales</code> namespaces. If a request is made from any other namespace for <code class="inlineCode">ns-scoped-pool</code>, it will be denied and an IP address in the <code class="inlineCode">172.168.205.0</code> range<a id="_idIndexMarker433"/> will not be assigned<a id="_idIndexMarker434"/> to the service.</p>
+<p class="normal">The last option we will discuss in the next section is known as handling buggy networks. </p>
+<h3 class="heading-3" id="_idParaDest-187">Handling buggy networks</h3>
+<p class="normal">MetalLB has a field that some networks<a id="_idIndexMarker435"/> may require<a id="_idIndexMarker436"/> to handle IP blocks ending in either <code class="inlineCode">.0</code> or <code class="inlineCode">.255</code>. Older networking devices may flag the traffic as a possible <strong class="keyWord">Smurf </strong>attack, blocking the traffic. If you happen to run into this scenario, you will need to set the <code class="inlineCode">AvoidBuggyIPs</code> field in the <code class="inlineCode">IPAddressPool</code> resource to <code class="inlineCode">true</code>.</p>
+<div class="note">
+<p class="normal">At a high level, a <strong class="keyWord">Smurf</strong> attack sends a large<a id="_idIndexMarker437"/> number of network messages to special addresses that will reach all computers on the network. The traffic makes all computers think that the traffic is coming from a specific address, causing all of the computers to send a response to that specific machine. This traffic results in a <strong class="keyWord">denial-of-service</strong> attack, causing the machine<a id="_idIndexMarker438"/> to go offline and disrupting any services that were running.</p>
+</div>
+<p class="normal">To avoid this issue, setting the <code class="inlineCode">AvoidBuggyIPs</code> field will prevent the <code class="inlineCode">.0</code> and <code class="inlineCode">.255</code> addresses from being used. An example manifest is shown here:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">metallb.io/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">IPAddressPool</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">buggy-example-pool</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">metallb-system</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">addresses:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-number">172.168.205.0</span><span class="hljs-string">/24</span>
+    <span class="hljs-attr">avoidBuggyIPs:</span> <span class="hljs-literal">true</span>
+</code></pre>
+<p class="normal">Adding MetalLB as a layer 4 load balancer to your cluster allows you to migrate applications that may not work with simple layer 7 traffic.</p>
+<p class="normal">As more applications are migrated<a id="_idIndexMarker439"/> or refactored<a id="_idIndexMarker440"/> for containers, you will run into many applications that require multiple protocols for a single service. In the next section, we will explain some scenarios where having multiple protocols for a single service is required.</p>
+<h2 class="heading-2" id="_idParaDest-188">Using multiple protocols</h2>
+<p class="normal">Earlier versions of Kubernetes <a id="_idIndexMarker441"/>did not allow services to assign multiple protocols to a <code class="inlineCode">LoadBalancer</code> service. If you attempted to assign both TCP and UDP to a single service, you would receive an error that multiple protocols were not supported and the resource would fail to deploy. </p>
+<p class="normal">Although MetalLB still provides support for this, there’s little incentive to utilize those annotations since newer versions of Kubernetes introduced an alpha feature gate called <code class="inlineCode">MixedProtocolLBService</code> in version <code class="inlineCode">1.20</code>. It has since graduated to general availability starting in Kubernetes version <code class="inlineCode">1.26</code>, making it a base feature that enables the use of different protocols for LoadBalancer-type services when multiple ports are defined.</p>
+<p class="normal">Using a <strong class="keyWord">CoreDNS</strong> example, we need to expose<a id="_idIndexMarker442"/> our CoreDNS to the outside world. We will explain a use case in the next chapter where we need to expose a CoreDNS instance to the outside world using both TCP and UDP.</p>
+<p class="normal">Since DNS servers use both TCP and UDP port <code class="inlineCode">53</code> for certain operations, we need to create a service that will expose our service as a <code class="inlineCode">LoadBalancer</code> type, listening to both TCP and UDP port <code class="inlineCode">53</code>. Using the following example, we create a new service that has both TCP and UDP defined:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">coredns-ext</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">kube-system</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">k8s-app:</span> <span class="hljs-string">kube-dns</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">dns-tcp</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-number">53</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">53</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">dns-udp</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-number">53</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">UDP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">53</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">LoadBalancer</span>
+</code></pre>
+<p class="normal">If we deployed the manifest and then looked at the services in the <code class="inlineCode">kube-system</code> namespace, we would see that the service was created successfully and that both port <code class="inlineCode">53</code> on TCP and UDP have been exposed:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME          TYPE           CLUSTER-IP    EXTERNAL-IP      PORT(S)                     AGE
+coredns-ext   LoadBalancer   10.96.192.4   172.18.200.101   53:31889/TCP,53:31889/UDP   6s
+</code></pre>
+<p class="normal">You will see that the new service was created, <code class="inlineCode">coredns-ext</code>, assigned the IP address of <code class="inlineCode">172.18.200.101</code>, and exposed on TCP and UDP port <code class="inlineCode">53</code>. This will now allow the service to accept connections on both protocols using port <code class="inlineCode">53</code>.</p>
+<p class="normal">One issue that many load balancers have is that they do not provide name resolution for the service IPs. Users prefer to target an easy-to-remember name rather than random IP addresses when they want to access a service. Kubernetes does not provide the ability to create externally accessible names for services, but there is an incubator project to enable this feature. In <em class="chapterRef">Chapter 5</em>, we will explain how we can provide external<a id="_idIndexMarker443"/> name resolution for Kubernetes services.</p>
+<p class="normal">In the final section of the chapter, we will discuss how to secure our workloads using network policies.</p>
+<h1 class="heading-1" id="_idParaDest-189">Introducing Network Policies</h1>
+<p class="normal">Security is something that all Kubernetes<a id="_idIndexMarker444"/> users should think about from day 1. By default, every pod in a cluster can communicate with any other pod in the cluster, even other namespaces that you may not own. While this is a basic Kubernetes concept, it’s not ideal for most enterprises, and when using multi-tenant clusters, it becomes a big security concern. We need to increase the security and isolation of workloads, which can be a very complex task, and this is where network policies come in. </p>
+<p class="normal"><code class="inlineCode">NetworkPolicies</code> provide users the ability to control their network traffic for both egress and ingress using a defined set of rules between pods, namespaces, and external endpoints. Think of a network policy as a firewall for your clusters, providing fine-grained access controls based on various parameters. Using network policies, you can control which pods are allowed to communicate with other pods, restrict traffic to specific protocols or ports, and enforce encryption and authentication requirements.</p>
+<p class="normal">Like most Kubernetes objects that we have discussed, network policies allow control based on labels and selectors. By matching the labels specified in a network policy, Kubernetes can determine which pods and namespaces should be allowed or denied network access.</p>
+<p class="normal">Network policies are an optional feature in Kubernetes, and the CNI being used in the cluster must support them to be used. On the KinD cluster we created, we deployed <strong class="keyWord">Calico</strong>, which does support network policies, however, not all network plugins support network policies out of the box, so it’s important to plan out your requirements before deploying<a id="_idIndexMarker445"/> a cluster.</p>
+<p class="normal">In this section, we will explain the options provided by network policies to enhance the overall security of your applications and cluster.</p>
+<h2 class="heading-2" id="_idParaDest-190">Network policy object overview</h2>
+<p class="normal">Network policies provide<a id="_idIndexMarker446"/> a number of options to control both <code class="inlineCode">ingress</code> and <code class="inlineCode">egress</code> traffic. They can be granular to only allow certain pods, namespaces, or even IP addresses to control the network traffic.</p>
+<p class="normal">There are four parts to a network policy. Each part is described in the following table. </p>
+<table class="table-container" id="table006">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Spec</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">podSelector</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">This limits the scope of workloads that a policy is applied to, using a label selector. If no selector is provided, the policy will affect every pod in the namespace.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">policyTypes</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">This defines the policy rules. The valid types are <code class="inlineCode">ingress</code> and <code class="inlineCode">egress</code>.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">ingress</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">(optional) This defines the rules to follow for ingress traffic. If there are no rules defined, it will match all incoming traffic. </p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">egress </code></p>
+</td>
+<td class="table-cell">
+<p class="normal">(optional) This defines the rules to follow for egress traffic. If there are no rules defined, it will match all outgoing traffic.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table.4.6: Parts of a network policy</p>
+<p class="normal">The <code class="inlineCode">ingress</code> and <code class="inlineCode">egress</code> portions of the policy are optional. If you do not want to block any <code class="inlineCode">egress</code> traffic, simply omit the <code class="inlineCode">egress</code> spec. If a spec is not defined, all traffic will be allowed.</p>
+<h3 class="heading-3" id="_idParaDest-191">The podSelector</h3>
+<p class="normal">The <code class="inlineCode">podSelector</code> field is used to tell<a id="_idIndexMarker447"/> you what workloads a network policy will affect. If you wanted the policy to only affect a certain deployment, you would define a label that would match a label in the deployment. The label selectors are not limited to a single entry; you can add multiple <code class="inlineCode">label selectors</code> to a network policy, but all selectors must match for the policy to be applied to the pod. If you want the policy to be applied to all pods, leave the <code class="inlineCode">podSelector</code> blank; it will apply the policy to every pod in the namespace.</p>
+<p class="normal">In the following example, we have defined that the policy will only be applied to pods that match the label <code class="inlineCode">app=frontend</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+</code></pre>
+<p class="normal">The next field is the type of policy, which is where you define a policy for <code class="inlineCode">ingress</code> and <code class="inlineCode">egress</code>. </p>
+<h3 class="heading-3" id="_idParaDest-192">The policyTypes</h3>
+<p class="normal">The <code class="inlineCode">policyType</code> field specifies the type<a id="_idIndexMarker448"/> of policy being defined, determining the scope and behavior of the <code class="inlineCode">NetworkPolicy</code>. There are two available options for <code class="inlineCode">policyType</code>:</p>
+<table class="table-container" id="table007">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">policyType</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">ingress</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">ingress</code> controls incoming network traffic to pods. It defines the rules that control the sources that are allowed to access the pods matching the <code class="inlineCode">podSelector</code> specified in the <code class="inlineCode">NetworkPolicy</code>. Traffic can be allowed from specific IP CIDR ranges, namespaces, or from other pods within the cluster.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">egress</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">egress</code> controls outgoing network traffic from pods. It defines rules that control the destinations that pods are allowed to communicate with. Egress traffic can be restricted by specific IP CIDR ranges, namespaces, or other pods within the cluster. </p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 4.7: The policy types</p>
+<p class="normal">Policies can contain <code class="inlineCode">ingress</code>, <code class="inlineCode">egress</code>, or both options. If one policy type is not included, it will not affect that traffic type. For example, if you only include an <code class="inlineCode">ingress</code> <code class="inlineCode">policyType</code>, all egress traffic will be allowed at any location on the network.</p>
+<p class="normal">As we mentioned, when you create a rule for either <code class="inlineCode">ingress</code> or <code class="inlineCode">egress</code> traffic, you can provide no label, a single label, or multiple labels that must match for the policy to take effect. The following example shows an <code class="inlineCode">ingress</code> block that has three labels; in order for the policy to affect a workload, all three declared fields must match:</p>
+<pre class="programlisting con"><code class="hljs-con">  ingress:
+    - from:
+        - ipBlock:
+            cidr: 192.168.0.0/16
+        - namespaceSelector:
+            matchLabels:
+              app: backend
+        - podSelector:
+            matchLabels:
+              app: database
+</code></pre>
+<p class="normal">In the preceding example, any incoming traffic needs to be coming from a workload that has an IP address in the <code class="inlineCode">192.168.0.0</code> subnet, in the namespace that has a label of <code class="inlineCode">app=backend</code>, and finally, the requesting pod must have a label of <code class="inlineCode">app=database</code>. </p>
+<p class="normal">While the example shows options<a id="_idIndexMarker449"/> for <code class="inlineCode">ingress</code> traffic, the same options are available for <code class="inlineCode">egress</code> traffic.</p>
+<p class="normal">Now that we have covered the options that are available in a network policy, let’s move on to creating a full policy using a real-world example.</p>
+<h2 class="heading-2" id="_idParaDest-193">Creating a Network Policy</h2>
+<p class="normal">We have included a network policy<a id="_idIndexMarker450"/> script in the <code class="inlineCode">chapter4/netpol</code> directory in the book’s GitHub repository called <code class="inlineCode">netpol.sh</code>. When you execute the script, it will create a namespace called <code class="inlineCode">sales</code>, with a few pods with labels and a network policy. The policy that is created will be the basis for the policy we will go over in this section.</p>
+<p class="normal">When you create a network policy, you need to have an understanding of the desired network restrictions. The person who is most aware of the application traffic flow is best suited to help create a working policy. You need to consider the pods or namespaces that should be able to communicate, which protocols and ports should be allowed, and whether you need any additional security like encryption or authentication.</p>
+<p class="normal">Like other Kubernetes objects, you need to create a manifest using the <code class="inlineCode">NetworkPolicy</code> object and provide metadata like the name of the policy and the namespace that it will be deployed in.</p>
+<p class="normal">Let’s use an example where you have a backend pod running <code class="inlineCode">PostgreSQL</code> in the same namespace as a web server. We know that the only pod that needs to talk to the database server is the web server itself and no other communication should be allowed to the database. </p>
+<p class="normal">To begin, we need to create our manifest, and it will start out by declaring the API, kind, policy name, and namespace:</p>
+<pre class="programlisting con"><code class="hljs-con">apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-netpol
+  namespace: sales
+</code></pre>
+<p class="normal">The next step is to add the pod selector <a id="_idIndexMarker451"/>to specify the pods that will be affected by the policy. This is done by creating a <code class="inlineCode">podSelector</code> section where you define selectors based on any pods with matching labels. For our example, we want our policy to apply to pods that are part of the backend database application. The pods for the application have all been labeled with <code class="inlineCode">app=backend-db</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+</code></pre>
+<p class="normal">Now that we have declared what pods to match, we need to define the <code class="inlineCode">ingress</code> and <code class="inlineCode">egress</code> rules, which are defined with the <code class="inlineCode">spec.ingress</code> or <code class="inlineCode">spec.egress</code> section of the policy. For each rule type, you can set the allowed protocols and ports for the application, and control from where an external request is allowed to access the port. To build on our example, we want to add an <code class="inlineCode">ingress</code> rule that will allow port <code class="inlineCode">5432</code> from pods with a label of <code class="inlineCode">app=backend</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - protocol: TCP
+      port: 5432
+</code></pre>
+<p class="normal">As the last step, we will define our policy type. Since we are only concerned with incoming traffic to the <code class="inlineCode">PostgreSQL</code> pod, we only need to declare one type, <code class="inlineCode">ingress</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">  policyTypes:
+    - Ingress
+</code></pre>
+<p class="normal">Once this policy is deployed, the pods running in the <code class="inlineCode">sales</code> namespace that have an <code class="inlineCode">app=backend-db</code> label will only receive traffic from pods that have a label of <code class="inlineCode">app=frontend</code> on TCP port <code class="inlineCode">5432</code>. Any request other than port <code class="inlineCode">5432</code> from a frontend pod will be denied. This policy makes our <code class="inlineCode">PostgreSQL</code> deployment very secure since any incoming traffic is tightly locked down to a specific workload and TCP port.</p>
+<p class="normal">When we execute the script from the repository, it will deploy <code class="inlineCode">PostgreSQL</code> to the cluster and add a label to the deployment. We are going to use the label to tie the network policy to the <code class="inlineCode">PostgreSQL</code> pod. To test the connectivity, and the network policy, we will run a <code class="inlineCode">netshoot</code> pod and use <code class="inlineCode">telnet</code> to test connecting to the pod on port <code class="inlineCode">5432</code>.</p>
+<p class="normal">We need to know the IP address<a id="_idIndexMarker452"/> to test the network connection. To get the IP for the database server, we just need to list the pods in the namespace using the <code class="inlineCode">-o wide</code> option, to list the IP of the pods. Now that <code class="inlineCode">PostgreSQL</code> is running, we will simulate a connection by running a <code class="inlineCode">netshoot</code> pod with a label that doesn’t match <code class="inlineCode">app: frontend</code>, which will result in a failed connection. See the following:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl get pods -n sales -o wide
+NAME              READY   STATUS    RESTARTS   AGE   IP
+db-postgresql-0   0/1     Running   0          45s   10.240.189.141
+kubectl run tmp-shell --rm -i --tty --image nicolaka/netshoot --labels app=wronglabel -n sales
+tmp-shell ~ telnet 10.240.189.141:5432
+</code></pre>
+<p class="normal">The connection will eventually time out since the incoming request has a pod labeled <code class="inlineCode">app=wronglabel</code>. The policy will look at the labels from the incoming request and if none of them match, it will deny the connection.</p>
+<p class="normal">Finally, let’s see whether we created our policy correctly. We will run <code class="inlineCode">netshoot</code> again, but this time with the correct label, we will see that the connection succeeds:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl run tmp-shell --rm -i --tty --image nicolaka/netshoot --labels app=frontend -n sales
+tmp-shell ~ telnet 10.240.189.141:5432
+Connected to 10.240.189.141:5432
+</code></pre>
+<p class="normal">Notice the line, which says <code class="inlineCode">Connected to 10.240.189.141:5432</code>. This shows that the <code class="inlineCode">PostgreSQL</code> pod accepted the incoming request from the <code class="inlineCode">netshoot</code> pod since the label for the pod matches the network policy, which is looking for a label of <code class="inlineCode">app=frontend</code>.</p>
+<p class="normal">So, why does the network policy allow only port <code class="inlineCode">5432</code>? We didn’t set any options to deny traffic; we defined only the allowed traffic. Network policies follow a default deny-all for any policy that isn’t defined. In our example, we only defined port <code class="inlineCode">5432</code>, so any request that is not on port <code class="inlineCode">5432</code> will be denied. Having a deny-all for any undefined communication helps to secure your workload by avoiding any unintended access.</p>
+<p class="normal">If you wanted to create a deny-all network policy, you would just need to create a new policy that has <code class="inlineCode">ingress</code> and <code class="inlineCode">egress</code> added, with no other values. An example is shown as follows:</p>
+<pre class="programlisting con"><code class="hljs-con">apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: sales
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+</code></pre>
+<p class="normal">In this example, we have set <code class="inlineCode">podSelector</code> to <code class="inlineCode">{}</code>, which means the policy will apply to all pods in the namespace. In the <code class="inlineCode">spec.ingress</code> and <code class="inlineCode">spec.egress</code> options, we haven’t set any values, and since the default behavior is to deny any communication<a id="_idIndexMarker453"/> that doesn’t have a rule, this rule will deny all ingress and egress traffic.</p>
+<h2 class="heading-2" id="_idParaDest-194">Tools to create network policies</h2>
+<p class="normal">Network policies can be difficult<a id="_idIndexMarker454"/> to create manually. It can be challenging to know what ports you need to open, especially if you aren’t the application owner.</p>
+<p class="normal">In <em class="chapterRef">Chapter 13</em>, <em class="italic">KubeArmor Securing Your Runtime</em>, we will<a id="_idIndexMarker455"/> discuss a tool called <strong class="keyWord">KubeArmor</strong>, which is a <strong class="keyWord">CNCF</strong> project that was donated<a id="_idIndexMarker456"/> by a company called <strong class="keyWord">AccuKnox</strong>. KubeArmor was primarily<a id="_idIndexMarker457"/> a tool to secure container runtimes, but recently they added the ability to watch the network traffic flow between pods. By watching the traffic, they know the “normal behavior” of the network connections for the pod and it creates a <code class="inlineCode">ConfigMap</code> for each observed network policy in the namespace.</p>
+<p class="normal">We will go into details in <em class="chapterRef">Chapter 13</em>; for now, we just wanted to let you know that there are tools to help you create network policies.</p>
+<p class="normal">In the next chapter, we’ll learn how to use <strong class="keyWord">CoreDNS</strong> to create service name<a id="_idIndexMarker458"/> entries in DNS using an incubator project called <code class="inlineCode">external-dns</code>. We will also introduce an exciting<a id="_idIndexMarker459"/> CNCF sandbox project called <strong class="keyWord">K8GB</strong> that provides a cluster with Kubernetes’ native global load-balancing<a id="_idIndexMarker460"/> features.</p>
+<h1 class="heading-1" id="_idParaDest-195">Summary</h1>
+<p class="normal">In this chapter, you learned how to expose your workloads in Kubernetes to other cluster resources and external traffic.</p>
+<p class="normal">The first part of the chapter went over services and the multiple types that can be assigned. The three major service types are <code class="inlineCode">ClusterIP</code>, <code class="inlineCode">NodePort</code>, and <code class="inlineCode">LoadBalancer</code>. Remember that the selection of the type of service will configure how your application is exposed.</p>
+<p class="normal">In the second part, we introduced two load balancer types, layer 4 and layer 7, each having a unique functionality for exposing workloads. You will often use a <code class="inlineCode">ClusterIP</code> service along with an ingress controller to provide access to services that use layer 7. Some applications may require additional communication, not provided by a layer 7 load balancer. These applications may require a layer 4 load balancer to expose their services externally. In the load balancing section, we demonstrated the installation and use of <strong class="keyWord">MetalLB</strong>, a popular, open-source, layer 4 load balancer.</p>
+<p class="normal">We closed out the chapter by discussing how to secure both <code class="inlineCode">ingress</code> and <code class="inlineCode">egress</code> network traffic. Since Kubernetes, by default, allows communication between all pods in a cluster, most enterprise environments need a way to secure the communication between workloads to only the required traffic for the application. Network policies are a powerful tool to secure a cluster and limit the traffic flow for both incoming and outgoing traffic.</p>
+<p class="normal">You may still have some questions about exposing workloads, such as the following: how can we handle DNS entries for services that use a <code class="inlineCode">LoadBalancer</code> type? Or, maybe, how do we make a deployment highly available between two clusters? </p>
+<p class="normal">In the next chapter, we will expand on using the tools that are useful for exposing your workloads, like name resolution and global load balancing.</p>
+<h1 class="heading-1" id="_idParaDest-196">Questions</h1>
+<ol>
+<li class="numberedList" value="1">How does a service know what pods should be used as endpoints for the service?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">By the service port</li>
+<li class="alphabeticList level-2">By the namespace</li>
+<li class="alphabeticList level-2">By the author</li>
+<li class="alphabeticList level-2">By the selector label</li>
+</ol>
+</li>
+</ol>
+<p class="normal-one">Answer: d</p>
+<ol>
+<li class="numberedList" value="2">What <code class="inlineCode">kubectl</code> command helps you troubleshoot services that may not be working properly?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1"><code class="inlineCode">kubectl get services &lt;service name&gt;</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">kubectl get ep &lt;service name&gt;</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">kubectl get pods &lt;service name&gt;</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">kubectl get servers &lt;service name&gt;</code></li>
+</ol>
+</li>
+</ol>
+<p class="normal-one">Answer: b</p>
+<ol>
+<li class="numberedList" value="3">All Kubernetes distributions include support for services that use the <code class="inlineCode">LoadBalancer</code> type.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<p class="normal-one">Answer: b</p>
+<ol>
+<li class="numberedList" value="4">Which load balancer type supports all TCP/UDP ports and accepts traffic regardless of the packet’s contents?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Layer 7</li>
+<li class="alphabeticList level-2">Cisco layer</li>
+<li class="alphabeticList level-2">Layer 2</li>
+<li class="alphabeticList level-2">Layer 4</li>
+</ol>
+</li>
+</ol>
+<p class="normal-one">Answer: d</p>
+</div>
+</div></body></html>

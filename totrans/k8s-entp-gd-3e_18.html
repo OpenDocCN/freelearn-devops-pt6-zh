@@ -1,0 +1,375 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer304">
+<h1 class="chapterNumber">18</h1>
+<h1 class="chapterTitle" id="_idParaDest-594">Provisioning a Multitenant Platform</h1>
+<p class="normal">Every chapter in this book, up until this point, has focused on the infrastructure of your cluster. We have explored how to deploy Kubernetes, how to secure it, and how to monitor it. What we haven’t talked about is how to deploy applications.</p>
+<p class="normal">In these, our final chapters, we’re going to work on building an application deployment platform using what we’ve learned about Kubernetes. We’re going to build our platform based on some common enterprise requirements. Where we can’t directly implement a requirement, because building a platform on Kubernetes could fill its own book, we’ll call it out and provide some insights.</p>
+<p class="normal">In this chapter, we will cover the following topics:</p>
+<ul>
+<li class="bulletList">Designing a pipeline</li>
+<li class="bulletList">Designing our platform architecture</li>
+<li class="bulletList">Using Infrastructure as Code for deployment</li>
+<li class="bulletList">Automating tenant onboarding</li>
+<li class="bulletList">Considerations for building an Internal Developer Platform</li>
+</ul>
+<p class="normal">You’ll have a good conceptual starting point for building out your own GitOps platform on Kubernetes by the end of this chapter. We’re going to use the concepts we cover in this chapter to drive how we build our Internal Developer Portal in the final chapter.</p>
+<h1 class="heading-1" id="_idParaDest-595">Technical requirements</h1>
+<p class="normal">This chapter will be all theory and concepts. We’re going to cover implementation in the final chapter.</p>
+<h1 class="heading-1" id="_idParaDest-596">Designing a pipeline</h1>
+<p class="normal">The <a id="_idIndexMarker1695"/>term <strong class="keyWord">pipeline</strong> is used extensively in the Kubernetes and DevOps world. Very simply, a pipeline is a process, usually automated, that takes code and gets it running. This usually involves the following:</p>
+<figure class="mediaobject"><img alt="Figure 14.1 – A simple pipeline " height="64" src="../Images/B21165_18_01.png" width="876"/></figure>
+<p class="packt_figref">Figure 18.1: A simple pipeline</p>
+<p class="normal">Let’s quickly run through the steps involved in this process:</p>
+<ol>
+<li class="numberedList" value="1">Storing the source code in a central repository, usually Git</li>
+<li class="numberedList">When code is committed, building it and generating artifacts, usually a container</li>
+<li class="numberedList">Telling the platform – in this case, Kubernetes – to roll out the new containers and shut down the old ones</li>
+</ol>
+<p class="normal">This is about as basic as a pipeline can get and isn’t of much use in most deployments. In addition to building our code and deploying it, we want to make sure we scan containers for known vulnerabilities. We may also want to run our containers through some automated testing before going into production. In enterprise deployments, there’s often a compliance requirement where someone takes responsibility for the move to production as well. Taking this into account, the pipeline starts to become more complex.</p>
+<figure class="mediaobject"><img alt="Figure 14.2 – Pipeline with common enterprise requirements " height="38" src="../Images/B21165_18_02.png" width="876"/></figure>
+<p class="packt_figref">Figure 18.2: Pipeline with common enterprise requirements</p>
+<p class="normal">The pipeline has added some extra steps, but it’s still linear with one starting point, a commit. This is <a id="_idIndexMarker1696"/>also very simplistic and unrealistic. The base containers and libraries your applications are built on are constantly being updated as new <strong class="keyWord">Common Vulnerabilities and Exposures</strong> (<strong class="keyWord">CVEs</strong>), a common way to catalog and identify <a id="_idIndexMarker1697"/>security vulnerabilities, are discovered and patched. In addition to having developers who are updating application code for new requirements, you will want to have a system in place that scans both the code and the base containers for available updates. These scanners watch your base containers and can do something to trigger a build once a new base container is ready. While the scanners could call an API to trigger a pipeline, your pipeline is already waiting on your Git repository to do something, so it would be better to simply add a commit or a pull request to your Git repository to trigger the pipeline.</p>
+<figure class="mediaobject"><img alt="Figure 14.3 – Pipeline with scanners integrated " height="158" src="../Images/B21165_18_03.png" width="876"/></figure>
+<p class="packt_figref">Figure 18.3: Pipeline with scanners integrated</p>
+<p class="normal">This means your application code is tracked and your operational updates are tracked in Git. Git is <a id="_idIndexMarker1698"/>now the source of truth for not only what your application code is but also operation updates. When it’s time to go through your audits, you have a ready-made change log! If your policies require you to enter changes into a change management system, simply export the changes from Git.</p>
+<p class="normal">So far, we have focused on our application code and just <a id="_idIndexMarker1699"/>put <strong class="keyWord">Rollout</strong> at the end of our pipeline. The final rollout step usually means patching a Deployment or StatefulSet with our newly built container, letting Kubernetes do the work of spinning up new pods and scaling down the old ones. This could be done with a simple API call, but how are we tracking and auditing that change? What’s the source of truth?</p>
+<p class="normal">Our application in Kubernetes is defined as a series of objects stored in <code class="inlineCode">etcd</code> that are generally represented as code using YAML files. Why not store those files in a Git repository too? This gives us the same benefits as storing our application code in Git. We have a single source of truth for both the application source and the operations of our application! Now, our pipeline involves some more steps.</p>
+<figure class="mediaobject"><img alt="Figure 14.4 – GitOps pipeline " height="210" src="../Images/B21165_18_04.png" width="876"/></figure>
+<p class="packt_figref">Figure 18.4: GitOps pipeline</p>
+<p class="normal">In this <a id="_idIndexMarker1700"/>diagram, our rollout updates a Git repository with our application’s Kubernetes YAML. A controller inside our cluster watches for updates to Git and when it sees them, gets the cluster in sync with what’s in Git. It can also detect drift in our cluster and bring it back to alignment with our source of truth.</p>
+<p class="normal">This focus on Git is <a id="_idIndexMarker1701"/>called <strong class="keyWord">GitOps</strong>. The idea is that all of the work of an application is done via code, not directly via APIs. How strict you are with this idea can dictate what your platform looks like. Next, we’ll explore how opinions can shape your platform.</p>
+<h2 class="heading-2" id="_idParaDest-597">Opinionated platforms</h2>
+<p class="normal">Kelsey Hightower, a developer advocate for Google and leader in the Kubernetes world, once said: “Kubernetes is a platform for building platforms. It’s a better place to start; not the endgame.” When you look at the landscape of vendors and projects building Kubernetes-based products, they all have their own opinions of how systems should be built. As an<a id="_idIndexMarker1702"/> example, Red Hat’s <strong class="keyWord">OpenShift Container Platform</strong> (<strong class="keyWord">OCP</strong>) wants<a id="_idIndexMarker1703"/> to be a one-stop shop for multi-tenant enterprise deployment. It builds in a great deal of the pipeline we discussed. You define a pipeline that is triggered by a commit, which builds a container and pushes it into its own internal registry that then triggers a rollout of the new container. Namespaces are the boundaries of tenants. Canonical is a minimalist distribution that doesn’t include any pipeline components. Managed vendors such as Amazon, Azure, and Google provide the building blocks of a cluster and the hosted build tools of a pipeline, but leave it to you to build out your platform.</p>
+<p class="normal">There is no correct <a id="_idIndexMarker1704"/>answer as to which platform to use. Each is opinionated and the right one for your deployment will depend on your own requirements. Depending on the size of your enterprise, it wouldn’t be surprising to see more than one platform deployed!</p>
+<p class="normal">Having looked at the idea of opinionated platforms, let’s explore the security impacts of building a pipeline.</p>
+<h2 class="heading-2" id="_idParaDest-598">Securing your pipeline</h2>
+<p class="normal">Depending<a id="_idIndexMarker1705"/> on your starting point, this can get complex quickly. How much of your pipeline is one integrated system, or could it be described using a colorful American colloquialism involving duct tape? Even in platforms where all the components are there, tying them together can often mean building a complex system. Most of the systems that are part of your pipeline will have a visual component. Usually, the visual component is a dashboard. Users and developers may need access to that dashboard. You don’t want to maintain separate accounts for all those systems, do you? You’ll want to have one login point and portal for all the components of your pipeline.</p>
+<p class="normal">After determining how to authenticate the users who use these systems, the next question is how to automate the rollout. Each component of your pipeline requires configuration. It can be as simple as an object that gets created via an API call or as complex as tying together a Git repo and build process with SSH keys to automate security. In such a complex environment, manually creating pipeline infrastructure will lead to security gaps. It will also lead to impossible-to-manage systems. Automating the process and providing consistency will help you both secure your infrastructure and keep it maintainable.</p>
+<p class="normal">Finally, it’s important to understand the implications of GitOps on our cluster from a security standpoint. We discussed authenticating administrators and developers to use the Kubernetes API and authorizing access to different APIs in <em class="chapterRef">Chapter 6</em>, <em class="italic">Integrating Authentication into Your Cluster</em>, and <em class="chapterRef">Chapter 7</em>, <em class="italic">RBAC Policies and Auditing</em>. What is the impact if someone can check in a <code class="inlineCode">RoleBinding</code> that assigns them the <code class="inlineCode">admin</code> <code class="inlineCode">ClusterRole</code> for a namespace and a GitOps controller automatically pushes it through to the cluster? As you design your platform, consider how developers and administrators will want to interact with it. It’s tempting to say “Let everyone interact with their application’s Git registry,” but that means putting the burden on you as the cluster owner for many requests. As we discussed in <em class="chapterRef">Chapter 7</em>, <em class="italic">RBAC Policies and Auditing</em>, this could make your team the bottleneck in an enterprise. Understanding your customers, in this case, is important in knowing how they want to interact with their operations even if it’s not how you intended.</p>
+<p class="normal">Having touched <a id="_idIndexMarker1706"/>on some of the security aspects of GitOps and a pipeline, let’s explore the requirements for a typical platform and how we will build it.</p>
+<h2 class="heading-2" id="_idParaDest-599">Building our platform’s requirements</h2>
+<p class="normal">Kubernetes<a id="_idIndexMarker1707"/> deployments, especially in enterprise settings, will often have the following basic requirements:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Development and test environments</strong>: At least two clusters to test the impacts of changes on the cluster level on applications</li>
+<li class="bulletList"><strong class="keyWord">Developer sandbox</strong>: A place where developers can build containers and test them without worrying about impacts on shared namespaces</li>
+<li class="bulletList"><strong class="keyWord">Source control and issue tracking</strong>: A place to store code and track open tasks</li>
+</ul>
+<p class="normal">In addition to these basic requirements, enterprises will often have additional requirements, such as regular access reviews, limiting access based on policy, and workflows that assign responsibility for actions that could impact a shared environment. Finally, you’ll want to make sure that policies are in place to protect nodes.</p>
+<p class="normal">For our platform, we want to encompass as many of these requirements as possible. To better automate deployments onto our platform, we’re going to define each application as having the following:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">A development namespace</strong>: Developers are administrators</li>
+<li class="bulletList"><strong class="keyWord">A production namespace</strong>: Developers are viewers</li>
+<li class="bulletList"><strong class="keyWord">A source control project</strong>: Developers can fork</li>
+<li class="bulletList"><strong class="keyWord">A build process</strong>: Triggered by updates to Git</li>
+<li class="bulletList"><strong class="keyWord">A deploy process</strong>: Triggered by updates to Git</li>
+</ul>
+<p class="normal">In addition, we want our developers to have their own sandbox so that each user will get their own namespace for development.</p>
+<p class="normal">To provide access to each application, we will define three roles:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Owners</strong>: Users who are application owners can approve access for other roles inside their application. This role is assigned to the application requestor and can be assigned by application owners. Owners are also responsible for pushing changes into development and production.</li>
+<li class="bulletList"><strong class="keyWord">Developers</strong>: These are users who will have access to an application’s source control and can administer the application’s development namespace. They can view objects in the production namespace but can’t edit anything. This role can be requested by any user and is approved by an application owner.</li>
+<li class="bulletList"><strong class="keyWord">Operations</strong>: These users have the same capabilities as developers, but can also make changes to the production namespace as needed. This role can be requested by any user and is approved by the application owner.</li>
+</ul>
+<p class="normal">We will also create some environment-wide roles:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">System approvers</strong>: Users with this role can approve access to any system-wide roles.</li>
+<li class="bulletList"><strong class="keyWord">Cluster administrators</strong>: This role is specifically for managing our clusters and the applications that comprise our platform. It can be requested by anyone and must be approved by a member of the system approvers role.</li>
+<li class="bulletList"><strong class="keyWord">Developers</strong>: Anyone who logs in gets their own namespace for development on the development cluster. These namespaces cannot be requested for access by other users. These namespaces are not directly connected to any CI/CD infrastructure or Git repositories.</li>
+</ul>
+<p class="normal">Even with <a id="_idIndexMarker1708"/>our very simple platform, we have six roles that need to be mapped to the applications that make up our pipeline. Each application has its own authentication and authorization processes that these roles will need to be mapped to. This is just one example of why automation is so important to the security of your clusters. Provisioning this access manually based on email requests can become unmanageable quickly.</p>
+<p class="normal">The workflow that developers are expected to go through with an application will line up with the GitOps flow we designed previously:</p>
+<ul>
+<li class="bulletList">Application owners will request that an application is created. Once approved, a Git repository will be created for application code, and Kubernetes manifests. Development and production namespaces will be created in the appropriate clusters, with the appropriate <code class="inlineCode">RoleBinding</code> objects. Groups will be created that reflect the roles for each application, with approval for access to those groups delegated to the application owner.</li>
+<li class="bulletList">Developers and operations staff are granted access to the application by either requesting it or having it provided directly by an application owner. Once granted access, updates are expected in both the developer’s sandbox and the development namespace. Updates are made in a user’s fork for the Git repository, with pull requests used to merge code into the main repositories that drive automation.<ul>
+<li class="bulletList level-2">All builds are controlled via scripts in the application’s source control.</li>
+<li class="bulletList level-2">All artifacts are published to a centralized container registry.</li>
+<li class="bulletList level-2">All production updates must be approved by application owners.</li>
+</ul>
+</li>
+</ul>
+<p class="normal">This <a id="_idIndexMarker1709"/>basic workflow doesn’t include typical components of a workflow, such as code and container scans, periodic access recertifications, or requirements for privileged access. The topic of this chapter could easily be a complete book on its own. The goal isn’t to build a complete enterprise platform but to give you a starting point for building and designing your own system.</p>
+<h2 class="heading-2" id="_idParaDest-600">Choosing our technology stack</h2>
+<p class="normal">In the <a id="_idIndexMarker1710"/>previous parts of this section, we talked about pipelines and platforms in a generic way. Now, let’s get into the specifics of what technology is needed in our pipeline. We identified earlier that every application has application source code and Kubernetes manifest definitions. It also has to build containers. There needs to be a way to watch for changes to Git and update our cluster. Finally, we need an automation platform so that all these components work together.</p>
+<p class="normal">Based on our requirements for our platform, we want technology that has the following features:</p>
+<ol>
+<li class="numberedList" value="1"><strong class="keyWord">Open source</strong>: We don’t want you to buy anything just for this book!</li>
+<li class="numberedList"><strong class="keyWord">API-driven</strong>: We need to be able to provide components and access in an automated way</li>
+<li class="numberedList"><strong class="keyWord">A visual component that supports external authentication</strong>: This book focuses on enterprise, and everyone in the enterprise loves their GUIs, just not having different credentials for each application</li>
+<li class="numberedList"><strong class="keyWord">Supported on Kubernetes</strong>: This is a book on Kubernetes</li>
+</ol>
+<p class="normal">To meet these<a id="_idIndexMarker1711"/> requirements, we’re going to deploy the following components to our cluster:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Git Registry – GitLab</strong>: GitLab is a<a id="_idIndexMarker1712"/> powerful system that provides a great UI and experience for working with Git that supports external <a id="_idIndexMarker1713"/>authentication (that is, <strong class="keyWord">Single Sign-On</strong> (<strong class="keyWord">SSO</strong>)). It has integrated issue management and an extensive API. It also has a Helm chart that we have tailored for the book to run a minimal install.</li>
+<li class="bulletList"><strong class="keyWord">Automated Builds – GitLab</strong>: GitLab is designed to be a development monolith. Given that it has an integrated pipeline system that is Kubernetes native, we’re going to use it instead of an external system like <strong class="keyWord">Jenkins</strong> or <strong class="keyWord">TektonCD</strong>.</li>
+<li class="bulletList"><strong class="keyWord">Container Registry – Harbor</strong>: In past editions, we’ve used a simple Docker registry, but since we’re going to be building out a multi-cluster environment, it’s important that we use a container registry that is designed for production use. Harbor <a id="_idIndexMarker1714"/>gives us the ability to store our containers and manage them via a web UI that supports OpenID Connect for authentication and has an API for management.</li>
+<li class="bulletList"><strong class="keyWord">GitOps – ArgoCD</strong>: ArgoCD is a <a id="_idIndexMarker1715"/>project from Intuit to build a feature-rich GitOps platform. It’s Kubernetes native, has its own API, and stores its objects as Kubernetes custom resources, making it easier to automate. Its UI and CLI tools both integrate with SSO using OpenID Connect.</li>
+<li class="bulletList"><strong class="keyWord">Access, authentication, and automation – OpenUnison</strong>: We’ll continue to use <a id="_idIndexMarker1716"/>OpenUnison for authentication into our cluster. We’re also going to integrate the UI components of our technology stack to provide a single portal for our platform. Finally, we’ll use OpenUnison’s workflows to manage access to each system based on our role structure and provision the objects needed for everything to work together. Access will be provided via OpenUnison’s self-service portal.</li>
+<li class="bulletList"><strong class="keyWord">Node Policy Enforcement –</strong> <strong class="keyWord">GateKeeper</strong>: The GateKeeper <a id="_idIndexMarker1717"/>deployment from <em class="chapterRef">Chapter 12</em>, <em class="italic">Node Security with Gatekeeper</em>, will enforce the fact that each namespace has a minimum set of policies.</li>
+<li class="bulletList"><strong class="keyWord">Tenant Isolation – vCluster</strong>: We used <a id="_idIndexMarker1718"/>vCluster to provide each tenant with their own virtual cluster in <em class="chapterRef">Chapter 9</em>. We’ll build on this to provide individual tenants with their own virtual clusters so they can better control their environment.</li>
+<li class="bulletList"><strong class="keyWord">Secrets Management –</strong> <strong class="keyWord">HashiCorp Vault</strong>: We<a id="_idIndexMarker1719"/> already know how to deploy a vCluster with Vault, so we’ll continue to use it to externalize our secrets.</li>
+</ul>
+<p class="normal">Reading through this technology stack, you might ask “Why didn’t you choose <em class="italic">XYZ</em>?” The Kubernetes ecosystem is diverse, with no shortage of great projects and products for your cluster. This is by no means a definitive stack, nor is it even a “recommended” stack. It’s a collection of applications that meets our requirements and lets us focus on the processes being implemented, rather than learning a specific technology.</p>
+<p class="normal">You might <a id="_idIndexMarker1720"/>also find that there’s quite a bit of overlap between even the tools in this stack. For instance, GitLab could be used for more than Git and pipelines, but we wanted to show how different components integrate with each other. It’s not unusual, especially in an enterprise where components are managed by different organizations, to only use a system for what the group that uses it specializes in. For instance, a group that specializes in GitLab may not want you using it as your identity provider because they’re not in the identity provider business even though GitLab has this capability. They don’t want to support it.</p>
+<p class="normal">Finally, you’ll notice <a id="_idIndexMarker1721"/>that Backstage isn’t mentioned. <strong class="keyWord">Backstage</strong> is a popular open-source internal developer platform that is often associated with any project related to “platform engineering.” We decided not to use Backstage to build out our platform because there’s no way to cover it in a single chapter! There have been multiple books written about Backstage and it’s a topic that requires a considerable amount of its own analysis to handle properly. The goal of these next two chapters is to help see how many of the technologies we’ve built through this book come together. It’s meant as a starting point, not a complete solution. If you want to integrate Backstage or any other of the internal developer platform systems, you’ll find your approach won’t be very different.</p>
+<p class="normal">With our technology stack in hand, the next step is to see how we will integrate these components.</p>
+<h1 class="heading-1" id="_idParaDest-601">Designing our platform architecture</h1>
+<p class="normal">In previous<a id="_idIndexMarker1722"/> chapters, all of our work centered around a single cluster. This made the labs easier, but the reality of the world in IT doesn’t work that way. You want to separate out your development and production clusters at a minimum, not only so you can isolate the workloads, but so that you can test your operations processes outside of production. You may need to isolate clusters for other risk- and <a id="_idIndexMarker1723"/>policy-based reasons as well. For instance, if your enterprise spans multiple nations, you may need to respect each nation’s data sovereignty laws and run workloads on infrastructure in that nation. If you are in a regulated industry that requires different levels of security for different kinds of data, you may need to separate your clusters. For this, and many reasons, these two chapters will move beyond a single cluster into a multiple cluster design.</p>
+<p class="normal">To keep things simple, we’re going to assume we can have one cluster for development and one cluster for production. There is a problem with this design though: where do you deploy all the technology in our management stack? They’re “production” systems, so you might want to deploy them onto the production cluster, but since these are generally privileged systems, that might cause an issue with security and policy. Since many of the systems are development-related, you may think they should be deployed into the development cluster. This can also be an issue because you don’t want a development system to be in control of a production system.</p>
+<p class="normal">In order to solve these issues, we’re going to add a third cluster that will be our “control plane” cluster. This cluster will host OpenUnison, GitLab, Harbor, ArgoCD, and Vault. That will leave tenants on the development and production clusters. Each tenant will run a vCluster in its namespace and that vCluster will run its own OpenUnison, as we did in the vCluster chapter. This leaves our architecture as:</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="638" src="../Images/B21165_18_05.png" width="876"/></figure>
+<p class="packt_figref">Figure 18.5: Developer platform architecture</p>
+<p class="normal">Looking at <a id="_idIndexMarker1724"/>our diagram, you can see that we’ve created a fairly complex infrastructure. That said, because we’re taking advantage of multitenancy, it’s much simpler than it could be. If each tenant had its own cluster and related infrastructure, you would need to manage and update all those systems. Throughout this book, we’ve had a focus on identity as an important security boundary. We’ve already discussed how OpenUnison and Kubernetes should interact with Vault, but what about the other components of our stack?</p>
+<h2 class="heading-2" id="_idParaDest-602">Securely managing a remote Kubernetes cluster</h2>
+<p class="normal">In <em class="chapterRef">Chapter 6</em>, <em class="italic">Integrating Authentication into Your Cluster</em>, we covered how external pipelines should securely communicate with Kubernetes clusters. We used the example of a pipeline <a id="_idIndexMarker1725"/>generating an identity for a remote cluster based on its own identity issued by Kubernetes to each pod or by using a credential issued by Active Directory. We didn’t use a <code class="inlineCode">ServiceAccount</code> token for the remote cluster though, identifying this approach as an anti-pattern in Kubernetes. <code class="inlineCode">ServiceAccount</code> tokens were never meant to be used as a credential for the cluster from outside the cluster, and while since Kubernetes 1.24 the default has been to generate tokens with a finite time to live, it still requires token rotation and violates the reason for having <code class="inlineCode">ServiceAccounts</code>. </p>
+<p class="normal">We’re going to avoid this anti-pattern by relying on OpenUnison’s built-in capabilities as an identity provider. When we integrate a node or tenant cluster into our control plane OpenUnison, an instance of kube-oidc-proxy is deployed that trusts OpenUnison. Then, when OpenUnison needs to issue an API call to one of the node or tenant clusters, it can do so with a short-lived token.</p>
+<figure class="mediaobject"><img alt="Diagram, timeline  Description automatically generated with medium confidence" height="333" src="../Images/B21165_18_06.png" width="876"/></figure>
+<p class="packt_figref">Figure 18.6: Control plane API integration with tenants and nodes</p>
+<p class="normal">In <em class="italic">Figure 18.6</em>, our tenant cluster runs an instance of kube-oidc-proxy that is configured to trust an identity provider configured in the control plane cluster’s OpenUnison. In this context, we’re calling the proxy a “management” proxy since it’s only going to be used by OpenUnison and ArgoCD to interact with the node or tenant’s API server. When OpenUnison wants to call the remote API, it first generates a one-minute-lived token for the call. This lines up with our goal to use short-lived tokens to communicate with remote clusters. This <a id="_idIndexMarker1726"/>way, if the token is leaked, it will likely be useless once the token is obtained by an attacker.</p>
+<p class="normal">We’re using kube-oidc-proxy because Kubernetes, prior to 1.29, only supported a single OpenID Connect issuer. Starting in 1.29, Kubernetes introduced as an alpha feature the ability to define multiple token issuers, eliminating the need for an impersonating proxy for this use case. We decided not to use this feature because:</p>
+<ol>
+<li class="numberedList" value="1">It’s still an alpha feature at the time of writing and is likely to change.</li>
+<li class="numberedList">Even once it goes GA, the feature is not implemented as an API, but as a static configuration that must be deployed to each control plane. This is similar to how clusters are configured using API Server command line flags and will impose similar challenges on managed clusters. </li>
+</ol>
+<p class="normal">For these reasons, we decided not to include this feature in our design and are instead going to rely on kube-oidc-proxy.</p>
+<p class="normal">Now that we know how OpenUnison will interact with remote clusters, we need to think about how ArgoCD will interact with remote clusters, too. Similar to OpenUnison, it needs to be able to call the APIs of our tenants and node clusters. Just as with OpenUnison, we don’t want to use a static <code class="inlineCode">ServiceAccount</code> token. Thankfully, we have all the components we need to make this work. </p>
+<p class="normal">Since OpenUnison is already capable of generating a short-lived token that is trusted by our remote clusters, what we need now is a way to securely get that token into ArgoCD when it needs it, and to tell ArgoCD to use it. Since ArgoCD uses the client-go SDK for Kubernetes, it’s able to use a credential plugin that can call a remote API to retrieve a credential. In this case, we’re going to use a similar pattern that we used in <em class="chapterRef">Chapter 6</em>, <em class="italic">Integrating Authentication into Your Cluster</em>, to generate a token. Instead of using an Active Directory credential, we’re going to use the identity of the ArgoCD controller pod to generate the needed token:</p>
+<figure class="mediaobject"><img alt="Diagram, timeline  Description automatically generated" height="332" src="../Images/B21165_18_07.png" width="876"/></figure>
+<p class="packt_figref">Figure 18.7: ArgoCD integration with tenants and nodes using short-lived credentials</p>
+<p class="normal">We’re able<a id="_idIndexMarker1727"/> to leverage a credential plugin for go-sdk. In step 1, we generate an HTTP request to a service we deployed into OpenUnison with our <code class="inlineCode">Pod's</code> credentials to get a token:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-meta">#!/bin/bash</span>
+OPENUNISON_CP_HOST=<span class="hljs-variable">$1</span>
+CLUSTER_NAME=<span class="hljs-variable">$2</span>
+PATH_TO_POD_TOKEN=<span class="hljs-variable">$3</span>
+REMOTE_TOKEN=$(curl -H <span class="hljs-string">"Authorization: Bearer </span><span class="hljs-subst">$(&lt;$PATH_TO_TOKEN)</span><span class="hljs-string">"</span> https://<span class="hljs-variable">$OPENUNISON_CP_HOST</span>/api/get-target-token?targetName=<span class="hljs-variable">$CLUSTER_NAME</span> 2&gt;/dev/null)
+</code></pre>
+<p class="normal">This is a snippet from our credential provider plugin. Credential providers are simply executables, such as this bash script, that the SDK calls to get a token or certificate and private key. We’ll tell ArgoCD to pass the control plane’s OpenUnison host, the name of the cluster in OpenUnison we want to work with, and the path to our <code class="inlineCode">Pod's</code> token. The script then makes a <code class="inlineCode">curl</code> call with that token to OpenUnison to get the token, using the <code class="inlineCode">Pod's</code> identity as a bearer token. </p>
+<p class="normal">When the request hits OpenUnison, it will run step 2, where OpenUnison will issue a <code class="inlineCode">TokenRequest</code> to the API server to make sure that the token provided in the API call is valid. In order for this to succeed, the token must not have expired yet and the pod bound to the token must still be running. If someone were to obtain a token from an expired pod, but that hasn’t yet expired, this call would still fail. At this point, the request is<a id="_idIndexMarker1728"/> authenticated and step 3 has the API server returning its determination to OpenUnison. We don’t want just any identity to allow for getting a token for our remote clusters.</p>
+<p class="normal">Next, OpenUnison needs to authorize the request. In our <code class="inlineCode">Application</code> configuration for our API, we defined the <code class="inlineCode">azRule</code> as <code class="inlineCode">(sub=system:serviceaccount:argocd:argocd-application-controller)</code>, making sure that only the controller pod is able to get a token for our remote clusters. This will make sure that if there is a breach of the ArgoCD web interface, an attacker can’t just generate a token with the identity of that pod. They’d also need to get into the application controller pod.</p>
+<p class="normal">With the request authenticated and authorized, step 4 has OpenUnison look up the target and return a generated token. Finally, in step 5, we generate some JSON in our credential plugin that tells the client-go SDK what token to use:</p>
+<pre class="programlisting con"><code class="hljs-con">echo -n "{\"apiVersion\": \"client.authentication.k8s.io/v1\",\"kind\": \"ExecCredential\",\"status\": {\"token\": \"$REMOTE_TOKEN\"}}"
+</code></pre>
+<p class="normal">Once the token is obtained by ArgoCD, it will use it while interacting with our remote clusters. We’ve designed a way for our platform to use centralized ArgoCD while not relying on long-lived credentials!</p>
+<p class="normal">We’re not quite done yet though. ArgoCD is configured to use our token in a two-step process:</p>
+<ol>
+<li class="numberedList" value="1">Define a <code class="inlineCode">Secret</code> that contains the cluster connection configuration and define a label to identify it</li>
+<li class="numberedList">Create an <code class="inlineCode">ApplicationSet</code> that specifies the target cluster</li>
+</ol>
+<p class="normal">For instance, here’s an example <code class="inlineCode">Secret</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Secret</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">k8s-kubernetes-satelite</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">argocd</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">argocd.argoproj.io/secret-type:</span> <span class="hljs-string">cluster</span>
+    <span class="hljs-attr">tremolo.io/clustername:</span> <span class="hljs-string">k8s-kubernetes-satelite</span>
+<span class="hljs-attr">type:</span> <span class="hljs-string">Opaque</span>
+<span class="hljs-attr">stringData:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">k8s-kubernetes-satelite</span>
+  <span class="hljs-attr">server:</span> <span class="hljs-string">https://oumgmt-proxy.idp-dev.tremolo.dev</span>
+  <span class="hljs-attr">config:</span> <span class="hljs-string">|</span>
+    {
+      <span class="hljs-string">"execProviderConfig":</span> {
+        <span class="hljs-string">"command":</span> <span class="hljs-string">"</span><span class="hljs-string">/custom-tools/remote-token.sh"</span>,
+        <span class="hljs-string">"args":</span> [<span class="hljs-string">"k8sou.idp-cp.tremolo.dev"</span>,<span class="hljs-string">"k8s-kubernetes-satelite"</span>,<span class="hljs-string">"/var/run/secrets/ubernetes.io/serviceaccount/token"</span>],
+        <span class="hljs-string">"apiVersion":</span> <span class="hljs-string">"client.authentication.k8s.io/v1"</span>
+      },
+      <span class="hljs-string">"tlsClientConfig":</span> {
+        <span class="hljs-string">"insecure":</span> <span class="hljs-literal">false</span>,
+        <span class="hljs-string">"</span><span class="hljs-string">caData":</span> <span class="hljs-string">"LS0tL…</span>
+      }
+    }
+</code></pre>
+<p class="normal">You can see <a id="_idIndexMarker1729"/>that our configuration doesn’t include any secret information! The <code class="inlineCode">label</code> <code class="inlineCode">acrocd.argoproj.io/secret-type: cluster</code> is what tells ArgoCD this <code class="inlineCode">Secret</code> is used to configure a remote cluster. The additional label <code class="inlineCode">tremolo.io/clustername</code> is how we know which cluster to support. Then, we define an <code class="inlineCode">ApplicationSet</code> that ArgoCD’s operator will use to generate an ArgoCD <code class="inlineCode">Application</code> object and a cluster configuration:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">argoproj.io/v1alpha1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ApplicationSet</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">test-remote-cluster</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">argocd</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">goTemplate:</span> <span class="hljs-literal">true</span>
+  <span class="hljs-attr">goTemplateOptions:</span> [<span class="hljs-string">"missingkey=error"</span>]
+  <span class="hljs-attr">generators:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">clusters:</span>
+      <span class="hljs-attr">selector:</span>
+        <span class="hljs-attr">matchLabels:</span>
+          <span class="hljs-attr">tremolo.io/clustername:</span> <span class="hljs-string">k8s-kubernetes-satelite</span>
+  <span class="hljs-attr">template:</span>
+    <span class="hljs-attr">metadata:</span>
+      <span class="hljs-attr">name:</span> <span class="hljs-string">'</span><span class="hljs-template-variable">{{.name}}</span><span class="hljs-string">-guestbook'</span> <span class="hljs-comment"># 'name' field of the Secret</span>
+    <span class="hljs-attr">spec:</span>
+      <span class="hljs-attr">project:</span> <span class="hljs-string">"default"</span>
+      <span class="hljs-attr">source:</span>
+        <span class="hljs-attr">repoURL:</span> <span class="hljs-string">https://github.com/mlbiam/test-argocd-repo.git</span>
+        <span class="hljs-attr">targetRevision:</span> <span class="hljs-string">HEAD</span>
+        <span class="hljs-attr">path:</span> <span class="hljs-string">yaml</span>
+        <span class="hljs-attr">directory:</span>
+          <span class="hljs-attr">recurse:</span> <span class="hljs-literal">true</span>
+      <span class="hljs-attr">destination:</span>
+        <span class="hljs-attr">server:</span> <span class="hljs-string">'</span><span class="hljs-template-variable">{{.server}}</span><span class="hljs-string">'</span> <span class="hljs-comment"># 'server' field of the secret</span>
+        <span class="hljs-attr">namespace:</span> <span class="hljs-string">myns</span>
+</code></pre>
+<p class="normal">The <code class="inlineCode">spec.generators[0]</code> identifies <a id="_idIndexMarker1730"/>a clusters generator, which matches the label <code class="inlineCode">tremolo.io/clustername: k8s-kubernetes-satelite</code>. Since we’re building a multi-tenant platform, we need to make sure that we define a GateKeeper policy that will stop users from specifying a cluster label that they don’t own when creating their <code class="inlineCode">ApplicationSet</code> objects.</p>
+<p class="normal">Now that we’ve worked out how both OpenUnison and ArgoCD are going to securely communicate with remote clusters in our platform, we next need to work out how our clusters will securely pull images from our image repository.</p>
+<h2 class="heading-2" id="_idParaDest-603">Securely pushing and pulling images</h2>
+<p class="normal">In addition<a id="_idIndexMarker1731"/> to having to securely call the APIs of remote clusters, we need to be able to securely push and pull images from our image registry. It would be great to use the same technique to work with our registry as we do with other APIs, but unfortunately, we won’t be able to. Kubernetes doesn’t provide a dynamic way for image pull secrets to be generated, meaning that we’ll need to generate a static token. The token will need to be stored as a <code class="inlineCode">Secret</code> in our API server too. Since we’re going to be using Vault anyway, we plan on using the External Secrets Operator in each cluster so we can synchronize the pull secret from Vault.</p>
+<p class="normal">We’ve worked through our technology stack, and how the various components are going to communicate. Next, we’ll work through how we’re going to deploy all this technology.</p>
+<h1 class="heading-1" id="_idParaDest-604">Using Infrastructure as Code for deployment</h1>
+<p class="normal">Throughout<a id="_idIndexMarker1732"/> this book, we’ve used bash scripts to deploy all our labs. We were able to do this because most of our labs were straightforward, with minimal integration, and didn’t require any repeatability. This is generally not the case when working in enterprises. You’ll want to have multiple environments for development and testing. You may need to deploy to multiple or different clouds. You might need to rebuild environments across international borders to maintain data sovereignty regulations. Finally, your deployment might just need more complex logic than what bash is able to easily provide.</p>
+<p class="normal">This is where an <strong class="keyWord">Infrastructure as Code</strong> (<strong class="keyWord">IaC</strong>) tool begins to provide value. IaC tools are popular because they provide a layer of abstraction between your code and the APIs needed to deploy your infrastructure. For instance, an IaC tool can provide a common API for creating Kubernetes resources and creating resources in your cloud provider. They won’t be exactly the same, but if you know how to use one then the patterns will generally apply to other providers. </p>
+<p class="normal">There are two common approaches to IaC tools:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Imperative Scripting</strong>: An<a id="_idIndexMarker1733"/> IaC tool can be something that just makes it easier to re-run commands across multiple systems and in a re-usable way. It provides minimal abstractions and doesn’t maintain any internal “state” between runs. Ansible is a great example of this kind of tool. It makes it easy to run commands against multiple hosts but doesn’t handle “drift” from a known configuration.</li>
+<li class="bulletList"><strong class="keyWord">State Reconciliation</strong>: Many <a id="_idIndexMarker1734"/>IaC tools store what the expected state of an environment is and reconcile against this state. This is very similar to the idea of GitOps, where the state is stored in a Git repository. The big benefit to this approach is that you can keep your infrastructure aligned with an expected state, so if your infrastructure were to “drift,” your IaC tool knows how to bring it back. One of the challenges of this approach is that you now have state you need to manage and maintain.</li>
+</ul>
+<p class="normal">There is no “correct” approach here;, it really depends on what you’re trying to accomplish. There are numerous open source IaC tools. For our platform, we’re going to use<a id="_idIndexMarker1735"/> Pulumi (<a href="https://www.pulumi.com/"><span class="url">https://www.pulumi.com/</span></a>). One of the reasons I like Pulumi is that it doesn’t have its own domain-specific language or markup – it provides APIs for Python, Java, Go, JavaScript, etc. So, while you still need an additional binary to run it, it makes for an easier learning curve, and I think easier long-term maintenance. </p>
+<p class="normal">As far as managing state goes, Pulumi offers its own cloud for free, or you can use an object storage system like Amazon S3, or your local file system. Since we don’t want you to have to sign up for anything, we’re going to use the local file system for all our examples.</p>
+<p class="normal">When working<a id="_idIndexMarker1736"/> with Pulumi programs, one of the key points to understand is that you’re not working on the infrastructure itself, you’re working on the state you want to create, and then Pulumi reconciles the state your program creates with the reality of your existing infrastructure. To make this work, Pulumi runs two passes of your program. First, a pass to generate an expected state, and then again to apply the unknowns of that state. As an example, let’s say you’re going to deploy OpenUnison and the Kubernetes Dashboard using Pulumi. Part of OpenUnison’s Helm chart requires knowing the name of the <code class="inlineCode">Service</code> that exposes the dashboard’s deployment. Pulumi controls the names of resources by default, so you won’t know the name of the <code class="inlineCode">Service</code> when writing your code, but it’s provided to you via a variable. That variable isn’t available in the first pass, but it is in the second pass of your code. Here’s the Python code for deploying the dashboard via Pulumi:</p>
+<pre class="programlisting code"><code class="hljs-code"> k8s_db_release = k8s.helm.v3.Release(
+            <span class="hljs-string">'</span><span class="hljs-string">kubernetes-dashboard'</span>,
+            k8s.helm.v3.ReleaseArgs(
+                chart=chart_name,
+                version=chart_version,
+                namespace=<span class="hljs-string">'kubernetes-dashboard'</span>,
+                skip_await=<span class="hljs-literal">False</span>,
+                repository_opts= k8s.helm.v3.RepositoryOptsArgs(
+                    repo=chart_url
+                ),
+            ),
+            opts=pulumi.ResourceOptions(
+                provider = k8s_provider,
+                depends_on=[dashboard_namespace],
+                custom_timeouts=pulumi.CustomTimeouts(
+                    create=<span class="hljs-string">"8m"</span>,
+                    update=<span class="hljs-string">"10m"</span>,
+                    delete=<span class="hljs-string">"10m"</span>
+                )
+            )
+        )
+</code></pre>
+<p class="normal">The important part of this code is that once the chart is deployed, it’s also made available to other parts of the code. Next, when we go to create OpenUnison’s Helm chart values, we need to get the Service name:</p>
+<pre class="programlisting code"><code class="hljs-code">openunison_helm_values[<span class="hljs-string">"dashboard"</span>][<span class="hljs-string">"service_name"</span>] = k8s_db_release.name.apply(<span class="hljs-keyword">lambda</span> name: name)
+</code></pre>
+<p class="normal">Here, we’re <a id="_idIndexMarker1737"/>not getting the name directly from the release as a variable because, depending on which phase of the deployment you’re in, your program won’t know. So instead, you use a lambda in Python to inject a function that will return the value so that Pulumi can generate it at the right point. This was a big mental block for me when I first started working with Pulumi, so I wanted to make sure to point it out here.</p>
+<p class="normal">We’re not going to dive into more Pulumi implementation details here. There are several books on Pulumi and they have great documentation on their website for all of the languages they support. We wanted to focus on a brief introduction and some key concepts to set the stage. We’ll walk through the deployment of our platform, including how to store and retrieve configuration information, in the next chapter as we deploy our platform.</p>
+<p class="normal">We’ve covered the infrastructure for our platform, how that infrastructure interconnects, and how we plan to deploy it. Next, we’ll turn our attention to how our tenants will be deployed.</p>
+<h1 class="heading-1" id="_idParaDest-605">Automating tenant onboarding</h1>
+<p class="normal">Earlier, in <a id="_idIndexMarker1738"/>the vCluster chapter, we deployed the OpenUnison NaaS portal to provide a self-service way for users to request tenants and have them deployed. This portal lets users request new namespaces to be created and allows developers to request access to these namespaces via a self-service interface. We built on this capability to include the creation of a vCluster in our namespace in addition to the appropriate <code class="inlineCode">RoleBinding</code> objects. While that implementation was a good start, it ran everything on a single cluster and only integrated with the components that were needed to run a vCluster.</p>
+<p class="normal">What we want to do is build a workflow that integrates our platform and creates all the objects we need to fulfill our requirements across all of our projects. The goal is that we’ll be able <a id="_idIndexMarker1739"/>to deploy a new application into our environment without having to run the <code class="inlineCode">kubectl</code> command (or at least minimize its use).</p>
+<p class="normal">This will require careful planning. Here’s how our developer workflow will run:</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="764" src="../Images/B21165_18_08.png" width="877"/></figure>
+<p class="packt_figref">Figure 18.8: Platform developer workflow</p>
+<p class="normal">Let’s quickly run through the workflow that we see in the preceding figure:</p>
+<ol>
+<li class="numberedList" value="1">An application owner will request an application be created.</li>
+<li class="numberedList">The infrastructure admin approves the creation.</li>
+<li class="numberedList">At this point, OpenUnison will deploy the objects we created manually. We’ll detail those objects shortly.</li>
+<li class="numberedList">Once created, a developer is able to request access to the application.</li>
+<li class="numberedList">The application owner(s) approves access to the application.</li>
+<li class="numberedList">Once approved, the developer will fork the application source base and do their work. They can launch the application in their developer workspace. They can also fork the build project to create a pipeline and the development environment operations project to create manifests for the application.</li>
+<li class="numberedList">Once the work is done and tested locally, the developer will push the code into their own fork and then request a merge request.</li>
+<li class="numberedList">The application owner will approve the request and merge the code from GitLab.</li>
+</ol>
+<p class="normal">Once the <a id="_idIndexMarker1740"/>code is merged, ArgoCD will synchronize the operations projects. GitLab will kick off a pipeline that will build our container and update the development operations project with the tag for the latest container. ArgoCD will synchronize the updated manifest into our application’s development namespace. Once testing is completed, the application owner submits a merge request from the development operations workspace to the production operations workspace, triggering ArgoCD to launch into production.</p>
+<p class="normal">Nowhere in this flow is there a step called “operations staff uses <code class="inlineCode">kubectl</code> to create a namespace.” This is a simple flow and won’t totally prevent your operations staff using <code class="inlineCode">kubectl</code>, but it should be a good starting point. All this automation requires an extensive set of objects to be created:</p>
+<figure class="mediaobject"><img alt="Diagram, schematic  Description automatically generated" height="737" src="../Images/B21165_18_09.png" width="875"/></figure>
+<p class="packt_figref">Figure 18.9: Application onboarding object map</p>
+<p class="normal">The <a id="_idIndexMarker1741"/>above diagram shows the objects that need to be created in our environment and the relationships between them. With so many moving parts, it’s important to automate the process. Creating these objects manually is both time-consuming and error-prone. We’ll work through that automation in the next chapter.</p>
+<p class="normal">In GitLab, we create a project for our application code and operations. We also fork the operations project as a development operations project. For each project, we generate deploy keys and register webhooks. We also create groups to match the roles we defined earlier in this chapter. Since we’re using GitLab to build our image, we’ll need to register a key so that it can push images into Harbor as well.</p>
+<p class="normal">For <a id="_idIndexMarker1742"/>Kubernetes, we create namespaces for the development and production environments. We define vClusters in the tenant namespaces, backed by each cluster’s MySQL database. Next, we deploy an OpenUnison to each vCluster, using our control plane OpenUnison as the identity provider. This will enable our control plane OpenUnison to generate identities for each vCluster and allow Argo CD to manage them without having to use static keys.</p>
+<p class="normal">Once OpenUnison is deployed, we need to add our vClusters to Vault for secrets management. We’ll also create namespace and ApplicationSets in the control plane cluster to configure Argo CD to generate <code class="inlineCode">Application</code> objects for our tenant clusters. Since Argo CD doesn’t have any controls to make sure that an ApplicationSet only uses specific clusters, we’ll need to add a GateKeeper policy to make sure that users don’t attempt to create ApplicationSets for other tenants.</p>
+<p class="normal">We also need to provision resources and credentials in Harbor so that our tenants can manage their containers. Next, we’ll onboard each vCluster into Vault and add external secret operator deployments for each vCluster. We’ll then provision the pull secrets into each cluster via Vault.</p>
+<p class="normal">Finally, we add RBAC rules to ArgoCD so that our developers can view their application synchronization status but owners and operations can make updates and changes.</p>
+<p class="normal">If that seems like quite a bit of work, you’re right! Imagine if we had to do all the work manually. Thankfully, we don’t. Before we get into our final chapter and start our deployment, let’s talk about what GitOps is and how we’ll use it.</p>
+<h2 class="heading-2" id="_idParaDest-606">Designing a GitOps strategy</h2>
+<p class="normal">We have<a id="_idIndexMarker1743"/> outlined the steps we want for our developer workflow and how we’ll build those objects. Before we get into talking about implementation, let’s work through how Argo CD, OpenUnison, and Kubernetes will interact with each other.</p>
+<p class="normal">So far, we’ve deployed everything manually in our cluster by running <code class="inlineCode">kubectl</code> commands off of manifests that we put in this book’s Git repo. That’s not really the ideal way to do this. What if you needed to rebuild your cluster? Instead of manually recreating everything, wouldn’t it be better to just let Argo CD deploy everything from Git? The more you can keep in Git, the better.</p>
+<p class="normal">That said, how <a id="_idIndexMarker1744"/>will OpenUnison communicate with the API server when it performs all this automation for us? The “easiest” way is for OpenUnison to just call the API server.</p>
+<figure class="mediaobject"><img alt="A picture containing text, screenshot, logo, font  Description automatically generated" height="344" src="../Images/B21165_18_10.png" width="747"/></figure>
+<p class="packt_figref">Figure 18.10: Writing objects directly to the API server</p>
+<p class="normal">This will work. We’ll get to our end goal of a developer workflow using GitOps, but what about our cluster management workflow? We want to get as many of the benefits from GitOps as cluster operators as our developers do! To that end, a better strategy would be to write our objects to a Git repository. That way, when OpenUnison creates these objects, they’re tracked in Git, and if changes need to be made outside of OpenUnison, those changes are tracked too.</p>
+<figure class="mediaobject"><img alt="A picture containing clipart, screenshot, cartoon, diagram  Description automatically generated" height="377" src="../Images/B21165_18_11.png" width="740"/></figure>
+<p class="packt_figref">Figure 18.11: Writing objects to Git</p>
+<p class="normal">When OpenUnison needs to create objects in Kubernetes, instead of writing them directly to the API server, it will write them into a management project in GitLab. Argo CD will synchronize these manifests into the API server.</p>
+<p class="normal">This is where <a id="_idIndexMarker1745"/>we’ll write any objects we don’t want our users to have access to. This would include cluster-level objects, such as <code class="inlineCode">Namespaces</code>, but also namespace objects we don’t want our users to have write access to, such as <code class="inlineCode">RoleBindings</code>. This way, we can separate operations object management from application object management.</p>
+<p class="normal">Here’s an important security question to answer: if Argo CD is writing these objects for us, what’s stopping a developer from checking a <code class="inlineCode">RoleBinding</code> or a <code class="inlineCode">ResourceQuota</code> into their repo and letting Argo CD synchronize it into the API server? At the time of publication, the only way to limit this is to tell Argo CD which objects can be synchronized in the <code class="inlineCode">AppProject</code> object. This isn’t quite as useful as relying on RBAC. We’ll be able to work around this limitation by using a vCluster for tenant isolation. Yes, Argo CD will have access to the tenant’s remote cluster as cluster-admin, but the user won’t be able to check in <code class="inlineCode">ApplicationSets</code> that talk to other clusters.</p>
+<p class="normal">Finally, look at <em class="italic">Figure 18.11</em> and you’ll notice that we’re still writing <code class="inlineCode">Secret</code> objects to the API server. We don’t want to write secret information to Git. It doesn’t matter if the data is encrypted or not; either way, you’re asking for trouble. Git is specifically designed to make it easier to share code in a decentralized way, whereas your secret data should be tracked carefully by a centralized repository. These are two opposing requirements. </p>
+<p class="normal">As an <a id="_idIndexMarker1746"/>example of how easy it is to lose track of sensitive data, let’s say you have a repo with Secrets in it on your workstation. A simple <code class="inlineCode">git archive HEAD</code> will remove all Git metadata and give you clean files that can no longer be tracked. How easy is it to accidentally push a repo to a public repository by accident? It’s just too easy to lose track of the code base.</p>
+<p class="normal">Another example of why Git is a bad place to store secret information is that Git doesn’t have any built-in authentication. When you use SSH or HTTPS when accessing a Git repo, either GitHub or GitLab is authenticating you, but Git itself has no form of built-in authentication. If you have followed the exercises in this chapter, go look at your Git commits. Do they say “root” or do they have your name? Git just takes the data from your Git configuration. There’s nothing that ties that data to you. Is that an audit trail that will work for you as regards your organization’s secret data? Probably not.</p>
+<p class="normal">Some projects attempt to fix this by encrypting sensitive data in the repo. That way, even if the repo were leaked, you would still need the keys to decrypt the data. Where’s the <code class="inlineCode">Secret</code> for the encryption being stored? Is it in use by developers? Is there special tooling that’s required? There are several places where it could go wrong. It’s better to not use Git at all for sensitive data, such as Secrets.</p>
+<p class="normal">In a production environment, you want to externalize your Secrets though, just like your other manifests. We will write our secret data into HashiCorp’s Vault and let the clusters determine how they want to extract that information, either using the external secrets operator or a Vault sidecar. </p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="567" src="../Images/B21165_18_12.png" width="777"/></figure>
+<p class="packt_figref">Figure 18.12: Writing secrets to Vault</p>
+<p class="normal">With our <a id="_idIndexMarker1747"/>developer workflow designed and example projects ready to go, next, we’ll update OpenUnison, GitLab, and ArgoCD to get all this automation to work!</p>
+<h1 class="heading-1" id="_idParaDest-607">Considerations for building an Internal Developer Platform</h1>
+<p class="normal">When<a id="_idIndexMarker1748"/> developing an <strong class="keyWord">Internal Developer Platform </strong>, or <strong class="keyWord">IDP</strong>, it’s important to keep some things in mind to avoid common antipatterns. When infrastructure teams build application support platforms, it’s common to want to build in as much as possible to minimize the amount of work application teams need to do in order to run their application. </p>
+<p class="normal">For instance, you can take this to an extreme where you simply provide a place for your code to go, and automate the rest. Most of the things we have identified in this chapter can be accomplished via boilerplate templates, right? Why bother even exposing it to the developers? Just let them check in their code and we’ll do the rest! This is often referred to as “Serverless” or “Function as a Service.” When appropriate, it’s great because your developers don’t need to know much about infrastructure.</p>
+<p class="normal">The key phrase in the above paragraph was “when appropriate.” Throughout this book, we’ve stressed not only the impacts technology has on Kubernetes, but also the silos that are built in enterprises. While in DevOps, we often refer to “knocking silos down,” in enterprises, those silos are a result of management structures. As we’ve discussed throughout this book in different situations, hiding a deployment under so many layers of abstraction can lead to conflicts with those silos and put your team in a position to become a bottleneck.</p>
+<p class="normal">When the <a id="_idIndexMarker1749"/>infrastructure team becomes the bottleneck, often because they’ve tried to assume too much responsibility in an application rollout, there’s often a backlash that leads to a swing to the other extreme, where developers are given an empty “cloud” to deploy their own infrastructure. This isn’t helpful either as it leads to a tremendous amount of duplicated effort and expertise across teams.</p>
+<p class="normal">In addition to keeping teams from their infrastructure, too much abstraction can lose the ability of your application teams to implement the logic they need to. There’s no scenario where an application infrastructure team can anticipate every edge case application teams need and lead to your application teams looking for alternatives for implementation. This is often where the idea of “Shadow IT” comes from. Application developers had requirements that infrastructure teams couldn’t fulfill, so they turned to cloud-based options.</p>
+<p class="normal">Brian Gracely, a Senior Director at Red Hat and co-host of the Cloud Cast podcast, often says (paraphrasing) “Guard rails, not tracks.” This means it’s important for infrastructure teams to provide guardrails to best maintain a common infrastructure, without being so restrictive that application teams aren’t impeding the work that the application teams need to do. </p>
+<p class="normal">When designing your internal developer platform, avoid going to too much of an extreme. If you want to offer low infrastructure offerings like Serverless/Function as a Service, that’s great. Just make sure that it’s an option, not the only approach.</p>
+<p class="normal">We’ve covered quite a bit of theory in this chapter. In our next chapter, we’ll put this theory to the test and build out our platform!</p>
+<h1 class="heading-1" id="_idParaDest-608">Summary</h1>
+<p class="normal">The previous chapters in this book focused on building out manifests and infrastructure. While we began looking at applications with Istio, we didn’t touch on how to manage their rollout. In this chapter, we moved our focus from building infrastructure to rolling out applications using pipelines, GitOps, and automation. We learned what components are built into a pipeline to move an application from code to deployment. We dove into what GitOps is and how it works. Finally, we designed a self-service multi-tenant platform that we’re going to implement in our final chapter!</p>
+<p class="normal">Using the information in this chapter should give you some direction as to how you want to build your own platform. Using the practical examples in this chapter will help you map the requirements of your organization to the technology needed to automate your infrastructure. The platform we built in this chapter is far from complete. It should give you a map for planning your own platform that matches your needs.</p>
+<h1 class="heading-1" id="_idParaDest-609">Questions</h1>
+<ol>
+<li class="numberedList" value="1">True or false: A pipeline must be implemented to make Kubernetes work.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">What are the minimum steps of a pipeline?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Build, scan, test, and deploy</li>
+<li class="alphabeticList level-2">Build and deploy</li>
+<li class="alphabeticList level-2">Scan, test, deploy, and build</li>
+<li class="alphabeticList level-2">None of the above</li>
+</ol>
+</li>
+<li class="numberedList">What is GitOps?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Running GitLab on Kubernetes</li>
+<li class="alphabeticList level-2">Using Git as an authoritative source for operations configuration</li>
+<li class="alphabeticList level-2">A silly marketing term</li>
+<li class="alphabeticList level-2">A product from a new start-up</li>
+</ol>
+</li>
+<li class="numberedList">What is the standard for writing pipelines?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">All pipelines should be written in YAML.</li>
+<li class="alphabeticList level-2">There are no standards; every project and vendor has its own implementation.</li>
+<li class="alphabeticList level-2">JSON combined with Go.</li>
+<li class="alphabeticList level-2">Rust.</li>
+</ol>
+</li>
+<li class="numberedList">How do you deploy a new instance of a container in a GitOps model?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Use <code class="inlineCode">kubectl</code> to update the <code class="inlineCode">Deployment</code> or <code class="inlineCode">StatefulSet</code> in the namespace.</li>
+<li class="alphabeticList level-2">Update the <code class="inlineCode">Deployment</code> or <code class="inlineCode">StatefulSet</code> manifest in Git, letting the GitOps controller update the objects in Kubernetes.</li>
+<li class="alphabeticList level-2">Submit a ticket that someone in operations needs to act on.</li>
+<li class="alphabeticList level-2">None of the above.</li>
+</ol>
+</li>
+<li class="numberedList">True or false: All objects in GitOps need to be stored in your Git repository.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">True or false: You can automate processes any way you want.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-610">Answers</h1>
+<ol>
+<li class="numberedList" value="1">a – True. It’s not a requirement, but it certainly makes life easier!</li>
+<li class="numberedList">d – There’s no minimum number of steps. How you implement a pipeline will depend on your requirements.</li>
+<li class="numberedList">b – Instead of interacting with the Kubernetes API, you store your objects in a Git repository, letting a controller keep them in sync.</li>
+<li class="numberedList">b – Each pipeline tool has its own approach.</li>
+<li class="numberedList">b – Your manifests in Git are your source of truth!</li>
+<li class="numberedList">b – In the operators model, an operator will create objects based on your checked-in manifest. They should be ignored by your GitOps tools based on annotations or labels.</li>
+<li class="numberedList">a – Kubernetes is a platform for building platforms. Build it how you need to!</li>
+</ol>
+</div>
+</div></body></html>

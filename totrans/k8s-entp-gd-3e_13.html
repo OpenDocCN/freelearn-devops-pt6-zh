@@ -1,0 +1,776 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer209">
+<h1 class="chapterNumber">13</h1>
+<h1 class="chapterTitle" id="_idParaDest-407">KubeArmor Securing Your Runtime</h1>
+<p class="normal">As the popularity of Kubernetes grows, so does the need for robust security measures to protect workloads. We learned how to secure a cluster using RBAC, which allows us to control the access that users have to resources. Using RBAC, we can control what users can execute on a cluster, controlling if someone can create or delete a pod, view logs, view Secrets, etc. We also looked at securing clusters using Gatekeeper policies that can protect nodes by denying the creation of an object that contains a value against security policies like attempting to allow privilege escalation.</p>
+<p class="normal">While these go a long way to securing clusters, there are certain actions that are often overlooked by many organizations. One of the most important examples is securing the container runtime.</p>
+<p class="normal">Kubernetes has limited abilities to audit or secure actions that are executed within a container. While Kubernetes can handle certain security requirements like blocking elevated privilege attempts within a container, it doesn’t provide a way for operators to limit most actions that are executed in the container. It cannot allow or deny any actions that a user may be able to execute once they exec into a running container, like looking at files, deleting files, adding files, and more. Even worse, most actions executed inside a container are not audited by the Kubernetes API server, which is why they often go overlooked.</p>
+<p class="normal">In <em class="chapterRef">Chapter 8</em>, <em class="italic">Managing Secrets</em>, we learned about using Vault to store and retrieve secrets. Many people think that if they use a system like Vault, they have secured their secrets from anyone being able to view the data in the secret. It is true that the secret isn’t stored in a basic K8s secret resource, where anyone with the required permissions to the namespace would be able to view and decode the secret. Since a Vault secret will be stored in your pod as an environment variable or a file, there is no way to stop someone who has access to exec into the container from viewing the container’s environment variables or the files where the Vault secret is stored.</p>
+<p class="normal">We also need a way to stop certain processes from running in containers. Your organization may have a policy that a container should never run an SSH daemon. Without an add-on tool, you have limited options to secure binaries to that level in a running container. </p>
+<p class="normal">Sure, you can create pipelines and security checks when an image is created and deny images that don’t follow documented security standards, but once the image passes and is deployed, how do you stop someone from executing an exec into the container and adding binaries like the SSH daemon, or even worse, malware or crypto mining tools?</p>
+<p class="normal">Luckily, a company called AccuKnox<a id="_idIndexMarker1184"/> has donated a project to the CNCF called <strong class="keyWord">KubeArmor</strong> that provides you with the ability to secure your container runtime. KubeArmor isn’t limited to only the runtime; it has a number of other useful features that are related to securing your workloads, including restricting process execution, file access, and more.</p>
+<p class="normal">In this chapter, we will explain how to deploy KubeArmor and how to use its many features to enhance the security of your clusters. Here are a few topics that we will cover in this chapter:</p>
+<ul>
+<li class="bulletList">What is runtime security?</li>
+<li class="bulletList">Introducing KubeArmor</li>
+<li class="bulletList">Deploying KubeArmor</li>
+<li class="bulletList">Enabling KubeArmor logging</li>
+<li class="bulletList">KubeArmor and LSM policies</li>
+<li class="bulletList">Creating a KubeArmorSecurityPolicy</li>
+<li class="bulletList">Using karmor to interact with KubeArmor</li>
+</ul>
+<h1 class="heading-1" id="_idParaDest-408">Technical requirements</h1>
+<p class="normal">This chapter has the following technical requirements:</p>
+<ul>
+<li class="bulletList">An Ubuntu 22.04+ server running Docker with a minimum of 8 GB of RAM</li>
+<li class="bulletList">A KinD cluster, preferably a new cluster, with Vault integrated</li>
+<li class="bulletList">Scripts from the <code class="inlineCode">chapter13</code> folder from the repo, which you can access by going to this book’s GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition</span></a></li>
+</ul>
+<h1 class="heading-1" id="_idParaDest-409">What is runtime security?</h1>
+<p class="normal">Runtime security<a id="_idIndexMarker1185"/> is a vital part of security for systems, applications, and data when they are most exposed to attacks during active execution, while they are up and running on your network. Runtimes, often left unmonitored and sometimes lacking in any form of logging or auditing, pose a critical security challenge. Of course, runtime security is not exclusive to containers; it is a requirement for applications, containers, physical servers, virtual machines, and more. Every component within your infrastructure requires continuous monitoring of all potential security risks to quickly detect threats and vulnerabilities posed by potential attackers.</p>
+<p class="normal">In the face of increasingly sophisticated and dynamic security threats, the reliance solely on static security measures is no longer adequate. This is where runtime security comes in, providing dynamic, real-time protection precisely when it is most crucial: with live systems. Through constant monitoring of the runtime environment, these systems can spot anomalies, suspicious activities, and unauthorized processes and allow or block actions based on a set of policies.</p>
+<p class="normal">To secure workloads you need to follow key practices, such as permitting only authorized processes in a container, implementing measures to prevent and alert on any unauthorized resource access, or inspecting network traffic to detect any hostile activities. For example, you can limit what processes can access files or directories in a container, denying access to a database file to any process that isn’t part of MySQL.</p>
+<p class="normal">Runtime security has multiple pieces to consider: using KubeArmor<a id="_idIndexMarker1186"/> is just one of the tools to help protect your workloads and clusters. <em class="italic">Figure 13.1</em> shows a picture of the components that make up a runtime environment from the CNCF security V2 whitepaper. You can find the whole paper on the CNCF website at <a href="https://www.cncf.io/wp-content/uploads/2022/06/CNCF_cloud-native-security-whitepaper-May2022-v2.pdf"><span class="url">https://www.cncf.io/wp-content/uploads/2022/06/CNCF_cloud-native-security-whitepaper-May2022-v2.pdf</span></a>.</p>
+<p class="normal">We have covered many of the various tools to secure your runtimes in previous chapters, including network policies, identity and access management, secrets, and<a id="_idIndexMarker1187"/> policy security using <strong class="keyWord">Gatekeeper</strong>. Combining these options with the added security that KubeArmor supplies, you can secure your clusters from malicious activity.</p>
+<figure class="mediaobject"><img alt="" height="534" src="../Images/B21165_13_01.png" width="877"/></figure>
+<p class="packt_figref">Figure 13.1: CNCF runtime security landscape</p>
+<p class="normal">In summary, KubeArmor<a id="_idIndexMarker1188"/> is a runtime security tool<a id="_idIndexMarker1189"/> that provides dynamic, real-time protection for your systems against an ever-expanding spectrum of threats and vulnerabilities. Its purpose is to protect the security and stability of your infrastructure, upholding the integrity of your operations in the face of countless cybersecurity threats.</p>
+<h1 class="heading-1" id="_idParaDest-410">Introducing KubeArmor</h1>
+<p class="normal">Before we jump<a id="_idIndexMarker1190"/> into KubeArmor, we need to define a few base concepts you need to be aware of. If you are new to Linux, you may not be familiar with these, and even if you are a Linux veteran, the concepts may still be new to you.</p>
+<h2 class="heading-2" id="_idParaDest-411">Introduction to Linux Security</h2>
+<p class="normal">In this chapter, you will primarily <a id="_idIndexMarker1191"/>see two references that need to be understood to understand how KubeArmor protects clusters. The first term is <strong class="keyWord">eBPF</strong>, which stands<a id="_idIndexMarker1192"/> for the <strong class="keyWord">extended Berkley Packet Filter</strong>, and the second one is <strong class="keyWord">LSM</strong>, which stands for <strong class="keyWord">Linux Security Module</strong>. In <em class="italic">Figure 13.2</em>, you can see how access<a id="_idIndexMarker1193"/> from a pod goes through KubeArmor before it hits the host’s kernel. This is what allows KubeArmor to secure your runtimes: sitting between the pod runtime and the kernel, to take action before a request is executed.</p>
+<figure class="mediaobject"><img alt="" height="492" src="../Images/B21165_13_02.png" width="877"/></figure>
+<p class="packt_figref">Figure 13.2: KubeArmor’s high-level design</p>
+<p class="normal">Now, we need to explain, at a high level, what eBPF and LSMs are and how they help to secure a cluster.</p>
+<p class="normal">Have you ever wondered how Linux handles the constant stream of data in and out of the system? How it monitors performance, and how it protects itself from security risks? Well, that’s where eBPF comes in: it handles all these responsibilities and more!</p>
+<p class="normal">Think of eBPF as a digital traffic cop. Your computer resembles a busy intersection where data is in constant motion. eBPF acts as a traffic controller, capable of controlling the data flow, inspecting it for issues, and tracking ongoing activities.</p>
+<p class="normal">One advantage of eBPF is its use of “virtual machines,” rather than requiring direct edits to the kernel to add features like monitoring network traffic. eBPF primarily uses programs that are written in a restricted subset of C and are executed within the kernel. While C is the most commonly used language for creating eBPF programs, you can also create them using other languages, including:</p>
+<ul>
+<li class="bulletList">Go</li>
+<li class="bulletList">Lua</li>
+<li class="bulletList">Python</li>
+<li class="bulletList">Rust</li>
+</ul>
+<p class="normal">Using a language other than C involves transpiling to C or adding the required libraries that abstract the C programming. The final decision on selecting a language is ultimately up to your use cases, standards, and expertise.</p>
+<p class="normal">In summary, eBPF provides a number of powerful functions, without the need to modify the kernel directly. It is highly secured and isolated, providing a security boundary through its use of virtual machines, similar to a standard virtual machine that runs a full operating system.</p>
+<p class="normal">The other term we<a id="_idIndexMarker1194"/> mentioned<a id="_idIndexMarker1195"/> was <strong class="keyWord">LSM</strong>, which stands for <strong class="keyWord">Linux Security Module</strong>. Two of the most common LSMs today are SELinux, which is primarily<a id="_idIndexMarker1196"/> used by Red Hat systems, and <strong class="keyWord">AppArmor</strong>, which is used by a number of systems, including Ubuntu, SUSE, and Debian.</p>
+<p class="normal">Like the previous eBPF section, we are going to provide a high-level overview of LSMs with a focus on AppArmor since we are using Ubuntu as our server operating system.</p>
+<p class="normal">LSMs are used to connect the kernel with security policies and modules, providing enforcement of <strong class="keyWord">mandatory access controls</strong> (<strong class="keyWord">MACs</strong>) and additional security<a id="_idIndexMarker1197"/> policies within a Linux system. They provide a framework for security, providing hooks into the kernel, and allowing external modules the ability to intercept and secure systems calls, file operations, and other various kernel activities. LSMs are meant to be very flexible and extensible, allowing you to select and create modules that meet your specific requirements, rather than a set of policies that a vendor thinks you should implement.</p>
+<p class="normal">Given that both eBPF and LSMs offer security functionalities, you might be wondering how, or if, they are different.</p>
+<p class="normal">Despite their apparent similarities at a high level, they diverge significantly. eBPF employs kernel-embedded virtual machines for execution, allowing the creation of programs capable of executing low-level tasks such as packet filtering, tracing, and performance monitoring. eBPF is commonly employed for network-related tasks, performance optimization, or the development of custom kernel-level functions. </p>
+<p class="normal">LSMs are components<a id="_idIndexMarker1198"/> executed by the kernel, operating<a id="_idIndexMarker1199"/> externally to the kernel itself. The core purpose of LSMs is to enhance system security through the enforcement of policies, including MACs, and other measures designed to safeguard system resources. These modules have the ability to increase cluster security by restricting access to various elements, ranging from files and processes to the flow of network traffic.</p>
+<p class="normal">You can create policies without a tool like KubeArmor if you know enough about the specific LSM, like AppArmor. Imagine if you use multiple Linux vendors, you would need to know each LSM that each vendor is compatible with. This makes creating policies a challenge, and that’s where AppArmorKubeArmor can help.</p>
+<p class="normal">KubeArmor streamlines the task of creating LSM policies, saving you from having to know the syntax between different LSMs. When you create a policy with KubeArmor, it automatically generates the corresponding LSM policy on the host system. This guarantees that, irrespective of the underlying LSM in operation, you can create a uniform set of policies that provide a consistent security standard across multiple Linux distributions and LSMs.</p>
+<p class="normal">As you can imagine, KubeArmor uses both eBPF and LSMs to help you secure your environments. Now that we know about what both eBPF and LSMs provide, we can move on to introducing KubeArmor.</p>
+<h2 class="heading-2" id="_idParaDest-412">Welcome to KubeArmor</h2>
+<p class="normal">Securing any environment<a id="_idIndexMarker1200"/> can be a difficult task. When it comes to protecting your clusters, it’s not something you can simply address after the fact; it should be a part of the initial design and discussions. Many organizations tend to postpone the security aspect of their environments because of the perceived skills, effort, and time required to implement security solutions. However, it’s essential to establish a security foundation before your cluster goes into production. This can present a challenge to organizations, and that’s where KubeArmor steps in to assist.</p>
+<p class="normal">By deploying KubeArmor, you can increase the security and regulatory compliance of containerized applications. KubeArmor serves as a runtime security solution designed to secure containerized workloads by enforcing security protocols and promptly identifying and allowing or denying any activity.</p>
+<p class="normal">The features of KubeArmor<a id="_idIndexMarker1201"/> are always evolving: by the time you read this book, KubeArmor will likely have additional features that we do not cover in this chapter.</p>
+<p class="normal">So, what are some of the features that KubeArmor provides to enhance our security?</p>
+<h3 class="heading-3" id="_idParaDest-413">Container security</h3>
+<p class="normal">Containers are the cornerstone<a id="_idIndexMarker1202"/> of modern applications, making their security a primary objective. This isn’t to say that we think non-containerized applications don’t need security: of course they do, but non-containerized apps have a lot of security options provided by operating systems and third-party vendors. Containers, as we know them today, are relatively new and many of the toolsets are still catching up.</p>
+<p class="normal">KubeArmor provides security by continuously monitoring container behavior in real time, mitigating risks like container escapes, binary execution, and privilege escalations.</p>
+<h3 class="heading-3" id="_idParaDest-414">Inline mitigation versus post-attack mitigation</h3>
+<p class="normal">There are a number of products<a id="_idIndexMarker1203"/> on the market today<a id="_idIndexMarker1204"/> that are very good at detecting<a id="_idIndexMarker1205"/> anomalies, but they do not have the ability to block or allow the request before it actually executes. This is a post-attack mitigation process, which means the action will be allowed or denied and the anomaly will be logged. </p>
+<p class="normal">This would be like having a door without a lock and when someone walks into the building, all you would get is an alert from a security camera. The person would still be allowed into the building since there is no lock on the door. </p>
+<p class="normal">Many of the offerings that only detect events can be integrated with other systems to prevent the action(s). For example, a system detects that someone may have injected a crypto miner into a running container. The event would be detected by the anomaly engine and based on that event, you could trigger a custom written routine to create a network policy that would deny all egress and ingress traffic. This would block the application from network activity, stopping the pod from mining and it would save the current state of the pod since we didn’t destroy it; we just stopped all network traffic to and from the pod.</p>
+<figure class="mediaobject"><img alt="Post Attack Mitigation" height="451" src="../Images/B21165_13_03.png" width="604"/></figure>
+<p class="packt_figref">Figure 13.3: Post-attack mitigation</p>
+<p class="normal">In <em class="italic">Figure 13.3</em>, you can see the flow<a id="_idIndexMarker1206"/> of a post-mitigation<a id="_idIndexMarker1207"/> attack. The flow<a id="_idIndexMarker1208"/> of the mitigation is as follows:</p>
+<ol>
+<li class="numberedList" value="1">Post-exploit mitigation works by actioning suspicious activity in response to an alert indicating malicious intent.</li>
+<li class="numberedList">The attacker is allowed to execute a binary or other actions. Since they have access, they may be able to disable security controls, logging, etc. to avoid detection.</li>
+<li class="numberedList">Assuming the action has been detected, we send it to an event handler that can execute an action based on the event. However, it’s important to point out that by the time a malicious process is actioned, sensitive contents may have already been deleted, encrypted, or transmitted.</li>
+<li class="numberedList">Based on the event, the handler will execute an action like deleting the pod or perform other actions like creating a network policy to block communication without deleting the pod.</li>
+</ol>
+<p class="normal">One key differentiator of KubeArmor is its ability to not only detect the runtime event but to take action on the event, to block or allow it based on various parameters. Similar to post-attack mitigation, you would still see the attempted action(s) logged, which may be required as evidence to document the malicious activity. However, unlike the previous example of a door with no lock, this door would have a camera and a lock. When someone tries to open the door, the camera will log the attempt: but this time, since the door is locked, the opening action will be denied.</p>
+<figure class="mediaobject"><img alt="KubeArmor Differentiation" height="374" src="../Images/B21165_13_04.png" width="877"/></figure>
+<p class="packt_figref">Figure 13.4: Inline mitigation</p>
+<p class="normal">In <em class="italic">Figure 13.4</em>, you can see how streamlined the process is: we don’t need an external event handler, or any custom components to act on the event. Since KubeArmor handles the events in line, in real time, we can stop an action instantly before an attacker can perform any malicious activity, all in a single product.</p>
+<p class="normal">As you can see, inline mitigation<a id="_idIndexMarker1209"/> is a better method of mitigating<a id="_idIndexMarker1210"/> runtime events. Threats<a id="_idIndexMarker1211"/> move quickly in today’s landscape, and we need to be just as quick at mitigation. If we are attempting to react to events only after they happen, the damage will already have been done and you will just have a log entry that tells you someone has done something malicious. </p>
+<h3 class="heading-3" id="_idParaDest-415">Zero-day vulnerability</h3>
+<p class="normal">Zero-day vulnerabilities<a id="_idIndexMarker1212"/> take time to remediate, not only from a vendor side but from an organizational side as well. If you have the ability to remediate any vulnerability as you wait for an official patch, you should: every minute counts. KubeArmor monitors container activities for any suspicious activity. It can stop activities, without prior knowledge regarding the specific vulnerability or attack pattern.</p>
+<h3 class="heading-3" id="_idParaDest-416">CI/CD pipeline integration</h3>
+<p class="normal">KubeArmor easily<a id="_idIndexMarker1213"/> integrates into <strong class="keyWord">continuous integration and continuous deployment</strong> (<strong class="keyWord">CI/CD</strong>) pipelines. Integrating KubeArmor into your<a id="_idIndexMarker1214"/> pipelines automates security checks through the entire development and deployment lifecycle, delivering a safe and secure image.</p>
+<h3 class="heading-3" id="_idParaDest-417">Robust auditing and logging</h3>
+<p class="normal">Logging is very important, and KubeArmor<a id="_idIndexMarker1215"/> includes comprehensive logs and audit trails of container activities. These logs can be used to report compliance, provide troubleshooting assistance, and assist in forensic examinations.</p>
+<h3 class="heading-3" id="_idParaDest-418">Enhanced container visibility</h3>
+<p class="normal">Visibility into container behavior<a id="_idIndexMarker1216"/> simplifies identifying and responding to security incidents or abnormalities. KubeArmor finds what processes are running in the container and what they are accessing and connecting to.</p>
+<h3 class="heading-3" id="_idParaDest-419">Least privilege tenet adherence</h3>
+<p class="normal">KubeArmor is based<a id="_idIndexMarker1217"/> on the least amount of privilege concept, which is a base security principle. This ensures that containers possess only the necessary permissions and access levels required for their designated functions, consequently curtailing the attack surface and constraining potential damage stemming from a compromised container. </p>
+<h3 class="heading-3" id="_idParaDest-420">Policy enforcement</h3>
+<p class="normal">Policies are at the heart<a id="_idIndexMarker1218"/> of KubeArmor. They provide administrators with the ability to create detailed security policies for containers, fine-tuning the requirements for each different, unique workload. Want to block the ability of any container executing the SSH daemon? Make a simple policy using KubeArmor and no container will be able to execute the SSH daemon.</p>
+<h3 class="heading-3" id="_idParaDest-421">Staying in compliance</h3>
+<p class="normal">To help you stay in compliance<a id="_idIndexMarker1219"/> with standards like <strong class="keyWord">CIS</strong>, <strong class="keyWord">NIST-800-53</strong>, and <strong class="keyWord">MITRE</strong>, KubeArmor includes policies that will secure your clusters <a id="_idIndexMarker1220"/>based on the defined best standards, all out of the box.</p>
+<h3 class="heading-3" id="_idParaDest-422">Policy impact testing</h3>
+<p class="normal">Any policy can be tested<a id="_idIndexMarker1221"/> before enforcing any settings. This will help you to create a policy that will not cause any workloads to have downtime due to a setting that may impact a running application.</p>
+<h3 class="heading-3" id="_idParaDest-423">Multi-tenancy support</h3>
+<p class="normal">It is common for enterprises<a id="_idIndexMarker1222"/> to run multi-tenant clusters. With multiple teams or applications sharing a Kubernetes cluster, you need to provide a secure environment to all of the users, stopping any attacks or effects that a workload in one namespace may have on another namespace. KubeArmor provides isolation and security among tenants by implementing unique policies at the container level. It’s an important tool for securing containerized applications, providing compliance with regulatory requirements, and providing a defence against a large spectrum of security threats.</p>
+<p class="normal">Now, let’s talk about how we can deploy KubeArmor in a cluster and how to use it to secure our workloads.</p>
+<h2 class="heading-2" id="_idParaDest-424">Cluster requirements for the exercises</h2>
+<p class="normal">As you learned in <em class="chapterRef">Chapter 2</em>, KinD<a id="_idIndexMarker1223"/> is a Kubernetes cluster that runs the components in containers. This nesting does mean that some add-ons like KubeArmor need to have some extra steps to function correctly.</p>
+<p class="normal">For this chapter, we suggest a new cluster. If you have a previous cluster with Vault installed already, you should delete that cluster and start over with a new one. If you do need to delete an existing cluster, you can execute <code class="inlineCode">kind delete cluster --name cluster01</code> to delete it and then use the scripts to deploy a new cluster that includes Vault integration.</p>
+<p class="normal">To make it easier to deploy, we have included all the required scripts in the <code class="inlineCode">chapter13/cluster</code> directory. To deploy a new cluster, execute <code class="inlineCode">create-cluster.sh</code> in the <code class="inlineCode">cluster</code> directory.</p>
+<p class="normal">We also need Vault for one of the examples. If you want to run the example, you will need to add Vault to your cluster. We have provided an automated Vault deployment in the <code class="inlineCode">chapter13/vault</code> directory called <code class="inlineCode">deploy-vault.sh</code>.</p>
+<p class="normal">Once both have been executed, you will have a brand-new cluster<a id="_idIndexMarker1224"/> integrated with Vault. It will take time for Vault to deploy fully, so please wait until all of the pods have been created to move on to deploying KubeArmor in the cluster.</p>
+<h1 class="heading-1" id="_idParaDest-425">Deploying KubeArmor</h1>
+<p class="normal">Before we can use KubeArmor<a id="_idIndexMarker1225"/> on our KinD cluster, we will need to patch Calico and the kubearmor-relay deployment to work with KinD. AppArmor requires some changes for certain workloads to deploy and run correctly in a KinD cluster. In a standard cluster, these patches would not be required: and once they are deployed, KubeArmor will work as it would on a standard Kubernetes cluster. </p>
+<p class="normal">KubeArmor can be easily deployed using a single binary, called karmor, or via Helm charts. For the book exercises, we will use the karmor utility to install KubeArmor. Both deployment methods offer the same protection and configuration options, and once deployed, you interact with KubeArmor the same way, regardless of the deployment method.</p>
+<p class="normal">We have included a script in the <code class="inlineCode">chapter13</code> folder called <code class="inlineCode">kubearmor-patch.sh</code> that will download karmor, patch Calico and the kubearmor-relay deployments, and deploy KubeArmor.</p>
+<div class="note">
+<p class="normal">KubeArmor installs on most Kubernetes clusters without any issues. Since we are using a cluster built on KinD, we need to make a few tweaks to allow AppArmor to work as expected. The scripts do this work for you. The majority of the fixes are to add an annotation to a few deployments, like the Calico Typha controller to unconfined mode. We will discuss the patched deployments and what unconfined provides in this section.</p>
+</div>
+<p class="normal">The script downloads karmor and moves it to the <code class="inlineCode">/usr/local/bin</code> directory on the host. This is the utility that we will use to install KubeArmor and interact with it once it has been deployed in the cluster.</p>
+<p class="normal">Since KubeArmor leverages LSMs, all nodes require an installed LSM, like AppArmor, for KubeArmor to function. On most Ubuntu deployments, AppArmor is already deployed, but since our Kubernetes cluster is running containerized, AppArmor is not included in the image. To resolve this, we need to add AppArmor to our nodes: the script takes care of this by executing <code class="inlineCode">docker exec</code> in each container that updates the apt repositories, installs AppArmor, and restarts containerd.</p>
+<p class="normal">The next step in the script will patch the <code class="inlineCode">calico-typha</code> deployment with an <code class="inlineCode">AppArmor</code> policy that is unconfined. Running policies as unconfined means they don’t have an AppArmor profile assigned to them, or they are assigned a profile that does not impose any significant restrictions. This allows the process to operate with the standard Linux discretionary access controls, without additional restrictions from AppArmor.</p>
+<p class="normal">As we mentioned previously, you wouldn’t need these patch deployments in a standard Kubernetes cluster, but since we are using KinD, we need to patch <code class="inlineCode">calico-typha</code> to work correctly with KubeArmor running in our KinD cluster.</p>
+<p class="normal">With all the requirements<a id="_idIndexMarker1226"/> and changes deployed, the script continues to install KubeArmor using karmor install. This will take a few minutes to deploy all the components and, during the deployment, you will see each step that karmor is executing:</p>
+<pre class="programlisting con"><code class="hljs-con">namespace/kubearmor created
+<img alt="" height="18" src="../Images/Untitled-2-01.png" width="15"/>       Installed helm release : kubearmor-operator
+<img alt="" height="15" src="../Images/Untitled-2-02.png" width="15"/>      KubeArmorConfig created
+<img alt="" height="17" src="../Images/Untitled-2-03.png" width="15"/>      This may take a couple of minutes
+<img alt="" height="15" src="../Images/Untitled-2-04.png" width="15"/>      KubeArmor Snitch Deployed!
+<img alt="" height="15" src="../Images/Untitled-2-05.png" width="15"/>      KubeArmor Daemonset Deployed!
+<img alt="" height="15" src="../Images/Untitled-2-04.png" width="15"/>      Done Checking , ALL Services are running!
+<img alt="" height="17" src="../Images/Untitled-2-07.png" width="15"/>      Execution Time : 2m1.206181193s
+<img alt="" height="14" src="../Images/Untitled-2-08.png" width="14"/>      Verifying KubeArmor functionality (this may take upto a minute) —.
+        <img alt="" height="19" src="../Images/Untitled-2-09.png" width="15"/>       Your Cluster is Armored Up!
+</code></pre>
+<p class="normal">You will see that the installer creates a number of Kubernetes resources, including CRDs, a ServiceAccount, RBAC, Services, and Deployments. Once all resources have been created, it will verify the deployment was successful by telling you that <code class="inlineCode">Your Cluster is Armored Up!</code></p>
+<p class="normal">After a successful deployment, you will have additional pods<a id="_idIndexMarker1227"/> running in the <code class="inlineCode">kubearmor</code> namespace, the controller, the relay, and a <code class="inlineCode">kubearmor</code> pod, one for each of your nodes:</p>
+<pre class="programlisting con"><code class="hljs-con">kubearmor-controller-7cb5467b99-wmlz5    2/2     Running   0          6m  
+kubearmor-gvs5f                               1/1     Running   0          6m6s
+kubearmor-lpkj6                             1/1     Running   0          6m6s
+kubearmor-relay-5ccb6b6ffb-c4dlm               1/1     Running   0          6m6s
+</code></pre>
+<div class="note">
+<p class="normal">You can also deploy KubeArmor using Helm charts. If you want to know more about deploying KubeArmor with Helm, read more about it in KubeArmor’s Git repository at <a href="https://github.com/kubearmor/KubeArmor/blob/main/getting-started/deployment_guide.md"><span class="url">https://github.com/kubearmor/KubeArmor/blob/main/getting-started/deployment_guide.md</span></a>.</p>
+</div>
+<p class="normal">Each of the pods has a specific function that is explained below:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">kubearmor</strong>: A daemonset that deploys<a id="_idIndexMarker1228"/> the <code class="inlineCode">kubearmor</code> pod on each node in the cluster. It is a non-privileged DaemonSet with capabilities that allow it to monitor pods and containers and the host.</li>
+<li class="bulletList"><strong class="keyWord">kubearmor-relay</strong>: KubeArmor’s relay server<a id="_idIndexMarker1229"/> collects all messages, alerts, and system logs generated by KubeArmor in each node, and then it allows other logging systems to simply collect those through the service of the relay server. The relay server plays a critical role in ensuring efficient and centralized security monitoring and data collection within Kubernetes environments, making it easier for organizations to maintain robust security postures in their containerized infrastructures.</li>
+<li class="bulletList"><strong class="keyWord">kubearmor-controller</strong>: Admission controller<a id="_idIndexMarker1230"/> for KubeArmor policy management, including policy management, distribution, synchronization, and logging. </li>
+</ul>
+<p class="normal">For the chapter, we’ve opted for the karmor binary installation due to its ease of use, making it a convenient choice for deploying KubeArmor quickly. Additionally, we need the same karmor binary for the exercises throughout the chapter. This approach not only simplifies the learning process but also underscores the versatility and practicality of the karmor tool in managing<a id="_idIndexMarker1231"/> KubeArmor deployments and operations.</p>
+<p class="normal">Now that we have KubeArmor deployed, we will discuss configuring logging before we start to create policies to secure our cluster.</p>
+<h1 class="heading-1" id="_idParaDest-426">Enabling KubeArmor logging</h1>
+<p class="normal">By default, KubeArmor<a id="_idIndexMarker1232"/> is not enabled to log events or alerts to <code class="inlineCode">STDOUT</code>. Later in the chapter, we will go over how to watch logging events in the console interactively, which is useful for troubleshooting issues with policies in real time, but it is not an efficient way to log a history of policy events.</p>
+<p class="normal">Most logging solutions made for Kubernetes will pick up logged events from <code class="inlineCode">STDOUT</code> and <code class="inlineCode">STDERROR</code>. By enabling KubeArmor’s logging options, you will have a history of events in your standard logging solution. Using these events, you can create alerts and produce a history of changes and events when a security audit occurs.</p>
+<p class="normal">KubeArmor offers three events<a id="_idIndexMarker1233"/> that can be logged:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Alert</strong>: When a policy is violated, an event will be logged with information including the action, policy name, pod name, namespace, and more</li>
+<li class="bulletList"><strong class="keyWord">Log</strong>: Creates a log event when a pod executes a syscall, file access, process creation, network socket events, etc</li>
+<li class="bulletList"><strong class="keyWord">Message</strong>: Creates log entries generated by the KubeArmor daemon</li>
+</ul>
+<p class="normal">The process to enable logging is different between deployments of KubeArmor. We used the karmor executable to deploy, so we need to edit the deployment, adding two environment variables: one for standard logging, <code class="inlineCode">ENABLE_STDOUT_LOGS</code>, and one for alerts, <code class="inlineCode">ENABLE_STDOUT_ALERTS</code>. Both of these require a value of true to be enabled. To enable logging, we need to edit or patch the deployment of the relay server. This has already been done by our included script that deployed KubeArmor. The script will use a standard YAML file to patch the deployment. The patching file is shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">spec:
+  template:
+    spec:
+      containers:
+      - name: kubearmor-relay-server
+        env:
+        - name: ENABLE_STDOUT_LOGS
+          value: "true"
+        - name: ENABLE_STDOUT_ALERTS
+          value: "true"
+</code></pre>
+<p class="normal">Next, using the patch file, the <code class="inlineCode">script</code> executes a <code class="inlineCode">kubectl patch</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl patch deploy kubearmor-relay -n kubearmor --patch-file patch-relay.yaml
+</code></pre>
+<p class="normal">Once patched, all of the enabled logs<a id="_idIndexMarker1234"/> will be shown in the relay-server pod logs. An example of an event is shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">{"Timestamp":1701200947,"UpdatedTime":"2023-11-28T19:49:07.625696Z","ClusterName":"default","HostName":"cluster01-worker","NamespaceName":"my-ext-secret","Owner":{"Ref":"Pod","Name":"nginx-secrets","Namespace":"my-ext-secret"},"PodName":"nginx-secrets","Labels":"app=nginx-web","ContainerID":"88f324db1f6ffa01f42b2811288b6f8b0e66001f41c5101ce578f69c bd932e5e","ContainerName":"nginx-web","ContainerImage":"docker.io/library/nginx :latest@sha256:10d1f5b58f74683ad34eb29287e07dab1e90f10af243f151bb50aa5 dbb4d62ee","HostPPID":1441261,"HostPID":1441503,"PPID":43,"PID":50,"ProcessName":"/usr/bin/cat","PolicyName":"nginx-secret","Severity":"1","Type":"MatchedPolicy","Source":"/usr/bin/cat /etc/secrets/","Operation":"File","Resource":"/etc/secrets/","Data":"syscall=SYS_OPENAT fd=-100 flags=O_RDONLY","Enforcer":"AppArmor","Action":"Block","Result":"Permission denied"}
+</code></pre>
+<p class="normal">From the example log entry, you can see that the information for the event contains everything that you need to know for the activity. It includes a review of the activity including:</p>
+<ul>
+<li class="bulletList">The source namespace</li>
+<li class="bulletList">The Kubernetes host</li>
+<li class="bulletList">Pod name</li>
+<li class="bulletList">Process name</li>
+<li class="bulletList">The violated policy name</li>
+<li class="bulletList">Operation</li>
+<li class="bulletList">The resource that was acted on</li>
+<li class="bulletList">The results of the action, allowed or denied</li>
+</ul>
+<p class="normal">By itself, this may not include additional information that you need to know the full activity from end to end. For example, it doesn’t include the user of the initial activity. Like many events in Kubernetes, you need to correlate events from multiple log files to create the full story of the executed activity. In this example, you would need to correlate the activity from the event that audited the initial <code class="inlineCode">kubectl exec</code> command with the pod and time of the runtime violation<a id="_idIndexMarker1235"/> that KubeArmor logged.</p>
+<p class="normal">At this point, we have KubeArmor configured, and we can get into creating and testing policies.</p>
+<h1 class="heading-1" id="_idParaDest-427">KubeArmor and LSM policies</h1>
+<p class="normal">As we mentioned, KubeArmor<a id="_idIndexMarker1236"/> is a tool that helps you create policies<a id="_idIndexMarker1237"/> for Linux LSMs. Since it creates standard LSMs, any policy that you create and deploy will be stored on the node(s) where the OS stores LSM policies. Since we are using KinD, the nodes are running Ubuntu, which uses AppArmor as the LSM. AppArmor policies are stored in the <code class="inlineCode">/etc/apparmor.d</code> directory on the host.</p>
+<p class="normal">The output below shows an example directory from a node that has had a few KubeArmor policies created:</p>
+<pre class="programlisting con"><code class="hljs-con">kubearmor-local-path-storage-local-path-provisioner-local-path-provisioner
+kubearmor-my-ext-secret-nginx-secrets-nginx-web
+kubearmor-calico-apiserver-calico-apiserver-calico-apiserver             kubearmor-tigera-operator-tigera-operator-tigera-operator
+kubearmor-calico-system-calico-kube-controllers-calico-kube-controllers  kubearmor-vault-vault-agent-injector-sidecar-injector
+kubearmor-calico-system-calico-node-calico-node                          kubearmor-vault-vault-vault
+kubearmor-calico-system-csi-node-driver-calico-csi
+kubearmor-calico-system-csi-node-driver-csi-node-driver-registrar        lsb_release
+kubearmor-cert-manager-cert-manager-cainjector-cert-manager-cainjector   nvidia_modprobe
+kubearmor-cert-manager-cert-manager-cert-manager-controller              tunables
+</code></pre>
+<p class="normal">If you looked at any of the policies, you would see a standard AppArmor formatted policy. We aren’t going to go into the details of creating an AppArmor policy, but the output below shows an example<a id="_idIndexMarker1238"/> of a policy created<a id="_idIndexMarker1239"/> by KubeArmor:</p>
+<pre class="programlisting con"><code class="hljs-con">## == Managed by KubeArmor == ##
+#include &lt;tunables/global&gt;profile kubearmor-vault-vault-vault flags=(attach_disconnected,mediate_deleted) {
+  ## == PRE START == ##
+  #include &lt;abstractions/base&gt;
+  umount,
+  file,
+  network,
+  capability,
+  ## == PRE END == ##
+  ## == POLICY START == ##
+  ## == POLICY END == ##
+  ## == POST START == ##
+  /lib/x86_64-linux-gnu/{*,**} rm,
+  deny @{PROC}/{*,**^[0-9*],sys/kernel/shm*} wkx,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/mem rwklx,
+  deny @{PROC}/kmem rwklx,
+  deny @{PROC}/kcore rwklx,
+  deny mount,
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/efi/efivars/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+  ## == POST END == ##
+}
+</code></pre>
+<p class="normal">It’s possible that your nodes may have policies that were not created using KubeArmor. In order to know what policies were created and managed by KubeArmor and what policies were not, you need to look at the first line of the policy. If the policy was created by KubeArmor, it will start with <code class="inlineCode">## == Managed by KubeArmor == ##</code>, and policies that do not start<a id="_idIndexMarker1240"/> with this line were not created<a id="_idIndexMarker1241"/> by KubeArmor.</p>
+<p class="normal">Now let’s move on to the next section, on creating a <code class="inlineCode">KubeArmorSecurityPolicy</code>.</p>
+<h1 class="heading-1" id="_idParaDest-428">Creating a KubeArmorSecurityPolicy</h1>
+<p class="normal">It’s time to create some policies! When KubeArmor<a id="_idIndexMarker1242"/> is deployed, it creates three Custom Resource Definitions and one of those is <code class="inlineCode">kubearmorpolicies.security.kubearmor.com</code>, which is used to create new policy resources.</p>
+<p class="normal">Let’s jump right into an example policy. You do not need to deploy this to your cluster; it’s being used to show an example policy. </p>
+<p class="normal">If we want to block any attempted access to create a file in the <code class="inlineCode">/bin</code> directory of our containers in the <code class="inlineCode">demo</code> namespace, the format of this policy is shown below:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">security.kubearmor.com/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">KubeArmorPolicy</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">block-write-bin</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">demo</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">action:</span> <span class="hljs-string">Block</span>
+  <span class="hljs-attr">file:</span>
+    <span class="hljs-attr">matchDirectories:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">dir:</span> <span class="hljs-string">/bin/</span>
+      <span class="hljs-attr">readOnly:</span> <span class="hljs-literal">true</span>
+      <span class="hljs-attr">recursive:</span> <span class="hljs-literal">true</span>
+  <span class="hljs-attr">message:</span> <span class="hljs-string">Alert!</span> <span class="hljs-string">An</span> <span class="hljs-string">attempt</span> <span class="hljs-string">to</span> <span class="hljs-string">write</span> <span class="hljs-string">to</span> <span class="hljs-string">the</span> <span class="hljs-string">/bin</span> <span class="hljs-string">directory</span> <span class="hljs-string">denied.</span>
+</code></pre>
+<p class="normal">Breaking down this policy, we can see that it’s using the <code class="inlineCode">security.kubearmor.com/v1</code> API and it’s a KubeArmorPolicy type. The metadata section has common options, naming the object <code class="inlineCode">block-write-bin</code> in the <code class="inlineCode">demo</code> namespace.</p>
+<p class="normal">The <code class="inlineCode">spec</code> section is where we actually start to create a new policy. There are a number of options available to you for creating policies. You can learn about all of the options on the KubeArmor<a id="_idIndexMarker1243"/> website: <a href="https://docs.kubearmor.io/kubearmor/documentation/security_policy_specification"><span class="url">https://docs.kubearmor.io/kubearmor/documentation/security_policy_specification</span></a>.</p>
+<p class="normal">The action <code class="inlineCode">spec</code> allows you to define what the policy enforces. The options are <code class="inlineCode">Block</code>, <code class="inlineCode">Allow</code>, and <code class="inlineCode">Audit</code>: each of the options is described in the table below.</p>
+<table class="table-container" id="table001-7">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Available Action</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Block</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Tells KubeArmor to block the actions that are included in the policy (default if no action is provided) </p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Allow</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Tells KubeArmor to allow the actions that are included in the policy</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Audit</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Tells KubeArmor to only audit the actions of the policy. The actions on the policy will be allowed, but in our example, we would receive a logged event when someone creates a file under the <code class="inlineCode">/bin</code> directory. This is handy for testing how a policy will affect a workload in the cluster.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 13.1: Available actions for policies</p>
+<p class="normal">KubeArmor operates on the principle<a id="_idIndexMarker1244"/> of enforcing the least permissive access. When you specify the allow action in a policy, it generates an allow list that permits access exclusively to the object(s) specified within the policy. For instance, if you were to establish an <code class="inlineCode">allow</code> policy for a file named <code class="inlineCode">demo/allowed-file</code>, any process within the container would have permission to access that particular file. All other files accessed within the container would trigger an audit event because they do not belong to the allowed list.</p>
+<p class="normal">You might be questioning the example, where if you set up an allow policy and someone tries to read a different file, it won’t reject the request but will instead log the access for auditing purposes. The default security posture, within an allow policy, pertains to how it manages access attempts not listed in the allowed entries. By default, KubeArmor’s security posture is set to audit mode.</p>
+<p class="normal">It’s crucial to bear in mind that when you establish an allow policy, any access requests that would typically be denied will not face denial; instead, they will merely trigger an audit alert. As a result, if you configure an allow rule to restrict access to a specific file, all other files will remain accessible.</p>
+<p class="normal">The default posture behavior<a id="_idIndexMarker1245"/> can be changed at the global level or on a per namespace level. To make the global default posture block, instead of audit, you need to edit the KubeArmor config, which is stored in a ConfigMap called <code class="inlineCode">kubearmor-config</code> in the <code class="inlineCode">kubearmor</code> namespace. In the config, you can set the default security posture for each option, file, network, and capabilities:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">defaultFilePosture:</span> <span class="hljs-string">block</span>        <span class="hljs-comment">#Can be block or audit</span>
+<span class="hljs-attr">defaultNetworkPosture:</span> <span class="hljs-string">block</span>         <span class="hljs-comment">#Can be block or audit</span>
+<span class="hljs-attr">defaultCapabilitiesPosture:</span> <span class="hljs-string">block</span>     <span class="hljs-comment">#Can be block or audit</span>
+</code></pre>
+<p class="normal">Depending on your cluster configuration and the logic design of a cluster, you may want to change the default posture on specific namespaces. To set the policy on a namespace, you need to add an annotation of <code class="inlineCode">kubearmor-file-posture=&lt;value&gt;</code>. If we wanted to add a policy to an existing demo namespace, we would just need to run <code class="inlineCode">kubectl annotate</code>, as shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl annotate ns default kubearmor-file-posture=block --overwrite
+</code></pre>
+<p class="normal">If you were creating a new namespace using a manifest, you would just add the annotation to the manifest before applying the file to create the namespace.</p>
+<p class="normal">After defining the policy action, we need to add what objects we want to block, allow, or audit. </p>
+<p class="normal">There are four objects that we can create policies for. They are:</p>
+<ul>
+<li class="bulletList">Process</li>
+<li class="bulletList">File</li>
+<li class="bulletList">Network</li>
+<li class="bulletList">Capabilities<div class="note">
+<p class="normal">The KubeArmor website has documentation on the policies and options located at <a href="https://docs.kubearmor.io/kubearmor/documentation/security_policy_specification"><span class="url">https://docs.kubearmor.io/kubearmor/documentation/security_policy_specification</span></a>.</p>
+</div>
+</li>
+</ul>
+<p class="normal">In our example, our goal<a id="_idIndexMarker1246"/> is to prevent any form of write access within the <code class="inlineCode">/bin</code> directory. To achieve this, we will utilize the <code class="inlineCode">file</code> object. Following the object declaration, you specify a <code class="inlineCode">match</code> condition that will trigger the policy action. In this instance, we’ve configured the <code class="inlineCode">matchDirectories</code> action specifically for the <code class="inlineCode">/bin</code> directory, indicating to KubeArmor that the policy’s evaluation should only occur if the action is within that directory.</p>
+<p class="normal">Continuing, there are optional settings for <code class="inlineCode">readOnly</code> and <code class="inlineCode">recursive</code>. In our scenario, we have enabled both. When <code class="inlineCode">readOnly</code> is set to true, it permits the reading of any file located under <code class="inlineCode">/bin</code>, but any other actions will be denied. Enabling the <code class="inlineCode">recursive</code> option instructs KubeArmor to assess both the <code class="inlineCode">/bin</code> directory and all of its subdirectories.</p>
+<p class="normal">Finally, you can define<a id="_idIndexMarker1247"/> the message option, which will add a custom message in the KubeArmor logs when the policy has been triggered. In our example, we added the message option to add “<strong class="screenText">Alert! An attempt to write to the /bin directory denied.</strong>” when an attempt is made to do anything other than read a file under the directory.</p>
+<p class="normal">You may be wondering about the allow action and how we said it creates an allow list, allowing only access to the objects in the policy, and denying access to every other file in the container. The example of a single file isn’t a great example for the real world, but it does explain what you granted access to and what was denied by allow policies. An allow policy will lock down a container tightly when used correctly. When used incorrectly, your application would likely crash, being denied access to a file not in the allowed list. You can imagine that creating an allow list for an app could require a large number of objects, many of which would be a challenge to find on your own.</p>
+<p class="normal">Let’s use a real-world example policy to close out this section. </p>
+<p class="normal">Foowidgets want to secure their secrets. They have created a policy that all secrets must be stored in an external secret manager like Vault. As we discussed in the secrets chapter, you can read your secret in from Vault without having a base64-encoded secret in the namespace. A lot of people assume this secures your secret, but they overlook that someone will be able to exec into the container and read most files, including files that store secrets.</p>
+<p class="normal">How do we enhance the security of our secrets, even using an external secrets manager like Vault? The answer is KubeArmor!</p>
+<p class="normal">We can address Foowidgets’ requirement by creating a policy that will allow only the required running process access to the file that contains the secret, while any other process will be denied. </p>
+<p class="normal">In the <code class="inlineCode">chapter13/nginx-secrets</code> directory, there is a script called <code class="inlineCode">create-nginx-vault.sh</code>, which will create an NGNIX webserver that will display a secret file and the contents when you open a webpage path, <code class="inlineCode">/secrets/myenv</code>. The secret that is shown on the page is pulled down from Vault and mounted in the pod using a volume at <code class="inlineCode">/etc/secrets/myenv</code>.</p>
+<p class="normal">When you execute the script, the last line will show you the <strong class="screenText">nip.io</strong> URL for the webserver. Open the URL in any browser, or curl the <code class="inlineCode">http://secret.&lt;nip.io&gt;/secrets/myenv</code> URL to prove that the secret shows in the output. You should see output similar to the below:</p>
+<figure class="mediaobject"><img alt="" height="144" src="../Images/B21165_13_05.png" width="759"/></figure>
+<p class="packt_figref">Figure 13.5: NGINX showing contents of secret file</p>
+<p class="normal">Verifying that the container<a id="_idIndexMarker1248"/> is working as expected, we can <code class="inlineCode">exec</code> into the container and attempt to read the secret file using <code class="inlineCode">cat</code>: </p>
+<pre class="programlisting con"><code class="hljs-con">kubectl exec -it nginx-secrets -n my-ext-secret -- bash
+</code></pre>
+<p class="normal">The secret is mounted in the pod at <code class="inlineCode">/etc/secrets</code> in the <code class="inlineCode">myenv</code> file:</p>
+<pre class="programlisting con"><code class="hljs-con">cat /etc/secrets/myenv
+</code></pre>
+<p class="normal">This will output the contents of the file:</p>
+<pre class="programlisting con"><code class="hljs-con">some-password: mysupersecretp@ssw0rd
+</code></pre>
+<p class="normal">Hold on! I thought that employing an external secret manager would ensure the security of Kubernetes secrets. Although it may not store the data in an easily discoverable <code class="inlineCode">Secret</code> within the namespace, an individual with container execution access can still retrieve the secret.</p>
+<p class="normal">This issue is one of the shortcomings of systems like Vault; simply using Vault doesn’t necessarily guarantee the security of the secret.</p>
+<p class="normal">To illustrate this with a real-world<a id="_idIndexMarker1249"/> scenario, let’s consider a requirement by our company, Foowidgets. They want to restrict secret access exclusively to the processes that require access to the secret. This can be accomplished by creating a new KubeArmor policy that permits only the application to access the file containing the secret. In our example container, we intend to grant the NGINX process permission to read the secret file while preventing other processes from doing so.</p>
+<p class="normal">To accomplish this, we have created an example policy file called <code class="inlineCode">nginx-secrets-block.yaml</code>. This will deploy into the <code class="inlineCode">my-ext-secret</code> namespace:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">security.kubearmor.com/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">KubeArmorPolicy</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-secret</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">my-ext-secret</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">app:</span> <span class="hljs-string">nginx-web</span>
+  <span class="hljs-attr">file:</span>
+    <span class="hljs-attr">matchDirectories:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">dir:</span> <span class="hljs-string">/</span>
+      <span class="hljs-attr">recursive:</span> <span class="hljs-literal">true</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">dir:</span> <span class="hljs-string">/etc/nginx/</span>
+      <span class="hljs-attr">recursive:</span> <span class="hljs-literal">true</span>
+      <span class="hljs-attr">fromSource:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">path:</span> <span class="hljs-string">/usr/sbin/nginx</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">dir:</span> <span class="hljs-string">/etc/secrets/</span>
+      <span class="hljs-attr">recursive:</span> <span class="hljs-literal">true</span>
+      <span class="hljs-attr">fromSource:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">path:</span> <span class="hljs-string">/usr/sbin/nginx</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">dir:</span> <span class="hljs-string">/etc/nginx/</span>
+      <span class="hljs-attr">recursive:</span> <span class="hljs-literal">true</span>
+      <span class="hljs-attr">action:</span> <span class="hljs-string">Block</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">dir:</span> <span class="hljs-string">/etc/secrets/</span>
+      <span class="hljs-attr">recursive:</span> <span class="hljs-literal">true</span>
+      <span class="hljs-attr">action:</span> <span class="hljs-string">Block</span>
+  <span class="hljs-attr">process:</span>
+    <span class="hljs-attr">matchPaths:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">path:</span> <span class="hljs-string">/usr/sbin/nginx</span>
+  <span class="hljs-attr">action:</span>
+    <span class="hljs-string">Allow</span>
+</code></pre>
+<p class="normal">To show the policy in action, we have included<a id="_idIndexMarker1250"/> a script called <code class="inlineCode">redeploy-nginx-vault.sh</code> in the <code class="inlineCode">chapter13/nginx-secrets</code> directory, which will delete the previous NGINX deployment and then create a new deployment with the KubeArmor policy to secure the Vault secret used by NGINX.</p>
+<p class="normal">Execute the script and wait until the new deployment and policy have been created. It’s important that we confirm that the outcome is what we expect from the new policy. To verify the policy, we will attempt to access the secret by executing <code class="inlineCode">kubectl exec -it nginx-secrets -n my-ext-secret -- bash</code> to enter the pod.</p>
+<p class="normal">Once in the pod, we can attempt to view the secret by using <code class="inlineCode">cat</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">cat /etc/secrets/myenv
+</code></pre>
+<p class="normal">You’ll notice that access to the file is no longer allowed. KubeArmor will intercept the request and, based on the policy, refuse access to the <code class="inlineCode">/etc/secrets/myenv</code> file:</p>
+<pre class="programlisting con"><code class="hljs-con">root@nginx-secrets:/etc/secrets# cat /etc/secrets/myenv
+cat: /etc/secrets/myenv: Permission denied
+</code></pre>
+<p class="normal">Take note that even though you have root privileges within the container, you can’t access the <code class="inlineCode">myenv</code> file in the <code class="inlineCode">/etc/secrets</code> directory. The policy blocks any access not explicitly allowed to the directory or its files.</p>
+<p class="normal">So far, everything seems<a id="_idIndexMarker1251"/> to be going well. However, now we must verify the website to ensure that the secret information still appears. If the site displays the same content as before implementing our policy, it demonstrates that the secret is allowed to be read by the NGINX binary. To verify this, navigate to the same URL you previously used to test the site, either by browsing or using the <code class="inlineCode">curl</code> command. If you still have the same browser window open, simply refresh it.</p>
+<p class="normal">The screenshot below verifies that the website is functioning correctly and continues to display the value stored in the <code class="inlineCode">myenv</code> file in the <code class="inlineCode">/etc/secrets</code> directory. This confirms that the NGINX binary has the necessary access to the secret file:</p>
+<figure class="mediaobject"><img alt="" height="144" src="../Images/B21165_13_06.png" width="759"/></figure>
+<p class="packt_figref">Figure 13.6: NGINX can still read secret</p>
+<p class="normal">KubeArmor simplifies the creation of LSM policies for both developers and operators. The potential applications are endless, granting you the capability to enhance the security of workloads<a id="_idIndexMarker1252"/> down to the granularity of individual files or processes. Now that we’ve covered the process of policy creation, let’s proceed to explore the primary tool that you’ll employ to engage with KubeArmor.</p>
+<h1 class="heading-1" id="_idParaDest-429">Using karmor to interact with KubeArmor</h1>
+<p class="normal">We installed KubeArmor<a id="_idIndexMarker1253"/> using the karmor utility. Along with installing and uninstalling KubeArmor in a cluster, it is used for a number of other actions. The table below is an overview of the main options that you should understand. Each one will be explained in detail in its own section.</p>
+<table class="table-container" id="table002-5">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Options</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Install</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Installs KubeArmorKubeArmor in a clusterKubeArmor</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Logs</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Provides an interactive method to view logs, or to send the logs to a file</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Probe</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Lists the support features for the cluster</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">profile</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Runs an interactive utility that displays the process, file, network, and syscalls that KubeArmor has observed</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">recommend</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Creates a directory that contains recommended policies that can be deployed in a cluster. This will download additional containers to create the recommendations. It could take some time depending on the number and size of the running containers.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">selfupdate</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Updates the <code class="inlineCode">karmor</code> CLI</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">summary</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Shows observations from the discovery engine</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">sysdump</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Used to collect a system dump to help troubleshooting</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">uninstall</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Uninstalls KubeArmor from the cluster</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">version</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Shows the version of the karmor binaryKubeArmor</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Vm</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Used for commands that can be used against VMs that run with <code class="inlineCode">Kubevirt</code>, which runs <code class="inlineCode">kvmservices</code></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 13.2: karmor command options</p>
+<p class="normal">The list may make KubeArmor look like it doesn’t have a lot of options, but most of the options are incredibly powerful<a id="_idIndexMarker1254"/> and some will take time to run in larger clusters. In the next sections, we will explain the karmor options and what they provide to secure your cluster.</p>
+<h2 class="heading-2" id="_idParaDest-430">karmor install and uninstall</h2>
+<p class="normal">As you would<a id="_idIndexMarker1255"/> imagine, the <code class="inlineCode">karmor install</code> command<a id="_idIndexMarker1256"/> will deploy KubeArmor into the cluster from your current <code class="inlineCode">kubeconfig</code> file, while the <code class="inlineCode">karmor uninstall</code> command will remove KubeArmor from the cluster.</p>
+<p class="normal">We do need to call out that <code class="inlineCode">karmor uninstall</code>, by default, will remove KubeArmor from the cluster, but it will leave any LSM policies that were created on the hosts in an inactive state. To fully remove KubeArmor from the cluster, including all created policies, you need to add the <code class="inlineCode">--force</code> flag to the <code class="inlineCode">uninstall</code> command.</p>
+<h2 class="heading-2" id="_idParaDest-431">karmor probe</h2>
+<p class="normal">The probe option<a id="_idIndexMarker1257"/> will list the KubeArmor features in the current cluster. </p>
+<p class="normal">When you check for the supported probes, karmor will output information including each node and its active LSM and the default posture of each namespace and pod.</p>
+<h2 class="heading-2" id="_idParaDest-432">karmor profile</h2>
+<p class="normal">KubeArmor’s profile<a id="_idIndexMarker1258"/> provides you with an interactive console to view what processes, files, network connections, and syscalls are in use. The screen below shows an abbreviated output from a probe with the <strong class="screenText">File</strong> tab selected.</p>
+<figure class="mediaobject"><img alt="" height="226" src="../Images/B21165_13_07.png" width="878"/></figure>
+<p class="packt_figref">Figure 13.7: karmor profile output</p>
+<p class="normal">By default, a probe will output information for all namespaces. If you have clusters with a lot of namespaces and pods, you can limit the output to a single namespace or certain pods.</p>
+<p class="normal">To limit the output to a single namespace, add the option <code class="inlineCode">-n</code> or <code class="inlineCode">--namespace &lt;namespace to prove&gt;</code>, and to limit the output to just a pod, use <code class="inlineCode">-p</code> or <code class="inlineCode">--pod &lt;pod name to probe&gt;</code>.</p>
+<p class="normal">If you want to see this in action, let’s say that you wanted to watch a new namespace called <code class="inlineCode">demo</code> for activity. You would execute the recommend command and add <code class="inlineCode">-n demo</code>.</p>
+<p class="normal">On the host, execute the probe command shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">karmor profile -n demo
+</code></pre>
+<div class="note">
+<p class="normal">You may not see any activity under some tabs. The profile command needs to have activity to show and if there is no activity for any of the watched events, they will not show any data. You will see a blank list until KubeArmor sees activity and creates new entries, as shown in <em class="italic">Figure 13.8</em>.</p>
+</div>
+<figure class="mediaobject"><img alt="" height="133" src="../Images/B21165_13_08.png" width="877"/></figure>
+<p class="packt_figref">Figure 13.8: KubeArmor’s profile console</p>
+<p class="normal">Open another connection<a id="_idIndexMarker1259"/> to the host, so we can create a new NGINX deployment. There is a script in the <code class="inlineCode">chapter13/nginx</code> directory called <code class="inlineCode">ngnix-ingress.sh</code> that will create a new namespace called demo with an NGINX deployment and an ingress rule. Execute the script and, at the end, it will show you the ingress URL to use.</p>
+<p class="normal">Now that we have created a deployment, your other terminal should show activity in the <strong class="screenText">Process</strong> tab, as shown in <em class="italic">Figure 13.9</em>.</p>
+<figure class="mediaobject"><img alt="" height="334" src="../Images/B21165_13_09.png" width="877"/></figure>
+<p class="packt_figref">Figure 13.9: KubeArmor’s profile console</p>
+<p class="normal">This will populate events in the <strong class="screenText">Process</strong> tab as the NGINX pod starts up and processes are started. In your other window, you will see the profile update, in real time, with the processes that started in the demo namespace.</p>
+<p class="normal">KubeArmor’s probe is a powerful tool<a id="_idIndexMarker1260"/> that provides information that would otherwise be very challenging to collect.</p>
+<h2 class="heading-2" id="_idParaDest-433">karmor recommend</h2>
+<p class="normal">The <code class="inlineCode">recommend</code> command<a id="_idIndexMarker1261"/> is to provide security policy recommendations based on established industry compliance standards and attack frameworks like CIS, MITRE, NIST, STIGs, and various others. All of the workloads specified in the recommend command will be tested against any policy templates included with KubeArmor.</p>
+<figure class="mediaobject"><img alt="" height="567" src="../Images/B21165_13_10.png" width="877"/></figure>
+<p class="packt_figref">Figure 13.10: KubeArmor recommend policies</p>
+<p class="normal">Since each pod and container<a id="_idIndexMarker1262"/> are evaluated, you have the option to filter the execution to target not only the cluster but by namespace, container image, or pod. An example output of <code class="inlineCode">karmor recommend</code> running is shown in <em class="italic">Figure 13.11</em>:</p>
+<figure class="mediaobject"><img alt="" height="413" src="../Images/B21165_13_11.png" width="878"/></figure>
+<p class="packt_figref">Figure 13.11: karmor recommend output</p>
+<p class="normal">From the output, you can see that karmor<a id="_idIndexMarker1263"/> will pull the image for each container to test against the policies. All policies that are created by karmor are, by default, saved in a directory called out in the current working directory. You can change where the policies will be created by adding the <code class="inlineCode">-o</code> or the <code class="inlineCode">--output</code> switch to the recommend command. Since the recommendations are broken down by each action, you may generate a large number of files. To show an example, we run a recommend command against our KinD cluster’s <code class="inlineCode">kube-system</code> namespace, which generates the directory structure shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">./out
+├── kube-system-coredns
+├── kube-system-kubearmor-controller
+└── kube-system-kubearmor-relay
+</code></pre>
+<p class="normal">Along with a directory for each deployment, you will see a <code class="inlineCode">report.txt</code> file that contains all recommended policies for various standards, including NIST, MITRE, PCI_DSS, CIS, etc. We will discuss the report and its options in a later section. For now, we want to focus on the created policies.</p>
+<p class="normal">Let’s take a closer look at the first directory in the list, which contains policies for the <code class="inlineCode">core-dns</code> deployment in the <code class="inlineCode">kube-system namespace</code>. As you can see from the output, 16 policies were created by the <code class="inlineCode">recommend</code> command: </p>
+<pre class="programlisting con"><code class="hljs-con">kube-system-coredns/
+├── registry-k8s-io-coredns-coredns-v1-10-1-cronjob-cfg.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-file-integrity-monitoring.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-impair-defense.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-k8s-client-tool-exec.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-maint-tools-access.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-network-service-scanning.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-pkg-mngr-exec.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-remote-file-copy.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-remote-services.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-shell-history-mod.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-system-owner-discovery.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-trusted-cert-mod.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-write-etc-dir.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-write-in-shm-dir.yaml
+├── registry-k8s-io-coredns-coredns-v1-10-1-write-under-bin-dir.yaml
+└── registry-k8s-io-coredns-coredns-v1-10-1-write-under-dev-dir.yaml
+</code></pre>
+<p class="normal">If you look at the filenames, you can tell<a id="_idIndexMarker1264"/> what type of action and process each policy uses. For example, let’s look at the <code class="inlineCode">registry-k8s-io-coredns-coredns-v1-10-1-write-etc-dir.yaml</code> <code class="inlineCode">policy</code>. From the filename, we can see that this policy was created to add an action to writing in the <code class="inlineCode">/etc</code> directory. Looking into the file, we will see that this policy contains a block action on directories in <code class="inlineCode">/etc</code> and it also locks down <code class="inlineCode">/etc</code> to a read-only state, for anything that matches the label <code class="inlineCode">k8s-app=kube-dns</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">security.kubearmor.com/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">KubeArmorPolicy</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">coredns-registry-k8s-io-coredns-coredns-v1-10-1-write-etc-dir</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">kube-system</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">action:</span> <span class="hljs-string">Block</span>
+  <span class="hljs-attr">file:</span>
+    <span class="hljs-attr">matchDirectories:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">dir:</span> <span class="hljs-string">/etc/</span>
+      <span class="hljs-attr">readOnly:</span> <span class="hljs-literal">true</span>
+      <span class="hljs-attr">recursive:</span> <span class="hljs-literal">true</span>
+  <span class="hljs-attr">message:</span> <span class="hljs-string">Alert!</span> <span class="hljs-string">File</span> <span class="hljs-string">creation</span> <span class="hljs-string">under</span> <span class="hljs-string">/etc/</span> <span class="hljs-string">directory</span> <span class="hljs-string">detected.</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">k8s-app:</span> <span class="hljs-string">kube-dns</span>
+  <span class="hljs-attr">severity:</span> <span class="hljs-number">5</span>
+  <span class="hljs-attr">tags:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">NIST_800-53_SI-7</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">NIST</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">NIST_800-53_SI-4</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">NIST_800-53</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">MITRE_T1562.001_disable_or_modify_tools</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">MITRE_T1036.005_match_legitimate_name_or_location</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">MITRE_TA0003_persistence</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">MITRE</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">MITRE_T1036_masquerading</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">MITRE_TA0005_defense_evasion</span>
+</code></pre>
+<p class="normal">There are a few added fields in this policy that we haven’t discussed previously, namely the severity and the tags. Unlike other tools that may add severity to a triggered event, KubeArmor allows you to set your own severity for policies. When you create a policy, you can assign it a severity rating from 1 to 10, allowing you to create your own rating based on your organizational requirements.</p>
+<p class="normal">The tags section was generated by the recommend command. By default, when you run a recommendation, it will test all of the objects against all of the included hardening policies, including MITRE TTPs, STIGs, NIST, and CIS. The policies that are created are based on the standards supplied during the recommendation collection. If you don’t specify any policies to check, karmor will create policies for all standards, including policies that you may or may not need.</p>
+<p class="normal">Depending on your organization<a id="_idIndexMarker1265"/> and security requirements, you can limit the hardening policies to only the policies that you want to include. This is done by adding either the <code class="inlineCode">-t</code> or <code class="inlineCode">--tag</code> flags to the recommend command, followed by the standard or standards. For example, if we wanted to run a recommend against the <code class="inlineCode">kube-system</code> namespace and only include the CIS and PCI-DSS standards, we would execute:</p>
+<pre class="programlisting con"><code class="hljs-con">karmor recommend -n kube-system -t PCI-DSS,CIS
+</code></pre>
+<p class="normal">Like all other recommend commands, this will create an <code class="inlineCode">out</code> directory in the working directory with policies and a <code class="inlineCode">report.txt</code>. If you took a look at the report, you would see a list of recommended actions around PCI-DSS and CIS standards for each pod. The figure below is an abbreviated example of a <code class="inlineCode">report.txt</code> from the recommend command we ran against <code class="inlineCode">kube-system</code>.</p>
+<figure class="mediaobject"><img alt="" height="210" src="../Images/B21165_13_12.png" width="877"/></figure>
+<p class="packt_figref">Figure 13.12: Recommend example for NIST and CIS</p>
+<p class="normal">Since we added tags to our command, karmor only created policies that are required to meet the standards for NIST and CIS. This will create fewer policies than running without any tags since it will only generate policies based on the specified tags versus all standards if you do not supply a tag.</p>
+<p class="normal">The last example we will discuss is using recommend to create policies and a report for an image that is not running in the cluster. So far, we have run recommendations against objects in the cluster, but KubeArmor offers the ability to create policies based on any container image. To run a recommendation against an image, you need to add the <code class="inlineCode">-i</code> or <code class="inlineCode">--image</code> to your command. For example, we want to run karmor against the <code class="inlineCode">bitnami/nginx</code> image:</p>
+<pre class="programlisting con"><code class="hljs-con">karmor recommend -i bitnami/nginx
+</code></pre>
+<p class="normal">This will pull down the image<a id="_idIndexMarker1266"/> and run it against all of the included KubeArmor policies. The policies will be created in the <code class="inlineCode">out</code> directory, just like the previous examples:</p>
+<pre class="programlisting con"><code class="hljs-con">out
+└── bitnami-nginx-latest
+Notice that the directory name does not contain a namespace; it only has the image name and tag that we tested against, bitnami/nginx:latest. This example run created a number of policies since we ran it against all included policies:
+├── access-ctrl-permission-mod.yaml
+├── cis-commandline-warning-banner.yaml
+├── cronjob-cfg.yaml
+├── file-integrity-monitoring.yaml
+├── file-system-mounts.yaml
+├── impair-defense.yaml
+├── k8s-client-tool-exec.yaml
+├── maint-tools-access.yaml
+├── network-service-scanning.yaml
+├── pkg-mngr-exec.yaml
+├── remote-file-copy.yaml
+├── remote-services.yaml
+├── shell-history-mod.yaml
+├── system-network-env-mod.yaml
+├── system-owner-discovery.yaml
+├── trusted-cert-mod.yaml
+├── write-etc-dir.yaml
+├── write-in-shm-dir.yaml
+├── write-under-bin-dir.yaml
+└── write-under-dev-dir.yaml
+</code></pre>
+<p class="normal">If we ran the same test and included the tag for only the CIS policies, we would generate fewer policies:</p>
+<pre class="programlisting con"><code class="hljs-con">├── access-ctrl-permission-mod.yaml
+├── cis-commandline-warning-banner.yaml
+├── cronjob-cfg.yaml
+├── file-system-mounts.yaml
+└── system-network-env-mod.yaml
+</code></pre>
+<p class="normal">As demonstrated, the recommend command<a id="_idIndexMarker1267"/> empowers you to increase the security of your workloads in accordance with any standards required by your organization, government regulations, or other pertinent criteria.</p>
+<h2 class="heading-2" id="_idParaDest-434">karmor logs</h2>
+<p class="normal">The logs option provides a real-time log<a id="_idIndexMarker1268"/> of KubeArmor’s activities, which is beneficial when you want to watch events without seeing hundreds of other logged activities. When you execute a karmor log, a logger will start up and watch for KubeArmor activity. Since it’s a real-time log, it will run interactively in your shell, waiting for activity:</p>
+<pre class="programlisting con"><code class="hljs-con">local port to be used for port forwarding kubearmor-relay-7676f9684f-652ll: 32879
+Created a gRPC client (localhost:32879)
+Checked the liveness of the gRPC server
+Started to watch alerts
+</code></pre>
+<p class="normal">As events are observed by KubeArmor, they will be shown in the output. For example, we create a policy that will block any write attempts to the <code class="inlineCode">/bin</code> directory in all containers in the demo namespace. We exec into the container and attempt to create a file called <code class="inlineCode">test</code> in the directory. As we can see in the output below, the attempt was denied:</p>
+<pre class="programlisting con"><code class="hljs-con">I have no name!@nginx-web-57794669f5-gd4r4:/app$ cd /bin
+I have no name!@nginx-web-57794669f5-gd4r4:/bin$ touch test
+touch: cannot touch 'test': Permission denied
+</code></pre>
+<p class="normal">Since this was an action that KubeArmor had a policy for, it will also log the activity in the session running the karmor logs. The logs contain a lot of information. Below is an example of a logged event:</p>
+<pre class="programlisting con"><code class="hljs-con">== Alert / 2023-10-09 14:14:32.192243 ==
+ClusterName: default
+HostName: cluster01-worker
+NamespaceName: demo
+PodName: nginx-web-57794669f5-gd4r4
+Labels: app=nginx-web
+ContainerName: nginx
+ContainerID: 8048c5fb3fd2425e401505cb4c12d147fddd71e6587ba3f3c488e609b28819a8
+ContainerImage: docker.io/bitnami/nginx:latest@sha256:4ce786ce4a547b796cf23efe62b54a910de6fd41245012f10e5f75e85ed3563c
+Type: MatchedPolicy
+PolicyName: DefaultPosture
+Source: /usr/bin/touch test
+Resource: test
+Operation: File
+Action: Block
+Data: syscall=SYS_OPENAT fd=-100 flags=O_WRONLY|O_CREAT|O_NOCTTY|O_NONBLOCK
+Enforcer: AppArmor
+Result: Permission denied
+HostPID: 2.731789e+06
+HostPPID: 2.731618e+06
+Owner: map[Name:nginx-web Namespace:demo Ref:Deployment]
+PID: 59
+PPID: 53
+ParentProcessName: /bin/bash
+ProcessName: /bin/touch
+UID: 1001
+</code></pre>
+<p class="normal">By default, the log output<a id="_idIndexMarker1269"/> is set to text, which may be difficult to sort through when there are a lot of logged events. If you would prefer the logs to be in JSON format, you can add the flag <code class="inlineCode">--json</code> to the <code class="inlineCode">logs</code> command. The format that is best to use for your requirements usually depends on the system you are using for storing your logged events. In most cases, JSON is the format preferred by most logging systems.</p>
+<p class="normal">To show the difference, we execute the same test from the previous log entry, an attempt to create a file under <code class="inlineCode">/bin</code>. This will change the output from text to JSON, as shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">{"Timestamp":1696861352,"UpdatedTime":"2023-10-09T14:22:32.445655Z","ClusterName":"default","HostName":"cluster01-worker","NamespaceName":"demo","Owner":{"Ref":"Deployment","Name":"nginx-web","Namespace":"demo"},"PodName":"nginx-web-57794669f5-gd4r4","Labels":"app=nginx-web","ContainerID":"8048c5fb3fd2425e401505cb4c12d147fddd71e6587ba3f3c488e6 09b28819a8","ContainerName":"nginx","ContainerImage":"docker.io/bitnami /nginx:latest@sha256:4ce786ce4a547b796cf23efe62b54a910de6fd41245012f 10e5f75e85ed3563c","HostPPID":2731618,"HostPID":2739719,"PPID":53,"PID":60,"UID":1001,"ProcessName":"/bin/touch","PolicyName":"DefaultPosture","Type":"MatchedPolicy","Source":"/usr/bin/touch test","Operation":"File","Resource":"test","Data":"syscall=SYS_OPENAT fd=-100 flags=O_WRONLY|O_CREAT|O_NOCTTY|O_NONBLOCK","Enforcer":"AppArmor","Action":"Block","Result":"Permission denied"}
+</code></pre>
+<p class="normal">The decision to use text or JSON is usually dependent on the tools you plan to use to parse the data. JSON is a popular format for logging since it makes parsing the data much easier than using a text format. </p>
+<p class="normal">You may be looking at the logging abilities using the karmor log and wondering how useful it is to have the output going to the console only. </p>
+<p class="normal">As a default behavior, the logs are directed<a id="_idIndexMarker1270"/> to <code class="inlineCode">stdout</code>. While real-time log viewing is valuable for monitoring events as they happen, it’s not always feasible to continuously observe events. It is more common to send your logs to a file, which can then be viewed or sent to an external system for processing. KubeArmor offers the flexibility to modify your log output preferences by using the <code class="inlineCode">--logPath</code> flag. This flag lets you specify the desired destination for the log file, enabling you to redirect log data to a designated file location.</p>
+<p class="normal">When you specify the path of the log file, it must include the entire path and filename that you want to use. The <code class="inlineCode">logPath</code> option can be used with other options, like setting the log format to JSON. The example command below will send the logs to the current user’s home directory using the filename <code class="inlineCode">karmor.logs</code> in JSON format:</p>
+<pre class="programlisting con"><code class="hljs-con">karmor logs --json --logPath ~/karmor.logs
+</code></pre>
+<p class="normal">If you specify a new directory in <code class="inlineCode">logPath</code>, it must be created before sending any logs; KubeArmor will not create the directory for you. If you fail to create the directory before logging, you will receive an error on the log output screen and no events will be logged.</p>
+<p class="normal">When the first event is caught by KubeArmor, it will create the file and will continue to collect data until you stop logging:</p>
+<pre class="programlisting con"><code class="hljs-con">-rw-rw-r--  1 surovich surovich  2602 Oct  9 14:49 karmor.logs
+</code></pre>
+<p class="normal">Like other karmor options, logging will watch the entire cluster by default, which may generate a lot of events that may make it difficult to find the events you really need to see. Instead of logging the entire cluster, you can filter the logs by adding a flag to the <code class="inlineCode">logs</code> option. The available flags include:</p>
+<table class="table-container" id="table003-5">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Flag</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--labels</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Filter the logs by a label</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--namespace</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Filter the logs by namespace</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--pod</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Filter the logs by pod</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 13.3: Limiting logs to certain objects</p>
+<p class="normal">Limiting the scope of the objects<a id="_idIndexMarker1271"/> being logged offers the distinct advantage of tailoring the log data to focus exclusively on the specific object(s) you require detailed information for. By implementing this approach, you can significantly enhance the precision and relevance of the logged data, ensuring that it directly aligns with your specific monitoring, analysis, and troubleshooting needs. Limiting the objects being logged enables you to streamline your monitoring efforts, making it more efficient and effective in providing insights into the targeted object(s) while reducing the noise and clutter caused by unnecessary log entries.</p>
+<h2 class="heading-2" id="_idParaDest-435">karmor vm</h2>
+<p class="normal">Did you know that with Kubernetes<a id="_idIndexMarker1272"/> you can run virtual machines? These VMs are deployed and managed differently than what you may be used to when working with hypervisors from VMware and Microsoft. Instead of running an OS straight on the hypervisor, KubeVirt VMs actually run inside of a container. They look like a standard pod running any other Docker image, but instead of a microservice, it’s an entire operating system supporting both Windows and Linux.</p>
+<p class="normal">KubeVirt is a complex topic and we can’t cover it in this section alone. You can learn more about<a id="_idIndexMarker1273"/> KubeVirt on their website, <a href="https://kubevirt.io/"><span class="url">https://kubevirt.io/</span></a>.</p>
+<p class="normal">The KubeArmor team<a id="_idIndexMarker1274"/> saw the need to expand runtime security to include support for VMs running with KubeVirt. This is a powerful feature for organizations that run VMs in Kubernetes, extending the same security that KubeArmor provides for containers to VMs.</p>
+<h1 class="heading-1" id="_idParaDest-436">Summary</h1>
+<p class="normal">In this chapter, we looked at strengthening the security of our runtime environment, enhancing your overall security posture. It’s a common misconception that an organization’s clusters are secured since many of them tend to overlook the content running within containers or the implications of a user connecting to a running pod using <code class="inlineCode">kubectl exec</code>.</p>
+<p class="normal">This chapter also described in detail how one of the most effective approaches to container security involves tightly controlling the container’s processes, exclusively allowing the execution of only the necessary processes while denying access to all other files. By leveraging a tool like KubeArmor, you can grant access to specific files from a restricted set of binaries, blocking access to and securing all other processes.</p>
+<h1 class="heading-1" id="_idParaDest-437">Questions</h1>
+<ol>
+<li class="numberedList" value="1">Which of the following are LSMs?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Accuknox</li>
+<li class="alphabeticList level-2">AppArmor</li>
+<li class="alphabeticList level-2">SELinux</li>
+<li class="alphabeticList level-2">LSMLinux</li>
+</ol>
+</li>
+<li class="numberedList">LSMs and eBPF provide the same features.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">Which karmor option provides real-time information in an easy-to-see console?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Monitor</li>
+<li class="alphabeticList level-2">Trace</li>
+<li class="alphabeticList level-2">Profile</li>
+<li class="alphabeticList level-2">Probe</li>
+</ol>
+</li>
+<li class="numberedList">Which of the following is NOT a feature provided by KubeArmor to enhance security in Kubernetes clusters?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Restricting process execution</li>
+<li class="alphabeticList level-2">File access control</li>
+<li class="alphabeticList level-2">Network traffic encryption</li>
+<li class="alphabeticList level-2">Creating security policies</li>
+</ol>
+</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-438">Answers</h1>
+<ol>
+<li class="numberedList" value="1">b - AppArmor</li>
+<li class="numberedList">b - False</li>
+<li class="numberedList">c - Profile</li>
+<li class="numberedList">c - Network traffic encryption</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-439">Join our book’s Discord space</h1>
+<p class="normal">Join the book’s Discord workspace for a monthly <em class="italic">Ask Me Anything</em> session with the authors:</p>
+<p class="normal"><a href="https://packt.link/K8EntGuide"><span class="url">https://packt.link/K8EntGuide</span></a></p>
+<p class="normal"><img alt="" height="176" src="../Images/QR_Code965214276169525265.png" width="176"/></p>
+</div>
+</div></body></html>

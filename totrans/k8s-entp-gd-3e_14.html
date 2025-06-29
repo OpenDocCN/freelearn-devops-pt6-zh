@@ -1,0 +1,1225 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer218">
+<h1 class="chapterNumber">14</h1>
+<h1 class="chapterTitle" id="_idParaDest-440">Backing Up Workloads</h1>
+<p class="normal">Backup products for Kubernetes are vital components of our ever-evolving journey into the world of container orchestration and cloud-native computing. In this chapter, we will explore using Velero’s capabilities and how it can help you ensure resilience and reliability for your workloads. Velero, meaning “safety” or “protection” in Italian, is a great name since it provides a safety net for your applications, allowing you to confidently run them in a dynamic, ever-changing environment.</p>
+<p class="normal">As you dive deeper into Kubernetes and microservices, you will quickly realize the advantages of backing up, restoring, and migrating applications. While Kubernetes is a remarkable system for deploying and managing containerized applications, it doesn’t inherently provide tools for data protection and disaster recovery. This gap is filled by <strong class="keyWord">Velero</strong>, which<a id="_idIndexMarker1275"/> presents a complete solution for safeguarding your Kubernetes workloads and the data connected with them.</p>
+<p class="normal">Velero was originally known as Heptio Ark. Heptio was a company co-founded by two of Kubernetes’ original creators, Joe Beda and Craig McLuckie. Since then, it has become part of the VMware Tanzu portfolio, demonstrating its importance to the Kubernetes ecosystem.</p>
+<p class="normal">In this chapter, we will explore the key features and use cases of Kubernetes and Velero, from basic backup and restore operations to more advanced scenarios like cross-cluster migrations. Whether you are just beginning your Kubernetes journey or are a seasoned Kubernetes operator, Velero is a tool worth learning.</p>
+<p class="normal">In this chapter, we will cover the following topics:</p>
+<ul>
+<li class="bulletList">Understanding Kubernetes backups</li>
+<li class="bulletList">Performing an <code class="inlineCode">etcd</code> backup</li>
+<li class="bulletList">Introducing and setting up VMware’s Velero</li>
+<li class="bulletList">Using Velero to back up workloads and PVCs</li>
+<li class="bulletList">Managing Velero using the CLI</li>
+<li class="bulletList">Restoring from a backup</li>
+</ul>
+<h1 class="heading-1" id="_idParaDest-441">Technical requirements</h1>
+<p class="normal">To carry out the hands-on experiments in this chapter, you will need the following:</p>
+<ul>
+<li class="bulletList">An Ubuntu 22.04+ server running Docker with a minimum of 8 GB of RAM.</li>
+<li class="bulletList">A KinD cluster built to the specifications in <em class="chapterRef">Chapter 2</em>.</li>
+<li class="bulletList">Scripts from the <code class="inlineCode">chapter14</code> folder from the repo, which you can access by going to this book’s GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition</span></a></li>
+</ul>
+<h1 class="heading-1" id="_idParaDest-442">Understanding Kubernetes backups</h1>
+<p class="normal">Backing up a <a id="_idIndexMarker1276"/>Kubernetes cluster requires backing up not only the workloads running on the cluster. You need to consider any persistent data and the cluster itself. Remember that the cluster state is maintained in an <code class="inlineCode">etcd</code> database, making it a very important component that you need to back up in order to recover from any disasters.</p>
+<p class="normal">Creating a backup of the cluster and the running workloads allows you to do the following:</p>
+<ul>
+<li class="bulletList">Migrate clusters.</li>
+<li class="bulletList">Create a development cluster from a production cluster.</li>
+<li class="bulletList">Recover a cluster from a disaster.</li>
+<li class="bulletList">Recover data from persistent volumes.</li>
+<li class="bulletList">Namespace and deployment recovery.</li>
+</ul>
+<p class="normal">In this chapter, we will provide the details and tools to back up your <code class="inlineCode">etcd</code> database, your namespace, the objects in them, and any persistent data you have attached to your workloads.</p>
+<p class="normal">Recovering a cluster from a complete disaster in an enterprise usually involves backing up custom SSL certificates for various components, such as Ingress controllers, load balancers, and the API server. Since the process of backing up all custom components is different in many environments, we will focus on the procedures that are common among most Kubernetes distributions.</p>
+<p class="normal">As you know, the cluster state is maintained in <code class="inlineCode">etcd</code>, and if you lose all of your <code class="inlineCode">etcd</code> instances, you will lose your cluster. In a multi-node control plane, you should have a minimum of three <code class="inlineCode">etcd</code> instances, providing redundancy for the cluster. If you lose a single node, the cluster will remain running, and you can replace the failed node with a new node. Once the new instance has been added, it will receive a copy of the <code class="inlineCode">etcd</code> database and your cluster will be back to full redundancy.</p>
+<p class="normal">In the event that you lose all of your <code class="inlineCode">etcd</code> servers without any backup of the database, you would lose the cluster, including the cluster state and all of the workloads. Since <code class="inlineCode">etcd</code> is so important, the <code class="inlineCode">etcdctl</code> utility<a id="_idIndexMarker1277"/> includes a built-in backup function. In the next section, we will show you how to take an <code class="inlineCode">etcd</code> backup using the <code class="inlineCode">etcdctl</code> utility.</p>
+<h1 class="heading-1" id="_idParaDest-443">Performing an etcd backup</h1>
+<p class="normal">Since we are using KinD for our <a id="_idIndexMarker1278"/>Kubernetes cluster, we can create a backup of the <code class="inlineCode">etcd</code> database, but we will not be able to restore it.</p>
+<p class="normal">Our <code class="inlineCode">etcd</code> server is running in a pod on the cluster called <code class="inlineCode">etcd-cluster01-control-plane</code>, located in the <code class="inlineCode">kube-system</code> namespace. During the creation of the KinD cluster, we added an extra port mapping for the control plane node, exposing port <code class="inlineCode">2379</code>, which is used to access <code class="inlineCode">etcd</code>. In your own production environment, you may not have the <code class="inlineCode">etcd</code> port exposed for external requests, but the process of backing up the database will still be similar to the steps explained in this section.</p>
+<h2 class="heading-2" id="_idParaDest-444">Backing up the required certificates</h2>
+<p class="normal">Most Kubernetes <a id="_idIndexMarker1279"/>installations store certificates in <code class="inlineCode">/etc/kubernetes/pki</code>. In this respect, KinD is no different, so we can back up our certificates using the <code class="inlineCode">docker cp</code> command.</p>
+<p class="normal">We have said it a few times: <code class="inlineCode">etcd</code> is very important! So, it stands to reason that accessing the database directly probably has some security around it. Well, it does, and to access it, you need to provide the correct certificates when you execute a command against the database. In an enterprise, you should store these keys in a secure location. For our example, we will pull the certificates from the KinD nodes.</p>
+<p class="normal">We have included a script in the <code class="inlineCode">chapter14/etcd</code> directory called <code class="inlineCode">install-etcd-tools.sh</code> that will execute the steps to download and execute the backup of the <code class="inlineCode">etcd</code> database. To execute the script, change to the <code class="inlineCode">chapter14/etcd</code> directory and execute the installation script.</p>
+<p class="normal">Running the script will download the <code class="inlineCode">etcd</code> tools, extract them, and move them to <code class="inlineCode">usr/bin</code> so we can execute them easily. It will then create a directory for the certificates and copy them into the newly created directory, <code class="inlineCode">/etcd/certs</code>. The certificates that we will use for backing up <code class="inlineCode">etcd</code> are:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">ca.crt</code></li>
+<li class="bulletList"><code class="inlineCode">healthcheck-client.crt</code></li>
+<li class="bulletList"><code class="inlineCode">healthcheck-client.key</code></li>
+</ul>
+<p class="normal">When you <a id="_idIndexMarker1280"/>execute commands using the <code class="inlineCode">etcdctl</code> utility, you will need to provide the keys or your actions will be denied.</p>
+<p class="normal">Now that we have the certificates required to access <code class="inlineCode">etcd</code>, the next step is to create a backup of the database.</p>
+<h2 class="heading-2" id="_idParaDest-445">Backing up the etcd database</h2>
+<p class="normal">The <a id="_idIndexMarker1281"/>creators of <code class="inlineCode">etcd</code> created a utility that backs up and restores the <code class="inlineCode">etcd</code> database, called <code class="inlineCode">etcdctl</code>. For our purposes, we will only use the backup operation; however, since <code class="inlineCode">etcd</code> is not <a id="_idIndexMarker1282"/>exclusive to Kubernetes, the utility has a number of options that you will not use as a Kubernetes operator or developer. If you want to read more about this utility, you can visit the <code class="inlineCode">etcd-io</code> Git repository<a id="_idIndexMarker1283"/> at <a href="https://github.com/etcd-io/etcd"><span class="url">https://github.com/etcd-io/etcd</span></a>.</p>
+<p class="normal">To back up a database, you will need the <code class="inlineCode">etcdctl</code> utility and the certificates required to access the database, which we copied from the control plane server.</p>
+<p class="normal">The script that we executed in the last section downloaded <code class="inlineCode">etcctl</code>, and we moved it into <code class="inlineCode">usr/bin</code>. To create a backup of the database, make sure you are in the <code class="inlineCode">chapter14/etcd</code> directory and that the <code class="inlineCode">certs</code> directory exists with the downloaded certificates.</p>
+<p class="normal">To back up <code class="inlineCode">etcd</code>, we execute the <code class="inlineCode">etcd snapshot save</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">etcdctl snapshot save etcd-snapshot.db --endpoints=https://127.0.0.1:2379 --cacert=./certs/ca.crt --cert=./certs/healthcheck-client.crt --key=./certs/healthcheck-client.key
+</code></pre>
+<div class="note">
+<p class="normal">Older versions of <code class="inlineCode">etcdctl</code> required <a id="_idIndexMarker1284"/>you to set the API version to 3 using <code class="inlineCode">ETCDCTL_API=3</code> since they default to the version 2 API. <code class="inlineCode">etcd 3.4</code> changed the default API to 3, so we do not need to set that variable before using <code class="inlineCode">etcdctl</code> commands.</p>
+</div>
+<p class="normal">It shouldn’t<a id="_idIndexMarker1285"/> take too long for the database to be copied over. If it takes more than a few seconds, you should try the same command with the <code class="inlineCode">--debug=true</code> flag. Adding the debug flag will provide more output during the execution of the snapshot. The most common reason for the snapshot failing is an incorrect certificate. Below is an example of the verbose output from a snapshot command that had an incorrect certificate:</p>
+<pre class="programlisting con"><code class="hljs-con">2023/11/17 21:39:19 INFO: [core] Creating new client transport to "{Addr: \"127.0.0.1:2379\", ServerName: \"127.0.0.1:2379\", }": connection error: desc = "transport: authentication handshake failed: tls: failed to verify certificate: x509: certificate signed by unknown authority (possibly because of \"crypto/rsa: verification error\" while trying to verify candidate authority certificate \"etcd-ca\")"
+</code></pre>
+<p class="normal">Notice the <code class="inlineCode">x509</code> error. This is likely caused by an incorrect certificate in your <code class="inlineCode">etcdctl</code> command. Check that you have the correct certificates, and re-run the command.</p>
+<p class="normal">If the command is successful, you will receive output similar to this:</p>
+<pre class="programlisting con"><code class="hljs-con">{"level":"info","ts":"2023-11-17T21:44:38.316265Z","caller":"snapshot/v3_snapshot.go:65","msg":"created temporary db file","path":"etcd-snapshot.db.part"}
+{"level":"info","ts":"2023-11-17T21:44:38.329699Z","logger":"client","caller":"v3@v3.5.10/maintenance.go:212","msg":"opened snapshot stream; downloading"}
+{"level":"info","ts":"2023-11-17T21:44:38.329756Z","caller":"snapshot/v3_snapshot.go:73","msg":"fetching snapshot","endpoint":"https://127.0.0.1:2379"}
+{"level":"info","ts":"2023-11-17T21:44:38.45673Z","logger":"client","caller":"v3@v3.5.10/maintenance.go:220","msg":"completed snapshot read; closing"}
+{"level":"info","ts":"2023-11-17T21:44:38.461743Z","caller":"snapshot/v3_snapshot.go:88","msg":"fetched snapshot","endpoint":"https://127.0.0.1:2379","size":"6.6 MB","took":"now"}
+{"level":"info","ts":"2023-11-17T21:44:38.46276Z","caller":"snapshot/v3_snapshot.go:97","msg":"saved","path":"etcd-snapshot.db"}
+Snapshot saved at etcd-snapshot.db
+</code></pre>
+<p class="normal">Next, we can verify that the database was copied over successfully by trying a simple <code class="inlineCode">etcdctl</code> command that will provide a summary of the backup:</p>
+<pre class="programlisting con"><code class="hljs-con">etcdctl --write-out=table snapshot status etcd-snapshot.db
+</code></pre>
+<p class="normal">This will output an overview of the backup:</p>
+<pre class="programlisting con"><code class="hljs-con">+----------+----------+------------+------------+
+|   HASH   | REVISION | TOTAL KEYS | TOTAL SIZE |
++----------+----------+------------+------------+
+| 224e9348 |     6222 |       1560 |     6.6 MB |
++----------+----------+------------+------------+
+</code></pre>
+<p class="normal">For this example, we only backed up the <code class="inlineCode">etcd</code> database once. In a real-life scenario, you should create a scheduled process that executes a snapshot of <code class="inlineCode">etcd</code> at regular intervals and stores the backup file in a safe, secure location.</p>
+<p class="normal">Due to how KinD runs the <a id="_idIndexMarker1286"/>control plane, we cannot use the restore procedures in this section. We are providing only the backup steps in this section so that you know how to back up an <code class="inlineCode">etcd</code> database in an enterprise environment.</p>
+<p class="normal">So far, you have learned about the critical importance of backing up both workloads and persistent data in Kubernetes, including the <code class="inlineCode">etcd</code> database. Having a good backup strategy allows you to facilitate cluster migrations, create new development clusters from production clusters, and recover from disasters. By knowing these strategies, you can ensure improved disaster recovery preparedness, enhanced operational efficiency, and data security. Mastering these techniques will equip you to manage and recover Kubernetes clusters more effectively, ensuring a resilient and reliable environment.</p>
+<p class="normal">Now, let’s move on and introduce the tool we will use to demonstrate Kubernetes backups: Velero.</p>
+<h1 class="heading-1" id="_idParaDest-446">Introducing and setting up VMware’s Velero</h1>
+<p class="normal"><strong class="keyWord">Velero</strong> is an <a id="_idIndexMarker1287"/>open-source backup solution for Kubernetes that was originally developed by a company called Heptio. As VMware has enhanced its support for Kubernetes, it has purchased multiple companies, and Heptio is one of its acquisitions, bringing Velero into the VMware portfolio.</p>
+<p class="normal">VMware has moved most of its offerings around Kubernetes under the Tanzu umbrella. This can be a little confusing for some people since the original iteration of Tanzu was a deployment of multiple components that added Kubernetes support to vSphere clusters. Since the initial incarnation of Tanzu, it has come to include components such as Velero, Harbor, and<a id="_idIndexMarker1288"/> the <strong class="keyWord">Tanzu Application Platform</strong> (<strong class="keyWord">TAP</strong>), none of which require vSphere to function; they will run natively in any standard Kubernetes cluster.</p>
+<p class="normal">Even with all of the ownership and branding changes, the base functions of Velero have remained. It offers many features that are only available in commercial products, including scheduling, backup hooks, and granular backup controls – all for no charge.</p>
+<p class="normal">While Velero is free, it has a learning curve since it does not include an easy-to-use GUI like most commercial products. All operations in Velero are carried out using their command-line utility, an executable called <code class="inlineCode">velero</code>. This single executable allows you to install the Velero server, create backups, check the status of backups, restore backups, and more. Since every operation for management can be done with one file, restoring a cluster’s workloads is a very easy process. In this chapter, we will create a second KinD cluster and populate it with a backup from an existing cluster.</p>
+<p class="normal">But before that, we need to take care of a few requirements.</p>
+<h2 class="heading-2" id="_idParaDest-447">Velero requirements</h2>
+<p class="normal">Velero consists of a few <a id="_idIndexMarker1289"/>components with which you create a backup system:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">The Velero CLI</strong>: This provides<a id="_idIndexMarker1290"/> the installation of Velero components. It is used for all backup and restore functions.</li>
+<li class="bulletList"><strong class="keyWord">The Velero server</strong>: This is<a id="_idIndexMarker1291"/> responsible for executing backup and restore procedures.</li>
+<li class="bulletList"><strong class="keyWord">Storage provider plug-ins</strong>: These<a id="_idIndexMarker1292"/> are used for backing up and restoring to specific storage systems.</li>
+</ul>
+<p class="normal">Outside of the base<a id="_idIndexMarker1293"/> Velero components, you will also need to provide an object storage location that will be used to store your backups. If you do not have an object storage solution, you can deploy MinIO, which is an open-source project that provides an S3-compatible object store. We will deploy MinIO in our KinD cluster to demonstrate the backup and restore features provided by Velero.</p>
+<h2 class="heading-2" id="_idParaDest-448">Installing the Velero CLI</h2>
+<p class="normal">The first step of deploying Velero is to <a id="_idIndexMarker1294"/>download the latest Velero CLI binary. We have included a script to install the Velero binary in the <code class="inlineCode">chapter14</code> directory called <code class="inlineCode">install-velero-binary.sh</code>, which will download the Velero binary, move it to <code class="inlineCode">/usr/bin</code>, and then output the version of Velero to verify that the binary has been installed correctly. As of the writing of this chapter, the latest version of Velero is 1.12.1.</p>
+<p class="normal">You can safely ignore the last line, which shows an error in finding the Velero server. Right now, all we have installed is the Velero executable, and it can’t find the server yet. In the next section, we will install the server to complete the installation.</p>
+<h2 class="heading-2" id="_idParaDest-449">Installing Velero</h2>
+<p class="normal">Velero has minimal<a id="_idIndexMarker1295"/> system requirements, most of which are easily met:</p>
+<ul>
+<li class="bulletList">A Kubernetes cluster running version 1.16 or higher</li>
+<li class="bulletList">The Velero executable</li>
+<li class="bulletList">Images for the system components</li>
+<li class="bulletList">A compatible storage location</li>
+<li class="bulletList">A volume snapshot plugin (optional)</li>
+</ul>
+<p class="normal">Depending on your infrastructure, you may not have a compatible location for the backups or snapshotting volumes. Fortunately, if you do not have a compatible storage system, there are open-source options that you can add to your cluster to meet the requirements.</p>
+<p class="normal">In the next section, we will explain the natively supported storage options and since our example will use a KinD cluster, we will install open-source options to add compatible storage to use as a backup location.</p>
+<h3 class="heading-3" id="_idParaDest-450">Backup storage location</h3>
+<p class="normal">Velero requires an S3-compatible <a id="_idIndexMarker1296"/>bucket to store backups. There are a number of officially supported systems, including all object store offerings from AWS, Azure, and Google.</p>
+<p class="normal">In the following table, the <strong class="keyWord">Support</strong> column means that the plugin provides a compatible location for storing Velero backups. The <strong class="keyWord">Volume Snapshot Support </strong>column means that the plugin supports backing up persistent volumes using snapshots. If the CSI in use does not provide snapshot support, data will be backed up using a standard file system backup via Restic or Kopia. Snapshots offer several advantages, with the most significant being their ability to maintain application consistency. Velero ensures that snapshots are captured in a manner that maintains the state of the application, minimizing the likelihood of data corruption.</p>
+<p class="normal">Along with the officially supported providers, there are a number of community- and vendor-supported providers from companies such as DigitalOcean, Hewlett-Packard, and Portworx. The following table lists all of the current providers:</p>
+<table class="table-container" id="table001-8">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Vendor</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Object Store</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Volume Snapshot Support</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Support</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Amazon</p>
+</td>
+<td class="table-cell">
+<p class="normal">AWS S3</p>
+</td>
+<td class="table-cell">
+<p class="normal">AWS EBS</p>
+</td>
+<td class="table-cell">
+<p class="normal">Official</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Google</p>
+</td>
+<td class="table-cell">
+<p class="normal">Google Cloud Storage</p>
+</td>
+<td class="table-cell">
+<p class="normal">GCE Disks</p>
+</td>
+<td class="table-cell">
+<p class="normal">Official</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Microsoft</p>
+</td>
+<td class="table-cell">
+<p class="normal">Azure Blob Storage</p>
+</td>
+<td class="table-cell">
+<p class="normal">Azure Managed Disks</p>
+</td>
+<td class="table-cell">
+<p class="normal">Official</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">VMware</p>
+</td>
+<td class="table-cell">
+<p class="normal">Not Supported</p>
+</td>
+<td class="table-cell">
+<p class="normal">vSphere Volumes</p>
+</td>
+<td class="table-cell">
+<p class="normal">Official</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Kubernetes CSI</p>
+</td>
+<td class="table-cell">
+<p class="normal">Not Supported</p>
+</td>
+<td class="table-cell">
+<p class="normal">CSI Volumes</p>
+</td>
+<td class="table-cell">
+<p class="normal">Official</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Alibaba Cloud</p>
+</td>
+<td class="table-cell">
+<p class="normal">Alibaba Cloud OSS</p>
+</td>
+<td class="table-cell">
+<p class="normal">Alibaba Cloud</p>
+</td>
+<td class="table-cell">
+<p class="normal">Community</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">DigitalOcean</p>
+</td>
+<td class="table-cell">
+<p class="normal">DigitalOcean Object Storage</p>
+</td>
+<td class="table-cell">
+<p class="normal">DigitalOcean Volumes Block Storage</p>
+</td>
+<td class="table-cell">
+<p class="normal">Community</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">HP</p>
+</td>
+<td class="table-cell">
+<p class="normal">Not Supported</p>
+</td>
+<td class="table-cell">
+<p class="normal">HPE Storage</p>
+</td>
+<td class="table-cell">
+<p class="normal">Community</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">OpenEBS</p>
+</td>
+<td class="table-cell">
+<p class="normal">Not Supported</p>
+</td>
+<td class="table-cell">
+<p class="normal">OpenEBS cStor Volumes</p>
+</td>
+<td class="table-cell">
+<p class="normal">Community</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Portworx</p>
+</td>
+<td class="table-cell">
+<p class="normal">Not Supported</p>
+</td>
+<td class="table-cell">
+<p class="normal">Portworx Volumes</p>
+</td>
+<td class="table-cell">
+<p class="normal">Community</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Storj</p>
+</td>
+<td class="table-cell">
+<p class="normal">Storj Object Storage</p>
+</td>
+<td class="table-cell">
+<p class="normal">Not Supported</p>
+</td>
+<td class="table-cell">
+<p class="normal">Community</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 14.1: Velero storage options</p>
+<p class="normal">If you do<a id="_idIndexMarker1297"/> not have an object storage solution, you can deploy the open-source S3 provider MinIO, which is what we will use for our S3 target in this chapter.</p>
+<p class="normal">Now that the Velero executable has been installed and our KinD cluster has persistent storage, thanks to the auto-provisioner from Rancher, we can move on to the first requirement – adding an S3-compatible backup location for Velero.</p>
+<h3 class="heading-3" id="_idParaDest-451">Deploying MinIO</h3>
+<p class="normal"><strong class="keyWord">MinIO</strong> is an<a id="_idIndexMarker1298"/> open-source object storage solution that is compatible with Amazon’s S3 cloud services API. You can<a id="_idIndexMarker1299"/> read more about MinIO in its GitHub repository at <a href="https://github.com/minio/minio"><span class="url">https://github.com/minio/minio</span></a>.</p>
+<p class="normal">If you install <a id="_idIndexMarker1300"/>MinIO using a manifest from the internet, be sure to verify what volumes are declared in the deployment before trying to use it as a backup location. Many of the examples on the internet use <code class="inlineCode">emptyDir: {}</code>, which is not persistent.</p>
+<p class="normal">We have included a modified MinIO deployment from the Velero GitHub repository in the <code class="inlineCode">chapter14</code> folder. Since we have persistent storage on our cluster, we edited the volumes in the deployment to<a id="_idIndexMarker1301"/> use <strong class="keyWord">Persistent Volume Claims</strong> (<strong class="keyWord">PVCs</strong>), which will use the auto-provisioner for Velero’s data and configuration.</p>
+<p class="normal">To deploy the MinIO server, change directories to <code class="inlineCode">chapter14</code> and execute <code class="inlineCode">kubectl create</code>. The deployment will create a Velero namespace, PVCs, and MinIO on your KinD cluster. It may take some time for the deployment to complete. We have seen the deployment take anything from a minute to a few minutes, depending on the host system:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl create -f minio-deployment.yaml
+</code></pre>
+<p class="normal">This will deploy the MinIO server and expose it as <code class="inlineCode">minio</code> on port <code class="inlineCode">9000/TCP</code>, with the <code class="inlineCode">console</code> on port <code class="inlineCode">9001/TCP</code>, as follows:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME      TYPE        CLUSTER-IP       EXTERNAL-IP    PORT(S)    AGE
+console   ClusterIP   10.102.216.91    &lt;none&gt;         9001/TCP   42h
+minio     ClusterIP   10.110.216.37    &lt;none&gt;         9000/TCP   42h
+</code></pre>
+<p class="normal">The MinIO server<a id="_idIndexMarker1302"/> can be targeted by any pod in the cluster, with correct access keys, using <code class="inlineCode">minio.velero.svc</code> on port <code class="inlineCode">9000</code>.</p>
+<p class="normal">With MinIO deployed, we need to expose the console using an Ingress rule so we can log in to look at buckets and verify that backups are working as expected.</p>
+<h3 class="heading-3" id="_idParaDest-452">Exposing MinIO and the console</h3>
+<p class="normal">By default, your MinIO<a id="_idIndexMarker1303"/> storage will only be available inside the cluster it has been deployed in. Since we will demonstrate restoring to a different cluster at the end of the chapter, we need to expose MinIO using an Ingress rule. MinIO also includes a dashboard that allows you to browse the contents of the S3 buckets on the server. To allow access to the dashboard, you can<a id="_idIndexMarker1304"/> deploy an Ingress rule that exposes the MinIO console.</p>
+<p class="normal">We have included a script in the <code class="inlineCode">chapter14</code> folder called <code class="inlineCode">create-minio-ingress.sh</code> that will create an Ingress rule using the <code class="inlineCode">nip.io</code> syntax of <code class="inlineCode">minio-console.w.x.y.z.nip.ip</code> and <code class="inlineCode">minio.w.x.y.z.nip.ip</code>, with your host IP.</p>
+<div class="note">
+<p class="normal">You will need the <code class="inlineCode">console</code> Ingress rule when you install Velero in your cluster.</p>
+</div>
+<p class="normal">Once deployed, you can use a browser on any machine and open the URL you used for the Ingress rule. On our cluster, the host IP is <code class="inlineCode">10.2.1.161</code>, so our URL is <code class="inlineCode">minio-console.10.2.1.161.nip.io</code>:</p>
+<figure class="mediaobject"><img alt="" height="336" src="../Images/B21165_14_01.png" width="878"/></figure>
+<p class="packt_figref">Figure 14.1: MinIO dashboard</p>
+<p class="normal">To access the dashboard, supply the access key and secret key from the MinIO deployment. If you used the MinIO installer from the GitHub repository, the username and password have been defined in the manifest. They are <code class="inlineCode">packt/packt123</code>.</p>
+<p class="normal">Once logged in, you<a id="_idIndexMarker1305"/> will see a list of buckets and any items that are stored in them. You should see a bucket named <strong class="screenText">velero</strong>, which is the bucket we will use to back up our cluster. This bucket was created during the initial MinIO deployment – we added a line to the deployment that creates the <strong class="screenText">velero</strong> bucket and the required permissions for the packt user.</p>
+<figure class="mediaobject"><img alt="" height="242" src="../Images/B21165_14_02.png" width="866"/></figure>
+<p class="packt_figref">Figure 14.2: MinIO browser</p>
+<p class="normal">If you are new to object storage, it is important to note that while this deploys a storage solution in your cluster, it <strong class="keyWord">will not</strong> create a <code class="inlineCode">StorageClass</code> or integrate with Kubernetes in any way. All pod access to the S3 bucket is done using the URL that we will provide in the next section.</p>
+<p class="normal">Now that you have an S3-compatible object store running, you need to create a configuration file that Velero will use to target your MinIO server.</p>
+<h3 class="heading-3" id="_idParaDest-453">Installing Velero</h3>
+<p class="normal">To deploy Velero in <a id="_idIndexMarker1306"/>your cluster, you can use the Velero binary or a Helm chart. We have chosen to install Velero using the binary.</p>
+<p class="normal">Before we start the installation, we need to create a credentials file that will contain the <code class="inlineCode">access_key</code> and <code class="inlineCode">secret_access_key</code> for the S3 target on MinIO.</p>
+<p class="normal">Create a new credential file in the <code class="inlineCode">chapter14</code> folder called <code class="inlineCode">credentials-velero</code> with the following content:</p>
+<pre class="programlisting con"><code class="hljs-con">[default]aws_access_key_id = packt
+aws_secret_access_key = packt123
+</code></pre>
+<p class="normal">Next, we can deploy Velero using the Velero executable and the <code class="inlineCode">install</code> option to deploy Velero with the option to back up persistent volumes.</p>
+<p class="normal">Execute the Velero installation using the following command from inside the <code class="inlineCode">chapter14</code> folder to deploy Velero. Please note that you need to provide your <code class="inlineCode">nip.io</code> ingress name for MinIO. We exposed both MinIO and the console when we created the Ingress rule earlier. Be careful to use the ingress name that contains <code class="inlineCode">minio.w.x.y.z.nip.io</code>; do not use the <code class="inlineCode">minio-console</code> ingress or Velero will fail to find the S3 bucket.</p>
+<pre class="programlisting con"><code class="hljs-con">velero install --provider aws --plugins velero/velero-plugin-for-aws:v1.2.0 --bucket velero  --secret-file ./credentials-velero --use-volume-snapshots=false --backup-location-config region=minio,s3ForcePathStyle="true",s3Url=http://minio.velero.svc:9000 --use-node-agent --default-volumes-to-fs-backup
+</code></pre>
+<p class="normal">Let’s explain the installation options and what the values mean:</p>
+<table class="table-container" id="table002-6">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Option</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--provider</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Configures Velero to use a storage provider. Since we are using MinIO, which is S3-compatible, we are passing <code class="inlineCode">aws</code> as our provider.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--plugins</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Tells Velero the backup plugin to use. For our cluster, since we are using MinIO for object storage, we selected the AWS plugin.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--bucket</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">The name of the S3 bucket that you want to target.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--secret-file</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Points to the file that contains the credentials to authenticate with the S3 bucket.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--use-volume-snapshots</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Will enable or disable volume snapshots for providers that support snapshots. Currently, Velero only supports object storage with snapshots; if snapshots are not supported, this should be set to <code class="inlineCode">false</code>. Since we are not interested in snapshots for our examples, we set this to <code class="inlineCode">false</code>.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--backup-location-config</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">The S3 target location where Velero will store backups. Since MinIO is running in the same cluster as Velero, we can target S3 using the name<code class="inlineCode"> minio.velero.svc:9000</code>. In a production environment, you would use MinIO in the same cluster – you will likely have an external S3 target to store your backups. Using the Kubernetes service name will cause Velero <code class="inlineCode">describe</code> commands to have some errors since it tries to query the cluster using the name provided, and you cannot access <code class="inlineCode">minio.velero.svc</code> from outside of the cluster.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--use-node-agent</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Add this flag if you want to back up persistent volumes using Velero’s node agent.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--default-volumes-to-fs-backup</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Configures Velero to support opting out of backing up persistent volumes. If this isn’t added during deployment, you can still use the option during a Velero backup to back up volumes. This will be explained more in the <em class="italic">Backing up PVCs</em> section of this chapter.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 14.2: Velero install options</p>
+<p class="normal">When you execute the install, you <a id="_idIndexMarker1307"/>will see a number of objects being created, including a <a id="_idIndexMarker1308"/>number of <strong class="keyWord">CustomResourceDefinitions</strong> (<strong class="keyWord">CRDs</strong>) and other objects that Velero uses to handle backup and restore operations.</p>
+<p class="normal">If you run into issues with your<a id="_idIndexMarker1309"/> Velero server starting up correctly, there are a few CRDs and Secrets that you can look at that may have incorrect information. In the following table, we explain some of the common objects that you may need to interact with when using Velero:</p>
+<table class="table-container" id="table003-6">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">CustomResourceDefinition</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Name</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">backups.velero.io</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Backup</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Each backup that is created will create an object called <code class="inlineCode">backup</code>, which includes the settings for each backup job.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">backupstoragelocations.velero.io</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">BackupStorageLocation</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Each backup storage location creates a <code class="inlineCode">BackupStorageLocation</code> object that contains the configuration to connect to the storage provider.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">schedules.velero.io</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Schedule</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Each scheduled backup creates a <code class="inlineCode">Schedule</code> object that contains the schedule for a backup.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">volumesnapshotlocations.velero.io</code></p>
+</td>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">VolumeSnapshotLocation</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">If enabled, the <code class="inlineCode">VolumeSnapshotLocation</code> object contains the information for the storage used for volume snapshots.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Secret Name</strong></p>
+</td>
+<td class="table-cell" colspan="2">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">cloud-credentials</code></p>
+</td>
+<td class="table-cell" colspan="2">
+<p class="normal">Contains the credentials to connect to the storage provider in Base64 format. If your Velero pod fails to start up, you may have an incorrect value in the <code class="inlineCode">data.cloud</code> spec.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">velero-repo-credentials</code></p>
+</td>
+<td class="table-cell" colspan="2">
+<p class="normal">If you are using the Restic plugin, this will contain your repository password, similar to <code class="inlineCode">cloud-credentials</code>. If you experience issues connecting to the volume snapshot provider, verify that the repository password is correct.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 14.3: Velero’s CRDs and Secrets</p>
+<p class="normal">While most of your<a id="_idIndexMarker1310"/> interaction with these objects will be through the Velero executable, it is always a good practice to understand how utilities interact with the API server. Understanding the objects and what their functions are is helpful if you do not have access to the Velero executable but you need to view, or potentially change, an object value to address an issue quickly.</p>
+<p class="normal">Now that we have Velero installed and a high-level understanding of Velero objects, we can move on to creating different backup jobs for a cluster.</p>
+<h1 class="heading-1" id="_idParaDest-454">Using Velero to back up workloads and PVCs</h1>
+<p class="normal">Velero supports running a one-time backup with a single command or on a recurring schedule. Whether you choose to run a single backup or a recurring backup, you can back up all objects or only certain objects using <code class="inlineCode">include</code> and <code class="inlineCode">exclude</code> flags.</p>
+<h2 class="heading-2" id="_idParaDest-455">Backing up PVCs</h2>
+<p class="normal">Since data is becoming increasingly<a id="_idIndexMarker1311"/> common on Kubernetes clusters, we will back up all of the cluster workloads, including any PVCs that are in the cluster. When we installed Velero, we added the <code class="inlineCode">--use-node-agent</code> option, which created a <strong class="keyWord">DaemonSet</strong> that creates a node agent on each cluster<a id="_idIndexMarker1312"/> node. The DaemonSet deploys a pod<a id="_idIndexMarker1313"/> containing modules that can perform file system backups, including a data mover, which may<a id="_idIndexMarker1314"/> be <strong class="keyWord">Restic</strong> or <strong class="keyWord">Kopia</strong> (<em class="italic">default</em>) on each node, and a new secret is created in the <code class="inlineCode">velero</code> namespace called <code class="inlineCode">velero-repo-credentials</code>. This secret contains a <code class="inlineCode">repository-password</code> that will be used for your backups. This is a generated password, and you can change it to anything you want – however, if you plan to change the password, do it before creating any backups. If this password is changed after you have created any backups, Velero will not be able to read the old backups.</p>
+<p class="normal">The default <code class="inlineCode">ServiceAccount</code> token, <code class="inlineCode">Secrets</code>, and <code class="inlineCode">ConfigMaps</code> can be mapped to volumes. These are not volumes that contain data and will not be backed up using the node agent. Like any other base Kubernetes objects, they will be backed up when Velero backs up the other <a id="_idIndexMarker1315"/>namespace objects.</p>
+<div class="note">
+<p class="normal">The data movers are responsible for copying the data from the volumes. Previous Velero releases used Restic<a id="_idIndexMarker1316"/> as the data mover, but it has been enhanced to include both Restic and Kopia<a id="_idIndexMarker1317"/> in the node DaemonSet. By default, Kopia will be used as the data mover, but if you want to use Restic, you can change the default by adding the option <code class="inlineCode">--data-mover restic</code> to your Velero backup create command. There is some debate around which data mover to use and Kopia has become the leader, so it has become the default.</p>
+</div>
+<p class="normal">Velero can be configured to back up PVCs via two different approaches:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Opt-out</strong>: Velero will back up all PVCs, unless a workload is annotated with the volume name(s) to ignore.</li>
+<li class="bulletList"><strong class="keyWord">Opt-in</strong>: Only workloads that have an annotation with the volume’s name will be backed up. This is Velero’s default configuration.</li>
+</ul>
+<p class="normal">Let’s take a closer look at these two approaches.</p>
+<h3 class="heading-3" id="_idParaDest-456">Using the opt-out approach</h3>
+<p class="normal">This is the approach we will use for<a id="_idIndexMarker1318"/> the exercises. When using this approach, all PVCs will be backed up unless you specify an annotation in the pod, adding <code class="inlineCode">backup.velero.io/backup-volumes-excludes</code>. For example, if you had 3 PVCs named <code class="inlineCode">volume1</code>, <code class="inlineCode">volume2</code>, and <code class="inlineCode">volume3</code> in a namespace and you wanted to exclude <code class="inlineCode">volume2</code> and <code class="inlineCode">volume3</code> from being backed up, you would need to add the following annotation to the pod spec in your deployment:</p>
+<pre class="programlisting con"><code class="hljs-con">backup.velero.io/backup-volumes-excludes=volume2,volume3
+</code></pre>
+<p class="normal">Since we added only <code class="inlineCode">volume2</code> and <code class="inlineCode">volume3</code> to the exclusion, Velero will ignore those volumes from the backup, but it will back up the PVC named <code class="inlineCode">volume1</code> since it was not included in the list.</p>
+<p class="normal">During the installation of Velero, we set <code class="inlineCode">--default-volumes-to-fs-backup</code>, which tells Velero to back up all persistent data, unless a volume has an annotation to exclude it from being backed up. If you didn’t set that option during your Velero deployment, you can tell Velero to use the opt-out approach for a single backup by adding the same option, <code class="inlineCode">--default-volumes-to-fs-backup</code>, to the <code class="inlineCode">backup</code> command.</p>
+<pre class="programlisting con"><code class="hljs-con">velero backup create BACKUP_NAME --default-volumes-to-fs-backup OTHER_OPTIONS
+</code></pre>
+<p class="normal">When a backup is <a id="_idIndexMarker1319"/>created using this option, Velero will back up every persistent volume that is attached to pods, unless it has been excluded in the <code class="inlineCode">excludes</code> annotation.</p>
+<h3 class="heading-3" id="_idParaDest-457">Using the opt-in approach</h3>
+<p class="normal">If you deployed Velero<a id="_idIndexMarker1320"/> without the <code class="inlineCode">--default-volumes-to-fs-backup</code> option, persistent volumes will not be backed up unless you add an annotation to tell Velero to back up the required volumes.</p>
+<p class="normal">Similarly to how you opted out in the previous example, you can add an annotation to your deployment to instruct Velero to back up your volume or volumes. The annotation that you need to add is <code class="inlineCode">backup.velero.io/backup-volumes</code>, and the following example tells Velero to back up two volumes, one called volume1 and the other called <code class="inlineCode">volume2</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl -n demo annotate deploy/demo backup.velero.io/backup-volumes=volume1,volume2
+</code></pre>
+<p class="normal">When you run your next backup, Velero will see the annotation and will add the two persistent volumes to the backup job.</p>
+<h3 class="heading-3" id="_idParaDest-458">Limitations of backing up data</h3>
+<p class="normal">Velero cannot back up a <a id="_idIndexMarker1321"/>volume that is using <code class="inlineCode">hostPath</code> for the persistent data. The <code class="inlineCode">local-path-provisioner</code> maps persistent disks to a <code class="inlineCode">hostPath</code> by default, meaning that Velero will not be able to back up or restore the data. Luckily, there is an option to change the type from <code class="inlineCode">hostPath</code> to <code class="inlineCode">local</code>, which will work with Velero. When you create a new PVC, you can add an annotation of <code class="inlineCode">volumeType: local</code>. The example below shows a PVC manifest that would be created as a local type, rather than <code class="inlineCode">hostPath</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: test-claim
+  namespace: demo
+  annotations:
+    volumeType: local
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+</code></pre>
+<p class="normal">This change <a id="_idIndexMarker1322"/>is not needed in many cases, but since it’s required when using the local-path-provisioner, we will need to add the annotation to any PVCs that we want to test with Velero.</p>
+<p class="normal">With Velero deployed with the ability to back up our persistent data, let’s jump into creating a one-time backup of our cluster.</p>
+<h2 class="heading-2" id="_idParaDest-459">Running a one-time cluster backup</h2>
+<p class="normal">To create an initial backup, you <a id="_idIndexMarker1323"/>can run a single Velero command that will back up all of the namespaces in the cluster and if there are any PVCs that have not been annotated to be ignored, they will also be backed up.</p>
+<p class="normal">Executing a backup without any flags to include or exclude any cluster objects will back up every namespace and all of the objects in the namespace.</p>
+<p class="normal">We will use what we learn in this section to perform a restore to show Velero in action. For our backup, we will back up the entire cluster, including the PVCs.</p>
+<p class="normal">Before we start a backup, we are going to add a deployment with a PVC, where we will add a few empty files to verify that restoring data works as expected.</p>
+<p class="normal">In the <code class="inlineCode">chapter14/pvc-example</code> directory, there is a manifest called <code class="inlineCode">busybox-pvc.yaml</code>. To deploy the example, you should execute the command from within the <code class="inlineCode">chapter14/pvc-example</code> directory:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl create -f busybox-pvc.yaml
+</code></pre>
+<p class="normal">The script will create a new namespace called <code class="inlineCode">demo</code> with the <code class="inlineCode">busybox-pvc</code> pod deployed using a PVC named <code class="inlineCode">test-claim</code>, mounted in the <code class="inlineCode">/mnt</code> directory of the container.</p>
+<p class="normal">Right now, the<a id="_idIndexMarker1324"/> PVC has one file, <code class="inlineCode">original-data</code>, in it. We need to add a few other files to test a restore a little later. First, let’s verify the current contents of the PVC using <code class="inlineCode">kubectl</code> <code class="inlineCode">exec</code> to list the directory contents. If you are following along on your own cluster, you will need to change the <code class="inlineCode">busybox-pvc</code> pod name to whatever is in use on your cluster. You can get the pod name using <code class="inlineCode">kubectl get pods -n demo</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl get pods -n demo
+</code></pre>
+<p class="normal">This will list the <code class="inlineCode">busybox</code> pod information. You will need the pod name to execute the exec command to create the files in the PVC:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME                           	READY   	STATUS    RESTARTS   AGE
+busybox-pvc-6cb895b675-grnxq   	1/1     	Running   0          4m29s
+kubectl exec -it busybox-pvc-f7bfbcc44-vfsnf -n demo -- ls /mnt -la
+total 8
+drwxrwxrwx    2 root     root          4096 Dec  7 15:41 .
+drwxr-xr-x    1 root     root          4096 Dec  7 15:41 ..
+-rw-r--r--    1 root     root             0 Dec  7 15:41 original-data
+</code></pre>
+<p class="normal">Now, let’s add two additional files called <code class="inlineCode">newdata1</code> and <code class="inlineCode">newdata2</code> to the pod. To do this, we will use another <code class="inlineCode">kubectl exec</code> command that will touch files in the <code class="inlineCode">/mnt</code> directory.</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl exec -it busybox-pvc-f7bfbcc44-vfsnf -n demo -- touch /mnt/newfile1
+kubectl exec -it busybox-pvc-f7bfbcc44-vfsnf -n demo -- touch /mnt/newfile2
+</code></pre>
+<p class="normal">Again, to verify the data has been written successfully, we can list the contents using <code class="inlineCode">kubectl exec</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl exec -it busybox-pvc-f7bfbcc44-vfsnf -n demo -- ls /mnt -la                  total 8
+drwxrwxrwx    2 root     root          4096 Dec  7 15:48 .
+drwxr-xr-x    1 root     root          4096 Dec  7 15:46 ..
+-rw-r--r--    1 root     root             0 Dec  7 15:48 newfile1
+-rw-r--r--    1 root     root             0 Dec  7 15:48 newfile2
+-rw-r--r--    1 root     root             0 Dec  7 15:41 original-data
+</code></pre>
+<p class="normal">Great! We can see that the two new files have been created. Now that we have new data in the pod, we can move on to backing up our cluster.</p>
+<p class="normal">To create a<a id="_idIndexMarker1325"/> one-time backup, execute the <code class="inlineCode">velero</code> command with the <code class="inlineCode">backup create &lt;backup name&gt;</code> option. In our example, we have named the backup <code class="inlineCode">initial-backup</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">velero backup create initial-backup
+</code></pre>
+<p class="normal">The only confirmation you will receive from this is that the backup request was submitted:</p>
+<pre class="programlisting con"><code class="hljs-con">Backup request "initial-backup" submitted successfully.
+Run `velero backup describe initial-backup` or `velero backup logs initial-backup` for more details.
+</code></pre>
+<p class="normal">Fortunately, Velero also tells you the command to check the backup status and logs. The last line of the output tells us that we can use the <code class="inlineCode">velero</code> command with the <code class="inlineCode">backup</code> option and either <code class="inlineCode">describe</code> or <code class="inlineCode">logs</code> to check the status of the backup operation.</p>
+<p class="normal">The <code class="inlineCode">describe</code> option will show all of the details of the job. An example is shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">velero backup describe initial-backup
+Name:         initial-backup
+Namespace:    velero
+Labels:       velero.io/storage-location=default
+Annotations:  velero.io/resource-timeout=10m0s
+              velero.io/source-cluster-k8s-gitversion=v1.28.0
+              velero.io/source-cluster-k8s-major-version=1
+              velero.io/source-cluster-k8s-minor-version=28
+Phase:  Completed
+Namespaces:
+  Included:  *
+  Excluded:  &lt;none&gt;
+Resources:
+  Included:        *
+  Excluded:        &lt;none&gt;
+  Cluster-scoped:  auto
+Label selector:  &lt;none&gt;
+Or label selector:  &lt;none&gt;
+Storage Location:  default
+ 
+Velero-Native Snapshot PVs:  auto
+Snapshot Move Data:          false
+Data Mover:                  velero
+TTL:  720h0m0s
+CSISnapshotTimeout:    10m0s
+ItemOperationTimeout:  4h0m0s
+Hooks:  &lt;none&gt;
+Backup Format Version:  1.1.0
+Started:    2023-12-06 18:46:57 +0000 UTC
+Completed:  2023-12-06 18:48:15 +0000 UTC
+Expiration:  2024-01-05 18:46:57 +0000 UTC
+Total items to be backed up:  641
+Items backed up:              641
+Velero-Native Snapshots: &lt;none included&gt;
+kopia Backups (specify --details for more information):
+  Completed:  4
+</code></pre>
+<p class="normal">Notice the last section. This section tells us that Velero backed up 4 PVCs using the Kopia data mover. We will show this more when we perform a backup.</p>
+<p class="normal">To reinforce the previous section, where we mentioned some of the CRDs that Velero uses, we also want to explain where the Velero utility retrieves this information from.</p>
+<p class="normal">Each backup that is<a id="_idIndexMarker1326"/> created will create a backup object in the Velero namespace. For our initial backup, a new backup object named <code class="inlineCode">initial-backup</code> was created. Using <code class="inlineCode">kubectl</code>, we can describe the object to see similar information that the Velero executable will provide.</p>
+<p class="normal">As shown in the preceding output, the <code class="inlineCode">describe</code> option shows you all of the settings for the backup job. Since we didn’t pass any options to the backup request, the job contains all the namespaces and objects. Some of the most important details to verify are the phase, the total items to be backed up, and the items backed up.</p>
+<p class="normal">If the status of the phase is anything other than <code class="inlineCode">success</code>, you may not have all the items that you want in your backup. It’s also a good idea to check the backed-up items; if the number of items backed up is less than the items to be backed up, our backup did not back up all of the items.</p>
+<p class="normal">You may need to check<a id="_idIndexMarker1327"/> the status of a backup, but you may not have the Velero executable installed. Since this information is in a CR, we can describe the CR to retrieve the backup details. Running <code class="inlineCode">kubectl describe</code> on the backup object will show the status of the backup:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl describe backups initial-backup -n velero
+</code></pre>
+<p class="normal">If we jump to the bottom of the output from the <code class="inlineCode">describe</code> command, you will see the following:</p>
+<pre class="programlisting con"><code class="hljs-con">Name:         initial-backup
+Namespace:    velero
+Labels:       velero.io/storage-location=default
+Annotations:  velero.io/resource-timeout: 10m0s
+              velero.io/source-cluster-k8s-gitversion: v1.28.0
+              velero.io/source-cluster-k8s-major-version: 1
+              velero.io/source-cluster-k8s-minor-version: 28
+API Version:  velero.io/v1
+Kind:         Backup
+Metadata:
+  Creation Timestamp:  2023-12-06T18:46:57Z
+  Generation:          15
+  Resource Version:    35606
+  UID:                 005da7ae-f270-470e-8907-c122815af365
+Spec:
+  Csi Snapshot Timeout:          10m0s
+  Default Volumes To Fs Backup:  true
+  Hooks:
+  Included Namespaces:
+    *
+  Item Operation Timeout:  4h0m0s
+  Metadata:
+  Snapshot Move Data:  false
+  Storage Location:    default
+  Ttl:                 720h0m0s
+  Volume Snapshot Locations:
+    default
+Status:
+  Completion Timestamp:  2023-12-06T18:48:15Z
+  Expiration:            2024-01-05T18:46:57Z
+  Format Version:        1.1.0
+  Phase:                 Completed
+  Progress:
+    Items Backed Up:  641
+    Total Items:      641
+  Start Timestamp:    2023-12-06T18:46:57Z
+  Version:            1
+  Warnings:           3
+Events:               &lt;none&gt;
+</code></pre>
+<p class="normal">In the output, you can see that the phase is completed, the start and completion times, and the number of objects that were backed up and included in the backup.</p>
+<p class="normal">It’s good practice to use a cluster add-on that can generate alerts based on information in log files or the status of an object, such <a id="_idIndexMarker1328"/>as <strong class="keyWord">AlertManager</strong>.</p>
+<p class="normal">You always want a successful backup, and if a backup fails, you should look into the failure immediately.</p>
+<p class="normal">To verify that the<a id="_idIndexMarker1329"/> backup is correctly stored in our S3 target, go back to the MinIO console, and if you are not already in the <strong class="screenText">Bucket</strong> view, click <strong class="screenText">Buckets</strong> on the left-hand side. If you are already on the <strong class="screenText">Bucket</strong> screen, press <em class="keystroke">F5</em> to refresh your browser to update the view. Once the view has been refreshed, you should see that the <strong class="screenText">velero</strong> bucket has objects stored in it. Clicking on the bucket will show you another screen, where you will see two folders, one for backup and one for Kopia. Velero will split the data from the Kubernetes objects by storing data in the <strong class="screenText">kopia</strong> (or restic, if that was used as the data mover) folder. All Kubernetes objects will be stored in the <strong class="screenText">backups</strong> folder.</p>
+<figure class="mediaobject"><img alt="" height="292" src="../Images/B21165_14_03.png" width="878"/></figure>
+<p class="packt_figref">Figure 14.3: Bucket details</p>
+<p class="normal">Since the overview of<a id="_idIndexMarker1330"/> the <strong class="screenText">velero</strong> bucket shows storage usage and a number of objects, and we see the <strong class="screenText">backups</strong> and <strong class="screenText">kopia</strong> folders, we can safely assume that the initial backup was successful. We will use this backup to restore a deleted namespace in the <em class="italic">Restoring from a backup</em> section of this chapter.</p>
+<p class="normal">A one-off backup is not something you will likely run often. You should back up your cluster on a regular, scheduled basis. In the next section, we will explain how to create a scheduled backup.</p>
+<h2 class="heading-2" id="_idParaDest-460">Scheduling a cluster backup</h2>
+<p class="normal">Creating a one-time backup is useful if <a id="_idIndexMarker1331"/>you have a cluster operation scheduled or if there is a major software upgrade in a namespace. Since these events will be rare, you will want to schedule backing up the cluster at regular intervals, rather than random one-time backups.</p>
+<p class="normal">To create a scheduled backup, you use the <code class="inlineCode">schedule</code> option and create a tag with the Velero executable. Along with the <code class="inlineCode">schedule</code> and creating the tag, you need to provide a name for the job and the <code class="inlineCode">schedule</code> flag, which accepts <code class="inlineCode">cron</code>-based expressions. The following schedule tells Velero to back up at 1 A.M. every day:</p>
+<figure class="mediaobject"><img alt="Figure 13.7 – Cron scheduling expression " height="111" src="../Images/B21165_14_04.png" width="408"/></figure>
+<p class="packt_figref">Figure 14.4: Cron scheduling expression</p>
+<p class="normal">Using the information in <em class="italic">Figure 14.4</em>, we can create a backup that will run at 1 A.M., using the following <code class="inlineCode">velero schedule create</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">velero schedule create cluster-daily-1 --schedule="0 1 * * *"
+</code></pre>
+<p class="normal">Velero will reply that a schedule has been successfully created:</p>
+<pre class="programlisting con"><code class="hljs-con">Schedule "cluster-daily-1" created successfully.
+</code></pre>
+<p class="normal">If you are<a id="_idIndexMarker1332"/> not familiar with <code class="inlineCode">cron</code> and the options that are available, you should read the <code class="inlineCode">cron</code> package documentation at <a href="https://godoc.org/github.com/robfig/cron"><span class="url">https://godoc.org/github.com/robfig/cron</span></a>.</p>
+<p class="normal"><code class="inlineCode">cron</code> will also accept some shorthand expressions, which may be easier than using the standard <code class="inlineCode">cron</code> expressions. The following table contains the shorthand for predefined schedules:</p>
+<table class="table-container" id="table004-2">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Shorthand value</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">@yearly</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Executes once a year at midnight on January 1<sup class="superscript">st</sup></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">@monthly</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Executes once a month, on the first day of the month, at midnight</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">@weekly</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Executes once a week, on Sunday morning at midnight</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">@daily</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Executes daily at midnight</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">@hourly</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Executes at the beginning of each hour</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 14.4: cron shorthand scheduling</p>
+<p class="normal">Using the values from the shorthand table to schedule a backup job that executes daily at midnight, we use the following Velero command:</p>
+<pre class="programlisting con"><code class="hljs-con">velero schedule create cluster-daily-2 --schedule="@daily"
+</code></pre>
+<p class="normal">This will create a backup job that backs the cluster up at midnight, each night. You can verify that the job was created and the last time it ran by looking at the <code class="inlineCode">schedules</code> object, using <code class="inlineCode">kubectl get schedules -n velero</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">NAMESPACE   NAME            STATUS    SCHEDULE   LASTBACKUP   AGE   PAUSED
+velero      cluster-daily   Enabled   @daily                  63s
+</code></pre>
+<p class="normal">Scheduled jobs will create a backup object when the job is executed. The backup name will contain the name of the schedule, with a dash and the date and time of the backup. Backup names follow the standard naming of YYYYMMDDhhmmss. Using the name from the preceding example, our initial backup was created with the name <code class="inlineCode">cluster-daily-20231206200028</code>. Here, <code class="inlineCode">20231206200028</code> is the date the backup ran, and <code class="inlineCode">200028</code> is the time the backup ran in UTC time. This is the equivalent of <code class="inlineCode">2021-09-30 20:00:28 +0000 UTC</code>.</p>
+<p class="normal">All of our <a id="_idIndexMarker1333"/>examples so far have been configured to back up all of the namespaces and objects in the cluster. You may need to create different schedules or exclude/include certain objects based on your specific clusters.</p>
+<p class="normal">In the next section, we will explain how to create a custom backup that will allow you to use specific tags to include and exclude namespaces and objects.</p>
+<h2 class="heading-2" id="_idParaDest-461">Creating a custom backup</h2>
+<p class="normal">When you create any<a id="_idIndexMarker1334"/> backup job, you can provide flags to customize what objects will be included in or excluded from the backup job. Some of the most common flags are detailed here:</p>
+<table class="table-container" id="table005-2">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Flag</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--exclude-namespaces</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Comma-separated<a id="_idIndexMarker1335"/> list of namespaces to exclude from the backup job.</p>
+<p class="normal"><em class="italic">Example</em>: <code class="inlineCode">--exclude-namespaces web-dev1,web-dev2</code>.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--exclude-resources</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Comma-separated list of resources to exclude, formatted as <code class="inlineCode">resource.group</code>.</p>
+<p class="normal"><em class="italic">Example</em>: <code class="inlineCode">--exclude-resources storageclasses.storage.k8s.io</code>.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--include-namespaces</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Comma-separated list of namespaces to include in the backup job.</p>
+<p class="normal"><em class="italic">Example</em>: <code class="inlineCode">--include-namespaces web-dev1,web-dev2</code>.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--selector</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Configures the backup to include only objects that match a label selector. Accepts a single value only.</p>
+<p class="normal"><em class="italic">Example</em>: <code class="inlineCode">--selector app.kubernetes.io/name=ingress-nginx</code>.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">--ttl</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Configures how long to keep the backup in hours, minutes, and seconds. By default, the value is set for 30 days or <code class="inlineCode">720h0m0s</code>.</p>
+<p class="normal"><em class="italic">Example</em>: <code class="inlineCode">--ttl 24h0m0s</code>.</p>
+<p class="normal">This will delete the <a id="_idIndexMarker1336"/>backup after 24 hours.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 14.5: Velero backup flags</p>
+<p class="normal">To create a<a id="_idIndexMarker1337"/> scheduled backup that will run daily and include only Kubernetes system namespaces, we would create a scheduled job using the <code class="inlineCode">--include-namespaces</code> flag:</p>
+<pre class="programlisting con"><code class="hljs-con">velero schedule create cluster-ns-daily --schedule="@daily" --include-namespaces ingress-nginx,kube-node-lease,kube-public,kube-system,local-path-storage,velero
+</code></pre>
+<p class="normal">Since Velero commands use a CLI for all operations, we should start by explaining the common commands you will use to manage backup and restore operations.</p>
+<h1 class="heading-1" id="_idParaDest-462">Managing Velero using the CLI</h1>
+<p class="normal">All Velero <a id="_idIndexMarker1338"/>operations must be done using the Velero executable. Velero does not include a UI for managing backups and restores. Managing a backup system without a GUI can be a challenge at first, but once you get comfortable with the Velero management commands, it becomes easy to perform operations.</p>
+<p class="normal">The Velero executable accepts two options:</p>
+<ul>
+<li class="bulletList">Commands</li>
+<li class="bulletList">Flags</li>
+</ul>
+<p class="normal">A <strong class="keyWord">command</strong> is an operation such as <code class="inlineCode">backup</code>, <code class="inlineCode">restore</code>, <code class="inlineCode">install</code>, and <code class="inlineCode">get</code>. Most initial commands require a second command to make a complete operation. For example, a <code class="inlineCode">backup</code> command requires another command, such as <code class="inlineCode">create</code> or <code class="inlineCode">delete</code>, to form a complete operation.</p>
+<p class="normal">There are two types of flags – command flags and global flags. <strong class="keyWord">Global flags</strong> are flags that can be set for any command, while <strong class="keyWord">command flags</strong> are specific to the command being executed.</p>
+<p class="normal">Like many <a id="_idIndexMarker1339"/>CLI tools, Velero includes built-in help for every command. If you forget some syntax or want to know what flags can be used with a command, you can use the <code class="inlineCode">-h</code> flag to get help:</p>
+<pre class="programlisting con"><code class="hljs-con">velero backup create -h
+</code></pre>
+<p class="normal">The following is the abbreviated help output for the <code class="inlineCode">backup create</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">Create a backup
+Usage:
+  velero backup create NAME [flags]
+Examples:
+<span class="hljs-con-meta">  # </span>Create a backup containing all resources.
+  velero backup create backup1
+<span class="hljs-con-meta">  # </span>Create a backup including only the nginx namespace.
+  velero backup create nginx-backup --include-namespaces nginx
+<span class="hljs-con-meta">  # </span>Create a backup excluding the velero and default namespaces.
+  velero backup create backup2 --exclude-namespaces velero,default
+<span class="hljs-con-meta">  # </span>Create a backup based on a schedule named daily-backup.
+  velero backup create --from-schedule daily-backup
+<span class="hljs-con-meta">  # </span>View the YAML <span class="hljs-con-keyword">for</span> a backup that doesn<span class="hljs-con-string">'t snapshot volumes, without sending it to the server.</span>
+  velero backup create backup3 --snapshot-volumes=false -o yaml
+<span class="hljs-con-meta">  # </span><span class="hljs-con-string">Wait for a backup to complete before returning from the command.</span>
+  velero backup create backup4 --wait
+</code></pre>
+<p class="normal">We find Velero’s help system to be very helpful; once you get comfortable with Velero’s basics, you will find that the built-in help provides enough information for most commands.</p>
+<h2 class="heading-2" id="_idParaDest-463">Using common Velero commands</h2>
+<p class="normal">Since many readers may be new to Velero, we want to provide a quick overview of the most commonly used commands to get you comfortable with using Velero.</p>
+<h3 class="heading-3" id="_idParaDest-464">Listing Velero objects</h3>
+<p class="normal">As we have mentioned, Velero <a id="_idIndexMarker1340"/>management is driven by using the CLI. You can imagine that as you create additional backup jobs, it may become difficult to remember what has been created. This is where the <code class="inlineCode">get</code> command comes in handy.</p>
+<p class="normal">The CLI can retrieve, or get, a list of the following Velero objects:</p>
+<ul>
+<li class="bulletList">Backup locations</li>
+<li class="bulletList">Backups</li>
+<li class="bulletList">Plugins</li>
+<li class="bulletList">Restores</li>
+<li class="bulletList">Schedules</li>
+<li class="bulletList">Snapshot locations</li>
+</ul>
+<p class="normal">As you may expect, executing <code class="inlineCode">velero get &lt;object&gt;</code> will return a list of the objects managed by Velero:</p>
+<pre class="programlisting con"><code class="hljs-con">velero get backups
+</code></pre>
+<p class="normal">Here is the output:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME                              STATUS       ERRORS    WARNINGS
+initial-backup                    Completed    0         0
+</code></pre>
+<p class="normal">Each <code class="inlineCode">get</code> command will produce a similar output, containing the names of each object and any unique values for the objects. This command is useful for getting a quick look at what objects exist, but it’s usually used before executing the next command, <code class="inlineCode">describe</code>.</p>
+<h3 class="heading-3" id="_idParaDest-465">Retrieving details for a Velero object</h3>
+<p class="normal">After <a id="_idIndexMarker1341"/>you get the name of the object that you want the details of, you can use the <code class="inlineCode">describe</code> command to get the details of the object. Using the output from the <code class="inlineCode">get</code> command in the previous section, we want to view the details of the <code class="inlineCode">initial-backup</code> job:</p>
+<pre class="programlisting con"><code class="hljs-con">velero describe backup initial-backup
+</code></pre>
+<p class="normal">The output of the command provides all the details for the requested object. You will find yourself using the <code class="inlineCode">describe</code> command to troubleshoot issues such as backup failures.</p>
+<h3 class="heading-3" id="_idParaDest-466">Creating and deleting objects</h3>
+<p class="normal">Since we have already<a id="_idIndexMarker1342"/> used the <code class="inlineCode">create</code> command a few times, we will focus on the <code class="inlineCode">delete</code> command in this section.</p>
+<p class="normal">To recap, the <code class="inlineCode">create</code> command allows you to create objects that will be managed by Velero, including backups, schedules, restores, and locations for backups and snapshots. We have created a backup and a schedule, and in the next section, we will create a restore.</p>
+<p class="normal">Once an object is created, you may discover that you need to delete it. To delete objects in Velero, you use<a id="_idIndexMarker1343"/> the <code class="inlineCode">delete</code> command, along with the object and name you want to delete.</p>
+<div class="note">
+<p class="normal">Since we do not have a backup called <code class="inlineCode">sales</code> on our KinD cluster, the example command will not find a backup called <code class="inlineCode">sales</code>.</p>
+</div>
+<p class="normal">In our <code class="inlineCode">get backups</code> output example, we had a backup called <code class="inlineCode">sales</code>. To delete that backup, we would execute the following <code class="inlineCode">delete</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">velero delete backup sales
+</code></pre>
+<p class="normal">Since a delete is a one-way operation, you will need to confirm that you want to delete the object. Once you have confirmed the deletion, it may take a few minutes for the object to be removed from Velero since it waits until all associated data is removed:</p>
+<pre class="programlisting con"><code class="hljs-con">Are you sure you want to continue (Y/N)? y
+Request to delete backup "sales" submitted successfully.
+The backup will be fully deleted after all associated data (disk snapshots, backup files, restores) are removed.
+</code></pre>
+<p class="normal">As you can see in the output, when we delete a backup, Velero will delete all of the objects for the backup, including the snapshot’s backup files and restores.</p>
+<p class="normal">There are additional commands<a id="_idIndexMarker1344"/> that you can use, but the commands covered in this section are what you really need to get comfortable with Velero. For reference, the list below shows common Velero commands and a brief description of what each command does:</p>
+<p class="normal"><strong class="keyWord">Installing and uninstalling Velero</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero install</code>: Installs Velero server components into the Kubernetes cluster.</li>
+</ul>
+<p class="normal"><strong class="keyWord">Managing backups</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero backup create &lt;NAME&gt;</code>: Creates a backup with the specified name.</li>
+<li class="bulletList"><code class="inlineCode">velero backup describe &lt;NAME&gt;</code>: Describes the details of a specific backup.</li>
+<li class="bulletList"><code class="inlineCode">velero backup delete &lt;NAME&gt;</code>: Deletes a specified backup.</li>
+<li class="bulletList"><code class="inlineCode">velero backup logs &lt;NAME&gt;</code>: Displays logs for a specific backup.</li>
+<li class="bulletList"><code class="inlineCode">velero backup download &lt;NAME&gt;</code>: Downloads the backup logs for troubleshooting purposes.</li>
+<li class="bulletList"><code class="inlineCode">velero backup get</code>: Lists all backups.</li>
+</ul>
+<p class="normal"><strong class="keyWord">Managing restores</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero restore create --from-backup &lt;BACKUP_NAME&gt;</code>: Creates a restore from a specified backup.</li>
+<li class="bulletList"><code class="inlineCode">velero restore describe &lt;NAME&gt;</code>: Describes the details of a specific restore.</li>
+<li class="bulletList"><code class="inlineCode">velero restore delete &lt;NAME&gt;</code>: Deletes a specified restore.</li>
+<li class="bulletList"><code class="inlineCode">velero restore logs &lt;NAME&gt;</code>: Displays logs for a specific restore.</li>
+<li class="bulletList"><code class="inlineCode">velero restore get</code>: Lists all restores.</li>
+</ul>
+<p class="normal"><strong class="keyWord">Scheduling backups</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero schedule create &lt;NAME&gt; --schedule &lt;CRON_SCHEDULE&gt;</code>: Creates a scheduled backup using <code class="inlineCode">cron</code> syntax.</li>
+<li class="bulletList"><code class="inlineCode">velero schedule describe &lt;NAME&gt;</code>: Describes the details of a specific schedule.</li>
+<li class="bulletList"><code class="inlineCode">velero schedule delete &lt;NAME&gt;</code>: Deletes a specified schedule.</li>
+<li class="bulletList"><code class="inlineCode">velero schedule get</code>: Lists all schedules.</li>
+</ul>
+<p class="normal"><strong class="keyWord">Managing plugins</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero plugin add &lt;PLUGIN_IMAGE&gt;</code>: Adds a plugin to the Velero server.</li>
+<li class="bulletList"><code class="inlineCode">velero plugin get</code>: Lists all plugins.</li>
+</ul>
+<p class="normal"><strong class="keyWord">Snapshot locations</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero snapshot-location create &lt;NAME&gt;</code>: Creates a new snapshot location with the <a id="_idIndexMarker1345"/>specified name.</li>
+<li class="bulletList"><code class="inlineCode">velero snapshot-location get</code>: Lists all snapshot locations.</li>
+<li class="bulletList"><code class="inlineCode">velero snapshot-location describe &lt;NAME&gt;</code>: Describes the details of a specific snapshot location.</li>
+<li class="bulletList"><code class="inlineCode">velero snapshot-location delete &lt;NAME&gt;</code>: Deletes a specified snapshot location.</li>
+</ul>
+<p class="normal"><strong class="keyWord">Backup locations</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero backup-location create &lt;NAME&gt;</code>: Establishes a new backup location with the specified name.</li>
+<li class="bulletList"><code class="inlineCode">velero backup-location get</code>: Lists all backup locations.</li>
+<li class="bulletList"><code class="inlineCode">velero backup-location describe &lt;NAME&gt;</code>: Describes the details of a specific backup location.</li>
+<li class="bulletList"><code class="inlineCode">velero backup-location delete &lt;NAME&gt;</code>: Removes a specified backup location.</li>
+</ul>
+<p class="normal"><strong class="keyWord">Managing restic repositories</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero restic repo get</code>: Lists all <code class="inlineCode">restic</code> repositories.</li>
+<li class="bulletList"><code class="inlineCode">velero restic repo describe &lt;NAME&gt;</code>: Describes the details of a specific restic repository.</li>
+<li class="bulletList"><code class="inlineCode">velero restic repo forget &lt;NAME&gt;</code>: Manually removes restic backup snapshots.</li>
+<li class="bulletList"><code class="inlineCode">velero restic repo prune &lt;NAME&gt;</code>: Removes unused data from a restic repository to free up space.</li>
+<li class="bulletList"><code class="inlineCode">velero restic repo garbage-collect &lt;NAME&gt;</code>: Runs a garbage collection operation on the specified repository.</li>
+</ul>
+<p class="normal"><strong class="keyWord">Utility commands</strong>:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">velero version</code>: Displays the current version of Velero.</li>
+<li class="bulletList"><code class="inlineCode">velero client config set</code>: Configures the default settings for the Velero client.</li>
+<li class="bulletList"><code class="inlineCode">velero client config get</code>: Displays the current client configuration.</li>
+<li class="bulletList"><code class="inlineCode">velero completion &lt;SHELL&gt;</code>: Generates a shell completion script for the specified shell, enhancing <a id="_idIndexMarker1346"/>CLI usability.</li>
+</ul>
+<p class="normal">Now that you can create and schedule backups and know how to use the help system in Velero, we can move on to using a backup to restore objects.</p>
+<h1 class="heading-1" id="_idParaDest-467">Restoring from a backup</h1>
+<p class="normal">In this section, we will explain the <a id="_idIndexMarker1347"/>process of restoring from a backup using Velero. Having a backup is akin to having car insurance or homeowner’s insurance—it’s<a id="_idIndexMarker1348"/> essential to have, yet you hope you never need to use it. When the unexpected happens, you’ll be grateful it’s there. In the realm of data backups, finding yourself needing to restore data without a backup is a scenario we often refer to as a “resume-building event.” To run a restore from a backup, you use the <code class="inlineCode">create restore</code> command with the <code class="inlineCode">--from-backup &lt;backup name&gt;</code> tag.</p>
+<p class="normal">Earlier in the chapter, we created a single, one-time backup, called <code class="inlineCode">initial-backup</code>, which includes every namespace and object in the cluster. If we decided that we needed to restore that backup, we would execute a restore using the Velero CLI:</p>
+<pre class="programlisting con"><code class="hljs-con">velero restore create --from-backup initial-backup
+</code></pre>
+<p class="normal">The output from the <code class="inlineCode">restore</code> command may seem odd:</p>
+<pre class="programlisting con"><code class="hljs-con">Restore request "initial-backup-20231207163306" submitted successfully.
+Run `velero restore describe initial-backup-20231207163306` or `velero restore logs initial-backup-20231207163306` for more details.
+</code></pre>
+<p class="normal">At first, it may seem like a backup request was made since Velero replies with <code class="inlineCode">"initial-backup-20231207163306" submitted successfully</code>, but you may be wondering why the restore isn’t called <code class="inlineCode">initial-backup</code>. Velero uses the backup name to create a restore request, and since we named our backup <code class="inlineCode">initial-backup</code>, the restore job name will use that name and append the date and time of the restore request.</p>
+<p class="normal">You can view the <a id="_idIndexMarker1349"/>status of the restore using the <code class="inlineCode">describe</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">velero restore describe initial-backup-20211001002927
+</code></pre>
+<p class="normal">Depending on the size of <a id="_idIndexMarker1350"/>the restore, it may take some time to restore the entire backup. During the restore phase, the status of the backup will be <code class="inlineCode">InProgress</code>. Once the restore is complete, the status will change to <code class="inlineCode">Completed</code>.</p>
+<h2 class="heading-2" id="_idParaDest-468">Restoring in action</h2>
+<p class="normal">With all of the theory behind us, let’s use two examples to see Velero restores in action. For the examples, we will start with a simple deployment with a persistent volume that we will delete and restore on the same cluster. The second example will be more complex; we will back up a few namespaces in our main KinD cluster and restore them to a new KinD cluster.</p>
+<h3 class="heading-3" id="_idParaDest-469">Restoring a deployment from a backup</h3>
+<p class="normal">In the backup section of this chapter, we created a backup of the cluster after we created a <strong class="keyWord">busybox</strong> deployment<a id="_idIndexMarker1351"/> with a PVC attached. We added data to the PVC<a id="_idIndexMarker1352"/> before we backed it up, and now we want to <a id="_idIndexMarker1353"/>make sure that the backup is complete and that restoring a namespace is successful.</p>
+<p class="normal">To test the restore, we will simulate a failure by deleting the <code class="inlineCode">demo</code> namespace and then use our backup to restore the entire namespace, including the PVC data.</p>
+<h3 class="heading-3" id="_idParaDest-470">Simulating a failure</h3>
+<p class="normal">To simulate an event that would require a backup<a id="_idIndexMarker1354"/> of our namespace, we will delete the entire namespace using <code class="inlineCode">kubectl</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl delete ns demo
+</code></pre>
+<p class="normal">It may take a minute to delete the objects in the namespace. Once you have returned to a prompt, the deletion should be complete.</p>
+<p class="normal">Verify that the namespace has been deleted before moving on. Run a <code class="inlineCode">kubectl get ns</code> and verify that the <code class="inlineCode">demo</code> namespace is no longer listed.</p>
+<p class="normal">With the <a id="_idIndexMarker1355"/>confirmation that the <code class="inlineCode">demo</code> namespace has been deleted, we will demonstrate how to restore the entire namespace and objects from the backup.</p>
+<h2 class="heading-2" id="_idParaDest-471">Restoring a namespace</h2>
+<p class="normal">Imagine this is a real-life<a id="_idIndexMarker1356"/> scenario. You receive a phone call that a developer has accidentally deleted every object in their namespace and they do not have the source files.</p>
+<p class="normal">Of course, you are prepared for this type of event. You have several backup jobs running in your cluster, and you tell the developer that you can restore it to the state it was in last night from a backup.</p>
+<p class="normal">We want to restore just the one namespace, <code class="inlineCode">demo</code>, rather than the entire cluster. We know our backup name is <code class="inlineCode">initial-backup</code>, so we will need to use that as our backup file when we execute a restore. To limit the restore to just a namespace, we will add the <code class="inlineCode">--include-namespaces demo</code> flag to our command.</p>
+<pre class="programlisting con"><code class="hljs-con">velero restore create --from-backup initial-backup --include-namespaces demo
+Restore request "initial-backup-20231207164723" submitted successfully.
+Run `velero restore describe initial-backup-20231207164723` or `velero restore logs initial-backup-20231207164723` for more details.
+</code></pre>
+<p class="normal">This will start a restore from the <code class="inlineCode">initial-backup</code>. It shouldn’t take too long to restore since it’s a single namespace and the PVC only has a few empty files to restore.</p>
+<p class="normal">First, check to make sure that the namespace has been recreated. If you execute <code class="inlineCode">kubectl get ns demo</code>, you should see the <code class="inlineCode">demo</code> namespace in the list:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl get ns demo
+NAME   STATUS   AGE
+demo   Active   2m47s
+</code></pre>
+<p class="normal">Great! That’s the first step. Now, let’s make sure the pods were restored. We will need the name to look at the PVC contents:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl get pods -n demo
+NAME                          READY   STATUS    RESTARTS   AGE
+busybox-pvc-f7bfbcc44-vfsnf   1/1     Running   0          4m
+</code></pre>
+<p class="normal">Looking good so far. Finally, let’s use <code class="inlineCode">kubectl exec</code> to look at the <code class="inlineCode">/mnt</code> directory in the pod. We are hoping to see the new files we created before the backup:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl exec -it busybox-pvc-f7bfbcc44-vfsnf -n demo -- ls /mnt -la
+Defaulted container "busybox-pvc" out of: busybox-pvc, restore-wait (init)
+total 12
+drwxrwxrwx    3 root     root          4096 Dec  7 16:47 .
+drwxr-xr-x    1 root     root          4096 Dec  7 16:47 ..
+drwxr-xr-x    2 root     root          4096 Dec  7 16:47 .velero
+-rw-r--r--    1 root     root             0 Dec  7 15:48 newfile1
+-rw-r--r--    1 root     root             0 Dec  7 15:48 newfile2
+-rw-r--r--    1 root     root             0 Dec  7 16:47 original-data
+</code></pre>
+<p class="normal">As we can see from the output of the <code class="inlineCode">ls</code> command, the two files we added before executing the backup, <code class="inlineCode">newfile1</code> and <code class="inlineCode">newfile2</code>, are in the pod, proving that the backup works for restoring the namespace, including any persistent data.</p>
+<p class="normal">Congratulations! You just<a id="_idIndexMarker1357"/> saved the developer a lot of work because you had a backup of the namespace!</p>
+<p class="normal">Restoring objects like the previous example is a common exercise, and backing up and restoring in the same cluster is the only thing some operators may think backups are good for. While that may be the most common use case for backups, they can also be used for a number of other activities, like using a backup from one cluster into another, different cluster.</p>
+<p class="normal">In the next section, we will use a backup from one cluster and restore the data to a different cluster. This is beneficial for a few scenarios, including migrating an application from one cluster to another or restoring the application and data to a development cluster to perform upgrade tests.</p>
+<h2 class="heading-2" id="_idParaDest-472">Using a backup to create workloads in a new cluster</h2>
+<p class="normal">Restoring objects in a<a id="_idIndexMarker1358"/> cluster is just one use case for Velero. While it is the main use case for most users, you can also use your backup files to restore a workload or all workloads on another cluster. This is a useful option if you need to create a new development or disaster recovery cluster.</p>
+<p class="normal">Remember that Velero backup jobs are only the namespaces and objects in the namespaces. To restore a backup to a new cluster, you must have a running cluster running Velero before you can restore any workloads.</p>
+<h3 class="heading-3" id="_idParaDest-473">Backing up the cluster</h3>
+<p class="normal">By this point in the chapter, we <a id="_idIndexMarker1359"/>assume that you have seen this process a few times and that you know how to use the Velero CLI. If you need a refresher, you can go back a few pages in the chapter for reference, or use the CLI help function.</p>
+<p class="normal">For this example, we will not work with any data. Instead, we just want to demonstrate restoring a backup from one cluster to a different cluster.</p>
+<p class="normal">First, we should create a few namespaces and add some deployments to each one to make it more interesting. We have included a script in the <code class="inlineCode">chapter14</code> folder called <code class="inlineCode">create-backup-objects.yaml</code> that will create the namespaces and the objects for you. Run that script to create the namespaces and deployment.</p>
+<p class="normal">Once the namespaces and deployment have been created, let’s create a new backup called <code class="inlineCode">namespace-demo</code> that will back up only the four new namespaces that we created with the script:</p>
+<pre class="programlisting con"><code class="hljs-con">velero backup create namespace-demo --include-namespaces=demo1,demo2,demo3,demo4
+</code></pre>
+<p class="normal">Before moving on, verify that the backup has been completed successfully. You can verify the backup by executing the <code class="inlineCode">describe</code> command against the <code class="inlineCode">namespace-demo</code> backup:</p>
+<pre class="programlisting con"><code class="hljs-con">velero backup describe namespace-demo
+</code></pre>
+<p class="normal">In the output, you will see that the backup includes the four namespaces and there are 40 objects in the backup. An abbreviated output is shown below.</p>
+<pre class="programlisting con"><code class="hljs-con">Phase:  Completed
+Namespaces:
+  Included:  demo1, demo2, demo3, demo4
+  Excluded:  &lt;none&gt;
+Resources:
+  Included:        *
+  Excluded:        &lt;none&gt;
+  Cluster-scoped:  auto
+Label selector:  &lt;none&gt;
+Or label selector:  &lt;none&gt;
+Storage Location:  default
+Started:    2023-12-07 16:58:02 +0000 UTC
+Completed:  2023-12-07 16:58:11 +0000 UTC
+Expiration:  2024-01-06 16:58:02 +0000 UTC
+Total items to be backed up:  36
+Items backed up:              36
+Velero-Native Snapshots: &lt;none included&gt;
+  Included:  demo1, demo2, demo3, demo4
+  Excluded:  &lt;none&gt;
+Started:     2021-10-01 00:44:30 +0000 UTC
+Completed:   2021-10-01 00:44:42 +0000 UTC
+Expiration:  2021-10-31 00:44:30 +0000 UTC
+Total items to be backed up:   40
+Items backed up:               40
+</code></pre>
+<p class="normal">You now have a new <a id="_idIndexMarker1360"/>backup that contains the four new namespaces and their objects. Now, using this backup, we will restore the four namespaces to a new cluster.</p>
+<p class="normal">First, we need to deploy a new KinD cluster thar, which will use to restore our <code class="inlineCode">demo1</code>, <code class="inlineCode">demo2</code>, <code class="inlineCode">demo3</code>, and <code class="inlineCode">demo4</code> namespaces.</p>
+<h3 class="heading-3" id="_idParaDest-474">Building a new cluster</h3>
+<p class="normal">Since we are only <a id="_idIndexMarker1361"/>demonstrating how Velero can be used to create workloads on a new cluster from a backup, we will create a simple single-node KinD cluster as our restore point.</p>
+<p class="normal">This section gets a little complex since you will have two clusters in your <code class="inlineCode">kubeconfig</code> file. Follow the steps carefully if you’re new to switching config contexts.</p>
+<p class="normal">Once we have completed this exercise, we will delete the second cluster since we will not need to have two clusters. This exercise will be interactive. You will need to execute each step:</p>
+<ol>
+<li class="numberedList" value="1">Create a new KinD cluster called <code class="inlineCode">velero-restore</code>:
+        <pre class="programlisting con-one"><code class="hljs-con">kind create cluster --name velero-restore
+</code></pre>
+</li>
+</ol>
+<p class="normal-one">This will create a new single-node cluster that contains both the control plane and worker node, and it will set your cluster context to the new cluster.</p>
+<ol>
+<li class="numberedList" value="2">Once the cluster has deployed, verify that your context has been switched to the <code class="inlineCode">velero-restore</code> cluster:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl config get-contexts
+</code></pre>
+</li>
+</ol>
+<p class="normal-one">The <a id="_idIndexMarker1362"/>output is as follows:</p>
+<pre class="programlisting con-one"><code class="hljs-con">CURRENT  NAME                 CLUSTER              AUTHINFO
+         kind-cluster01       kind-cluster01       kind-cluster01
+*        kind-velero-restore  kind-velero-restore  kind-velero-restore
+</code></pre>
+<ol>
+<li class="numberedList" value="3">Verify that the current context is set to the <code class="inlineCode">kind-velero-restore</code> cluster. You will see an <code class="inlineCode">*</code> in the current field of the cluster that is being used.</li>
+<li class="numberedList">Finally, verify the namespaces in the cluster using <code class="inlineCode">kubectl</code>. You should only see the default namespaces that are included with a new cluster:
+        <pre class="programlisting con-one"><code class="hljs-con">NAME                 STATUS   AGE
+default              Active   4m51s
+kube-node-lease      Active   4m54s
+kube-public          Active   4m54s
+kube-system          Active   4m54s
+local-path-storage   Active   4m43s
+</code></pre>
+</li>
+</ol>
+<p class="normal">Now that we have created a new cluster, we can start the process of restoring the workloads. The first step is to install Velero on the new cluster, pointing to the existing S3 bucket as the backup location.</p>
+<h2 class="heading-2" id="_idParaDest-475">Restoring a backup to the new cluster</h2>
+<p class="normal">With our<a id="_idIndexMarker1363"/> new KinD cluster up and running, we need to install Velero to restore our backup. We can use most of the same manifests and settings that we used in the original cluster, but since we are in a different cluster, we need to change the S3 target to the external URL we used to expose MinIO.</p>
+<h3 class="heading-3" id="_idParaDest-476">Installing Velero in the new cluster</h3>
+<p class="normal">We<a id="_idIndexMarker1364"/> already have the <code class="inlineCode">credentials-velero</code> file in the <code class="inlineCode">chapter14</code> folder, so we can jump right into installing Velero using the <code class="inlineCode">velero install</code> command. To follow these steps, you should be in the <code class="inlineCode">chapter14</code> directory:</p>
+<ol>
+<li class="numberedList" value="1">Be sure to change the <code class="inlineCode">s3Url</code> to your MinIO Ingress rule for your original KinD cluster that was created earlier in the chapter. If you forgot the ingress name, change your context to <code class="inlineCode">kind-cluster01</code> and use <code class="inlineCode">kubectl</code> to look at the rules in the <code class="inlineCode">velero</code> namespace, <code class="inlineCode">kubectl get ingress -n velero</code>. This will show you the full <code class="inlineCode">nip.io</code> for MinIO (remember, don’t use the <code class="inlineCode">minio-console</code> rule):
+        <pre class="programlisting con-one"><code class="hljs-con">velero install --provider aws --plugins velero/velero-plugin-for-aws:v1.2.0 --bucket velero  --secret-file ./credentials-velero --use-volume-snapshots=false --backup-location-config region=minio,s3ForcePathStyle="true",s3Url=http://minio.10.2.1.161.nip.io --use-node-agent --default-volumes-to-fs-backup
+</code></pre>
+</li>
+<li class="numberedList">The install will take a few minutes, but once the pod is up and running, view the log files to verify that the Velero server is up and running and connected to the S3 target:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl logs deployment/velero -n velero
+</code></pre>
+</li>
+<li class="numberedList">If all of your settings were correct, the Velero log will have an entry saying that it has found backups in the backup location that need to be synced with the new Velero server (the number of backups may be different for your KinD cluster):
+        <pre class="programlisting con-one"><code class="hljs-con">time="2021-10-01T23:53:30Z" level=info msg="Found 2 backups in the backup location that do not exist in the cluster and need to be synced" backupLocation=default controller=backup-sync logSource="pkg/controller/backup_sync_controller.go:204"
+</code></pre>
+</li>
+<li class="numberedList">After <a id="_idIndexMarker1365"/>confirming the installation, verify that Velero can see the existing backup files using <code class="inlineCode">velero get backups</code>:
+        <pre class="programlisting con-one"><code class="hljs-con">NAME             STATUS      ERRORS   WARNINGS
+initial-backup   Completed   0        0
+namespace-demo   Completed   0        0
+</code></pre>
+</li>
+</ol>
+<p class="normal">Your backup list will differ from ours, but you should see the same list that you had in the original cluster.</p>
+<p class="normal">At this point, we can use any of the backup files to create a restore job in the new cluster.</p>
+<h3 class="heading-3" id="_idParaDest-477">Restoring a backup in a new cluster</h3>
+<p class="normal">In this section, we will <a id="_idIndexMarker1366"/>use the backup that was created in the previous section and restore the workloads to a brand new KinD cluster to simulate a workload migration.</p>
+<p class="normal">The backup that was created of the original cluster, after we added the namespaces and deployment, was called <code class="inlineCode">namespace-demo</code>:</p>
+<ol>
+<li class="numberedList" value="1">Using that backup name, we can restore the namespaces and objects by running the <code class="inlineCode">velero create restore</code> command:
+        <pre class="programlisting con-one"><code class="hljs-con">velero create restore --from-backup=namespace-demo
+</code></pre>
+</li>
+<li class="numberedList">Wait for the restore to complete before moving on to the next step. To verify that the restore was successful, use the <code class="inlineCode">velero describe restore</code> command with the name of the restore job that was created when you executed the <code class="inlineCode">create restore</code> command. In our cluster, the restore job was assigned the name <code class="inlineCode">namespace-demo-20211001235926</code>:
+        <pre class="programlisting con-one"><code class="hljs-con">velero restore describe namespace-demo-20211001235926
+</code></pre>
+</li>
+<li class="numberedList">Once the phase has changed from <code class="inlineCode">InProgress</code> to <code class="inlineCode">Completed</code>, verify that your new cluster has the additional demo namespaces using <code class="inlineCode">kubectl get ns</code>:
+        <pre class="programlisting con-one"><code class="hljs-con">NAME                 STATUS   AGE
+calico-apiserver     Active   23m
+calico-system        Active   24m
+default              Active   24m
+demo1                Active   15s
+demo2                Active   15s
+demo3                Active   15s
+demo4                Active   15s
+ingress-nginx        Active   24m
+kube-node-lease      Active   24m
+kube-public          Active   24m
+kube-system          Active   24m
+local-path-storage   Active   24m
+tigera-operator      Active   24m
+velero               Active   5m18s
+</code></pre>
+</li>
+<li class="numberedList">You will see that the new namespaces were created, and if you look at the pods in each namespace, you will see that each has a pod called <code class="inlineCode">nginx</code>. You can verify that the pods were created using <code class="inlineCode">kubectl get pods</code>. For example, to verify the pods in the <code class="inlineCode">demo1</code> namespace, enter the following: <code class="inlineCode">kubectl get pods -n demo1</code>.</li>
+</ol>
+<p class="normal-one">The<a id="_idIndexMarker1367"/> output is as follows:</p>
+<pre class="programlisting con-one"><code class="hljs-con">NAME     READY   STATUS    RESTARTS   AGE
+nginx    1/1     Running   0          3m30s
+</code></pre>
+<p class="normal">Congratulations! You have successfully restored objects from one cluster into a new cluster.</p>
+<h3 class="heading-3" id="_idParaDest-478">Deleting the new cluster</h3>
+<p class="normal">Since we do not need two<a id="_idIndexMarker1368"/> clusters, let’s delete the new KinD cluster that we restored the backup to:</p>
+<ol>
+<li class="numberedList" value="1">To delete the cluster, execute the <code class="inlineCode">kind delete cluster</code> command:
+        <pre class="programlisting con-one"><code class="hljs-con">kind delete cluster --name velero-restore
+</code></pre>
+</li>
+<li class="numberedList">Set your current context to the original KinD cluster, <code class="inlineCode">kind-cluster01</code>:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl config use-context kind-cluster01
+</code></pre>
+</li>
+</ol>
+<p class="normal">Now that we have cleaned up the temporary second cluster, we have completed the chapter.</p>
+<h1 class="heading-1" id="_idParaDest-479">Summary</h1>
+<p class="normal">Backing up clusters and workloads is a requirement for any enterprise cluster. Having a backup solution allows you to recover from a disaster or human error. A typical backup solution allows you to restore any Kubernetes object, including namespaces, persistent volumes, RBAC, services, and service accounts. You can also take all of the workloads from one cluster and restore them on a completely different cluster for testing or troubleshooting.</p>
+<p class="normal">In this chapter, we reviewed how to back up the <code class="inlineCode">etcd</code> cluster database using <code class="inlineCode">etcdctl</code> and the snapshot feature. We also went into detail on how to install Velero in a cluster to back up and restore workloads. We closed out the chapter by copying workloads from an existing backup by restoring an existing backup on a new cluster.</p>
+<p class="normal">Coming up in the next chapter, we will introduce you to monitoring your clusters and workloads.</p>
+<h1 class="heading-1" id="_idParaDest-480">Questions</h1>
+<ol>
+<li class="numberedList" value="1">True or false – Velero can only use an S3 target to store backup jobs.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">If you do not have an object storage solution, how can you provide an S3 target using a backend storage solution such as NFS?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">You can’t – there is no way to add anything in front of NFS to present S3.</li>
+<li class="alphabeticList level-2">Kubernetes can do this using native CSI features.</li>
+<li class="alphabeticList level-2">Install MinIO and use the NFS volumes as persistent disks in the deployment.</li>
+<li class="alphabeticList level-2">You don’t need to use an object store; you can use NFS directly with Velero.</li>
+</ol>
+</li>
+<li class="numberedList">True or false – Velero backups can only be restored on the same cluster where the backup was originally created.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">What utility can you use to create an <code class="inlineCode">etcd</code> backup?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Velero.</li>
+<li class="alphabeticList level-2">MinIO.</li>
+<li class="alphabeticList level-2">There is no reason to back up the <code class="inlineCode">etcd</code> database.</li>
+<li class="alphabeticList level-2"><code class="inlineCode">etcdctl</code>.</li>
+</ol>
+</li>
+<li class="numberedList">Which command will create a scheduled backup that runs every day at 3 A.M.?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1"><code class="inlineCode">velero create backup daily-backup</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">velero create @daily backup daily-backup</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">velero create backup daily-backup –schedule="@daily3am"</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">velero create schedule daily-backup --schedule="0 3 * * *"</code></li>
+</ol>
+</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-481">Answers</h1>
+<ol>
+<li class="numberedList" value="1">a</li>
+<li class="numberedList">a</li>
+<li class="numberedList">b</li>
+<li class="numberedList">d</li>
+<li class="numberedList">d</li>
+</ol>
+</div>
+</div></body></html>

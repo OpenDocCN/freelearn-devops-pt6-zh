@@ -1,0 +1,526 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer254">
+<h1 class="chapterNumber">15</h1>
+<h1 class="chapterTitle" id="_idParaDest-482">Monitoring Clusters and Workloads</h1>
+<p class="normal">So far in this book, we’ve spent a considerable amount of time standing up different aspects of an enterprise Kubernetes infrastructure. Once it’s stood up, how do you know it’s healthy? How do you know it’s running? Do you know when there’s a problem before your users do, or are you first finding out when someone can’t access a critical system? Monitoring is a critical aspect of any well-run infrastructure that has its own unique challenges in the Kubernetes and Cloud Native world. In this chapter, we’re going to look at two specific aspects of monitoring. First, we’re going to work with the Prometheus project and its integration with Kubernetes to understand how to inspect our cluster and what to look for. Next, we’re going to centralize our logs using the popular ELK stack. Along the way, we’ll include typical enterprise discussions around security and compliance to make sure we’re working within our enterprise’s requirements.</p>
+<p class="normal">In this chapter, we’re going to cover the following main topics:</p>
+<ul>
+<li class="bulletList">Managing Metrics in Kubernetes</li>
+<li class="bulletList">Log Management in Kubernetes</li>
+</ul>
+<p class="normal">Next, let’s review the technical requirements.</p>
+<h1 class="heading-1" id="_idParaDest-483">Technical Requirements</h1>
+<p class="normal">This chapter will involve a larger workload than previous chapters, so a more powerful cluster will be needed. This chapter has the following technical requirements:</p>
+<ul>
+<li class="bulletList">An Ubuntu 22.04+ server running Docker with a minimum of 8 GB of RAM, though 16 GB is suggested</li>
+<li class="bulletList">Scripts from the <code class="inlineCode">chapter15</code> folder from the repo, which you can access by going to this book’s GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition</span></a></li>
+</ul>
+<h2 class="heading-2" id="_idParaDest-484">Getting Help</h2>
+<p class="normal">We do our best to test everything, but there are sometimes half a dozen systems or more in our integration labs. Given the fluid nature of technology, sometimes things that work in our environment don’t work in yours. Don’t worry, we’re here to help! Open an issue on our GitHub repo at <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues</span></a> and we’ll be happy to help you out!</p>
+<h1 class="heading-1" id="_idParaDest-485">Managing Metrics in Kubernetes</h1>
+<p class="normal">Once upon a time, monitoring and metrics were a complex and very proprietary corner of the industry. While there were some open-source projects that did monitoring, the majority of “enterprise” systems were large, cumbersome, and proprietary. There were a few standards, such as SNMP, but for the most part, every vendor had their own agents, their own <a id="_idIndexMarker1369"/>configurations, their own…everything. If you wanted to write an application that generated metrics or alerts, then you needed to write to their SDK. This led to monitoring being one of the centralized services, like databases, but required much deeper understanding of what’s being monitored. Changes were difficult and ultimately, many systems followed either <strong class="keyWord">you only live once</strong> (<strong class="keyWord">YOLO</strong>) monitoring or very basic high-level monitoring that “checked the compliance box,” but didn’t provide much value.</p>
+<p class="normal">Then came the Prometheus project, which made two critical improvements to the monitoring process that really changed the way we approach monitoring. The first change was to do everything via simple HTTP requests. If you want to monitor something, it needs to expose a URL that provides metrics data. It doesn’t matter whether it’s a website or a database. The second major impact was that these metrics endpoints provide data text format that makes it easy to dynamically generate a response regardless of the monitoring system. We’ll dive into the details later, but this format is so powerful and flexible that it has been adopted by SaaS monitoring systems in addition to Prometheus. Datadog, AWS CloudWatch, and so on all support the Prometheus endpoint and format, making it much easier to start with Prometheus and move to a provided solution without changing your applications.</p>
+<p class="normal">In addition to opening the ability to monitor disparate systems, Prometheus made it easier for operators to interact with that data by providing it via APIs. Now, common visualization tools, such as Grafana, can access that data without a vendor’s proprietary UI. These <a id="_idIndexMarker1370"/>tools build on the base offering of Prometheus, expanding your capabilities to monitoring and alerting as well.</p>
+<p class="normal">Now that we’ve explained why Prometheus has had such a large impact on the monitoring world, we’ll next walk through how your Kubernetes clusters provide metrics data and how to leverage it.</p>
+<h1 class="heading-1" id="_idParaDest-486">How Kubernetes Provides Metrics</h1>
+<p class="normal">Kubernetes provides a <code class="inlineCode">/metrics</code> URI on the API server. This API requires an authorized token to <a id="_idIndexMarker1371"/>be able to access it. To access this endpoint, let’s create a <code class="inlineCode">ServiceAccount</code>, <code class="inlineCode">ClusterRole</code>, and <code class="inlineCode">ClusterRoleBinding</code>:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl create sa getmetrics
+$ kubectl create clusterrole get-metrics --non-resource-url=/metrics --verb=get
+$ kubectl create clusterrolebinding get-metrics --clusterrole=get-metrics --serviceaccount=default:getmetrics
+$ <span class="hljs-con-built_in">export</span> TOKEN=$(kubectl create token getmetrics -n default)
+<span class="hljs-con-meta">$ </span>curl -v --insecure -H <span class="hljs-con-string">"Authorization: Bearer </span><span class="hljs-con-variable">$TOKEN</span><span class="hljs-con-string">"</span> https://0.0.0.0:6443/metrics
+<span class="hljs-con-comment"># HELP aggregator_discovery_aggregation_count_total [ALPHA] Counter of number of times discovery was aggregated</span>
+<span class="hljs-con-comment">.</span>
+<span class="hljs-con-comment">.</span>
+<span class="hljs-con-comment">.</span>
+</code></pre>
+<p class="normal">This is going to take a while; there are too many metrics that are collected to document here. We’ll talk about some individual metrics after we get some context on how the metrics are created and consumed by Prometheus. The main point to understand now is that all metrics from your cluster come from a single URL and that those metrics require authentication. You could disable this requirement by making the <code class="inlineCode">/metrics</code> endpoint available to the system (unauthenticated user, which is what all unauthenticated requests are assigned to), but this would now open your cluster up to potential escalation attacks. It’s better to keep this resource protected.</p>
+<p class="normal">If you spend even a moment looking at this data, you’ll see there is an incredible amount. We’re <a id="_idIndexMarker1372"/>going to first dive into deploying Prometheus to make it easier for you to interact with this data. Thankfully, deploying a full monitoring stack on Kubernetes is pretty simple!</p>
+<h1 class="heading-1" id="_idParaDest-487">Deploying the Prometheus Stack</h1>
+<p class="normal">So far, we’ve found how to access the Kubernetes metrics endpoint; next, we’re going to deploy <a id="_idIndexMarker1373"/>Prometheus using the <code class="inlineCode">kube-prometheus-stack</code> project (<a href="https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack"><span class="url">https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack</span></a>) from the Prometheus Community. This chart combines the Prometheus project with Grafana and Alertmanager to create a mostly complete monitoring solution. We’ll walk through some of the gaps later in the chapter. First, let’s get Prometheus deployed:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter15/simple
+<span class="hljs-con-meta">$ </span>./deploy-prometheus-charts.sh
+</code></pre>
+<p class="normal">This script creates the monitoring namespace, deploys the Helm chart, and creates an Ingress object with the host <code class="inlineCode">prometheus.apps.X-X-X-X.nip.io</code>, where <code class="inlineCode">X-X-X-X</code> is your API server’s IP address but with dashes instead of dots. For me, my API server is running on <code class="inlineCode">192.168.2.82</code>, so, to access the Prometheus UI in my browser, I go to <code class="inlineCode">https://prometheus.apps.192-168-2-82.nip.io/</code>.</p>
+<p class="normal">Now that Prometheus is running and we can access it, the next step is to walk through some of Prometheus’ capabilities.</p>
+<h2 class="heading-2" id="_idParaDest-488">Introduction to Prometheus</h2>
+<p class="normal">The first thing you’ll notice when accessing Prometheus is there’s no login screen. Prometheus <a id="_idIndexMarker1374"/>has no concept of security. Anyone with access to your URL will have access to your Prometheus in the current setup. We’ll take care of this problem later in the chapter as we look at operationalizing Prometheus.</p>
+<p class="normal">Having seen that there’s no security in Prometheus, the next thing to note is that the main screen, known as the <strong class="screenText">Graph</strong> view, gives you an <strong class="screenText">Expression</strong> box. This is where you can look for any of the expressions available using PromQL, Prometheus’ query language. For instance, using the <code class="inlineCode">sum by (namespace) (kube_pod_info)</code> query gives you a list of all the pods in each namespace:</p>
+<figure class="mediaobject"><img alt="A screenshot of a computer  Description automatically generated" height="393" src="../Images/B21165_15_01.png" width="877"/></figure>
+<p class="packt_figref">Figure 15.1: Prometheus query</p>
+<p class="normal">This screen <a id="_idIndexMarker1375"/>has a menu bar that includes <strong class="screenText">Alerts</strong> and <strong class="screenText">Status</strong> menu options as well. If you click on <strong class="screenText">Alerts</strong>, you’ll see several alerts are red and firing. This is because we’re running inside of KinD, which has its own networking quirks. Depending on the kind of Kubernetes distribution, you’ll find that some alerts are firing on a regular basis and can be ignored.</p>
+<p class="normal">While Prometheus is configured to generate alerts, it doesn’t have any mechanism for notification. It instead relies on an outside system. The typical open source tool used is Alertmanager, but we’ll cover that later in the chapter. For now, what’s important to know is that alerts are defined in Prometheus and you can check their status from the <strong class="screenText">Alerts</strong> view.</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="493" src="../Images/B21165_15_02.png" width="877"/></figure>
+<p class="packt_figref">Figure 15.2: Alerts view</p>
+<p class="normal">Finally, there’s the <strong class="screenText"><a id="_idIndexMarker1376"/></strong><strong class="screenText">Status</strong> menu, which provides several views. The one I find myself using the most is the <strong class="screenText">Targets</strong> view, which will tell you if any targets aren’t available.</p>
+<figure class="mediaobject"><img alt="A screenshot of a computer screen  Description automatically generated" height="494" src="../Images/B21165_15_03.png" width="879"/></figure>
+<p class="packt_figref">Figure 15.3: Targets view</p>
+<p class="normal">It was important to get Prometheus up and running before we dove into the details of how metrics are collected or queried. As we saw when we first looked at Kubernetes’ metrics, there is a massive amount of data and it’s not in a format that’s easily analyzed via command-line tools. With the GUI in hand, we can begin to look at how Prometheus collects and stores metrics.</p>
+<h3 class="heading-3" id="_idParaDest-489">How Does Prometheus Collect Metrics?</h3>
+<p class="normal">So far, we’ve polled the metrics endpoint for Kubernetes and gotten the Prometheus stack up and <a id="_idIndexMarker1377"/>running to query and analyze that data. Earlier, we created a simple query to look for the number of pods by <code class="inlineCode">Namespace</code>:<code class="inlineCode"> sum by (namespace) (kube_pod_info)</code>. Looking at the output of our API server metrics pull, we can grep for <code class="inlineCode">kube_pod_info</code>, and we won’t find anything! That’s because this particular metric doesn’t come directly from the API server. It instead comes from the <code class="inlineCode">kube-state-metrics</code> project (<a href="https://github.com/kubernetes/kube-state-metrics"><span class="url">https://github.com/kubernetes/kube-state-metrics</span></a>), which is deployed with the Prometheus stack chart. This tool generates data about the API server in a way that can be integrated into Prometheus. If we look at its <code class="inlineCode">/metrics</code> output, we’ll find:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta"># </span>HELP kube_pod_deletion_timestamp Unix deletion timestamp
+<span class="hljs-con-meta"># </span>TYPE kube_pod_deletion_timestamp gauge
+<span class="hljs-con-meta"># </span>HELP kube_pod_info [STABLE] Information about pod.
+<span class="hljs-con-meta"># </span>TYPE kube_pod_info gauge
+kube_pod_info{namespace="calico-system",pod="calico-typha-699dc7b758-bgr5f",uid="33ec61b1-bb56-4a4c-853c-6a0ee56023c2",host_ip="172.18.0.2",pod_ip="172.18.0.2",node="cluster01-worker",created_by_kind="ReplicaSet",created_by_name="calico-typha-699dc7b758",priority_class="system-cluster-critical",host_network="true"} 1
+</code></pre>
+<p class="normal">The lines with a hash mark or pound, <code class="inlineCode">#</code>, provide metadata for the upcoming metrics. For each metric, the form is:</p>
+<pre class="programlisting con"><code class="hljs-con">metric_name{annotation1="value1",annotation2="value2"} value
+</code></pre>
+<p class="normal">The annotations on each metric are what allow Prometheus to be able to index so much information and make it easy to query. Looking at the <code class="inlineCode">kube_pod_info</code> metrics, we see an annotation for <code class="inlineCode">namespace</code>. This means that we can ask Prometheus to give us all the instances of the <code class="inlineCode">kube_pod_info</code> metric, broken up by the annotation of <code class="inlineCode">namespace</code>. We could also ask for any pods on a specific <code class="inlineCode">host_ip</code>, <code class="inlineCode">node</code>, or any other of the annotations.</p>
+<p class="normal">The type of the <code class="inlineCode">kube_pod_info</code> metric is a gauge. There are four types of metrics in Prometheus:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Counter</strong>:<strong class="keyWord"> </strong>Counters <a id="_idIndexMarker1378"/>can only increase over time or go back down to zero. An example of a counter would be the number of requests an application responded to over its lifetime. The number of requests will only increase until the pods dies, at which point, it goes back to zero.</li>
+<li class="bulletList"><strong class="keyWord">Gauge</strong>: These <a id="_idIndexMarker1379"/>metrics can go up or down over time. For instance, the number of open sessions a pod has would be a gauge because it can fluctuate over time.</li>
+<li class="bulletList"><strong class="keyWord">Histogram</strong>: This type <a id="_idIndexMarker1380"/>is more complex. It’s designed to allow you to track ranges, or buckets, of request types. For instance, if you wanted to track response times for requests, you could create buckets for likely times and increase the count for each bucket. This is much more efficient than generating a new metric instance for each request. If we did generate a metric instance for each request, we might have thousands of data points every second that need to be indexed and stored and that data just wouldn’t be helpful. Instead of using a histogram, we can categorize ranges and track them that way, saving on processing and data storage.</li>
+<li class="bulletList"><strong class="keyWord">Summary</strong>: Summary <a id="_idIndexMarker1381"/>metrics are similar to histograms but are managed by the client. Generally speaking, you’ll want to use histograms.</li>
+</ul>
+<p class="normal">When Prometheus collects these metrics, they’re stored in an internal database. You’ll see that both <a id="_idIndexMarker1382"/>the Prometheus and Alertmanager pods are part of <code class="inlineCode">StatefulSets</code>, not <code class="inlineCode">Deployments</code>. That’s because they store data locally. For Prometheus, the data is stored so that you can not only see the latest version of the metric but also the past instances of that metric, too. From the main <strong class="screenText">Graph</strong> screen in Prometheus, you can click on <strong class="screenText">Graph</strong> for any result to see the result over time. Our cluster is small and isn’t running much, but what if we had an explosion of new <code class="inlineCode">pods</code>? That could trigger an alarm. Another area where keeping the history of metrics is important is for alerting. When we get to defining our alerting rules, we’ll see that we can specify to only fire or clear an alert if it happens over a certain period of time. Stuff happens; you don’t want your pager going off for every packet that gets dropped. Tracking this information is very important for both the value of the data and accurate alerting.</p>
+<p class="normal">In this section, we looked at how Prometheus collects and stores metrics. Next, we’ll dive into common metrics you’ll want to keep an eye on for Kubernetes.</p>
+<h3 class="heading-3" id="_idParaDest-490">Common Kubernetes Metrics</h3>
+<p class="normal">So far, we’ve talked about deploying Prometheus with Kubernetes and how Prometheus pulls metrics, but which metrics are important? To say there is a large number of metrics to <a id="_idIndexMarker1383"/>choose from in Kubernetes is an understatement. There are 212 individual metrics coming from the API server. There are 194 metrics from the kube-state-metrics project. There are also metrics from the kubelet and etcd. Instead of focusing on specific metrics, which will vary based on your projects, I would instead point you to the built-in Grafana that comes with the charts we deployed.</p>
+<p class="normal">To access Grafana, go to <code class="inlineCode">https://grafana.apps.X-X-X-X.nip.io/</code>, where <code class="inlineCode">X-X-X-X</code> is your server’s IP address but with dashes instead of dots. Since my cluster is on <code class="inlineCode">192.168.2.82</code>, I go to <code class="inlineCode">https://grafana.apps.192-168-2-82.nip.io/</code>. The username is <code class="inlineCode">admin</code> and the password is <code class="inlineCode">prom-operator</code>. You can navigate through any of the available dashboards and click to edit them to see how they get their data. For instance, in <em class="italic">Figure 15.4</em>, I’ve navigated to the compute resources in the cluster, which breaks down CPU usage by namespace.</p>
+<div class="note">
+<p class="normal">These dashboards were all installed as part of the Helm chart we deployed. We’ll cover how to create your own dashboards later in the chapter.</p>
+</div>
+<p class="normal">From here, I can click on the menu and the <strong class="screenText">edit</strong> option:</p>
+<figure class="mediaobject"><img alt="A screenshot of a computer  Description automatically generated with medium confidence" height="493" src="../Images/B21165_15_04.png" width="876"/></figure>
+<p class="packt_figref">Figure 15.4: Grafana compute resources for the cluster</p>
+<p class="normal">With the graph editor open, you can now view the PromQL expression used to generate the data:</p>
+<figure class="mediaobject"><img alt="A screenshot of a computer  Description automatically generated" height="493" src="../Images/B21165_15_05.png" width="876"/></figure>
+<p class="packt_figref">Figure 15.5: Edit screen in Grafana</p>
+<p class="normal">If you take <a id="_idIndexMarker1384"/>this expression, you can drop it into the <strong class="screenText">Graph</strong> screen in Prometheus and see the raw data used to generate the graph:</p>
+<figure class="mediaobject"><img alt="A screenshot of a computer  Description automatically generated with medium confidence" height="494" src="../Images/B21165_15_06.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.6: Prometheus with a Grafana query</p>
+<p class="normal">If you look closely at the query, you’ll see that the Prometheus version doesn’t reference a cluster. That’s because the Grafana dashboards were built with the idea of managing multiple clusters, whereas Prometheus was set up to inspect only a single cluster. The data isn’t <a id="_idIndexMarker1385"/>annotated with the <code class="inlineCode">cluster</code> attribute so Prometheus can’t search on it. We’ll talk more about this when we get to Grafana.</p>
+<p class="normal">Now that we know where we can find examples of important metrics for our cluster and how to test them, we should spend some time on PromQL, the query language for Grafana.</p>
+<h3 class="heading-3" id="_idParaDest-491">Querying Prometheus with PromQL</h3>
+<p class="normal">The majority of this chapter so far has been focused on deploying Prometheus and gathering data. We started to dive into how to query data, but we haven’t yet dived into the details <a id="_idIndexMarker1386"/>of the Prometheus query language, called PromQL. If <a id="_idIndexMarker1387"/>you’re familiar with other query languages, this won’t look too different.</p>
+<p class="normal">At a <a id="_idIndexMarker1388"/>high level, the query language looks similar to the data. You start with a metric and which annotations you want to apply. For instance, looking at the compute query by namespace, first, let’s look at what happens when we start with <code class="inlineCode">node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate</code>:</p>
+<figure class="mediaobject"><img alt="Chart, histogram  Description automatically generated" height="494" src="../Images/B21165_15_07.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.7: CPU metrics</p>
+<p class="normal">Since we didn’t include any annotations in our query, we received the CPU usage for every pod on the cluster. If we wanted to see the CPU used in a specific namespace, we would specify <a id="_idIndexMarker1389"/>that the same way it’s specified in <a id="_idIndexMarker1390"/>the metrics data but adding a <code class="inlineCode">{annotation="value"}</code> to our metric. To see all of the containers’ CPU usage in the <code class="inlineCode">monitoring</code> namespace, add <code class="inlineCode">{namespace="monitoring"}</code> to your query:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, chart  Description automatically generated" height="494" src="../Images/B21165_15_08.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.8: CPU in the monitoring namespace</p>
+<p class="normal">Once you’ve limited the data you want, you may wish to aggregate the data. The current details show all of the running containers in the <code class="inlineCode">monitoring</code> namespace, but that doesn’t give you a great idea as to how much total CPU is being used. You can add functions that will aggregate for you, such as the <code class="inlineCode">sum</code> function:</p>
+<figure class="mediaobject"><img alt="Chart  Description automatically generated" height="426" src="../Images/B21165_15_09.png" width="876"/></figure>
+<p class="packt_figref">Figure 15.9: Sum of all CPU usage in the monitoring namespace</p>
+<p class="normal">Finally, you <a id="_idIndexMarker1391"/>may want to <code class="inlineCode">sum</code> by a specific annotation, such <a id="_idIndexMarker1392"/>as the pod since most of the pods have multiple containers. You can add a grouping using the <code class="inlineCode">by</code> keyword:</p>
+<figure class="mediaobject"><img alt="A screenshot of a computer  Description automatically generated with medium confidence" height="494" src="../Images/B21165_15_10.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.10: CPU usage of pods in the monitoring namespace</p>
+<p class="normal">In addition to functions, you can perform math operations, too. Let’s say you want to know what percentage of total CPU has been used in your cluster. You need to know the CPU utilization at any moment, and the total amount of CPU available. We already know how to get the total CPU being utilized by all the containers in our cluster. Next, we need to know the total available CPU across the cluster. Then, we need to do some math to get <a id="_idIndexMarker1393"/>the percentage. When doing math with <a id="_idIndexMarker1394"/>PromQL, you would use the typical infix notation that you would use in most other programming and query languages. For instance, the <code class="inlineCode">(sum(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate) / max(count without(cpu,mode,pod) (node_cpu_seconds_total{mode="idle"}))) * 100</code> query combines multiple metrics and calculation to get the CPU utilization across the cluster:</p>
+<figure class="mediaobject"><img alt="Chart  Description automatically generated" height="424" src="../Images/B21165_15_11.png" width="877"/></figure>
+<p class="packt_figref">Figure 15.11: Percentage of CPU used across the cluster</p>
+<p class="normal">Now, we have a way of knowing how much CPU we’re using in the cluster. We could incorporate this knowledge into our capacity planning by creating an alert that tells us that our cluster has reached a certain capacity level. This leads us to our next section, which will focus on this very question.</p>
+<h2 class="heading-2" id="_idParaDest-492">Alerting with Alertmanager</h2>
+<p class="normal">Thus far, we’ve deployed Prometheus, integrated it with our Kubernetes cluster, and learned how <a id="_idIndexMarker1395"/>to query the database for useful information about our cluster. We’ve seen that Prometheus tracks alerts on the <strong class="keyWord">Alerts</strong> screen of the UI, but how do cluster operators get notified there’s an issue?</p>
+<p class="normal">The Alertmanager project (<a href="https://prometheus.io/docs/alerting/latest/alertmanager/"><span class="url">https://prometheus.io/docs/alerting/latest/alertmanager/</span></a>) is a generic tool that knows how to query for alerts and then send them to the correct people. It’s not simply a notification conduit; it also helps with deduplication and grouping, too. Finally, it provides an interface for silencing alerts that don’t need to continue firing.</p>
+<p class="normal">The helm charts we deployed earlier include an instance of Alertmanager and an <code class="inlineCode">Ingress</code> for it too. Like with the other projects, you can access it with the <code class="inlineCode">https://alertmanager.apps.X-X-X-X.nip.io/</code> with the <code class="inlineCode">X-X-X-X</code> URL replaced with your cluster’s IP address. Since my cluster is on <code class="inlineCode">192.168.2.82</code>, my URL is <code class="inlineCode">https://alertmanager.apps.192-168-2-82.nip.io/</code>.</p>
+<figure class="mediaobject"><img alt="Graphical user interface, text, application, email  Description automatically generated" height="351" src="../Images/B21165_15_12.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.12: Alertmanager UI</p>
+<p class="normal">Similar to Prometheus, you’ll notice there’s no authentication because, just like Prometheus, there’s no security model. There is more information on that later in the chapter. What you <a id="_idIndexMarker1396"/>will see is that there are already alerts! That’s because running Kubernetes in KinD will lead to some interesting networking issues that aren’t expected. If you run the Prometheus stack in a cloud-hosted Kubernetes, you will find similar results.</p>
+<p class="normal">You’ll notice that there are multiple sets of alerts. Alertmanager provides for tagging of alerts so you can better organize them. For instance, you may want to only send alerts for critical issues or route alerts based on where they’re from.</p>
+<p class="normal">You can silence an alert from this UI as well. This is useful when you want to stop notifications because you’re working on the problem or because you know of the issue and it’s an issue another team needs to address and you don’t need to get continuous alerts while that team is addressing the problem. Many teams do not get direct access to this UI because of the lack of security, but we’ll cover how to fix that later in the chapter.</p>
+<p class="normal">While the UI lets you see what alerts there are and silence them, what it won’t do is allow you to configure alerts or where to send them. That’s done in custom resource objects, which we’ll cover in the next section.</p>
+<h3 class="heading-3" id="_idParaDest-493">How Do You Know Whether Something Is Broken?</h3>
+<p class="normal">So far, we’ve seen how to access the Alertmanager UI and we’ve seen that the alerts are configured <a id="_idIndexMarker1397"/>in Prometheus, but we’ve not yet configured an alert. There are two steps to configuring an alert:</p>
+<ol>
+<li class="numberedList" value="1">Create an instance of a <code class="inlineCode">PrometheusRule</code> to define under what conditions an alert should be generated. This involves creating a PromQL expression to define the data, how long you want the condition to be met, and finally, how to label the alert.</li>
+<li class="numberedList">Create an <code class="inlineCode">AlertmanagerConfig</code> object to group and route the alert to a receiver.</li>
+</ol>
+<p class="normal">We already have plenty of <code class="inlineCode">PrometheusRule</code> objects thanks to the great set of pre-configured rules that come with the chart we deployed. The next question is how to build an <code class="inlineCode">AlertmanagerConfig</code>. The tricky part about this is that we need something to send the alerts to. There are plenty of options including email, Slack, and various notification SaaS services. To keep things simple, let’s deploy an NGINX server that can act as a webhook that will let us see the JSON payload. Our pagers won’t go off, but it will at least give us a feel for what we’re seeing. From inside the source repo:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl apply -f chapter15/alertmanager-webhook/alertmanager-webhook.yaml
+</code></pre>
+<p class="normal">This will launch an NGINX pod in the <code class="inlineCode">alert-manager-webhook</code> namespace. Now, let’s configure an <code class="inlineCode">AlertmanagerConfig</code> to send all critical alerts to our webhook:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">monitoring.coreos.com/v1alpha1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">AlertmanagerConfig</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">critical-alerts</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">kube-system</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">alertmanagerConfig:</span> <span class="hljs-string">critical</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">receivers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-webhook</span>
+      <span class="hljs-attr">webhookConfigs:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">sendResolved:</span> <span class="hljs-literal">true</span>
+          <span class="hljs-attr">url:</span> <span class="hljs-string">http://nginx-alerts.alert-manager-webhook.svc/webhook</span>
+  <span class="hljs-attr">route:</span>
+    <span class="hljs-attr">repeatInterval:</span> <span class="hljs-string">30s</span>
+    <span class="hljs-attr">receiver:</span> <span class="hljs-string">'</span><span class="hljs-string">nginx-webhook'</span>
+    <span class="hljs-attr">matchers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">severity</span>
+      <span class="hljs-attr">matchType:</span> <span class="hljs-string">"="</span>
+      <span class="hljs-attr">value:</span> <span class="hljs-string">critical</span>
+    <span class="hljs-attr">groupBy:</span> [<span class="hljs-string">'</span><span class="hljs-string">namespace'</span>]
+    <span class="hljs-attr">groupWait:</span> <span class="hljs-string">30s</span>
+    <span class="hljs-attr">groupInterval:</span> <span class="hljs-string">5m</span>
+</code></pre>
+<p class="normal">The <code class="inlineCode">receivers</code> section tells Alertmanager to send all events to our web server. The <code class="inlineCode">route.matchers</code> section tells Alertmanager which alerts to send. In our example, we will send any alerts with a <code class="inlineCode">severity</code> of <code class="inlineCode">critical</code> being generated from the <code class="inlineCode">kube-system</code> namespace. When working with <code class="inlineCode">AlertmanagerConfig</code> objects, the namespace the object is created in automatically gets added to your matchers. You can create this object from <code class="inlineCode">chapter15/alertmanager-webhook/critical-alerts.yaml</code>. Once created, wait a few minutes. There will eventually be an alert that gets fired from Prometheus, which will result in a log entry like:</p>
+<pre class="programlisting con"><code class="hljs-con">0.240.189.139 - - [12/Jan/2024:22:15:22 +0000] "POST /webhook HTTP/1.1" body:"{\x22receiver\x22:\x22kube-system/critical-alerts/nginx-we… " 200 2 "-" "Alertmanager/0.26.0" "-"
+</code></pre>
+<p class="normal">The JSON in the <a id="_idIndexMarker1398"/>log message is too large to provide here, but it provides all the information available to Alertmanager. There are very few times when you should be writing your own receiver. There are so many pre-built ones that it’s unlikely you’ll need to build your own.</p>
+<p class="normal">Now that we know how to configure Alertmanager to send an alert, next, we’ll walk through how to design metrics-based alerts.</p>
+<h3 class="heading-3" id="_idParaDest-494">Alerting Your Team Based on Metrics</h3>
+<p class="normal">In the previous section, we walked through how to send an alert to a receiver using Alertmanager. Next, we’ll walk through how to generate an alert. Alerts are not configured <a id="_idIndexMarker1399"/>in Alertmanager but in Prometheus. The only job Alertmanager has is to forward the generated alerts to receivers. The job of determining whether an alert should be fired is up to Prometheus.</p>
+<p class="normal">The <code class="inlineCode">PrometheusRule</code> object is used to configure Prometheus to fire an alert. This object defines metadata for the rule, conditions for when the rule will fire, and how often the rule needs to fire for the alert to be sent to Alertmanager. The <code class="inlineCode">kube-prometheus</code> project that we deployed comes with about forty pre-built rules. These rules are constantly being updated based on experience and you shouldn’t update them on your own. You can, however, build your own rules for your own infrastructure.</p>
+<p class="normal">To demonstrate this, let’s deploy OpenUnison into our cluster:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter15/user-auth
+<span class="hljs-con-meta">$ </span>./deploy_openunison_imp_impersonation.sh
+</code></pre>
+<p class="normal">We’ll get into the details of what this script does when we get to the <em class="italic">Monitoring Applications</em> section later in the chapter. For now, know that this script deploys OpenUnison and integrates it with our kube-prometheus chart for both adding the login to our apps and providing something to monitor.</p>
+<p class="normal">Now that we’re using OpenUnison to provide authentication for our cluster, if it goes down, you want to know before your users start calling. We deployed the below <code class="inlineCode">PrometheusRule</code> as part of our deployment script earlier:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">monitoring.coreos.com/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">PrometheusRule</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">creationTimestamp:</span> <span class="hljs-literal">null</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">release:</span> <span class="hljs-string">prometheus</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">openunison-has-activesessions</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">groups:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">openunison.rules</span>
+    <span class="hljs-attr">rules:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">alert:</span> <span class="hljs-literal">no</span><span class="hljs-string">-sessions</span>
+      <span class="hljs-attr">annotations:</span>
+        <span class="hljs-attr">description:</span> <span class="hljs-string">Fires</span> <span class="hljs-string">when</span> <span class="hljs-string">there</span> <span class="hljs-string">are</span> <span class="hljs-literal">no</span> <span class="hljs-string">OpenUnison</span> <span class="hljs-string">sessions</span>
+      <span class="hljs-attr">expr:</span> <span class="hljs-string">absent(active_sessions)</span>
+      <span class="hljs-attr">for:</span> <span class="hljs-string">1m</span>
+      <span class="hljs-attr">labels:</span>
+        <span class="hljs-attr">severity:</span> <span class="hljs-string">openunison-critical</span>
+        <span class="hljs-attr">source:</span> <span class="hljs-string">openunison</span>
+</code></pre>
+<p class="normal">In our <code class="inlineCode">PrometheusRule</code>, we created a single <code class="inlineCode">group</code> with a single <code class="inlineCode">rule</code>. The rule creates an <code class="inlineCode">alert</code> called <code class="inlineCode">no-sessions</code> that checks for the absence of the <code class="inlineCode">active_sessions</code> metric. This <a id="_idIndexMarker1400"/>metric is provided by OpenUnison to track how many sessions are currently open. If we simply had something like <code class="inlineCode">active_sessions &lt; 1</code>, then this rule wouldn’t fire because there is no <code class="inlineCode">active_sessions</code> metric. The language for specifying the <code class="inlineCode">expr</code> is the same PromQL that we used with Prometheus to query our data. This means you can test your expressions in the Prometheus web app before creating your <code class="inlineCode">PrometheusRule</code> objects.</p>
+<p class="normal">Let’s fire this rule by deleting the <code class="inlineCode">metrics</code> <code class="inlineCode">Application</code> object from OpenUnison:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>kubectl delete application metrics -n openunison
+</code></pre>
+<p class="normal">After about thirty seconds, if we log in to Prometheus and click on the <strong class="screenText">Alerts</strong> link, we’ll see:</p>
+<figure class="mediaobject"><img alt="A screenshot of a computer  Description automatically generated" height="493" src="../Images/B21165_15_13.png" width="876"/></figure>
+<p class="packt_figref">Figure 15.13: Pending alert in Prometheus</p>
+<p class="normal">The screenshot shows that there’s a pending alert. This is happening because, in our rule, we said that the conditions of the rule must be met for at least one minute. This is an important <a id="_idIndexMarker1401"/>tuning option to help prevent false positives. Depending on what you’re monitoring, you could find you’re getting alerts that are being cleared very quickly on their own. After another thirty seconds or so, you’ll see that the alert has moved from pending to firing:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="493" src="../Images/B21165_15_14.png" width="876"/></figure>
+<p class="packt_figref">Figure 15.14: Prometheus alert firing</p>
+<p class="normal">Now that our rule is firing, we can look in the Alertmanager application and see an alert is firing:</p>
+<figure class="mediaobject"><img alt="" height="103" src="../Images/B21165_15_15.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.15: Alert firing in Alertmanager</p>
+<p class="normal">We don’t have anything to collect the alert, but if we did, we’d now be receiving alerts that OpenUnison is down! Let’s fix the problem by re-adding the monitoring application:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>helm upgrade orchestra-login-portal tremolo/orchestra-login-portal -n openunison -f /tmp/openunison-values.yaml
+</code></pre>
+<p class="normal">Once this command is done, the same process will go in reverse. The first time that OpenUnison <a id="_idIndexMarker1402"/>responds with the active_<code class="inlineCode">sessions</code> metric, the alert will move into a pending status. If everything is OK after a full minute, the alert will be cleared.</p>
+<div class="note">
+<p class="normal">You may be asking why we simply deleted the metrics application instead of stopping OpenUnison. The Deployment script added security to our infrastructure, which would have made it harder to access the Prometheus and Alertmanager applications without OpenUnison. While you could have used port forwarding to access both Prometheus and Alertmanager, that could be complicated based on how your cluster is deployed, so we went with a simpler approach.</p>
+</div>
+<p class="normal">Now that we know how to generate an alert, what happens if we want to ignore it? We’ll cover that in the next section.</p>
+<h3 class="heading-3" id="_idParaDest-495">Silencing Alerts</h3>
+<p class="normal">Now that we know how to generate an alert, how do we silence it? There are many reasons <a id="_idIndexMarker1403"/>why you’d want to silence an alert:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Known outage</strong>:<strong class="keyWord"> </strong>You’ve been informed that ongoing work will cause an outage and there’s no reason to act on the alerts.</li>
+<li class="bulletList"><strong class="keyWord">Outage outside your control</strong>: Your outage is caused by a system outside of your control. For instance, if there’s an issue with your Active Directory that you have no control over and OpenUnison fails to authenticate because of it, you shouldn’t be getting alerts.</li>
+<li class="bulletList"><strong class="keyWord">Ongoing outage</strong>: You know there’s an issue; the alert doesn’t need to keep firing.</li>
+</ul>
+<p class="normal">You can enable a silence based on labels provided by your alerts. When you see an alert you want to silence, you can click on the <strong class="screenText">Silence</strong> button in the Alertmanager application:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, text, application, email  Description automatically generated" height="375" src="../Images/B21165_15_16.png" width="876"/></figure>
+<p class="packt_figref">Figure 15.16: Create a silence in Alertmanager from an alert</p>
+<p class="normal">You can <a id="_idIndexMarker1404"/>now customize the alert, specify who created it, and how long it should last. This silence isn’t persisted in the API server as an object, so you can’t scan for it via the Kubernetes API (though that would be a great feature).</p>
+<div class="note">
+<p class="normal">Security-minded readers may be thinking, could an attacker create a silence to cover their tracks? Of course! You could silence warnings about CPU while running Bitcoin miners, for example. We’ll talk more about the security of Prometheus when we get to adding SSO to the monitoring stack at the end of the chapter.</p>
+</div>
+<p class="normal">We’ve worked through most of the operational portions of our monitoring stack. The next step is to visualize all of the data collected. We’ll cover that next by looking at Grafana.</p>
+<h2 class="heading-2" id="_idParaDest-496">Visualizing Data with Grafana</h2>
+<p class="normal">So far, we’ve worked with the data collected by Prometheus in an operational way. We’ve <a id="_idIndexMarker1405"/>focused on how to react to changes in data in a way <a id="_idIndexMarker1406"/>that impacts our cluster and our users. While it’s great to be able to act on this data, there’s too much to be able to process without some help. This is where Grafana comes in; it provides a way for us to build dashboards based on the data from Prometheus (as well as other sources). We already looked at some of the out-of-the-box graphs earlier in the chapter. Now, we’ll create our own graphs and integrate those graphs into the kube-prometheus stack we’ve deployed.</p>
+<h3 class="heading-3" id="_idParaDest-497">Creating Your Own Graphs</h3>
+<p class="normal">A graph is a combination of a dataset and a set of visualization rules. The graph itself is defined <a id="_idIndexMarker1407"/>by JSON. This means that it can be persisted as a Kubernetes object and loaded as part of our stack instead of being stored in a persisted database. The downside to this approach is that you’ll need to first generate that JSON. Thankfully, the Grafana web UI makes it easy to do:</p>
+<ol>
+<li class="numberedList" value="1">Log in to Grafana.</li>
+<li class="numberedList">Create a new dashboard: We created a simple dashboard for OpenUnison’s <code class="inlineCode">active_sessions</code> metric.</li>
+<li class="numberedList">Once you’ve created the dashboard, export it to JSON.</li>
+<li class="numberedList">Create a <code class="inlineCode">ConfigMap</code> with the <code class="inlineCode">label</code> <code class="inlineCode">grafana_dashboard="1"</code>.</li>
+<li class="numberedList">Here are the important parts of <code class="inlineCode">chapter15/user-auth/grafana-custom-dashboard.yaml</code>:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ConfigMap</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">grafana_dashboard:</span> <span class="hljs-string">"1"</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">openunison-activesessions-dashboard-configmap</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">monitoring</span>
+<span class="hljs-attr">data:</span>
+  <span class="hljs-attr">openunison-activesessions-dashboard.json:</span> <span class="hljs-string">|-</span>
+    {
+      <span class="hljs-attr">"annotations":</span> {
+<span class="hljs-string">.</span>
+</code></pre>
+</li>
+</ol>
+<p class="normal">Once the <code class="inlineCode">ConfigMap</code> is created, Grafana will pick it up almost immediately!</p>
+<p class="normal">Having created a dashboard, you may have noticed that there are other capabilities in Grafana, such as alerting. Grafana can be used for this process, but that’s outside of the scope of the kube-prometheus project and this book.</p>
+<p class="normal">Now that you are familiar with the various components of the kube-prometheus stack, the next step is to look at how you can use it to monitor applications and systems running in your cluster.</p>
+<h2 class="heading-2" id="_idParaDest-498">Monitoring Applications</h2>
+<p class="normal">In the previous sections of this chapter, we focused on working with the operational aspects of the kube-prometheus stack for monitoring and alerting. We integrated OpenUnison <a id="_idIndexMarker1408"/>into our cluster and created monitors and alerts, but we didn’t detail how this worked. We’re going to use OpenUnison as a model for integrating other systems into your monitoring stack.</p>
+<h3 class="heading-3" id="_idParaDest-499">Why You Should Add Metrics to Your Applications</h3>
+<p class="normal">Before we move forward with how we added metrics and monitoring to OpenUnison, the first question we should answer is why. Your clusters are made of more than just your Kubernetes <a id="_idIndexMarker1409"/>implementation. Most clusters today have automation frameworks, authentication systems, external integrations, GitOps frameworks, and so on. If any of these components go down, to your users, your cluster is down. From a customer-management perspective, you want to know before they start opening alerts.</p>
+<p class="normal">In addition to your systems, you may be dependent on outside systems. When these go down, and they impact you and your customers, your customers will come to you first.</p>
+<p class="normal">This is very true in the authentication world, where, if the login process doesn’t “complete,” the authentication process is assumed to be the problem. I have dozens of anecdotes to demonstrate this reality, but I’ll focus on a couple where downstream monitoring helped me identify the root cause and stay ahead of my customers’ tickets. First off, many of my customers use OpenUnison to integrate with Active Directory via LDAP. While Active Directory is a very solid system, the network access is susceptible to issues. An errant firewall rule can cut off access, and adding monitoring of OpenUnison’s downstream Active Directory has provided quick evidence that an outage of the login process isn’t an OpenUnison issue. </p>
+<p class="normal">The Prometheus format for metrics has become a de facto standard in the cloud-native world. Even systems that aren’t built on Prometheus have built-in support for it, such as commercial systems like Datadog and Amazon CloudWatch. This means that most monitoring systems you’ll have deployed have support for Prometheus metric endpoints, even if you’re not using Prometheus internally. For systems that aren’t web-based, there are often “bolt-on” solutions for monitoring via Prometheus, such as databases.</p>
+<p class="normal">Having discussed why you should be monitoring your cluster systems, not just Kubernetes, let’s step through how we’re monitoring our OpenUnison.</p>
+<h3 class="heading-3" id="_idParaDest-500">Adding Metrics to OpenUnison</h3>
+<p class="normal">Earlier in <a id="_idIndexMarker1410"/>the chapter, we redeployed our monitoring stack with an OpenUnison instance. Now, it’s time to walk through what that integration looks like. If you haven’t already, redeploy your monitoring stack and OpenUnison:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter15/user-auth
+<span class="hljs-con-meta">$ </span>./deploy_openunison_imp_impersonation.sh
+</code></pre>
+<p class="normal">Prometheus’ operator looks for various objects for things to monitor; we’re going to focus on the <code class="inlineCode">ServiceMonitor</code>. If you look in the <code class="inlineCode">monitoring</code> namespace, you’ll notice a dozen or so predefined <code class="inlineCode">ServiceMonitor</code> objects. The point of a <code class="inlineCode">ServiceMonitor</code> is to tell Prometheus to look up which pods to monitor based on a <code class="inlineCode">Service</code> object. This makes sense as <a id="_idIndexMarker1411"/>a cloud-native pattern, you wouldn’t want to hardcode your metrics endpoints. pods get rescheduled, scaled, and so on. Relying on a <code class="inlineCode">Service</code> object helps Prometheus scale in a cloud-native way. For OpenUnison, here’s our <code class="inlineCode">ServiceMonitor</code> object:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">monitoring.coreos.com/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ServiceMonitor</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">release:</span> <span class="hljs-string">prometheus</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">orchestra</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">monitoring</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">endpoints:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">bearerTokenFile:</span> <span class="hljs-string">/var/run/secrets/kubernetes.io/serviceaccount/token</span>
+    <span class="hljs-attr">interval:</span> <span class="hljs-string">30s</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-string">openunison-secure-orchestra</span>
+    <span class="hljs-attr">scheme:</span> <span class="hljs-string">https</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">8443</span>
+    <span class="hljs-attr">tlsConfig:</span>
+      <span class="hljs-attr">insecureSkipVerify:</span> <span class="hljs-literal">true</span>
+  <span class="hljs-attr">namespaceSelector:</span>
+    <span class="hljs-attr">matchNames:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-string">openunison</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">matchLabels:</span>
+      <span class="hljs-attr">app:</span> <span class="hljs-string">openunison-orchestra</span>
+</code></pre>
+<p class="normal">The first thing to point out is that there’s a <code class="inlineCode">label</code> called <code class="inlineCode">release="prometheus"</code>. This <code class="inlineCode">label</code> is needed for kube-prometheus to pick up our monitor. Prometheus is not a multitenant system, so it’s reasonable to expect there to be multiple instances for different use cases. Requiring this label makes sure that the <code class="inlineCode">ServiceMonitor</code> object is picked up by the correct Prometheus operator deployment.</p>
+<p class="normal">Next, we’ll point out that the endpoint lines up with the <code class="inlineCode">openunison-orchestra</code> Service in the <code class="inlineCode">openunison</code> namespace. We didn’t name it directly, but we did identify it by labels. It’s important to make sure you don’t get multiple <code class="inlineCode">Service</code> objects integrated by having overly broad labels. Finally, we included the <code class="inlineCode">bearerTokenFile</code> option to tell Prometheus to use its own identity when accessing OpenUnison’s metrics endpoint. We’ll cover this in more detail in the next section.</p>
+<p class="normal">If we deployed <a id="_idIndexMarker1412"/>just this object, the Prometheus operator would complain that it can’t load the correct <code class="inlineCode">Service</code> objects because it doesn’t have RBAC permissions. The next step is to create an RBAC <code class="inlineCode">Role</code> and <code class="inlineCode">RoleBinding</code> for the operator to be able to look up the <code class="inlineCode">Services</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">rbac.authorization.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Role</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">monitoring-list-services</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">openunison</span>
+<span class="hljs-attr">rules:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">apiGroups:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">""</span>
+  <span class="hljs-attr">resources:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">endpoints</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">pods</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">services</span>
+  <span class="hljs-attr">verbs:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">get</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">list</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">watch</span>
+<span class="hljs-meta">---</span>
+<span class="hljs-attr">apiVersion:</span> <span class="hljs-string">rbac.authorization.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">RoleBinding</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">monitoring-list-services</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">openunison</span>
+<span class="hljs-attr">roleRef:</span>
+  <span class="hljs-attr">apiGroup:</span> <span class="hljs-string">rbac.authorization.k8s.io</span>
+  <span class="hljs-attr">kind:</span> <span class="hljs-string">Role</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">monitoring-list-services</span>
+<span class="hljs-attr">subjects:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">kind:</span> <span class="hljs-string">ServiceAccount</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">prometheus-kube-prometheus-prometheus</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">openunison</span>
+</code></pre>
+<p class="normal">This should look straightforward if you’ve already read through our chapter on Kubernetes RBAC. We included services, endpoints, and pods because once you retrieve a <code class="inlineCode">Service</code>, you use an <code class="inlineCode">Endpoint</code> object to get to a pod that has the correct IP. Each <code class="inlineCode">/metrics</code> endpoint is then accessed based on the <code class="inlineCode">Pod's</code> IP address, not the <code class="inlineCode">Service</code> host. This means you’ll need to keep in mind that, if your system uses hostnames for routing, you’ll need to accept the <code class="inlineCode">/metrics</code> on all hostnames.</p>
+<p class="normal">Once you have Prometheus configured, you’ll start seeing your metrics in a few minutes. If they don’t show up, there are three places to look:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Prometheus operator</strong>:<strong class="keyWord"> </strong>The operator will show whether there were any issues loading the <code class="inlineCode">Service</code>/<code class="inlineCode">Endpoint</code>/<code class="inlineCode">Pod</code>.</li>
+<li class="bulletList"><strong class="keyWord">Prometheus Pod, configuration reloader container</strong>: The Prometheus pod has a sidecar container that reloads the configuration. Check here next to see whether there was an issue loading the configuration.</li>
+<li class="bulletList"><strong class="keyWord">Prometheus Pod, Prometheus container</strong>: Finally, check the Prometheus container in the Prometheus pod to see whether there is an issue in Prometheus loading the metrics.</li>
+</ul>
+<p class="normal">Having walked <a id="_idIndexMarker1413"/>through how to set up a monitor in Prometheus, the next question is why, and how, to secure your metrics endpoints.</p>
+<h3 class="heading-3" id="_idParaDest-501">Securing Access to the Metrics Endpoint</h3>
+<p class="normal">Throughout this chapter, we’ve only tangentially mentioned security. That’s because, for the most part, Prometheus follows the <strong class="keyWord">SNMP</strong> approach: <strong class="keyWord">Security is Not My Problem</strong>. There <a id="_idIndexMarker1414"/>are some good reasons for this. If you’re using your Prometheus stack to debug an outage, you don’t want security to break that process. At the same time, making all of the data that can be gleaned from metrics for an attacker publicly visible is dangerous. In their 2019 keynote at KubeCon North America, Ian Coldwater said, “Attackers think in graphs” (Ian is quoting John Lambert: <a href="https://github.com/JohnLaTwC/Shared/blob/master/Defenders%20think%20in%20lists.%20Attackers%20think%20in%20graphs.%20As%20long%20as%20this%20is%20true%2C%20attackers%20win.md"><span class="url">https://github.com/JohnLaTwC/Shared/blob/master/Defenders%20think%20in%20lists.%20Attackers%20think%20in%20graphs.%20As%20long%20as%20this%20is%20true%2C%20attackers%20win.md</span></a>), which comes to mind as I think about this because you can map out an environment based on metrics endpoints! Think about all the data about workloads and distributions, when and where nodes work the hardest, and so on. Take the <code class="inlineCode">active_sessions</code> metric we worked with earlier in the chapter. Simply mapping that number over time will tell you when a spike in usage may not trigger alarms because it’s within norms.</p>
+<p class="normal">The good news is that because Prometheus runs in clusters, it gets its own identity. That’s why our <code class="inlineCode">ServiceMonitor</code> included the <code class="inlineCode">bearerTokenFile</code> option to the <code class="inlineCode">Pod's</code> built-in Kubernetes identity. OpenUnison validates this identity against the API server using a <code class="inlineCode">SubjectAccessReview</code>. That’s why, when you look at the OpenUnison logs, you’ll see something like:</p>
+<pre class="programlisting con"><code class="hljs-con">[2024-01-16 03:18:22,254][XNIO-1 task-4] INFO  AccessLog - [AuSuccess] - metrics - https://10.240.189.139:8443/metrics - username=system:serviceaccount:monitoring:prometheus-kube-prometheus-prometheus,ou=oauth2,o=Tremolo - 20 / oauth2k8s [10.240.189.165] - [f763bbd1a1c474929d91bfe89a2fd8e5f5b49a1d5]
+[2024-01-16 03:18:22,254][XNIO-1 task-4] INFO  AccessLog - [AzSuccess] - metrics - https://10.240.189.139:8443/metrics - username=system:serviceaccount:monitoring:prometheus-kube-prometheus-prometheus,ou=oauth2,o=Tremolo - NONE [10.240.189.165] - [f763bbd1a1c474929d91bfe89a2fd8e5f5b49a1d5]
+</code></pre>
+<p class="normal">Whenever Prometheus attempts to scrape the metrics from OpenUnison, we know it’s with a <a id="_idIndexMarker1415"/>token that is bound to a running pod and is still valid. When evaluating systems that provide metrics, check to see whether they support some kind of token validation. It’s not a bad idea to use <code class="inlineCode">NetworkPolicies</code> to limit access, too, but as we’ve discussed several times, you’ll get the best protection based on a <code class="inlineCode">Pod's</code> identity.</p>
+<p class="normal">Having reviewed how to secure your application metrics, the last section on Prometheus will focus on adding security to the kube-prometheus stack.</p>
+<h2 class="heading-2" id="_idParaDest-502">Securing Access to Your Monitoring Stack</h2>
+<p class="normal">The kube-prometheus stack is a combination of Prometheus, Alertmanager, and Grafana combined with operators to automate the deployment and management of the stack. When we <a id="_idIndexMarker1416"/>went through each of the applications in the stack, we pointed out that neither Prometheus nor Alertmanager has any sense of what a user is. Grafana does have its own user model, but kube-prometheus ships with a hardcoded credential. It’s assumed that you’ll access these tools via the <code class="inlineCode">kubectl port-forward</code> directive. This is a similar scenario to the Kubernetes dashboard that we secured earlier in the book. While none of these applications use the user’s identity to communicate with the API server, they can be abused to provide extensive knowledge about the environment, so usage should be tracked.</p>
+<p class="normal">For Prometheus and Alertmanager, the easiest approach is to place an authenticating reverse proxy in front of them, something like an <strong class="keyWord">OAuth2</strong> proxy, for example. For this chapter, we used OpenUnison because it’s a built-in capability and requires fewer things to deploy.</p>
+<p class="normal">Grafana is more complicated because it does have several options for authentication. It also has its own user authorization model based on teams and roles. The Grafana that ships with the kube-prometheus charts is the Community edition, which only supports two roles: <strong class="keyWord">Admin</strong> and <strong class="keyWord">Viewers</strong>. While Grafana does support OpenID Connect out of the box, that would involve a more complicated helm configuration, and since we’re already using OpenUnison’s reverse proxy to authenticate Prometheus and Alertmanager, we went with the same approach with Grafana. The user’s identity is injected via an HTTP header in the request from OpenUnison to Grafana, with all users being considered administrators. Then, Grafana is <a id="_idIndexMarker1417"/>configured in the helm chart using the proxy authentication method. So, where originally, we had <code class="inlineCode">Ingress</code> objects that pointed directly to our applications, now we have a single Ingress pointing to OpenUnison, which is responsible for authenticating and authorizing access to these applications:</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="452" src="../Images/B21165_15_17.png" width="398"/></figure>
+<p class="packt_figref">Figure 15.17: Adding SSO to kube-prometheus</p>
+<p class="normal">A bonus to integrating the kube-prometheus stack into OpenUnison is that you don’t need to memorize the URLs because they’re included as badges along with the dashboard and tokens:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, logo, company name  Description automatically generated" height="441" src="../Images/B21165_15_18.png" width="877"/></figure>
+<p class="packt_figref">Figure 15.18: OpenUnison with kube-prometheus “badges”</p>
+<p class="normal">What happens <a id="_idIndexMarker1418"/>if OpenUnison goes down? It’s important to always have a “break glass in case of emergency” plan! You can still fall back on port forwarding access to all three of the applications.</p>
+<p class="normal">This concludes our section on monitoring Kubernetes using Prometheus. Next, we’ll explore how logs work in Kubernetes and how to manage them.</p>
+<h1 class="heading-1" id="_idParaDest-503">Log Management in Kubernetes</h1>
+<p class="normal">Throughout <a id="_idIndexMarker1419"/>this book, after running an exercise, we will often ask you to view the logs of a container by running a command such as:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl logs mypod -n myns
+</code></pre>
+<p class="normal">This allows us to view logs, but what’s happening to get the logs? Where are the logs stored and how are they managed? What are the processes to manage archiving logs? It turns out this is a complex topic that often gets overlooked when getting started with Kubernetes. The rest of this chapter will be dedicated to answering these questions. First, let’s discuss how Kubernetes stores logs, and then we’ll get into pulling those logs into a centralized system.</p>
+<h2 class="heading-2" id="_idParaDest-504">Understanding Container Logs</h2>
+<p class="normal">Before we ran containers, logging was relatively straightforward. Your application usually had a library that was responsible for sending data to logs. That library would rotate the <a id="_idIndexMarker1420"/>logs and often clean out old logs. It wasn’t unusual to have multiple logs for multiple purposes. For instance, most web servers <a id="_idIndexMarker1421"/>had at least two logs. There was an access log to record who made requests to the web server and an error log to track any error or debug messages. In the early 2000s, companies like Splunk came out with systems that would ingest your logs into a time series database that you could use to query them in real time across multiple systems, making log management even easier.</p>
+<p class="normal">Then came Docker containers, which broke this model. Containers are self-contained and not meant to generate data on their own. Instead of generating log data to a volume, containers were encouraged to pipe all log data to standard out so that the Docker API could be used to watch the logs without directly accessing the volume they were stored on. This standard continued with Kubernetes, so that as an operator, I never need access to the file where logs are stored, just access to the Kubernetes API. While this vastly simplifies accessing a log directly, it makes managing logs much more difficult. First off, an application can no longer break up logs by function, so as an operator, I need to filter out the parts of the logs I want. Additionally, the logs are no longer rotated in a way that is standard or configurable by the application owner. Finally, how do you archive logs in a way that satisfies your compliance requirements? The answer is to pipe your logs into a central log management system. Next, we’ll walk through the OpenSearch project, which is the log management system we chose to illustrate how container log management works.</p>
+<h2 class="heading-2" id="_idParaDest-505">Introducing OpenSearch</h2>
+<p class="normal">There are several log management systems. Splunk is often the most well known, but there is <a id="_idIndexMarker1422"/>an entire industry built around log management. There are multiple open <a id="_idIndexMarker1423"/>source log management systems as well. Probably the best known is the “ELK” stack, which is a combination of:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Elasticsearch</strong>:<strong class="keyWord"> </strong>A time series database and indexing system for storing and sorting logs</li>
+<li class="bulletList"><strong class="keyWord">Logstash</strong>: A project for getting logs into Elasticsearch</li>
+<li class="bulletList"><strong class="keyWord">Kibana:</strong> A dashboard and UI for Elasticsearch</li>
+</ul>
+<p class="normal">The ELK stack is not the only open source log management system. Another project called Graylog is popular as well. Unfortunately, both projects hide their SSO support for OpenID Connect in commercial offerings. In 2021, Amazon forked the ELK stack from Elasticsearch 7.0 into the OpenSearch project. The two projects have since diverged. We decided to focus on OpenSearch for this chapter because it’s fully open source and we can show how it integrates into your cluster’s enterprise requirements via OpenID Connect. </p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="187" src="../Images/B21165_15_19.png" width="601"/></figure>
+<p class="packt_figref">Figure 15.19: OpenSearch architecture</p>
+<p class="normal">In the <a id="_idIndexMarker1424"/>above diagram, we see the major <a id="_idIndexMarker1425"/>components of an OpenSearch deployment:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Masters</strong>:<strong class="keyWord"> </strong>This is the engine of OpenSearch that indexes log data.</li>
+<li class="bulletList"><strong class="keyWord">Node</strong>: The nodes are the integration points for services interacting with OpenSearch. It hosts the API used to query indices and to push logs into the cluster.</li>
+<li class="bulletList"><strong class="keyWord">Kibana</strong>: OpenSearch has a bundled Kibana dashboard for interacting with the OpenSearch API via a web application.</li>
+<li class="bulletList"><strong class="keyWord">Logstash/Fluent Bit/Fluentd</strong>: A <code class="inlineCode">DaemonSet</code> that tails the logs in the cluster and sends them to OpenSearch.</li>
+</ul>
+<p class="normal">We’re not going too deeply into how OpenSearch works, because it’s a complex system that deserves its own book (and there are a few out there). We’re going to go deep enough to see how it relates to our enterprise Kubernetes requirements for aggregating logs and meeting our enterprise security requirements using our centralized Active Directory and managing access via our directory groups. Now that we’ve got an overview of the different components of our OpenSearch cluster, next, we’ll deploy it.</p>
+<h2 class="heading-2" id="_idParaDest-506">Deploying OpenSearch</h2>
+<p class="normal">We’ve <a id="_idIndexMarker1426"/>automated the deployment <a id="_idIndexMarker1427"/>of OpenSearch using scripts. There’s a dependency in OpenSearch for the CRDs from Prometheus’ operator, so we’re going to need that deployed, too. We’re going to start with a fresh cluster:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> chapter2
+<span class="hljs-con-meta">$ </span>kind delete cluster -n cluster01
+<span class="hljs-con-meta">$ </span>./create-cluster.sh
+.
+.
+.
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> ../chapter15/simple
+<span class="hljs-con-meta">$ </span>./deploy-prometheus-charts.sh
+.
+.
+.
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> ../user-auth/
+<span class="hljs-con-meta">$ </span>./deploy_openunison_imp_impersonation.sh
+</code></pre>
+<p class="normal">These scripts:</p>
+<ol>
+<li class="numberedList" value="1">Deploy a new KinD cluster with an NGINX Ingress controller.</li>
+<li class="numberedList">Deploy the kube-prometheus project for Prometheus, Alertmanager, and Grafana.</li>
+<li class="numberedList">Deploy “Active Directory” and OpenUnison, and integrate SSO into the Prometheus stack applications.</li>
+</ol>
+<p class="normal">This is the <a id="_idIndexMarker1428"/>same place where <a id="_idIndexMarker1429"/>you would be had you followed throughout this chapter. Next, we’ll deploy OpenSearch:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cd</span> ../opensearch/
+<span class="hljs-con-meta">$ </span>./deploy_opensearch.sh
+</code></pre>
+<p class="normal">This script does several things:</p>
+<ol>
+<li class="numberedList" value="1">Increases file limits to support both OpenSearch and FluentBit opening every log and tailing them</li>
+<li class="numberedList">Deploys the OpenSearch operator via Helm</li>
+<li class="numberedList">Creates OpenUnison configuration objects to integrate OpenSearch</li>
+<li class="numberedList">Deploys an OpenSearch cluster, configured to use SSO from OpenUnison using OpenID Connect</li>
+<li class="numberedList">Deploys Fluent Bit via Helm</li>
+</ol>
+<p class="normal">We’re not going to spend lots of time diving into individual configurations. Given how quickly things change, it would be better to get individual instructions directly from the OpenSearch project. We will instead walk through how these components relate to each other, our cluster, and our enterprise security requirements. Now that everything is deployed, we’re going to walk through how a log gets from your container into OpenSearch, and how you access it.</p>
+<h2 class="heading-2" id="_idParaDest-507">Tracing Logs from Your Container to Your Console</h2>
+<p class="normal">With OpenSearch in place and integrated into your cluster, let’s follow how logs get from your <code class="inlineCode">ingress-nginx</code> container into your console. The first place to look is in the <code class="inlineCode">fluentbit</code> namespace, where you’ll find a single <code class="inlineCode">DaemonSet</code> called <code class="inlineCode">fluent-bit</code>. Recall <a id="_idIndexMarker1430"/>that a <code class="inlineCode">DaemonSet</code> is a pod that gets deployed to every node in your cluster. Since we only have <a id="_idIndexMarker1431"/>one node in our KinD cluster, we only have one pod for the <code class="inlineCode">fluent-bit DaemonSet</code>. This pod is responsible for scanning all of the <a id="_idIndexMarker1432"/>logs on the node and tailing them, similar to how you might tail a log on a local file system. What’s important about Fluent Bit <a id="_idIndexMarker1433"/>is that in addition to sending log data to OpenSearch, it’s also adding metadata, which will allow us to easily search for log data inside of OpenSearch.</p>
+<div class="note">
+<p class="normal">You might be wondering why we’re not using Logstash since it’s one of the named components in the ELK stack. Logstash isn’t the only log aggregator project. FluentD and FluentBit are both very popular tools for pulling logs from your cluster. Fluentd is much heavier than Fluent Bit and has many more capabilities for transforming and parsing log data before sending it to OpenSearch. FluentBit is simpler but is also much smaller. We went with FluentBit for its simplicity and size given we’re already filling out the cluster with other tools.</p>
+</div>
+<p class="normal">Let’s look at the <code class="inlineCode">Pod's</code> logs and look for <code class="inlineCode">ingress-nginx</code>:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span>k logs fluent-bit-grhvw -n fluentbit | grep nginx
+[2024/01/26 01:26:23] [ info] [input:tail:tail.0] inotify_fs_add(): inode=1606570 watch_fd=19 name=/var/log/containers/ingress-nginx-admission-create-k8fxz_ingress-nginx_create-6….log
+[2024/01/26 01:26:23] [ info] [input:tail:tail.0] inotify_fs_add(): inode=1606592 watch_fd=20 name=/var/log/containers/ingress-nginx-admission-patch-fhwpx_ingress-nginx_patch-0….log
+<span class="code-highlight"><strong class="hljs-slc">[2024/01/26 01:26:23] [ info] [input:tail:tail.0] inotify_fs_add(): inode=1610601 watch_fd=21 name=/var/log/containers/ingress-nginx-controller-977d987f8-4xxvr_ingress-nginx_controller-8….log</strong></span>
+</code></pre>
+<p class="normal">As you can see, FluentBit found the logs on the node. You may be asking whether or not the FluentBit pods need special permissions to access the logs on the node, and the answer is yes! If we look at the <code class="inlineCode">fluent-bit DaemonSet</code>, we’ll see that the <code class="inlineCode">securityContext</code> is empty, meaning there are no constraints on the pod, and that the <code class="inlineCode">volumes</code> include <code class="inlineCode">hostMount</code> directives to where the logs are stored on standard kubeadm deployments. These <code class="inlineCode">Pods</code> are privileged and should be protected as such by limiting access to the <code class="inlineCode">fluentbit</code> namespace and adding policies, such as with GateKeeper, that limit which containers can run in the <code class="inlineCode">fluentbit</code> namespace, too.</p>
+<p class="normal">Once <a id="_idIndexMarker1434"/>the watch is placed on the <code class="inlineCode">ingress-nginx</code> logs, those logs and additional metadata are sent to the OpenSearch node. As <a id="_idIndexMarker1435"/>we discussed earlier, the OpenSearch node hosts the API and is the conduit for the masters, which are responsible for <a id="_idIndexMarker1436"/>managing the indexes. The fluent-bit <code class="inlineCode">DaemonSet</code> communicates with OpenSearch using the Logstash protocol and a simple authentication <a id="_idIndexMarker1437"/>using basic authentication.</p>
+<div class="note">
+<p class="normal">It would be great for our FluentBit deployment to use its <code class="inlineCode">ServiceAccount</code> token to communicate with OpenSearch securely in the same way we configured our pods to communicate with Vault, but unfortunately, this feature doesn’t exist in either the nodes or in FluentBit. Instead, you should make sure to give your Logstash account an extremely long password and make sure to rotate it with your enterprise policies. You could even leverage a secrets manager…</p>
+</div>
+<p class="normal">As the OpenSearch node pulls in the data, it’s sent to the masters to be indexed. This is where the magic of OpenSearch happens because this is where all that data gets stored in an index and is made available to you and your cluster’s administrators. </p>
+<p class="normal">Now that the data is in OpenSearch, how are you going to access it? OpenSearch includes a Kibana dashboard for accessing and visualizing log data. The default implementation uses a single admin username and password, but that’s not going to work for us! Log data is extremely sensitive, and we want to make sure we’re using our enterprise security requirements when accessing it! That said, we’ll want to integrate OpenSearch with OpenUnison the same way we’ve integrated the rest of our cluster management applications. Thankfully, OpenSearch supports OpenID Connect, which makes integration with OpenUnison very straightforward!</p>
+<div class="note">
+<p class="normal">OpenSearch supports multiple authentication systems in addition to OpenID Connect, including LDAP. We could use this LDAP functionality to integrate with the “Active Directory” we deployed with OpenUnison. This integration provides some major limitations, though. If our enterprise decides to move off of Active Directory to an identity-as-a-service platform, such as Entra (formerly known as Azure AD) or Okta, this solution wouldn’t work anymore. Also, if a multi-factor solution is added, this method would no longer work. Using OpenID Connect with an integration tool like OpenUnison, Dex, or KeyCloak will make your deployment much more manageable.</p>
+</div>
+<p class="normal">What’s interesting about the OpenSearch OpenID Connect implementation is that it is very similar to how the Kubernetes dashboard worked. The Kibana that is bundled with OpenSearch can use OpenID Connect to redirect the user to OpenUnison to authenticate and also knows how to refresh the user’s <code class="inlineCode">id_token</code> to keep the session open. Once authenticated, Kibana then uses the user’s token to interact with the OpenSearch nodes using <a id="_idIndexMarker1438"/>their identity. This means that, in addition to configuring Kibana, we need to configure the OpenSearch nodes to trust OpenUnison’s tokens.</p>
+<p class="normal">There <a id="_idIndexMarker1439"/>are two configuration points to do this. In <code class="inlineCode">chapter15/opensearch/opensearch-sso.yaml</code>, you’ll find an OpenSearch cluster object with a <code class="inlineCode">spec.dashboard.additionalConfig</code> that contains the <a id="_idIndexMarker1440"/>dashboard (Kibana) configuration. If we deployed with just this, we’d be able to authenticate to Kibana, but we wouldn’t be able to interact with OpenSearch because the API calls would fail.</p>
+<p class="normal">Next, there’s a <code class="inlineCode">Secret</code> called <code class="inlineCode">opensearch-security-config</code>, which contains a key called <code class="inlineCode">config.yml</code> that stores the OpenSearch node security main configuration. Here, we <a id="_idIndexMarker1441"/>tell OpenSearch where to retrieve the OpenUnison OpenID Connect discovery document so that the <code class="inlineCode">id_token</code> sent by Kibana can be validated. Similar to the Kubernetes dashboard, when using OpenID Connect, the API isn’t able to refresh or manage a user’s session. The nodes are only validating the user’s <code class="inlineCode">id_token</code>.</p>
+<p class="normal">We’ve tracked our data from our container’s log into OpenSearch and seen how we will access it. Next, let’s log in to Kibana and view our log data!</p>
+<h2 class="heading-2" id="_idParaDest-508">Viewing Log Data in Kibana</h2>
+<p class="normal">We’ve spent quite a bit of time describing how OpenSearch is deployed and how log data is ingested <a id="_idIndexMarker1442"/>into the OpenSearch <a id="_idIndexMarker1443"/>cluster from Kubernetes. Next, we’ll log in to <a id="_idIndexMarker1444"/>Kibana and view the logs from our <code class="inlineCode">ingress-nginx</code> Deployment.</p>
+<p class="normal">First, open a web browser and enter the URL for your OpenUnison deployment. Just as in prior chapters, it will be <code class="inlineCode">https://k8sou.apps.X-X-X-X.nip.io/</code>, where <code class="inlineCode">X-X-X-X</code> is your cluster’s IP address with dashes instead of dots. Since my cluster is running on <code class="inlineCode">192.168.2.93</code>, I navigate to <code class="inlineCode">https://k8sou.apps.192-168-2-93.nip.io/</code>. Use the username <strong class="screenText">mmosley</strong> and the password <strong class="screenText">start123</strong> to log in. You’ll now see an OpenSearch badge:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, logo, company name  Description automatically generated" height="439" src="../Images/B21165_15_20.png" width="878"/></figure>
+<figure class="mediaobject">Figure 15.20: OpenUnison with OpenSearch “badge”</figure>
+<p class="normal">Click <a id="_idIndexMarker1445"/>on the OpenSearch <a id="_idIndexMarker1446"/>badge. You may be asked to add data, but skip <a id="_idIndexMarker1447"/>this so we can get straight to our data. Next, click on the three horizontal bars in the upper-left corner to open the menu, scroll down to <strong class="screenText">Management</strong>, and click on <strong class="screenText">Dashboards Management</strong>:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application, Teams  Description automatically generated" height="494" src="../Images/B21165_15_21.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.21: OpenSearch Dashboard Management menu</p>
+<p class="normal">Next, click <a id="_idIndexMarker1448"/>on <strong class="screenText">Index patterns</strong> on <a id="_idIndexMarker1449"/>the left and then <strong class="screenText">Create index pattern</strong> on the <a id="_idIndexMarker1450"/>right:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application, Teams  Description automatically generated" height="189" src="../Images/B21165_15_22.png" width="877"/></figure>
+<p class="packt_figref">Figure 15.22: Index patterns</p>
+<p class="normal">On the next screen, use <code class="inlineCode">logstash-*</code> for the <strong class="screenText">Index pattern name</strong> to load all our indices from FluentBit and click <strong class="screenText">Next step</strong>.</p>
+<figure class="mediaobject"><img alt="Graphical user interface, text, application, email  Description automatically generated" height="303" src="../Images/B21165_15_23.png" width="877"/></figure>
+<p class="packt_figref">Figure 15.23: Create index pattern</p>
+<p class="normal">On the <a id="_idIndexMarker1451"/>next screen, choose <strong class="screenText">@timestamp</strong> for the <strong class="screenText">Time field</strong> and, <a id="_idIndexMarker1452"/>finally, <a id="_idIndexMarker1453"/>click <strong class="screenText">Create index pattern</strong>:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="306" src="../Images/B21165_15_24.png" width="876"/></figure>
+<p class="packt_figref">Figure 15.24: Index Time field</p>
+<p class="normal">The next screen will show you the list of all the fields that can be searched. These fields are what are created by FluentBit and provide much easier searching of logs. They have all kinds of metadata from Kubernetes, including the namespace, labels, annotations, pod names, and so on. With our index pattern created, next, we’ll want to query the log data to find which logs are coming from <code class="inlineCode">ingress-nginx</code>. Next, click on the three horizontal bars in the upper-left corner again to reveal the menu and, under <strong class="screenText">Observability</strong>, click <strong class="screenText">Logs</strong>:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="401" src="../Images/B21165_15_25.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.25: Logs menu item</p>
+<p class="normal">We <a id="_idIndexMarker1454"/>haven’t created any <a id="_idIndexMarker1455"/>visualization, so <a id="_idIndexMarker1456"/>there’s nothing to see yet! Click on <strong class="screenText">Event Explorer</strong>:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application, Teams  Description automatically generated" height="412" src="../Images/B21165_15_26.png" width="880"/></figure>
+<p class="packt_figref">Figure 15.26: The Logs screen</p>
+<p class="normal">On the next screen, set the <strong class="screenText">index pattern</strong> to <code class="inlineCode">logstash-*</code>, and the <strong class="screenText">timeframe</strong> to the last 15 hours. Finally, click <strong class="screenText">Refresh</strong>. </p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="494" src="../Images/B21165_15_27.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.27: Logs Explorer</p>
+<p class="normal">This <a id="_idIndexMarker1457"/>will load quite a bit <a id="_idIndexMarker1458"/>of data, most of which is meaningless to us. We only <a id="_idIndexMarker1459"/>want data from the <code class="inlineCode">ingress-nginx</code> namespace. So, we’ll want to constrain the results to our <code class="inlineCode">ingress-nginx</code> namespace. Next to <strong class="screenText">PPL</strong>, paste in the following and click <strong class="screenText">Refresh</strong>:</p>
+<pre class="programlisting con"><code class="hljs-con">source = logstash-*
+| where kubernetes.namespace_name="ingress-nginx"
+| fields log
+</code></pre>
+<p class="normal">Now, you’ll see the access logs from NGINX:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, text, application, email  Description automatically generated" height="494" src="../Images/B21165_15_28.png" width="878"/></figure>
+<p class="packt_figref">Figure 15.28: Searching for NGINX logs</p>
+<p class="normal">While we’re <a id="_idIndexMarker1460"/>now able to search <a id="_idIndexMarker1461"/>our logs from a central location, this only scratches <a id="_idIndexMarker1462"/>the surface of what OpenSearch is capable of. As we said earlier in the chapter, there are books written on this topic alone, so we’ll not be able to get too proficient in OpenSearch in this chapter but we have covered enough to demonstrate how logs move from your containers into a centralized system. Whether you’re deploying an on-premises cluster, like our KinD cluster, or a cloud-based cluster, the same concepts will exist.</p>
+<h1 class="heading-1" id="_idParaDest-509">Summary</h1>
+<p class="normal">Logging and monitoring are crucial to being able to track the health of your cluster, planning for ongoing maintenance and capacity, and also making sure to maintain compliance. In this chapter, we started with monitoring, walking through the Prometheus stack, and exploring each component and how they interact. After looking at the stack, we worked on how to monitor systems running on our cluster by integrating our OpenUnison into Prometheus. The last Prometheus topic we explored was integrating the stack into our enterprise authentication system using OpenUnison.</p>
+<p class="normal">After working through Prometheus, we explored logging in Kubernetes by deploying an OpenSearch cluster to centralize our log aggregation. After deployment, we tracked logs from the container that generates them into OpenSearch’s indexes and then how to access them securely using OpenSearch’s Kibana dashboard.</p>
+<p class="normal">In the next chapter, we’re going to learn how service meshes work and deploy Istio.</p>
+<h1 class="heading-1" id="_idParaDest-510">Questions</h1>
+<ol>
+<li class="numberedList" value="1">Prometheus’ metrics are transferred using JSON.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">Where can Alertmanager send alerts to?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Webhook</li>
+<li class="alphabeticList level-2">Slack</li>
+<li class="alphabeticList level-2">Email</li>
+<li class="alphabeticList level-2">All of the above</li>
+</ol>
+</li>
+<li class="numberedList">What label does a ConfigMap that stores a Grafana dashboard need?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1"><code class="inlineCode">grafana_dashboard: 1</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">dashboard_type: grafana</code></li>
+<li class="alphabeticList level-2">None needed</li>
+</ol>
+</li>
+<li class="numberedList">OpenSearch is compatible with Elasticsearch.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">Logstash is required for log management.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-511">Answers</h1>
+<ol>
+<li class="numberedList" value="1">b: False: Prometheus has its own format for metrics.</li>
+<li class="numberedList">d: Alertmanager can send notifications to all of these systems and more.</li>
+<li class="numberedList">a: Grafana looks for all ConfigMaps across the cluster with <code class="inlineCode">grafana_dashboard</code>: 1 to load dashboards.</li>
+<li class="numberedList">b: False: OpenSearch was forked from Elasticsearch 7.0; the two systems have since diverged.</li>
+<li class="numberedList">b: False: Logstash is not required; systems such as FluentD and FluentBit are also compatible with OpenSearch and Elasticsearch.</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-512">Join our book’s Discord space</h1>
+<p class="normal">Join the book’s Discord workspace for a monthly <em class="italic">Ask Me Anything</em> session with the authors:</p>
+<p class="normal"><a href="https://packt.link/K8EntGuide"><span class="url">https://packt.link/K8EntGuide</span></a></p>
+<p class="normal"><img alt="" height="176" src="../Images/QR_Code965214276169525265.png" width="176"/></p>
+</div>
+</div></body></html>

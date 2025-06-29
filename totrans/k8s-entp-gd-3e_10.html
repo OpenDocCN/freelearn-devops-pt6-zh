@@ -1,0 +1,208 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer174">
+<h1 class="chapterNumber">10</h1>
+<h1 class="chapterTitle" id="_idParaDest-341">Deploying a Secured Kubernetes Dashboard</h1>
+<p class="normal">The Kubernetes Dashboard is a very helpful tool for understanding how your cluster is running. It’s often the first thing someone will install when learning Kubernetes because it shows you something. Even after the beginning stage, dashboards provide a tremendous amount of information very quickly in a way that isn’t possible using <code class="inlineCode">kubectl</code>. On one screen, you can quickly see what workloads are running, where, how many resources they’re using, and if you need to update them, you can do so quickly. Too often, the dashboard is called “insecure” or difficult to access. In this chapter, we’re going to show you how the dashboard is in fact quite secure and how to make it easy to access.</p>
+<p class="normal">Beyond the Kubernetes Dashboard, Kubernetes clusters are made up of more than the API server and the <code class="inlineCode">kubelet</code>. Clusters are generally made up of additional applications that need to be secured, such as container registries, source control systems, pipeline services, GitOps applications, and monitoring systems. The users of your cluster will often need to interact with these applications directly.</p>
+<p class="normal">While many clusters are focused on authenticating access to user-facing applications and services, cluster solutions are not given the same first-class status. Users are often asked to use kubectl’s port-forward or proxy capability to access these systems. This method of access is an anti-pattern from a security and user experience standpoint. The first exposure users and administrators will have to this anti-pattern is the Kubernetes Dashboard. This chapter will detail why this method of access is an anti-pattern and how to properly access the dashboard. We’ll walk you through how not to deploy a secure web application and point out the issues and risks so that you’ll know what to look for when being advised on how to access management applications.</p>
+<p class="normal">We’ll use the Kubernetes Dashboard as a way to learn about web application security and how to apply those patterns in your own cluster. These lessons will work with not just the dashboard but also other cluster-focused applications such as the <strong class="keyWord">Kiali dashboard</strong> for Istio, Grafana, Prometheus, ArgoCD, and other cluster management applications.</p>
+<p class="normal">Finally, we’ll spend some time talking about local dashboards and how to evaluate their security. This is a popular trend, but not universal. It’s important to understand the security of both approaches, and we’ll explore them in this chapter.</p>
+<p class="normal">In this chapter, we will cover the following topics:</p>
+<ul>
+<li class="bulletList">How does the dashboard know who you are?</li>
+<li class="bulletList">Understanding dashboard security risks</li>
+<li class="bulletList">Deploying the dashboard with a reverse proxy</li>
+<li class="bulletList">Integrating the dashboard with OpenUnison</li>
+<li class="bulletList">What’s changed in the Kubernetes Dashboard 7.0</li>
+</ul>
+<p class="normal">Having covered what we’ll work through in this chapter, next, let’s work through the technical requirements for this chapter.</p>
+<h1 class="heading-1" id="_idParaDest-342">Technical requirements</h1>
+<p class="normal">To follow the exercises in this chapter, you will require a fresh KinD cluster from <em class="chapterRef">Chapter 2</em>, <em class="italic">Deploying Kubernetes Using KinD</em>.</p>
+<p class="normal">You can access the code for this chapter at the following GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter10"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter10</span></a>.</p>
+<h2 class="heading-2" id="_idParaDest-343">Getting help</h2>
+<p class="normal">We do our best to test everything, but there are sometimes half a dozen systems or more in our integration labs. Given the fluid nature of technology, sometimes things that work in our environment don’t work in yours. Don’t worry, we’re here to help! Open an issue on our GitHub repo at <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues</span></a> and we’ll be happy to help you out!</p>
+<h1 class="heading-1" id="_idParaDest-344">How does the dashboard know who you are?</h1>
+<p class="normal">The Kubernetes Dashboard is a powerful web application<a id="_idIndexMarker981"/> for quickly accessing your cluster from inside a browser. It lets you browse your namespaces and view the status of nodes and even provides a shell you can use to access pods directly. There is a fundamental difference between using the dashboard and <code class="inlineCode">kubectl</code>. The dashboard, being a web application, needs to manage your session, whereas <code class="inlineCode">kubectl</code> does not. This means there’s a different set of security issues during deployment<a id="_idIndexMarker982"/> that are often not accounted for, leading to severe consequences. In this section, we’ll explore how the dashboard identifies users and interacts with the API server.</p>
+<h2 class="heading-2" id="_idParaDest-345">Dashboard architecture</h2>
+<p class="normal">Before diving into the specifics<a id="_idIndexMarker983"/> of how the dashboard authenticates a user, it’s important to understand the basics of how the dashboard works. The dashboard, at a high level, has three logical layers:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">User interface</strong>: This is the Angular + HTML frontend that is displayed in your browser and that you interact with</li>
+<li class="bulletList"><strong class="keyWord">Middle tier</strong>: The frontend interacts with a set of APIs hosted in the dashboard’s container to translate calls from the frontend into Kubernetes API calls</li>
+<li class="bulletList"><strong class="keyWord">API server</strong>: The middle-tier API interacts directly with the Kubernetes API server</li>
+</ul>
+<p class="normal">This three-layered architecture of the Kubernetes Dashboard can be seen in the following diagram:</p>
+<figure class="mediaobject"><img alt="Figure 9.1 – Kubernetes Dashboard architecture " height="555" src="../Images/B21165_10_01.png" width="386"/></figure>
+<p class="packt_figref">Figure 10.1: Kubernetes Dashboard logical architecture</p>
+<p class="normal">When a user interacts<a id="_idIndexMarker984"/> with the dashboard, the user interface makes calls to the middle tier, which in turn makes calls to the API server. The dashboard doesn’t know how to collect credentials; there’s no place to supply a username or password to log in to the Dashboard. It has a very simple session mechanism system based on cookies, but for the most part, the dashboard doesn’t really know, or care, who the currently logged-in user is. The only thing the dashboard cares about is what token to use when communicating with the API server.</p>
+<p class="normal">While this is the logical architecture, the physical architecture divides these components across different containers:</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="409" src="../Images/B21165_10_02.png" width="438"/></figure>
+<p class="packt_figref">Figure 10.2: Kubernetes Dashboard container architecture</p>
+<p class="normal">Starting with vertion 7.0, the dashboard<a id="_idIndexMarker985"/> is now broken into five components in their own containers:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Web</strong>: The user interface for the dashboard, serving the HTML and JavaScript rendered by your browser. This component has no authentication and doesn’t need it.</li>
+<li class="bulletList"><strong class="keyWord">Api</strong>: This container hosts the workhorse of the dashboard. It’s the component that interacts with the API server on your behalf. This container needs to know who you are.</li>
+<li class="bulletList"><strong class="keyWord">Auth</strong>: The auth container is used to tell the frontend if your token is valid. If the token isn’t valid, the UI will redirect you to login by providing the token to the API server for verification.</li>
+<li class="bulletList"><strong class="keyWord">Metrics</strong>: This container provides a metrics endpoint for <strong class="keyWord">Prometheus</strong> of the Kubernetes Dashboard.</li>
+<li class="bulletList"><strong class="keyWord">Ingress Controller</strong>: Since each of these containers provide their own path from the same host, something needs to combine them into a single URL. The default deployment<a id="_idIndexMarker986"/> includes Kong’s <code class="inlineCode">Ingress</code> controller.</li>
+</ul>
+<p class="normal">If you looked at the pods running in <em class="chapterRef">Chapter 6</em>, you’ll notice that neither <code class="inlineCode">Kong</code> nor the <code class="inlineCode">auth</code> container are running. We’ll cover that a bit later. Now that we understand how the dashboard is architected, how does the dashboard know who you are? Let’s walk through the options.</p>
+<h2 class="heading-2" id="_idParaDest-346">Authentication methods</h2>
+<p class="normal">There are two ways<a id="_idIndexMarker987"/> that the dashboard can determine<a id="_idIndexMarker988"/> who a user is:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Token from login/uploaded kubectl configuration</strong>: The dashboard can prompt the user for their <code class="inlineCode">kubectl</code> configuration file or for a bearer token to use. Once a token is provided, the UI uses it as a header to the API container. There is no session management. When the token is no longer valid, the user is redirected back to the login screen to upload a new token.</li>
+<li class="bulletList"><strong class="keyWord">Token from a reverse proxy</strong>: If there’s an authorization header containing a bearer token in requests from the user interface to the middle tier, the middle tier will use that bearer token in requests to the API server. This is the most secure option and the implementation that will be detailed in this chapter.</li>
+</ul>
+<p class="normal">If you’ve read our previous editions, or have used previous versions of the dashboard, you may be wondering what happened to using the dashboard’s own identity and skipping login. The architectural changes in version 7.x meant the removal of this option. No matter what, there <em class="italic">MUST</em> be an <code class="inlineCode">Authorization</code> header with a token in each request. This is a very positive development as it makes it very hard to deploy a dashboard that can be taken over by an anonymous request. In fact, we removed the section of this chapter that talked about how to compromise an improperly deployed dashboard because that attack vector is no longer valid.</p>
+<p class="normal">Throughout the rest of this chapter, the first option will be explored as an anti-pattern for accessing the dashboard, and we will explain why the reverse proxy pattern is the best option for accessing a cluster’s dashboard implementation from a security standpoint and a user experience standpoint.</p>
+<p class="normal">Let’s now try to understand dashboard security risks.</p>
+<h1 class="heading-1" id="_idParaDest-347">Understanding dashboard security risks</h1>
+<p class="normal">The question of the dashboard’s security<a id="_idIndexMarker989"/> often comes up when setting up a new cluster. Securing the dashboard boils down to how the dashboard is deployed, rather than if the dashboard itself is secure. Going back to the architecture of the dashboard application, there is no sense of “security” being built in. The middle tier simply passes a token to the API server.</p>
+<p class="normal">When talking about any kind of IT security, it’s important to look at it through the lens of <em class="italic">defense in depth</em>. This is the idea that any system should have multiple layers of security. If one fails, there are other layers to fill the gap until the failed layers can be addressed. A single failure doesn’t give an attacker direct access.</p>
+<p class="normal">The most often cited incident related to the dashboard’s security was the breach of Tesla in 2018 by crypto miners. Attackers were able to access pods running in Tesla’s clusters because the dashboard wasn’t secured.</p>
+<p class="normal">The cluster’s pods had access to tokens that provided the attackers with access to Tesla’s cloud providers where the attackers ran their crypto-mining systems. It’s important to note that this attack would not have worked in version 7.x and above because the <code class="inlineCode">api</code> container will not accept requests that don’t have <code class="inlineCode">Authorization</code> headers.</p>
+<p class="normal">Dashboards in general are often an attack vector because they make it easy to find what attackers are looking for and can easily be deployed insecurely. Illustrating this point, at KubeCon NA 2019, a <strong class="keyWord">Capture the Flag</strong> (<strong class="keyWord">CTF</strong>) challenge was presented<a id="_idIndexMarker990"/> where one of the scenarios was a developer “accidentally” exposing the cluster’s dashboard.</p>
+<p class="normal">The CTF challenge is available<a id="_idIndexMarker991"/> as a home lab at <a href="https://securekubernetes.com/"><span class="url">https://securekubernetes.com/</span></a>. It’s a highly recommended resource for anyone learning the Kubernetes security. In addition to being educational (and terrifying), it’s also really fun!</p>
+<p class="normal">Since we can no longer deploy a dashboard without some kind of authentication, we’re going to focus on the security issues of using <code class="inlineCode">ServiceAccount</code> tokens and the default. Additionally, there is no encryption between Kong and the downstream services.</p>
+<h2 class="heading-2" id="_idParaDest-348">Exploring Dashboard Security Issues</h2>
+<p class="normal">The version 7.x dashboard<a id="_idIndexMarker992"/> eliminated the ability to deploy the dashboard without a login, but there are still some security issues with the default deployment that should be addressed. </p>
+<p class="normal">First, deploy the dashboard to your cluster:</p>
+<pre class="programlisting con"><code class="hljs-con">helm repo add kubernetes-dashboard https://kubernetes.github.io/dashboard/
+helm upgrade --install kubernetes-dashboard kubernetes-dashboard/kubernetes-dashboard --create-namespace --namespace kubernetes-dashboard
+</code></pre>
+<p class="normal">When you inspect the pods, you’ll notice<a id="_idIndexMarker993"/> that there are now the five containers we described earlier. There’s also a <code class="inlineCode">NodePort</code> service for the <code class="inlineCode">Kong</code> ingress gateway. While you can choose to deploy a different <code class="inlineCode">Ingress</code>, we’re going to focus on the defaults. You’ll also see there’s also no encryption from Kong to the pods.</p>
+<h2 class="heading-2" id="_idParaDest-349">Using a token to log in</h2>
+<p class="normal">A user may upload a token<a id="_idIndexMarker994"/> to the dashboard on the login<a id="_idIndexMarker995"/> screen. As discussed earlier, the dashboard will take the user’s bearer token and use it with all requests to the API server. While this may appear to provide a secure solution, it brings its own issues. The dashboard isn’t <code class="inlineCode">kubectl</code> and doesn’t know how to refresh tokens as they expire. This means that a token would need to be fairly long-lived to be useful. It would require either creating service accounts that can be used or making your OpenID Connect <code class="inlineCode">id_tokens</code> longer-lived. Both options would negate much of the security put in place by leveraging OpenID Connect for authentication.</p>
+<p class="normal">As has been repeated throughout the book, <code class="inlineCode">ServiceAccount</code> tokens were never meant to be used outside of the cluster. You’ll need to distribute the token, and of course since it’s a bearer token it’s easy to lose, maybe it gets checked in to a git repo, or can be leaked by some buggy code. There’s also no difference between a token that is used by the dashboard vs Kubernetes, so a leaked token can be used directly against the Kubernetes API. While this solution exists to make it relatively easy to use the dashboard, it shouldn’t be used in production.</p>
+<p class="normal">Having looked at the issues with a token login into the dashboard, next we’ll look at the issues with the default installation and lack of encryption.</p>
+<h2 class="heading-2" id="_idParaDest-350">Unencrypted Connections</h2>
+<p class="normal">The default dashboard Helm chart<a id="_idIndexMarker996"/> doesn’t encrypt connections from the Ingress controller, Kong by default, to the individual containers. Regardless of how you authenticate to the dashboard, this can be a serious security antipattern. As we’ve discussed, a bearer token can be used by anyone with network access, which means a lost token from an unencrypted network connection can lead to a serious breach. Even if using short-lived tokens, this is a worrying design choice. Whenever you build in security, it’s important to use a defense-in-depth approach, where you never have a single point of failure. In this case, the lack of encryption means that you could have that single point of failure by not having any fall back.</p>
+<p class="normal">When you deploy your dashboard, you should enable encryption between the reverse proxy and the api container. We’ll walk through that in the next section. The web and metrics containers aren’t as important. The auth container doesn’t support any encryption, which is an issue, but with the right configuration can be bypassed.</p>
+<p class="normal">An alternative approach is to rely on a service mesh like Istio. If you enable a mesh, you could use that to rely on for encryption, but that’s an additional component to add. </p>
+<p class="normal">Given how easy it is to create an internal certificate<a id="_idIndexMarker997"/> authority, there really isn’t any reason to not have these connections encrypted. </p>
+<p class="normal">While we’ve focussed on the security concerns of the default Kubernetes Dashboard installation, we’ll next move on to how to correctly deploy the dashboard.</p>
+<h1 class="heading-1" id="_idParaDest-351">Deploying the dashboard with a reverse proxy</h1>
+<p class="normal">Proxies are a common pattern<a id="_idIndexMarker998"/> in Kubernetes; there are proxies at every layer in a Kubernetes cluster. The proxy pattern is also used by most service mesh implementations on Kubernetes, creating sidecars that will intercept requests. The difference between the reverse proxy described here and these proxies is in their intent. Microservice proxies often do not carry a session, whereas web applications need a session to manage the state.</p>
+<p class="normal">The following diagram shows the architecture of a Kubernetes Dashboard with a reverse proxy:</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="526" src="../Images/B21165_10_03.png" width="741"/></figure>
+<p class="packt_figref">Figure 10.3: Kubernetes Dashboard with a reverse proxy</p>
+<p class="normal">The reverse proxy shown in <em class="italic">Figure 10.3</em> performs<a id="_idIndexMarker999"/> four roles:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Routing:</strong> Each of the containers used by the dashboard has its own path off of the host URL. The reverse proxy is responsible for routing requests to the correct container.</li>
+<li class="bulletList"><strong class="keyWord">Authentication</strong>: The reverse proxy intercepts unauthenticated requests (or stale sessions) and triggers the authentication process with an OpenID Connect identity provider to authenticate the user.</li>
+<li class="bulletList"><strong class="keyWord">Session management</strong>: The Kubernetes Dashboard is a user-facing application. It should have the typical controls put in place to support session timeouts and revocation. Be wary of a reverse proxy that stores all session data in a cookie. These methods are difficult to revoke.</li>
+<li class="bulletList"><strong class="keyWord">Identity injection</strong>: Once the proxy has authenticated a user, it needs to be able to inject an HTTP authorization header on each request that is a JWT identifying the logged-in user, is signed by the same OpenID Connect identity provider, and has the same issuer and recipient as the API server. The exception to this is using impersonation, which, as discussed in <em class="chapterRef">Chapter 6</em>, <em class="italic">Integrating Authentication into Your Cluster</em>, injects specific headers<a id="_idIndexMarker1000"/> into the requests.</li>
+</ul>
+<p class="normal">What’s important is that when you configure<a id="_idIndexMarker1001"/> your reverse proxy, it should:</p>
+<ol>
+<li class="numberedList" value="1">Encrypt traffic to the api and the auth containers: These two containers are the ones that need the user’s token, so encryption is important. Since the auth container doesn’t support any encryption, you may want to just bypass this container entirely. We’ll explain this more in the next section when we talk about how OpenUnison integrates with the dashboard.</li>
+<li class="numberedList">Manage and renew tokens: There’s no reason to use long-lived tokens with your reverse proxy. It should be able to renew them based on how long the token is good for.</li>
+</ol>
+<p class="normal">Combining these means eliminating the Kong Ingress controller. It’s not needed anymore because your authenticating reverse proxy is doing the work.</p>
+<p class="normal">The reverse proxy does not need to run on the cluster. Depending on your setup, it may be advantageous to do so, especially when utilizing impersonation with your cluster. When using impersonation, the reverse proxy uses a service account’s token, so it’s best for that token to never leave the cluster.</p>
+<p class="normal">The focus of this chapter has been on the Kubernetes project’s dashboard. There are multiple options for dashboard functionality. Next, we’ll explore how these dashboards interact with the API server and how to evaluate their security.</p>
+<h2 class="heading-2" id="_idParaDest-352">Local dashboards</h2>
+<p class="normal">A common theme among third-party dashboards<a id="_idIndexMarker1002"/> is to run locally on your workstation and use a Kubernetes SDK to interact with the API server the same way <code class="inlineCode">kubectl</code> would. These tools offer the benefit of not having to deploy additional infrastructure to secure them.</p>
+<p class="normal">Visual Studio Code’s Kubernetes plugin is an example of a local application leveraging direct API server connections. When launching the plugin, Visual Studio Code accesses your current <code class="inlineCode">kubectl</code> configuration and interacts with the API server using that configuration. It will even refresh an OpenID Connect token when it expires:</p>
+<figure class="mediaobject"><img alt="Figure 9.7 – Visual Studio Code with the Kubernetes plugin " height="612" src="../Images/B21165_10_04.png" width="877"/></figure>
+<p class="packt_figref">Figure 10.4: Visual Studio Code with the Kubernetes plugin</p>
+<p class="normal">The Kubernetes plugin for Visual Studio Code<a id="_idIndexMarker1003"/> is able to refresh its OpenID Connect token because it’s built with the client-go SDK, the same client libraries used by <code class="inlineCode">kubectl</code>. When evaluating a client dashboard, make sure it works with your authentication type, even if it isn’t OpenID Connect. Many of the SDKs for Kubernetes don’t support OpenID Connect token refreshes. The Java and Python SDKs only recently (as of the published date of this book) began supporting the refresh of OpenID Connect tokens the way the client-go SDK does. When evaluating a local dashboard, make sure it’s able to leverage your short-lived tokens and can refresh them as needed, just like <code class="inlineCode">kubectl</code> can.</p>
+<p class="normal">There is no shortage of different dashboards in the Kubernetes ecosystem, all with their own spins on management. I don’t want to simply provide a list of these dashboards without giving you an in-depth review of their benefits and security impacts. Instead, let’s focus on what’s important when evaluating which dashboard you want to use:</p>
+<ul>
+<li class="bulletList">If the dashboard is web-based:<ul>
+<li class="bulletList level-2">Does it support OpenID Connect directly?</li>
+<li class="bulletList level-2">Can it run behind a reverse proxy and accept both tokens and impersonation headers?</li>
+<li class="bulletList level-2">Does it require any permissions for its own service account? Do these permissions adhere to a least-privilege approach?</li>
+</ul>
+</li>
+<li class="bulletList">If the dashboard is local:<ul>
+<li class="bulletList level-2">Does the client SDK support OpenID Connect, with the ability to automatically refresh tokens as <code class="inlineCode">kubectl</code> does, using the client-go SDK?</li>
+</ul>
+</li>
+</ul>
+<p class="normal">These are important evaluation questions not just for the Kubernetes Dashboard, but for dashboards that you may use for other cluster management applications. As an example, the <strong class="keyWord">TektonCD dashboard</strong>, which is a web application for managing<a id="_idIndexMarker1004"/> your pipelines, requires deleting several RBAC<a id="_idIndexMarker1005"/> bindings to make sure the dashboard has to use the user’s identity and can’t be co-opted to use its <code class="inlineCode">ServiceAccount</code> identity.</p>
+<h2 class="heading-2" id="_idParaDest-353">Other cluster-level applications</h2>
+<p class="normal">The introduction of this chapter<a id="_idIndexMarker1006"/> discussed how a cluster is made up of several applications besides Kubernetes. Other applications will likely follow the same model as the dashboard for security, and the reverse proxy method is a better method for exposing those applications than <code class="inlineCode">kubectl</code> port-forwarding, even when the application has no built-in security. Take the common Prometheus stack as an example. Grafana has support for user authentication, but Prometheus and Alert Manager do not.</p>
+<p class="normal">How would you track who had access to these systems or when they were accessed using port-forwarding?</p>
+<p class="normal">Using a reverse proxy, logs of each URL and the user that was authenticated to access the URL can be forwarded<a id="_idIndexMarker1007"/> to a central log management system and analyzed by a <strong class="keyWord">Security Information and Event Manager</strong> (<strong class="keyWord">SIEM</strong>) providing an additional layer of visibility into a cluster’s usage.</p>
+<p class="normal">Just as with the dashboard, using a reverse proxy with these applications provides a layered security approach. It offloads session management from the application in question and provides the capability to have enhanced authentication measures in place such as multi-factor authentication and session revocation. These benefits will lead to a more secure<a id="_idIndexMarker1008"/> and easier-to-use cluster.</p>
+<p class="normal">Let’s now discuss how to integrate the dashboard with OpenUnison.</p>
+<h1 class="heading-1" id="_idParaDest-354">Integrating the dashboard with OpenUnison</h1>
+<p class="normal">The topic of how OpenUnison<a id="_idIndexMarker1009"/> injects identity headers<a id="_idIndexMarker1010"/> using impersonation was covered in <em class="chapterRef">Chapter 6</em>, <em class="italic">Integrating Authentication into Your Cluster</em>, but not how OpenUnison injects a user’s identity into the dashboard with an OpenID Connect integrated cluster. It worked, but it wasn’t explained. This section will use the OpenUnison implementation as an example of how to build a reverse proxy for the dashboard. Use the information in this section to get a better understanding of API security or to build your own solution for dashboard authentication.</p>
+<p class="normal">The OpenUnison deployment comprises two integrated applications:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">The OpenID Connect Identity Provider &amp; Login Portal</strong>: This application hosts the login process and the discovery URLs used by the API server to get the keys needed to validate an <code class="inlineCode">id_token</code>. It also hosts the screens where you can obtain your token for <code class="inlineCode">kubectl</code>.</li>
+<li class="bulletList"><strong class="keyWord">The dashboard</strong>: A reverse proxy application that authenticates to the integrated OpenID Connect identity provider and injects the user’s <code class="inlineCode">id_token</code> into each request.</li>
+</ul>
+<p class="normal">This diagram shows how the dashboard’s user interface interacts with its server-side component with a reverse proxy injecting the user’s <code class="inlineCode">id_token</code>:</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="559" src="../Images/B21165_10_05.png" width="527"/></figure>
+<p class="packt_figref">Figure 10.5: OpenUnison integration with the dashboard</p>
+<p class="normal">The dashboard uses the same OpenID Connect<a id="_idIndexMarker1011"/> identity provider<a id="_idIndexMarker1012"/> as the API server but doesn’t use the <code class="inlineCode">id_token</code> provided by it. Instead, OpenUnison has a plugin that will generate a new <code class="inlineCode">id_token</code> independent of the identity provider with the user’s identity data in it. OpenUnison can do this because the key used to generate an <code class="inlineCode">id_token</code> for the OpenID Connect identity provider, used by <code class="inlineCode">kubectl</code> and the API server, is stored in OpenUnison. This is different from how you would integrate the dashboard with KeyCloak or Dex because you would need an additional component to authenticate users and maintain the <code class="inlineCode">id_token</code> that is injected into the requests. This is often done with the OAuth2 proxy, which would need to be integrated with both your identity provider (i.e., Dex or KeyCloak), the dashboard, and your ingress controller. OpenUnison did all these steps for you.</p>
+<p class="normal">A new, short-lived token is generated separately from the OpenID Connect session used with <code class="inlineCode">kubectl</code>. This way, the token can be refreshed independently of a <code class="inlineCode">kubectl</code> session. This process provides the benefits of a 1- to 2-minute token life with the convenience of a direct login process.</p>
+<p class="normal">You’ll also notice that there is no auth container. The auth container’s only role is to return some JSON to tell the UI that the user is still authenticated. Since this container doesn’t support any encryption, we don’t bother calling it and instead generate the JSON directly in OpenUnison. This cuts out the need for the auth container and any issues that might arise from not having a TLS network connection with a bearer token.</p>
+<p class="normal">If you have an eye for security, you may point out that this method has a glaring single point of failure in the security model: a user’s credentials! An attacker generally just needs to ask for credentials in order to get them. This is often done via email in an attack called phishing, where an attacker<a id="_idIndexMarker1013"/> sends a victim a link to a page that looks like their login page but really just collects credentials. This is why multi-factor authentication is so important for infrastructure systems.</p>
+<p class="normal">In a 2019 study, Google showed that multi-factor authentication stopped 99% of automated and phishing attacks (<a href="https://security.googleblog.com/2019/05/new-research-how-effective-is-basic.xhtml"><span class="url">https://security.googleblog.com/2019/05/new-research-how-effective-is-basic.xhtml</span></a>). Adding multi-factor authentication to the identity provider OpenUnison authenticates against, or integrating it directly into OpenUnison, is one of the most effective ways<a id="_idIndexMarker1014"/> to secure the dashboard<a id="_idIndexMarker1015"/> and your cluster.</p>
+<p class="normal">Next, we’ll look at what’s changed with the new release of the dashboard.</p>
+<h1 class="heading-1" id="_idParaDest-355">What’s changed in the Kubernetes Dashboard 7.0</h1>
+<p class="normal">We’ve spent this chapter talking<a id="_idIndexMarker1016"/> about the 7.0 dashboard, but as is often true in enterprises the old 2.7 dashboard is still in use and probably will be for a while. The major difference between the 2.7 version and the 7.0 version that is coming is that the API layer and the frontend layer are broken up into multiple containers in 7.0. This was done by the maintainers to make it easier to support more complex use cases, so keep an eye on this project!</p>
+<h1 class="heading-1" id="_idParaDest-356">Summary</h1>
+<p class="normal">In this chapter, we explored the security of the Kubernetes Dashboard in detail. First, we walked through the architecture and how the dashboard passes your identity information on to the API server. We then explored how the dashboard gets compromised, and finally, we detailed how to correctly deploy the dashboard securely.</p>
+<p class="normal">With this knowledge, you can now provide a secure tool to your users. Many users prefer the simplicity of accessing the dashboard via a web browser. Adding multi-factor authentication adds an additional layer of security and peace of mind. When your security team questions the security of the dashboard, you’ll have the answers needed to satisfy their concerns.</p>
+<p class="normal">The previous three chapters focused on the security of the Kubernetes APIs. Next, in <em class="chapterRef">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>, we’ll explore securing the soft underbelly of every Kubernetes deployment: nodes!</p>
+<h1 class="heading-1" id="_idParaDest-357">Questions</h1>
+<ol>
+<li class="numberedList" value="1">The dashboard is insecure.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">How can the dashboard identify a user?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">A token injected from a reverse proxy or provided by the login form</li>
+<li class="alphabeticList level-2">Username and password</li>
+<li class="alphabeticList level-2">service account</li>
+<li class="alphabeticList level-2">Multi-factor authentication</li>
+</ol>
+</li>
+<li class="numberedList">How does the dashboard track the session state?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Sessions are stored in etcd</li>
+<li class="alphabeticList level-2">Sessions are stored in custom resource objects called <code class="inlineCode">DashboardSession</code></li>
+<li class="alphabeticList level-2">There are no sessions</li>
+<li class="alphabeticList level-2">If a token is uploaded, it’s encrypted and stored in the browser as a cookie</li>
+</ol>
+</li>
+<li class="numberedList">When using a token, how often can the dashboard refresh it?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Once a minute</li>
+<li class="alphabeticList level-2">Every thirty seconds</li>
+<li class="alphabeticList level-2">When the token expires</li>
+<li class="alphabeticList level-2">None of the above</li>
+</ol>
+</li>
+<li class="numberedList">What’s the best way to deploy the dashboard?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Using <code class="inlineCode">kubectl</code> port-forward</li>
+<li class="alphabeticList level-2">Using <code class="inlineCode">kubectl</code> proxy</li>
+<li class="alphabeticList level-2">With a secret Ingress host</li>
+<li class="alphabeticList level-2">Behind a reverse proxy</li>
+</ol>
+</li>
+<li class="numberedList">The dashboard doesn’t support impersonation.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">OpenUnison is the only reverse proxy that supports the dashboard.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-358">Answers</h1>
+<ol>
+<li class="numberedList" value="1">b</li>
+<li class="numberedList">a – There must be a token</li>
+<li class="numberedList">c – When your token expires, you’ll be asked for a new one</li>
+<li class="numberedList">d – The dashboard can’t refresh tokens</li>
+<li class="numberedList">d – Better security and usability</li>
+<li class="numberedList">b</li>
+<li class="numberedList">b</li>
+</ol>
+</div>
+</div></body></html>

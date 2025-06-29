@@ -1,0 +1,532 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div id="_idContainer141">
+<h1 class="chapter-number" id="_idParaDest-84"><a id="_idTextAnchor085"/>6</h1>
+<h1 id="_idParaDest-85"><a id="_idTextAnchor086"/>Configuring Connectivity for Containers</h1>
+<p>We learned how to set up a MicroK8s Raspberry Pi multi-node cluster, deploy a sample application, and perform rolling updates on the deployed application in the previous chapter. We also figured out how to scale the deployed application. We also learned about a few best practices for designing a Kubernetes cluster that is scalable, secure, and highly optimized. In this and the following chapters, we’ll continue to implement various use cases of common edge-computing applications using MicroK8s. Kubernetes provides several ways for exposing Services to the outside world. </p>
+<p>In this chapter, we'll continue with our next use case, which is about container network connectivity on MicroK8s. Each Pod in the Kubernetes network model is assigned its own <strong class="bold">Internet Protocol</strong> (<strong class="bold">IP</strong>) address by default. As a result, you won’t have to explicitly link or network Pods together, and you shouldn’t have to bother with mapping container ports to host ports, and so on.</p>
+<p>Kubernetes allows you to describe declaratively how your applications are deployed, how they communicate with one another and with the Kubernetes control plane, and how clients can access them. </p>
+<p>Kubernetes, as a highly modular open source project, allows for a great level of network implementation adaptability. The Kubernetes ecosystem has spawned a slew of projects aimed at making container communication simple, consistent, and safe. One project that enables plugin-based features to ease networking in Kubernetes is <strong class="bold">Container Network Interface</strong> (<strong class="bold">CNI</strong>). The major goal of CNI is to give administrators enough control to monitor traffic while decreasing the time it takes to manually configure network configurations.</p>
+<p>The following fundamental criteria are imposed by Kubernetes on any networking implementation:</p>
+<ul>
+<li>Without <strong class="bold">network address translation</strong> (<strong class="bold">NAT</strong>), Pods on a node can communicate with Pods on all other nodes.</li>
+<li>A node’s agents (such as system daemons and <strong class="source-inline">kubelet</strong>) can communicate with all the node’s Pods.</li>
+<li>Without NAT, Pods in a node’s host network can communicate with Pods on all other nodes.</li>
+</ul>
+<p>CNI allows a Kubernetes provider to develop unique networking models that seek to deliver a consistent and dependable network across all your Pods. CNI plugins provide namespace isolation, traffic, and IP filtering, which Kubernetes does not provide by default. Let’s say a programmer wishes to use these advanced network functionalities. In such situations, they must utilize the CNI plugin in conjunction with CNI to facilitate network construction and administration.</p>
+<p>There are a variety of CNI plugins on the market. In this chapter, we will look at some of the popular options—such as Flannel, Calico, and Cilium—and we’re going to cover the following main topics:</p>
+<ul>
+<li>CNI overview</li>
+<li>Configuring Calico </li>
+<li>Configuring Cilium </li>
+<li>Configuring Flannel </li>
+<li>Guidelines on choosing a CNI provider</li>
+</ul>
+<h1 id="_idParaDest-86"><a id="_idTextAnchor087"/>CNI overview</h1>
+<p>Before diving into a CNI overview, let’s understand <a id="_idIndexMarker376"/>how networking is handled within a Kubernetes cluster. </p>
+<p>When Kubernetes schedules a Pod to execute on a node, the node’s Linux kernel generates a network namespace for the Pod. This network<a id="_idIndexMarker377"/> namespace establishes a <strong class="bold">virtual network interface</strong> (<strong class="bold">VIF</strong>) between the node’s physical network interface—such as <strong class="source-inline">eth0</strong>—and the Pod, allowing packets to flow to and from the Pod. The related VIF in the root network namespace of the node connects to a Linux bridge, allowing communication between Pods on the same node. A Pod can also use the same VIF to send packets outside of the node.</p>
+<p>From a range of addresses reserved for Pods on the node, Kubernetes assigns an IP address (Pod IP address) to the VIF in the Pod’s network namespace. This address range is a subset of the cluster’s IP address range for Pods, which you can specify when you build a cluster.</p>
+<p>The network namespace<a id="_idIndexMarker378"/> used by a container running in a Pod is the Pod’s network namespace. The Pod seems to be a physical machine with one network interface from the perspective of the container. This network interface is shared by all containers in the Pod. The localhost of each container is connected to the node’s physical network interface, such as <strong class="source-inline">eth0</strong>, via the Pod. Each Pod has unfiltered access to all other Pods operating on all cluster nodes by default, but you can restrict access among Pods.</p>
+<p>The following diagram depicts a single node running two Pods and the network traffic between the Pods:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer102">
+<img alt="Figure 6.1 – Kubernetes network model: Flow of traffic between Pods " height="1013" src="image/Figure_6.01_B18115.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.1 – Kubernetes network model: Flow of traffic between Pods</p>
+<h1 id="_idParaDest-87"><a id="_idTextAnchor088"/>Communication flow from Pod 3 to Pod 6</h1>
+<p>Let's look at the communication flow from Pod3 to Pod6 which is housed in a single node:</p>
+<ol>
+<li>A packet leaves from Pod <strong class="source-inline">3</strong> through the <strong class="source-inline">eth3</strong> interface<a id="_idIndexMarker379"/> and reaches the <strong class="source-inline">cbr0</strong> bridge<a id="_idIndexMarker380"/> interface through the <strong class="source-inline">veth1234</strong> virtual interface. </li>
+<li>The packet leaves <strong class="source-inline">veth1234</strong> and reaches <strong class="source-inline">cbr0</strong>, looking for the address of Pod <strong class="source-inline">6</strong>.</li>
+<li>The packet leaves <strong class="source-inline">cbr0</strong> and is redirected to <strong class="source-inline">veth5678</strong>.</li>
+<li>The packet leaves <strong class="source-inline">cbr0</strong> through <strong class="source-inline">veth5678</strong> and reaches the Pod <strong class="source-inline">6</strong> network through the <strong class="source-inline">eth6</strong> interface.</li>
+</ol>
+<p>On a regular basis, Kubernetes destroys and rebuilds Pods. As a result, Services that have a stable IP address and enable load balancing among a set of Pods must be used. The <strong class="source-inline">kube-proxy</strong> component residing in the node takes care of communication between Pods and Services.</p>
+<p>The flow of traffic from a client Pod <strong class="source-inline">3</strong> to a server Pod 6 on a separate<a id="_idIndexMarker381"/> node is depicted in the following diagram. The Kubernetes <strong class="bold">application programming interface</strong> (<strong class="bold">API</strong>) server keeps track of the application’s Pods. This list is used by the <strong class="source-inline">kube-proxy</strong> agent process on each node to configure an <strong class="source-inline">iptables</strong> rule that directs traffic to the proper Pod:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer103">
+<img alt="Figure 6.2 – Kubernetes network model: Flow of traffic between Pods on different nodes " height="695" src="image/Figure_6.02_B18115.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.2 – Kubernetes network model: Flow of traffic between Pods on different nodes</p>
+<h3>Communication flow from Pod 3 to Pod 6 on different nodes</h3>
+<p>Let's look at the communication flow from Pod3 to Pod6 which is housed in different nodes:</p>
+<ol>
+<li value="1">A packet leaves<a id="_idIndexMarker382"/> from Pod <strong class="source-inline">3</strong> through the <strong class="source-inline">eth3</strong> interface<a id="_idIndexMarker383"/> and reaches the <strong class="source-inline">cbr0</strong> bridge interface through the <strong class="source-inline">veth1234</strong> virtual interface. </li>
+<li>The packet leaves <strong class="source-inline">veth1234</strong> and reaches <strong class="source-inline">cbr0</strong>, looking for the address of Pod <strong class="source-inline">6</strong>.</li>
+<li>The packet leaves <strong class="source-inline">cbr0</strong> and is redirected to <strong class="source-inline">eth0</strong>.</li>
+<li>The packet then leaves <strong class="source-inline">eth0</strong> from node <strong class="source-inline">1</strong> and reaches the gateway.</li>
+<li>The packet leaves the gateway and reaches the <strong class="source-inline">eth0</strong> interface on node <strong class="source-inline">2</strong>.</li>
+<li>The packet leaves <strong class="source-inline">eth0</strong> and reaches <strong class="source-inline">cbr0</strong>, looking for the address of Pod <strong class="source-inline">6</strong>.</li>
+<li>The packet leaves <strong class="source-inline">cbr0</strong> through <strong class="source-inline">veth5678</strong> and reaches the Pod <strong class="source-inline">6</strong> network through the <strong class="source-inline">eth6</strong> interface.</li>
+</ol>
+<p>Now that we are clear on how the traffic flow is routed in a Kubernetes network model, we can now focus on CNI concepts.</p>
+<p>CNI is a network framework that uses a set of standards and modules to enable the dynamic setup<a id="_idIndexMarker384"/> of networking resources. The plugin’s specification<a id="_idIndexMarker385"/> details the interface for configuring the network, provisioning IP addresses, and maintaining multi-host communication.</p>
+<p>CNI effortlessly connects with the <strong class="source-inline">kubelet</strong> agent in the Kubernetes context to allow automatic network configuration between Pods, utilizing either an underlay or an overlay network. Let’s look at this in more detail here:</p>
+<ul>
+<li><strong class="bold">Overlay mode</strong>—A container in <strong class="bold">Overlay</strong> mode is independent<a id="_idIndexMarker386"/> of the host’s IP address range. Tunnels are established between hosts during cross-host<a id="_idIndexMarker387"/> communication, and all packets in the container <strong class="bold">Classless Inter-Domain Routing</strong> (<strong class="bold">CIDR</strong>) block are encapsulated (using a virtual interface such as <strong class="bold">Virtual eXtensible Local Area Network</strong>, or <strong class="bold">VXLAN</strong>) as packets exchanged between hosts<a id="_idIndexMarker388"/> in the underlying physical network. This mode eliminates the underlying network’s dependency, and you can see an overview of it in the following diagram:</li>
+</ul>
+<div>
+<div class="IMG---Figure" id="_idContainer104">
+<img alt="Figure 6.3 – Overlay mode " height="931" src="image/Figure_6.03_B18115.jpg" width="1256"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.3 – Overlay mode</p>
+<ul>
+<li><strong class="bold">Underlay mode</strong>—Containers and hosts are located<a id="_idIndexMarker389"/> at the same network layer and share the same position in <strong class="bold">Underlay</strong> mode. Container network interconnection is determined by the underlying network (physical level of the networking layer), which consists of routers and switches. As a result, the underlying capabilities are heavily reliant on this mode. You can see an overview of this in the following diagram:</li>
+</ul>
+<div>
+<div class="IMG---Figure" id="_idContainer105">
+<img alt="Figure 6.4 – Underlay mode " height="743" src="image/Figure_6.04_B18115.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.4 – Underlay mode</p>
+<p>Once the network configuration<a id="_idIndexMarker390"/> type is defined, the runtime creates<a id="_idIndexMarker391"/> a network for containers to join and uses the CNI plugin to add the interface<a id="_idIndexMarker392"/> to the container namespace and use the <strong class="bold">IP Address Management</strong> (<strong class="bold">IPAM</strong>) plugin to allocate the linked subnetwork and routes. In addition to Kubernetes networking, CNI also supports a <strong class="bold">software-defined networking</strong> (<strong class="bold">SDN</strong>) approach to offer unified container communication<a id="_idIndexMarker393"/> across a cluster.</p>
+<p>Now that we are clear on CNI concepts, we will delve into the steps of configuring Calico CNI plugin to network across a cluster.</p>
+<h1 id="_idParaDest-88"><a id="_idTextAnchor089"/>Configuring Calico </h1>
+<p>Calico is the most popular open source CNI plugin<a id="_idIndexMarker394"/> for the Kubernetes environment. <strong class="bold">Tigera</strong> maintains Calico, which is intended<a id="_idIndexMarker395"/> for use in contexts where network performance, flexibility, and power<a id="_idIndexMarker396"/> are crucial. It has strong network administration security capabilities, as well as a comprehensive view of host and Pod connectivity. </p>
+<p>It can be easily deployed as a <strong class="source-inline">DaemonSet</strong> on each node in a regular Kubernetes cluster. For managing numerous networking activities, each node in a cluster would have three Calico components installed: <strong class="source-inline">Felix</strong>, <strong class="source-inline">BIRD</strong>, and <strong class="source-inline">confd</strong>. Node routing is handled by <strong class="source-inline">Felix</strong>, a Calico agent, while <strong class="source-inline">BIRD</strong> and <strong class="source-inline">confd</strong> manage routing configuration changes.</p>
+<p>Calico uses the <strong class="bold">Border Gateway Protocol</strong> (<strong class="bold">BGP</strong>) routing protocol instead of an overlay network to route messages<a id="_idIndexMarker397"/> between nodes. IP-IN-IP or VXLAN, which may encapsulate packets delivered across subnets such as an overlay network, provide an overlay networking mode. It employs an unencapsulated IP network fabric, which reduces the need to encapsulate packets, resulting in improved network performance for Kubernetes workloads. </p>
+<p>WireGuard, which establishes and manages tunnels between nodes to ensure secure communication, encrypts in-cluster Pod communications. It makes tracing and debugging a lot easier than other tools because it doesn’t use wrappers to manipulate packets. Developers and administrators can quickly analyze packet behavior and take advantage of complex network<a id="_idIndexMarker398"/> features such as policy management and <strong class="bold">access control lists</strong> (<strong class="bold">ACLs</strong>).</p>
+<p>Calico’s network policies implement deny/match rules that may be applied to Pods using manifests to assign ingress policies. To monitor Pod traffic, boost security, and govern Kubernetes workloads, users can build globally scoped policies and interface with an Istio Service mesh.</p>
+<p>In the following steps, we will demonstrate how Calico can secure your Kubernetes cluster with a basic example of the Kubernetes NetworkPolicy API. NetworkPolicies are application-centric constructs that allow you to declare how Pods can communicate across the network with various network entities.</p>
+<p>The entities with which a Pod can communicate are identified<a id="_idIndexMarker399"/> using a combination of the three <strong class="bold">identifiers</strong> (<strong class="bold">IDs</strong>), shown next:</p>
+<ul>
+<li>Other Pods that are permissible (exception: a Pod cannot block access to itself)</li>
+<li>Namespaces that are allowed</li>
+<li>IP blocks that are allowed (exception: traffic to and from the node where a Pod is running is always allowed, regardless of the IP address of the Pod or the node)</li>
+</ul>
+<p>Now that we are clear <a id="_idIndexMarker400"/>on the IDs, we will delve into the steps of configuring Calico CNI plugin to network across a cluster. The following diagram depicts our Raspberry Pi cluster setup:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer106">
+<img alt="Figure 6.5 – Raspberry Pi cluster setup " height="588" src="image/Figure_6.05_B18115.jpg" width="1322"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.5 – Raspberry Pi cluster setup</p>
+<p>Now that we know what we want to do, let’s look at the requirements.</p>
+<h2 id="_idParaDest-89"><a id="_idTextAnchor090"/>Requirements </h2>
+<p>Before you begin, here are the prerequisites<a id="_idIndexMarker401"/> that are needed for building a Raspberry Pi Kubernetes cluster and for the configuration of the CNI:</p>
+<ul>
+<li>A microSD card (4 <strong class="bold">gigabytes</strong> (<strong class="bold">GB</strong>) minimum; 8 GB recommended)</li>
+<li>A computer with a microSD card drive</li>
+<li>A Raspberry Pi 2, 3, or 4 (one or more)</li>
+<li>A micro-USB power cable (USB-C for the Pi 4)</li>
+<li>A Wi-Fi network or an Ethernet cable with an internet connection</li>
+<li>(Optional) A monitor with a <strong class="bold">High-Definition Multimedia Interface</strong> (<strong class="bold">HDMI</strong>) interface</li>
+<li>(Optional) An HDMI cable for the Pi 2 and 3 and a micro-HDMI cable for the Pi 4</li>
+<li>(Optional) A <strong class="bold">Universal Serial Bus</strong> (<strong class="bold">USB</strong>) keyboard</li>
+</ul>
+<p>Now that we’ve established<a id="_idIndexMarker402"/> the requirements, we’ll go on to the step-by-step instructions on how to complete the process.</p>
+<h2 id="_idParaDest-90"><a id="_idTextAnchor091"/>Step 1 – Creating a MicroK8s Raspberry Pi cluster </h2>
+<p>Please follow the steps that we covered in <a href="B18115_05.xhtml#_idTextAnchor070"><em class="italic">Chapter 5</em></a><em class="italic">,</em> <em class="italic">Creating and Implementing Updates on Multi-Node Raspberry Pi Kubernetes Clusters</em>, to create<a id="_idIndexMarker403"/> a MicroK8s Raspberry Pi<a id="_idIndexMarker404"/> cluster. Here is a quick refresher:</p>
+<ul>
+<li><em class="italic">Step 1</em>: Installing <strong class="bold">operating system</strong> (<strong class="bold">OS</strong>) image to SD card</li>
+<li><em class="italic">Step 1a</em>: Configuring Wi-Fi access settings</li>
+<li><em class="italic">Step 1b</em>: Configuring remote access settings</li>
+<li><em class="italic">Step 1c</em>: Configuring control group settings</li>
+<li><em class="italic">Step 1d</em>: Configuring hostname</li>
+<li><em class="italic">Step 2</em>: Installing and configuring MicroK8s</li>
+<li><em class="italic">Step 3</em>: Adding a worker node</li>
+</ul>
+<p>A fully functional multi-node Kubernetes cluster would look like the one shown next. To summarize, we have installed MicroK8s on the Raspberry Pi boards and joined multiple deployments to form the cluster. We have also added nodes to the cluster:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer107">
+<img alt="Figure 6.6 – Fully functional MicroK8s Kubernetes cluster " height="570" src="image/Figure_5.22_B18115.jpg" width="1264"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.6 – Fully functional MicroK8s Kubernetes cluster</p>
+<p>We can go to the next step of enabling <a id="_idIndexMarker405"/>the Calico add-on now that<a id="_idIndexMarker406"/> we have a fully functional cluster.</p>
+<h2 id="_idParaDest-91"><a id="_idTextAnchor092"/>Step 2 – Enabling the Calico CNI add-on </h2>
+<p>By default, Calico is enabled if a<a id="_idIndexMarker407"/> cluster add-on is enabled. We can verify whether it’s enabled by using the following command:</p>
+<p class="source-code">kubectl get pods – A | grep calico</p>
+<p>The following command execution output indicates Calico is enabled and its Pods are running:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer108">
+<img alt="Figure 6.7 – Validating Calico Pods are running " height="89" src="image/Figure_6.07_B18115.jpg" width="765"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.7 – Validating Calico Pods are running</p>
+<p>Now that we have Calico CNI running, let’s create a sample <strong class="source-inline">nginx</strong> deployment for us to test the network isolation in the next step. By default, a Pod is not isolated for egress and ingress—that is, all outbound and inbound connections are allowed.</p>
+<h2 id="_idParaDest-92"><a id="_idTextAnchor093"/>Step 3 – Deploying a sample containerized application</h2>
+<p>Use the following command<a id="_idIndexMarker408"/> to create a sample <strong class="source-inline">nginx</strong> deployment:</p>
+<p class="source-code">kubectl create deployment nginx –-image=nginx</p>
+<p>The following command execution output indicates that there is no error in the deployment, and in the next steps, we can expose the <strong class="source-inline">nginx</strong> deployment that we created:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer109">
+<img alt="Figure 6.8 – Sample application deployment " height="65" src="image/Figure_6.08_B18115.jpg" width="702"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.8 – Sample application deployment</p>
+<p>Use the following command to expose the <strong class="source-inline">nginx</strong> deployment so that it can be accessed from other Pods:</p>
+<p class="source-code">kubectl expose deployment nginx –-port=80</p>
+<p>The following command execution output confirms that expose deployment has succeeded:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer110">
+<img alt="Figure 6.9 – Exposing the sample application " height="62" src="image/Figure_6.09_B18115.jpg" width="652"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.9 – Exposing the sample application</p>
+<p>Use the following command to see whether the Service has been exposed:</p>
+<p class="source-code">kubectl get svc</p>
+<p>The following command execution output shows that the Service is exposed, and a cluster IP has been assigned. Using the cluster IP and port, we can access the Service from other Pods. Recall from <a href="B18115_06.xhtml#_idTextAnchor085"><em class="italic">Chapter 6</em></a><em class="italic">,</em> <em class="italic">Setting up MetalLB and Ingress for Load Balancing</em>, that an external IP would not have been allocated because an external load balancer such as <strong class="source-inline">MetalLB</strong> must be enabled for this:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer111">
+<img alt="Figure 6.10 – Cluster IP for the Service is allocated " height="73" src="image/Figure_6.10_B18115.jpg" width="899"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.10 – Cluster IP for the Service is allocated</p>
+<p>We’ll establish a new Pod<a id="_idIndexMarker409"/> to access the Service now that the Services have been exposed. Use the following command to create a new Pod and open up a shell session inside the Pod:</p>
+<p class="source-code">kubectl run access --rm -ti –-image busybox /bin/sh</p>
+<p>The following command execution output confirms that the <strong class="source-inline">run</strong> command has succeeded and a shell session has opened up inside the <strong class="source-inline">access</strong> Pod:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer112">
+<img alt="Figure 6.11 – Shell session for the access Pod " height="74" src="image/Figure_6.11_B18115.jpg" width="755"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.11 – Shell session for the access Pod</p>
+<p>Use the following command to access the <strong class="source-inline">nginx</strong> Service from the <strong class="source-inline">access</strong> Pod:</p>
+<p class="source-code">wget -q nginx -O -</p>
+<p>Great! The <strong class="source-inline">nginx</strong> Service is accessible from the <strong class="source-inline">access</strong> Pod, as we can see here:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer113">
+<img alt="Figure 6.12 – nginx response " height="474" src="image/Figure_6.12_B18115.jpg" width="773"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.12 – nginx response</p>
+<p>To summarize, we’ve set up a test nginx application and exposed and tested the Service from the access Pod. Isolation<a id="_idIndexMarker410"/> will be applied in the next step by using NetworkPolicy.</p>
+<h2 id="_idParaDest-93"><a id="_idTextAnchor094"/>Step 4 – Applying isolation by using NetworkPolicy</h2>
+<p>Let’s create a NetworkPolicy for all Pods in the default <a id="_idIndexMarker411"/>namespace that implements<a id="_idIndexMarker412"/> a default deny behavior, as follows:</p>
+<pre class="source-code">kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: default-deny
+spec:
+  podSelector:
+    matchLabels: {}</pre>
+<p>From the preceding code, we can note that <strong class="source-inline">podSelector</strong> is included in each NetworkPolicy, which selects the grouping of Pods to which the policy applies. In the preceding policy, an empty <strong class="source-inline">podSelector</strong> indicates that it applies to all Pods in the namespace.</p>
+<p>Use the following command to create isolation using NetworkPolicy:</p>
+<p class="source-code">kubectl apply -f calico-policy.yaml</p>
+<p>The following command execution output confirms that there is no error in the deployment and Calico will then block all connections to Pods in this namespace:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer114">
+<img alt="Figure 6.13 – NetworkPolicy created " height="85" src="image/Figure_6.13_B18115.jpg" width="593"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.13 – NetworkPolicy created</p>
+<p>To test access to the <strong class="source-inline">nginx</strong> Service, run the following command from within the BusyBox <strong class="source-inline">access</strong> Pod:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer115">
+<img alt="Figure 6.14 – Testing access to the nginx Service from the access Pod " height="90" src="image/Figure_6.14_B18115.jpg" width="755"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.14 – Testing access to the nginx Service from the access Pod</p>
+<p>Use the same <strong class="source-inline">wget</strong> command<a id="_idIndexMarker413"/> to access the <strong class="source-inline">nginx</strong> Service<a id="_idIndexMarker414"/> from the <strong class="source-inline">access</strong> Pod, as follows:</p>
+<p class="source-code">wget -q nginx -O -</p>
+<p>The following command output confirms that the <strong class="source-inline">nginx</strong> Service is not accessible, so let’s try with a timed-out setting in the next step, as follows:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer116">
+<img alt="Figure 6.15 – Using the wget command to access nginx " height="68" src="image/Figure_6.15_B18115.jpg" width="598"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.15 – Using the wget command to access nginx</p>
+<p>The following command output confirms the request timed out after 5 seconds:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer117">
+<img alt="Figure 6.16 – Request timed out after 5 seconds " height="40" src="image/Figure_6.16_B18115.jpg" width="537"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.16 – Request timed out after 5 seconds</p>
+<p>Now that we’ve tested the isolation using the deny rule, it’s time to provide access and test the incoming connections.</p>
+<h2 id="_idParaDest-94"><a id="_idTextAnchor095"/>Step 5 – Enabling access </h2>
+<p>Let’s modify the same NetworkPolicy to grant access<a id="_idIndexMarker415"/> to the <strong class="source-inline">nginx</strong> Service. Incoming connections from our access Pod only will be allowed, but not from anywhere else. The code is illustrated in the following snippet:</p>
+<pre class="source-code">kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: access-nginx
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            run: access</pre>
+<p>From the preceding<a id="_idIndexMarker416"/> code, we can note the following:</p>
+<ul>
+<li><strong class="source-inline">podSelector</strong> selects Pods with matching labels of type <strong class="source-inline">app: nginx</strong>. </li>
+<li>The <strong class="source-inline">ingress</strong> rule allows traffic if it matches the <strong class="source-inline">from</strong> section.</li>
+</ul>
+<p>Use the following command to apply the modified policy:</p>
+<p class="source-code">kubectl apply -f calico-policy.yaml</p>
+<p>The following command execution output confirms that there is no error in the deployment. Traffic from Pods with the <strong class="source-inline">run: access</strong> label to Pods with the <strong class="source-inline">app: nginx</strong> label is allowed by the NetworkPolicy. Labels are created automatically by <strong class="source-inline">kubectl</strong> and are based on the resource name:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer118">
+<img alt="Figure 6.17 – Deployment of the modified policy " height="78" src="image/Figure_6.17_B18115.jpg" width="622"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.17 – Deployment of the modified policy</p>
+<p>Use the <strong class="source-inline">wget</strong> command to access the <strong class="source-inline">nginx</strong> Service from the <strong class="source-inline">access</strong> Pod, as follows:</p>
+<p class="source-code">wget -q nginx -O -</p>
+<p>The following output of the preceding command<a id="_idIndexMarker417"/> confirms that we can access the <strong class="source-inline">nginx</strong> Service from the <strong class="source-inline">access</strong> Pod:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer119">
+<img alt="Figure 6.18 – Testing access using the wget command " height="451" src="image/Figure_6.18_B18115.jpg" width="757"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.18 – Testing access using the wget command</p>
+<p>To reconfirm, let’s create a Pod without the <strong class="source-inline">run: access</strong> label using the following command and test whether it’s working correctly:</p>
+<p class="source-code">kubectl run access1 --rm -ti --image busybox /bin/sh</p>
+<p>As shown in the following command execution output, this should start a shell session inside the <strong class="source-inline">access1</strong> Pod:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer120">
+<img alt="Figure 6.19 – Shell session inside the access1 Pod " height="78" src="image/Figure_6.19_B18115.jpg" width="765"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.19 – Shell session inside the access1 Pod</p>
+<p>To test access to the <strong class="source-inline">nginx</strong> Service, run the <strong class="source-inline">wget</strong> command from within the BusyBox <strong class="source-inline">access1</strong> Pod, as follows:</p>
+<p class="source-code">wget -q nginx -O -</p>
+<p>The request should time out since<a id="_idIndexMarker418"/> the NetworkPolicy will allow only access from a Pod with a <strong class="source-inline">run: access</strong> label, as illustrated here:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer121">
+<img alt="Figure 6.20 – Request timed out " height="129" src="image/Figure_6.20_B18115.jpg" width="710"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.20 – Request timed out</p>
+<p>This was just a quick demonstration of the Kubernetes NetworkPolicy API and how Calico can help you secure your Kubernetes cluster. For more information<a id="_idIndexMarker419"/> about Kubernetes network policy, refer to the following link: <a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">https://kubernetes.io/docs/concepts/services-networking/network-policies/</a>.</p>
+<p>Calico’s powerful network policy framework makes it simple to restrict communication so that only the traffic you want flows. Furthermore, with built-in WireGuard encryption functionality, safeguarding your Pod-to-Pod traffic across the network has never been easier.</p>
+<p>Calico’s policy engine can enforce the same policy model at the host networking layer, safeguarding your infrastructure from compromised workloads and your workloads from compromised infrastructure.</p>
+<p>Calico is a great option for consumers who desire complete control over their network components. It is also compatible with a variety of Kubernetes platforms and provides commercial support via Calico Enterprise.</p>
+<p>The highly scalable Cilium CNI solution created by Linux kernel developers will be discussed in the following section.</p>
+<h1 id="_idParaDest-95"><a id="_idTextAnchor096"/>Configuring Cilium </h1>
+<p>Cilium uses <strong class="bold">extended Berkeley Packet Filter</strong> (<strong class="bold">eBPF</strong>) filtering technology to ensure network connectivity<a id="_idIndexMarker420"/> across Kubernetes Services by adding high-level<a id="_idIndexMarker421"/> application rules. It manages operations and converts network<a id="_idIndexMarker422"/> definitions to eBPF applications as a <strong class="source-inline">cilium-agent</strong> daemon on each node of the Kubernetes cluster. Pods communicate with one another using an overlay network or a routing mechanism; for instance, both IPv4 and IPv6 addresses are supported. VXLAN tunneling is used for packet encapsulation in overlay networks, while native routing is done via the unencapsulated BGP protocol.</p>
+<p>The eBPF Linux kernel feature allows for the dynamic insertion of sophisticated security visibility and control logic within Linux itself, as shown in the following diagram. Cilium security policies can be applied and modified without requiring any changes to the application code or container configuration<a id="_idIndexMarker423"/> because eBPF operates inside the Linux kernel. It also has <strong class="bold">HyperText Transfer Protocol</strong> (<strong class="bold">HTTP</strong>) request filters that support Kubernetes Network Policies. Both ingress and egress enforcements are available, and the policy<a id="_idIndexMarker424"/> configuration can be expressed in <strong class="bold">YAML Ain’t Markup Language</strong> (<strong class="bold">YAML</strong>) or <strong class="bold">JavaScript Object Notation</strong> (<strong class="bold">JSON</strong>) format. While integrating<a id="_idIndexMarker425"/> policies with service meshes such as Istio, administrators can approve or reject requests based on the request method or path header:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer122">
+<img alt="Figure 6.21 – Cilium: eBPF-based networking, observability, and security " height="774" src="image/Figure_6.21_B18115.jpg" width="1261"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.21 – Cilium: eBPF-based networking, observability, and security</p>
+<p>More details about eBPF technology<a id="_idIndexMarker426"/> can be found here: <a href="https://ebpf.io/">https://ebpf.io/</a>.</p>
+<p>Cilium may be utilized<a id="_idIndexMarker427"/> across several Kubernetes clusters and provides multi-CNI functionality, a high level of inspection, and Pod-to-Pod interaction. Packet inspection and application protocol packets are managed by its network- and application-layer awareness. </p>
+<p>In the next steps, we will be using Kubernetes’ <strong class="source-inline">NetworkPolicy</strong>, <strong class="source-inline">CiliumNetworkPolicy</strong>, and <strong class="source-inline">CiliumClusterwideNetworkPolicy</strong> resources to apply policies to our cluster. Kubernetes will automatically distribute the policies to all agents.</p>
+<p>Since Cilium isn’t available for <strong class="source-inline">arm64</strong> architecture, I’ll be<a id="_idIndexMarker428"/> using an Ubuntu <strong class="bold">virtual machine</strong> (<strong class="bold">VM</strong>) for this section. The instructions for setting up a MicroK8s cluster are the same as in <a href="B18115_05.xhtml#_idTextAnchor070"><em class="italic">Chapter 5</em></a><em class="italic">,</em> <em class="italic">Creating and Implementing Updates on Multi-node Raspberry Pi Kubernetes Clusters</em>.</p>
+<h2 id="_idParaDest-96"><a id="_idTextAnchor097"/>Step 1 – Enabling the Cilium add-on </h2>
+<p>Use the following command<a id="_idIndexMarker429"/> to enable the Cilium add-on:</p>
+<p class="source-code">microk8s enable cilium</p>
+<p>The following command execution output indicates the Cilium add-on has been enabled successfully: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer123">
+<img alt="Figure 6.22 – Enabling Cilium add-on " height="562" src="image/Figure_6.22_B18115.jpg" width="892"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.22 – Enabling Cilium add-on</p>
+<p>It will take some time to finish activating the add-on, but the following command execution output shows that Cilium has been successfully enabled:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer124">
+<img alt="Figure 6.23 – Cilium add-on enabled " height="236" src="image/Figure_6.23_B18115.jpg" width="972"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.23 – Cilium add-on enabled</p>
+<p>Cilium is now configured! We can<a id="_idIndexMarker430"/> now use the <strong class="source-inline">microk8s.cilium</strong> <strong class="bold">command-line interface</strong> (<strong class="bold">CLI</strong>) to check the status of the Cilium configuration. The following command execution output indicates Cilium CNI has been enabled successfully and the controller status is healthy:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer125">
+<img alt="Figure 6.24 – Cilium CNI " height="388" src="image/Figure_6.24_B18115.jpg" width="1343"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.24 – Cilium CNI</p>
+<p>Now that Cilium CNI has been successfully activated and the controller status has been verified as healthy, the next step is to enable the <strong class="bold">Domain Name System</strong> (<strong class="bold">DNS</strong>) add-on.</p>
+<h2 id="_idParaDest-97"><a id="_idTextAnchor098"/>Step 2 – Enabling the DNS add-on </h2>
+<p>Since we need address resolution<a id="_idIndexMarker431"/> services, we are going to enable the DNS add-on as well. The following command execution output indicates DNS has been enabled successfully:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer126">
+<img alt="Figure 6.25 – Enabling DNS add-on " height="197" src="image/Figure_6.25_B18115.jpg" width="700"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.25 – Enabling DNS add-on</p>
+<p>Now that we have<a id="_idIndexMarker432"/> Cilium CNI running, let’s create a sample <strong class="source-inline">nginx</strong> deployment for us to test the network isolation in the next step.</p>
+<h2 id="_idParaDest-98"><a id="_idTextAnchor099"/>Step 3 – Deploying a sample containerized application</h2>
+<p>Use the following command<a id="_idIndexMarker433"/> to create a sample <strong class="source-inline">nginx</strong> deployment:</p>
+<p class="source-code">kubectl create deployment nginx-cilium –-image=nginx</p>
+<p>The following command execution output indicates that there is no error in the deployment, and in the next steps, we can expose the <strong class="source-inline">nginx-cilium</strong> deployment we just created:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer127">
+<img alt="Figure 6.26 – Sample application deployment " height="78" src="image/Figure_6.26_B18115.jpg" width="722"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.26 – Sample application deployment</p>
+<p>Use the <strong class="source-inline">kubectl expose</strong> command to expose the <strong class="source-inline">nginx</strong> deployment so that it can be accessed from other Pods, as follows:</p>
+<p class="source-code">kubectl expose deployment nginx-cilium –-port=80</p>
+<p>The following command execution output confirms that the expose deployment has succeeded:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer128">
+<img alt="Figure 6.27 – Exposing the sample application " height="74" src="image/Figure_6.27_B18115.jpg" width="671"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.27 – Exposing the sample application</p>
+<p>Now that the Services have been<a id="_idIndexMarker434"/> exposed, we’ll create a new Pod to access them. To build a new Pod and open a shell session inside it, run the following command:</p>
+<p class="source-code">kubectl run access --rm -ti --image busybox /bin/sh</p>
+<p>The following command execution output confirms that the <strong class="source-inline">run</strong> command has succeeded and a shell session has opened up inside the <strong class="source-inline">access</strong> Pod. We can now confirm that the <strong class="source-inline">nginx-cilium</strong> Service can be accessed from the <strong class="source-inline">access</strong> Pod:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer129">
+<img alt="Figure 6.28 – nginx response " height="490" src="image/Figure_6.28_B18115.jpg" width="776"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.28 – nginx response</p>
+<p>To summarize, we created a test <strong class="source-inline">nginx-cilium</strong> application and exposed<a id="_idIndexMarker435"/> and tested it from the <strong class="source-inline">access</strong> Pod. In the next stage, NetworkPolicy will be used to test the isolation.</p>
+<h2 id="_idParaDest-99"><a id="_idTextAnchor100"/>Step 4 – Applying isolation by using NetworkPolicy</h2>
+<p>Let’s create a NetworkPolicy for all Pods<a id="_idIndexMarker436"/> in the default namespace<a id="_idIndexMarker437"/> that implements a default deny behavior, as follows:</p>
+<pre class="source-code">kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: cilium-deny
+spec:
+  podSelector:
+    matchLabels: {}</pre>
+<p>From the preceding code, we can note that <strong class="source-inline">podSelector</strong> is included in each NetworkPolicy, which selects the grouping of Pods to which the policy applies. In the preceding policy, an empty <strong class="source-inline">podSelector</strong> indicates that it applies to all Pods in the namespace.</p>
+<p>Use the <strong class="source-inline">kubectl apply</strong> command to create isolation using NetworkPolicy, as follows:</p>
+<p class="source-code">kubectl apply -f cilium-policy.yaml</p>
+<p>The following command execution output confirms that there is no error in the deployment, and Cilium will then block all connections to Pods in this namespace:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer130">
+<img alt="Figure 6.29 – NetworkPolicy created " height="67" src="image/Figure_6.29_B18115.jpg" width="621"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.29 – NetworkPolicy created</p>
+<p>We can also verify the same<a id="_idIndexMarker438"/> using the MicroK8s Cilium CLI as well. The following command<a id="_idIndexMarker439"/> execution output confirms that a policy has been created:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer131">
+<img alt="Figure 6.30 – Cilium CLI shows a policy has been created " height="672" src="image/Figure_6.30_B18115.jpg" width="577"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.30 – Cilium CLI shows a policy has been created</p>
+<p>To test access to the <strong class="source-inline">nginx-cilium</strong> Service, run the <strong class="source-inline">wget</strong> command from within the BusyBox <strong class="source-inline">access</strong> Pod, as follows:</p>
+<p class="source-code">wget -q –-timeout=5 nginx-cilium -O -</p>
+<p>The following command<a id="_idIndexMarker440"/> output confirms that the <strong class="source-inline">nginx-cilium</strong> Service<a id="_idIndexMarker441"/> is not accessible, and the request timed out after 5 seconds:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer132">
+<img alt="Figure 6.31 – Testing access to the nginx-cilium Service from the access Pod " height="61" src="image/Figure_6.31_B18115.jpg" width="654"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.31 – Testing access to the nginx-cilium Service from the access Pod</p>
+<p>Now that we’ve tested isolation using the deny rule, it’s time to provide access and test incoming connections as well.</p>
+<h2 id="_idParaDest-100"><a id="_idTextAnchor101"/>Step 5 – Enabling access </h2>
+<p>Let’s modify the same NetworkPolicy to grant access<a id="_idIndexMarker442"/> to the <strong class="source-inline">nginx-cilium</strong> Service. Incoming connections from our access Pod only will be allowed, but not from anywhere else. The code is illustrated in the following snippet:</p>
+<pre class="source-code">kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: access-nginx
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            run: access</pre>
+<p>From the preceding code, we can<a id="_idIndexMarker443"/> note the following:</p>
+<ul>
+<li><strong class="source-inline">podSelector</strong> selects Pods with matching labels of type <strong class="source-inline">app: nginx</strong>. </li>
+<li>The <strong class="source-inline">ingress</strong> rule allows traffic if it matches the <strong class="source-inline">from</strong> section.</li>
+</ul>
+<p>Use the following command to apply the modified isolation using NetworkPolicy:</p>
+<p class="source-code">kubectl apply -f cilium-policy.yaml</p>
+<p>The following command execution output confirms that there is no error in the deployment. The NetworkPolicy allows traffic from Pods with the <strong class="source-inline">run: access</strong> label to flow to Pods with the <strong class="source-inline">app: nginx.</strong> label. Labels are generated by <strong class="source-inline">kubectl </strong>automatically and are based on the resource name:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer133">
+<img alt="Figure 6.32 – Deployment of the modified policy " height="61" src="image/Figure_6.32_B18115.jpg" width="561"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.32 – Deployment of the modified policy</p>
+<p>We can also verify the same using the MicroK8s Cilium CLI as well. The following command execution output confirms that the policy has been updated:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer134">
+<img alt="Figure 6.33 – Cilium CLI shows updated policy " height="642" src="image/Figure_6.33_B18115.jpg" width="601"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.33 – Cilium CLI shows updated policy</p>
+<p>Use the <strong class="source-inline">wget</strong> command to access<a id="_idIndexMarker444"/> the <strong class="source-inline">nginx-cilium</strong> Service from the <strong class="source-inline">access</strong> Pod, as follows:</p>
+<p class="source-code">wget -q nginx-cilium -O -</p>
+<p>The output of the following command confirms<a id="_idIndexMarker445"/> that we can access the <strong class="source-inline">nginx-cilium</strong> Service from the <strong class="source-inline">access</strong> Pod:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer135">
+<img alt="Figure 6.34 – Testing access using the wget command " height="454" src="image/Figure_6.34_B18115.jpg" width="753"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.34 – Testing access using the wget command</p>
+<p>Now that we have completed our tasks with Cilium, we can disable Cilium CNI so that MicroK8s reverts itself to the default CNI, which is Calico CNI. The following command execution output confirms that Cilium has been disabled and MicroK8s has reverted to Calico CNI:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer136">
+<img alt="Figure 6.35 – Disabling Cilium " height="292" src="image/Figure_6.35_B18115.jpg" width="711"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.35 – Disabling Cilium</p>
+<p>The following command execution output<a id="_idIndexMarker446"/> confirms that Calico Pods are running and the default CNI is set:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer137">
+<img alt="Figure 6.36 – Calico default CNI is set, and Pods are running " height="183" src="image/Figure_6.36_B18115.jpg" width="709"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.36 – Calico default CNI is set, and Pods are running</p>
+<p>Cilium retains the ability to seamlessly inject security visibility and enforcement by leveraging Linux eBPF but does so in a fashion that is based on Service/Pod/container identity (rather than IP address identification, as in traditional systems) and may filter on application-layer security (for example, HTTP). As a result of decoupling security from addressing, Cilium not only makes it straightforward to apply security policies in a highly dynamic environment, but it may also provide stronger security isolation.</p>
+<p>After looking into Cilium CNI, we can move on to Flannel CNI in the next section.</p>
+<h1 id="_idParaDest-101"><a id="_idTextAnchor102"/>Configuring Flannel CNI </h1>
+<p>Flannel is one of the most mature<a id="_idIndexMarker447"/> open source CNI projects for Kubernetes, developed by CoreOS. Flannel<a id="_idIndexMarker448"/> is a simple network model that may be used to cover the most common Kubernetes network configuration and management scenarios. It functions by building an overlay network that assigns an internal IP address subnet to each Kubernetes cluster node. The leasing and maintenance of subnets are handled by the <strong class="source-inline">flanneld</strong> daemon agent, which is packaged as a single binary for easy installation and configuration on Kubernetes clusters and distributions.</p>
+<h2 id="_idParaDest-102"><a id="_idTextAnchor103"/>Disabling the HA cluster to enable the Flannel add-on </h2>
+<p>To set Flannel<a id="_idIndexMarker449"/> as the CNI, the <strong class="bold">high availability</strong> (<strong class="bold">HA</strong>) cluster must be disabled<a id="_idIndexMarker450"/> to set the CNI as Flannel. The following command execution output confirms that the HA cluster is disabled and Flannel CNI is set:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer138">
+<img alt="Figure 6.37 – Disabling the HA cluster to set Flannel CNI " height="223" src="image/Figure_6.37_B18115.jpg" width="849"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.37 – Disabling the HA cluster to set Flannel CNI</p>
+<p>Now that Flannel CNI is set up, we can deploy<a id="_idIndexMarker451"/> a sample application and test the network.</p>
+<p>Flannel uses the Kubernetes <strong class="source-inline">etcd</strong> cluster or API to store host mappings and other network-related configurations and sustain connections between hosts/nodes via encapsulated packets after assigning IP addresses. It uses <strong class="source-inline">VXLAN</strong> configuration for encapsulation and communication by default, although there are a variety of backends available, including <strong class="source-inline">host-gw</strong> and <strong class="source-inline">UDP</strong>. It’s also feasible to use Flannel to activate <strong class="source-inline">VXLAN-GBP</strong> for routing, which is required when multiple hosts are connected to the same network.</p>
+<p>The following diagram depicts the flow of traffic between nodes using a <strong class="source-inline">VXLAN</strong> tunnel:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer139">
+<img alt="" height="1058" src="image/Figure_6.38_B18115.jpg" width="1163"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.38 – Flannel CNI</p>
+<p>Flannel does not include<a id="_idIndexMarker452"/> any means for encrypting<a id="_idIndexMarker453"/> encapsulated traffic by default. It does, however, enable <strong class="bold">IP Security</strong> (<strong class="bold">IPsec</strong>) encryption, which allows Kubernetes<a id="_idIndexMarker454"/> clusters to create encrypted tunnels between worker nodes. It is an excellent CNI plugin for novices who wish to begin their Kubernetes CNI adventure from the perspective of a cluster administrator. Until it is used to regulate traffic transfer between hosts, its simple networking model has no drawbacks.</p>
+<p>Let’s sum up what we've learned so far: we’ve looked at the three most popular CNI plugins: Flannel, Calico, and Cilium. When containers are built or destroyed, CNI makes it simple to configure container networking. These plugins ensure that Kubernetes’ networking needs are met and cluster<a id="_idIndexMarker455"/> administrators have access to the networking functionalities<a id="_idIndexMarker456"/> they need. In the next section, we will look at some of the guidelines for choosing the right CNI provider for your requirements.</p>
+<h1 id="_idParaDest-103"><a id="_idTextAnchor104"/>Guidelines on choosing a CNI provider</h1>
+<p>There isn’t a single CNI vendor<a id="_idIndexMarker457"/> that can meet all of a project’s requirements. Flannel is an excellent option for easy setup and configuration. Calico has a superior performance because it employs a BGP underlay network. Cilium uses BPF to implement an entirely different application-layer filtering model that is more focused on enterprise security.</p>
+<p>In the following table, we compare the three most popular CNI plugins:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer140">
+<img alt="Table 6.1 – Comparison of popular CNI plugins " height="540" src="image/B18115_06_Table_6.1.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 6.1 – Comparison of popular CNI plugins</p>
+<p>Relying on a single CNI provider is unnecessary because operating requirements vary widely between projects. Multiple solutions will be used and tested to meet complicated networking requirements while also giving a more dependable networking experience. We’ll look at some<a id="_idIndexMarker458"/> of the most important factors to consider when selecting a CNI provider in the next section.</p>
+<h2 id="_idParaDest-104"><a id="_idTextAnchor105"/>Key considerations when choosing a CNI provider</h2>
+<p>Calico, Flannel, and Cilium<a id="_idIndexMarker459"/> are just a few of the CNI plugins available. Let’s have a look at the various aspects to consider before choosing an acceptable CNI plugin for a production environment.</p>
+<p>You should select a plugin based on the environment in which you operate, as outlined here:</p>
+<ul>
+<li><strong class="bold">For virtualization environments</strong>—There could be many network restrictions. Nodes, for example, cannot communicate<a id="_idIndexMarker460"/> directly with one another using a Layer 2 protocol; only Layer 3 features such as IP addresses are forwarded, and a host can only utilize specific IP numbers. In Overlay mode, you can only choose plugins such as Flannel-<strong class="source-inline">VXLAN</strong> and Calico-IPIP for a restricted underlying network.</li>
+<li><strong class="bold">For physical environments</strong>—The underlying network is relatively unrestricted<a id="_idIndexMarker461"/> in this context. Layer 2 communication, for example, can be implemented within a switch. Plugins can be selected in <strong class="bold">Underlay</strong> mode in such a cluster setup. You can directly install several <strong class="bold">network interface controllers</strong> <strong class="bold">(NICs</strong>) onto a physical machine or virtualize<a id="_idIndexMarker462"/> hardware on NICs in Underlay mode. Routes are established in <strong class="bold">Routing</strong> mode using the Linux routing protocol. This prevents <strong class="source-inline">VXLAN</strong> encapsulation from degrading performance. You can use plugins such as Calico-BGP and Flannel-HostGW in this context.</li>
+<li><strong class="bold">For cloud environments</strong>—The fundamental capabilities<a id="_idIndexMarker463"/> are severely limited in this context, which is a form of virtual environment. Each public cloud, on the other hand, adjusts containers for better performance and may offer APIs for configuring additional NICs or routing capabilities. For compatibility and best performance, it is recommended to use CNI plugins provided by the public cloud vendor.</li>
+</ul>
+<p>After evaluating the environmental constraints, you may have a better sense of which plugins can and cannot be used. In the next section, we will look at business requirements.</p>
+<p>Based on business<a id="_idIndexMarker464"/> requirements, functional criteria could also dictate your plugin options. Here are some factors that should be considered:</p>
+<ul>
+<li><strong class="bold">Security requirements</strong>—Kubernetes includes NetworkPolicy, which lets you set up rules to support<a id="_idIndexMarker465"/> policies such as whether to allow access between Pods. NetworkPolicy declaration is not supported by all CNI plugins. Calico is a good option if you need NetworkPolicy support.</li>
+<li><strong class="bold">Connection to resources within and outside the cluster</strong>—Applications running on VMs or physical machines<a id="_idIndexMarker466"/> can’t all be moved to a containerized environment at the same time. As a result, IP address connectivity between VMs or physical machines and containers must be configured by interconnecting or deploying them at the same layer. In these kinds of scenarios, choose a plugin in Underlay mode. The Calico-BGP plugin, for example, allows Pods and legacy VMs or physical machines to share a layer. Even though containers are in a different CIDR block than historical VMs or physical machines, Calico-BGP can be used to publish BGP routes to original routers, allowing VMs and containers to communicate.</li>
+<li><strong class="bold">Service discovery and load-balancing capabilities</strong>—Kubernetes provides services<a id="_idIndexMarker467"/> such as service discovery<a id="_idIndexMarker468"/> and load balancing. These two features are not available in all CNI plugins. In Underlay mode, the NIC of a Pod is either the Underlay hardware or is virtualized and introduced into a container via hardware for various plugins. As a result, NIC traffic cannot be forwarded to the namespace in which the host resides, and you won’t be able to use the rules that <strong class="source-inline">kube-proxy</strong> sets up on the host. In this instance, the plugin is unable to use Kubernetes’ service discovery<a id="_idIndexMarker469"/> capabilities. Choose a plugin in <strong class="bold">Underlay</strong> mode that enables service discovery <a id="_idIndexMarker470"/>and load balancing if you need these features.</li>
+</ul>
+<p>Now that we’ve gone over the business criteria for selecting a plugin, we can move on to the performance requirements.</p>
+<p>Based on performance<a id="_idIndexMarker471"/> requirements, Pod creation speed and Pod network performance could be used to gauge performance. Depending on the implementation modes, there may be a performance loss. Here are some of the considerations when choosing a plugin:</p>
+<ul>
+<li><strong class="bold">Pod creation speed</strong>—For example, there could be scenarios to build and configure more network<a id="_idIndexMarker472"/> resources when you need to scale out immediately during a business peak scenario. In the case of the CNI plugin with Overlay mode, you can easily scale up Pods because the plugin implements virtualization on nodes, and creating Pods is as simple as calling kernel interfaces. In the case of Underlay mode, it must first generate underlying network resources, which slows down the Pod-generation process. Hence, when you need to quickly scale out Pods or build a large number of Pods, choose an <strong class="bold">Overlay</strong> mode plugin.</li>
+<li><strong class="bold">Pod network performance</strong>—Metrics such as inter-Pod network forwarding, network bandwidth, and <strong class="bold">pulse-per-second</strong> (<strong class="bold">PPS</strong>) latency are used to assess Pod network<a id="_idIndexMarker473"/> performance. Plugins in <strong class="bold">Overlay</strong> mode will give lesser performance than plugins in Underlay modes since the former implement virtualization on nodes and encapsulate packets. As a result, if you need excellent network performance in scenarios such as <strong class="bold">machine learning</strong> (<strong class="bold">ML</strong>) and big-data scenarios, don’t select a plugin<a id="_idIndexMarker474"/> in Overlay mode; instead, use a CNI plugin in Underlay mode.</li>
+</ul>
+<h1 id="_idParaDest-105"><a id="_idTextAnchor106"/>Summary</h1>
+<p>In this chapter, we looked at how networking is handled in a Kubernetes cluster. We also learned how CNI supports dynamic networking resource setup, such as network configuration, IP address provisioning, and multi-host communication. We learned how CNI automatically configures networks between Pods using either an underlay or an overlay network.</p>
+<p>We’ve also covered how to use Calico, Cilium, and Flannel CNI plugins to network the cluster. We discovered the advantages and disadvantages of each CNI. We also discovered that no single CNI vendor was capable of meeting all of a project’s requirements. Flannel is an excellent solution for easy setup and configuration. Calico has a superior performance because it employs a BGP underlay network. BPF is used by Cilium to create an application-layer filtering approach that is more focused on enterprise security. We’ve gone through some of the most important factors to consider when selecting a CNI Service.</p>
+<p>In the next chapter, we’ll continue with our next use case, which is about exposing your Services outside the cluster.</p>
+</div>
+</div>
+</body></html>

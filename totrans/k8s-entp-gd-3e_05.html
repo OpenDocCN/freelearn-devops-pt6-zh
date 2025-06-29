@@ -1,0 +1,776 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer124">
+<h1 class="chapterNumber">5</h1>
+<h1 class="chapterTitle" id="_idParaDest-197">External DNS and Global Load Balancing</h1>
+<p class="normal">In this chapter, we will build on what you learned in <em class="chapterRef">Chapter 4</em>. We will discuss some of the limitations of certain load balancer features and how we can configure a cluster to resolve those limitations.</p>
+<p class="normal">We know that Kubernetes has a built-in DNS server that dynamically allocates names to resources. These are used for applications to communicate intra-cluster, or within the cluster. While this feature is beneficial for internal cluster communication, it doesn’t provide DNS resolution for external workloads. Since it does provide DNS resolution, why do we say it has limitations?</p>
+<p class="normal">In the previous chapter, we used a dynamically assigned IP address to test our <code class="inlineCode">LoadBalancer</code> service workloads. While our examples have been good for learning, in an enterprise, nobody wants to access a workload running on a cluster using an IP address. To address this limitation, the Kubernetes SIG<a id="_idIndexMarker461"/> has developed a project called <strong class="keyWord">ExternalDNS</strong>, which provides the ability to dynamically create DNS entries for our <code class="inlineCode">LoadBalancer</code> services. </p>
+<p class="normal">Also, in an enterprise, you will commonly run services that run on multiple clusters to provide failover for your applications. So far, the options we have discussed can’t address failover scenarios. In this chapter, we will explain how to implement a solution to provide an automated failover for workloads, making them highly available across multiple clusters.</p>
+<p class="normal">In this chapter, you will learn the following:</p>
+<ul>
+<li class="bulletList">An introduction to external DNS resolution and global load balancing</li>
+<li class="bulletList">Configuring and deploying ExternalDNS in a Kubernetes cluster</li>
+<li class="bulletList">Automating DNS name registration</li>
+<li class="bulletList">Integrating ExternalDNS with an enterprise DNS server</li>
+<li class="bulletList">Using GSLB to offer global load balancing across multiple clusters</li>
+</ul>
+<p class="normal">Now, let’s jump into the chapter!</p>
+<h1 class="heading-1" id="_idParaDest-198">Technical requirements</h1>
+<p class="normal">This chapter has the following technical requirements:</p>
+<ul>
+<li class="bulletList">An Ubuntu 22.04+ server running Docker with a minimum of 4 GB of RAM, though 8 GB is recommended</li>
+<li class="bulletList">A KinD cluster running <strong class="keyWord">MetalLB</strong> – if you completed <em class="chapterRef">Chapter 4</em>, you should already have a cluster running MetalLB</li>
+<li class="bulletList">The scripts from the <code class="inlineCode">chapter5</code> folder from the repository, which you can access by going to this book’s GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition</span></a></li>
+</ul>
+<h1 class="heading-1" id="_idParaDest-199">Making service names available externally</h1>
+<p class="normal">As we mentioned in the introduction, you may remember<a id="_idIndexMarker462"/> that we used IP addresses to test the <code class="inlineCode">LoadBalancer</code> services we created, whereas for our <code class="inlineCode">Ingress</code> examples, we used domain names. Why did we have to use IP addresses instead of a hostname for our <code class="inlineCode">LoadBalancer</code> services?</p>
+<p class="normal">Although a Kubernetes load balancer assigns a standard IP address to a service, it doesn’t automatically generate a DNS name for workloads to access the service. Instead, you must rely on IP addresses to connect to applications within the cluster, which becomes confusing and inefficient. Furthermore, manually registering DNS names for each IP assigned by <strong class="keyWord">MetalLB</strong> presents a maintenance<a id="_idIndexMarker463"/> challenge. To deliver a more cloud-like experience and streamline name resolution for <code class="inlineCode">LoadBalancer</code> services, we need an add-on that can address these limitations.</p>
+<p class="normal">Similar to the team that maintains KinD, there is a Kubernetes SIG that is working<a id="_idIndexMarker464"/> on this feature for Kubernetes called <strong class="keyWord">ExternalDNS</strong>. The main project page can be found on the SIG’s GitHub at <a href="https://github.com/kubernetes-sigs/external-dns"><span class="url">https://github.com/kubernetes-sigs/external-dns</span></a>.</p>
+<p class="normal">At the time of writing, the <code class="inlineCode">ExternalDNS</code> project supports 34 compatible DNS services, including the following:</p>
+<ul>
+<li class="bulletList">AWS Cloud Map</li>
+<li class="bulletList">Amazon’s Route 53</li>
+<li class="bulletList">Azure DNS</li>
+<li class="bulletList">Cloudflare</li>
+<li class="bulletList">CoreDNS</li>
+<li class="bulletList">Google Cloud DNS</li>
+<li class="bulletList">Pi-hole</li>
+<li class="bulletList">RFC2136</li>
+</ul>
+<p class="normal">There are multiple options on how to extend CoreDNS to resolve external names, depending on what main DNS server you may be running. Many of the supported DNS servers will simply register any services dynamically. ExternalDNS will see the created resource and use native calls to register<a id="_idIndexMarker465"/> services automatically, like <strong class="keyWord">Amazon’s Route 53</strong>. Not all DNS servers natively allow for this type of dynamic registration by default. </p>
+<p class="normal">In these instances, you need to manually configure your main DNS server to forward the desired domain requests to a CoreDNS instance running in your cluster. This is what we will use for the examples in this chapter. </p>
+<p class="normal">Our Kubernetes cluster<a id="_idIndexMarker466"/> currently utilizes CoreDNS to handle cluster DNS name resolution. However, what might be lesser known is that CoreDNS offers more than just internal cluster DNS resolution. It can extend its capabilities to perform external name resolution, effectively resolving names for any DNS zone managed by a CoreDNS deployment.</p>
+<p class="normal">Now, let’s move on to how ExternalDNS installs.</p>
+<h2 class="heading-2" id="_idParaDest-200">Setting up ExternalDNS</h2>
+<p class="normal">Right now, our CoreDNS<a id="_idIndexMarker467"/> is only resolving names for internal cluster names, so we need to set up a zone for our new <code class="inlineCode">LoadBalancer</code> DNS entries.</p>
+<p class="normal">For our example, a company, <strong class="keyWord">FooWidgets</strong>, wants all Kubernetes<a id="_idIndexMarker468"/> services to go into the <code class="inlineCode">foowidgets.k8s </code>domain, so we will use that as our new zone.</p>
+<h2 class="heading-2" id="_idParaDest-201">Integrating ExternalDNS and CoreDNS</h2>
+<p class="normal"><strong class="keyWord">ExternalDNS</strong> is not an actual DNS<a id="_idIndexMarker469"/> server; instead, it is a controller that will watch for objects that request a new DNS entry. Once a request is seen by the controller, it will send the information to an actual DNS server, like CoreDNS, for registration.</p>
+<p class="normal">The process of how a service<a id="_idIndexMarker470"/> is registered is shown in the diagram below.</p>
+<figure class="mediaobject"><img alt="" height="422" src="../Images/B21165_05_01.png" width="659"/></figure>
+<p class="packt_figref">Figure 5.1: ExternalDNS registration flow</p>
+<p class="normal">In our example, we are using CoreDNS as our DNS server; however, as we mentioned previously, ExternalDNS has support for 34 different DNS services and the list of supported services is constantly growing. Since we will be using CoreDNS as our DNS server, we will need to add a component that will store the DNS records. To accomplish this, we need to deploy an ETCD server in the cluster.</p>
+<p class="normal">For our example deployment, we will use the ETCD Helm chart.</p>
+<p class="normal">Helm is a tool for Kubernetes<a id="_idIndexMarker471"/> that makes it easier to deploy and manage applications. It uses Helm charts, which are templates that contain the necessary configuration and resource values for the application. It automates the setup of complex applications, ensuring they are consistently and reliably configured. It’s a powerful tool, and you will find that many projects and vendors offer their applications, by default, using Helm charts. You can read more about Helm<a id="_idIndexMarker472"/> on their main home page at <a href="https://v3.helm.sh/"><span class="url">https://v3.helm.sh/</span></a>.</p>
+<p class="normal">One reason Helm is such a powerful tool is its ability to use custom options that can be declared when you run the <code class="inlineCode">helm instal</code>l command. The same options can also be declared in a file that is passed to the installation using the <code class="inlineCode">-f</code> option. These options make deploying complex systems easier and reproducible since the same values file can be used on any deployment.</p>
+<p class="normal">For our deployment example, we have included a <code class="inlineCode">values.yaml</code> file, located in the <code class="inlineCode">chapter5/etcd</code> directory, that we will use to configure our ETCD deployment.</p>
+<p class="normal">Now, finally, let’s deploy ETCD! We have included a script called <code class="inlineCode">deploy-etcd.sh</code> in the <code class="inlineCode">chapter5/etcd</code> directory that will deploy ETCD with a single replica in a new namespace called <code class="inlineCode">etcd-dns</code>. Execute the script while in the <code class="inlineCode">chapter5/etcd</code> directory.</p>
+<p class="normal">Thanks to Helm, the script only has two commands– it will create a new namespace, and then execute a <code class="inlineCode">Helm install</code> command to deploy our ETCD instance. In the real world, you would want to change the replica count to at least 3 to have a highly available ETCD deployment, but we wanted to limit resource<a id="_idIndexMarker473"/> requirements for our KinD server.</p>
+<p class="normal">Now that we have our ETCD for DNS, we can move on to integrating our CoreDNS service with our new ETCD deployment.</p>
+<h2 class="heading-2" id="_idParaDest-202">Adding an ETCD zone to CoreDNS</h2>
+<p class="normal">As we showed<a id="_idIndexMarker474"/> in the diagram<a id="_idIndexMarker475"/> in the last section, CoreDNS will store the DNS records in an ETCD instance. This requires us to configure a CoreDNS server with the DNS zone(s) we want to register names in and the ETCD server that will store the records.</p>
+<p class="normal">To keep resource requirements lower, we will use the included CoreDNS server that most Kubernetes installations include as part of their base cluster creation for our new domain. In the real world, you should deploy a dedicated CoreDNS server to handle just ExternalDNS registrations.</p>
+<p class="normal">At the end of this section, you will execute a script to deploy a fully configured ExternalDNS service that has all of the options and configurations discussed in this section. The commands used in this section are only for reference; you do not need to execute them on your cluster, since the script will do that for you.</p>
+<p class="normal">Before we can integrate<a id="_idIndexMarker476"/> CoreDNS, we need to know the IP address<a id="_idIndexMarker477"/> of our new ETCD service. You can retrieve the address by listing the services in the <code class="inlineCode">etcd-dns</code> namespace using <code class="inlineCode">kubectl</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl get svc etcd-dns -n etcd-dns
+</code></pre>
+<p class="normal">This will show our ETCD service, along with the IP address of the service:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME       TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)             AGE
+etcd-dns   ClusterIP   10.96.149.223   &lt;none&gt;        2379/TCP,2380/TCP   4m
+</code></pre>
+<p class="normal">The <code class="inlineCode">Cluster-IP</code> you see in the service list will be used to configure the new DNS zone as a location to store the DNS records.</p>
+<p class="normal">When you deploy ExternalDNS, you can configure CoreDNS in one of two ways:</p>
+<ul>
+<li class="bulletList">Add a zone to the Kubernetes-integrated CoreDNS service</li>
+<li class="bulletList">Deploy a new CoreDNS service that will be used for ExternalDNS registrations</li>
+</ul>
+<p class="normal">For ease of testing, we will add a zone to the Kubernetes CoreDNS service. This requires us to edit the CoreDNS <code class="inlineCode">ConfigMap</code> found in the <code class="inlineCode">kube-sytem</code> namespace. When you execute the script at the end of this section, the modification will be done for you. It will add the section shown below in <strong class="keyWord">bold</strong> to the <code class="inlineCode">ConfigMap</code>.</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">data:   Corefile:</span> <span class="hljs-string">|</span>     <span class="hljs-string">.:53</span> {
+        <span class="hljs-string">errors</span>         <span class="hljs-string">health</span> {
+           <span class="hljs-string">lameduck</span> <span class="hljs-string">5s</span>         }
+        <span class="hljs-string">ready</span>         <span class="hljs-string">kubernetes</span> <span class="hljs-string">cluster.local</span> <span class="hljs-string">in-addr.arpa</span> <span class="hljs-string">ip6.arpa</span> {
+           <span class="hljs-string">pods</span> <span class="hljs-string">insecure</span>            <span class="hljs-string">fallthrough</span> <span class="hljs-string">in-addr.arpa</span> <span class="hljs-string">ip6.arpa</span>            <span class="hljs-string">ttl</span> <span class="hljs-number">30</span>         }
+        <span class="hljs-string">prometheus</span> <span class="hljs-string">:9153</span>         <span class="hljs-string">forward</span> <span class="hljs-string">.</span> <span class="hljs-string">/etc/resolv.conf</span>         <span class="code-highlight"><strong class="hljs-string-slc">etcd</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">foowidgets.k8s</strong><strong class="hljs-slc"> {</strong></span>
+<span class="code-highlight"><strong class="hljs-slc">          </strong><strong class="hljs-string-slc">stubzones</strong><strong class="hljs-slc">           </strong><strong class="hljs-string-slc">path</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">/skydns</strong><strong class="hljs-slc">           </strong><strong class="hljs-string-slc">endpoint</strong><strong class="hljs-slc"> </strong><strong class="hljs-string-slc">http://10.96.149.223:2379</strong><strong class="hljs-slc">         }</strong></span>
+        <span class="hljs-string">cache</span> <span class="hljs-number">30</span>         <span class="hljs-string">loop</span>         <span class="hljs-string">reload</span>         <span class="hljs-string">loadbalance</span>     }
+</code></pre>
+<p class="normal">The added lines configure a zone called <code class="inlineCode">foowidgets.k8s</code> that is ETCD integrated. The first line that we added tells CoreDNS that the zone name, <code class="inlineCode">foowidgets.com</code>, is integrated with an ETCD service.</p>
+<p class="normal">The next line, <code class="inlineCode">stubzone</code>, tells CoreDNS to allow you to set up a DNS server as a “stub resolver” for a particular zone. As a stub resolver, this DNS server directly queries specific name servers for a zone’s information without the need for recursive resolution throughout the entire DNS hierarchy.</p>
+<p class="normal">The third addition is the <code class="inlineCode">path /skydns</code> option, which may look confusing since it doesn’t mention CoreDNS. Even though the value is <code class="inlineCode">skydns</code>, it is also the default path for CoreDNS integration as well.</p>
+<p class="normal">Finally, the last line tells CoreDNS where to store the records. In our example, we have an ETCD service running, using IP address <code class="inlineCode">10.96.149.223</code> on the default ETCD port of <code class="inlineCode">2379</code>.</p>
+<div class="note">
+<p class="normal">You could use the Service’s host name instead of the IP here. We used the IP to show the relationships between a pod and a Service, but the name <code class="inlineCode">etcd-dns.etcd-dns.svc</code> would work as well. Which method you choose will depend on your situation. In our KinD cluster, we don’t really need to worry about losing the IP because the cluster is disposable. In the real world, you would want to use the host name to protect against the IP address changing.</p>
+</div>
+<p class="normal">Now that you understand<a id="_idIndexMarker478"/> how to add an ETCD integrated zone<a id="_idIndexMarker479"/> in CoreDNS, the next step is to update the deployment options that ExternalDNS requires to integrate with CoreDNS.</p>
+<h2 class="heading-2" id="_idParaDest-203">ExternalDNS configuration options</h2>
+<p class="normal">ExternalDNS can be configured<a id="_idIndexMarker480"/> to register ingress or service objects. This is configured in the deployment file of ExternalDNS using the source field. The example below shows the options portion of the deployment that we will use in this chapter.</p>
+<p class="normal">We also need to configure the provider that ExternalDNS will use, and since we are using CoreDNS, we set the provider to <code class="inlineCode">coredns</code>.</p>
+<p class="normal">The last option is the log level we want to set, which we set to <code class="inlineCode">info</code> to keep our log files smaller and easier to read. The arguments that we will use are shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">    spec:
+      serviceAccountName: external-dns
+      containers:
+      - name: external-dns
+        image: registry.k8s.io/external-dns/external-dns:v0.13.5
+        args:
+        - --source=service
+        - --provider=coredns
+        - --log-level=info
+</code></pre>
+<p class="normal">Now that we have gone over the ETCD options and deployment, how to configure a new zone to use ETCD, and the options to configure ExternalDNS to use CoreDNS as a provider, we can deploy ExternalDNS in our cluster.</p>
+<p class="normal">We have included a script called <code class="inlineCode">deploy-externaldns.sh</code> in the <code class="inlineCode">chapter5/externaldns</code> folder. Execute the script in the directory to deploy ExternalDNS into your KinD cluster. When you execute the script, it will fully configure and deploy an integrated ExternalDNS with ETCD. </p>
+<div class="note">
+<p class="normal"><strong class="keyWord">NOTE</strong></p>
+<p class="normal">If you see a warning when the script updates the <code class="inlineCode">ConfigMap</code>, you can safely ignore it. Since our <code class="inlineCode">kubectl</code> command is using <code class="inlineCode">apply</code> to update the object, Kubernetes will look for a last-applied-configuration annotation, if there is one set. Since you likely do not have that in the existing object, you will see the warning that it’s missing. This is just a warning and will not stop the <code class="inlineCode">ConfigMap</code> update, as you can confirm by looking at the last line of the <code class="inlineCode">kubectl</code> update command, where it shows the <code class="inlineCode">ConfigMap</code> was updated: <code class="inlineCode">configmap/coredns configured</code></p>
+</div>
+<p class="normal">Now, we have added the ability for developers<a id="_idIndexMarker481"/> to create dynamically registered DNS names for their services. Next, let’s see it in action by creating a new service that will register itself in our CoreDNS server.</p>
+<h2 class="heading-2" id="_idParaDest-204">Creating a LoadBalancer service with ExternalDNS integration</h2>
+<p class="normal">Our ExternalDNS will watch all services<a id="_idIndexMarker482"/> for an annotation<a id="_idIndexMarker483"/> that contains the desired DNS name. This is just a single annotation using the format <code class="inlineCode">annotation external-dns.alpha.kubernetes.io/hostname</code> with the value of the DNS name you want to register. For our example, we want to register a name of <code class="inlineCode">nginx.foowidgets.k8s</code>, so we would add an annotation to our NGINX service: <code class="inlineCode">external-dns.alpha.kubernetes.io/hostname: nginx.foowidgets.k8s</code>.</p>
+<p class="normal">In the <code class="inlineCode">chapter5/externaldns</code> directory, we have included a manifest that will deploy an NGINX web server using a <code class="inlineCode">LoadBalancer</code> service that contains the annotation to register the DNS name. </p>
+<p class="normal">Deploy the manifest using <code class="inlineCode">kubectl create -f nginx-lb.yaml</code>, which will deploy the resources in the default namespace. The deployment is a standard NGINX deployment, but the service has the required annotation to tell the ExternalDNS service that you want to register a new DNS name. The manifest for the service is shown below, with the annotation in bold:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">annotations:</span>
+    <span class="hljs-attr">external-dns.alpha.kubernetes.io/hostname:</span> <span class="hljs-string">nginx.foowidgets.k8s</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">nginx-ext-dns</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">default</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">port:</span> <span class="hljs-number">80</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">TCP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">80</span>
+  <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">app:</span> <span class="hljs-string">nginx</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">LoadBalancer</span>
+</code></pre>
+<p class="normal">When ExternalDNS sees the annotation, it will register the requested name in the zone. The hostname from the annotation will log an entry in the ExternalDNS pod – the registration for our new entry, <code class="inlineCode">nginx.foowidgets.k8s</code>, is shown below:</p>
+<pre class="programlisting con"><code class="hljs-con">time="2023-08-04T19:16:00Z" level=debug msg="Getting service (&amp;{ 0 10 0 \"heritage=external-dns,external-dns/owner=default,external-dns/resource=service/default/nginx-ext-dns\" false 0 1  /skydns/k8s/foowidgets/a-nginx/39ca730e}) with service host ()"
+time="2023-08-04T19:16:00Z" level=debug msg="Getting service (&amp;{172.18.200.101 0 10 0 \"heritage=external-dns,external-dns/owner=default,external-dns/resource=service/default/nginx-ext-dns\" false 0 1  /skydns/k8s/foowidgets/nginx/02b5d1d5}) with service host (172.18.200.101)"
+time="2023-08-04T19:16:00Z" level=debug msg="Creating new ep (nginx.foowidgets.k8s 0 IN A  172.18.200.101 []) with new service host (172.18.200.101)"
+</code></pre>
+<p class="normal">As you can see in the last line of the log, the record was added as an A-record in the DNS server, pointing to the IP address <code class="inlineCode">172.18.200.101</code>.</p>
+<p class="normal">The last step for confirming that ExternalDNS is fully working is to test a connection to the application. Since we are using a KinD cluster, we must test this from a pod in the cluster. To provide the new names to external resources, we would need to configure our main DNS server(s) to forward requests for the <code class="inlineCode">foowidgets.k8s</code> domain to our CoreDNS server. At the end of this section, we will show the steps to integrate a Windows DNS server, which could be any main DNS server on your network, with our Kubernetes CoreDNS server.</p>
+<p class="normal">Now we can test the NGINX deployment<a id="_idIndexMarker484"/> using the DNS name<a id="_idIndexMarker485"/> from our annotation. Since you aren’t using the CoreDNS server as your main DNS provider, we need to use a container in the cluster to test name resolution. There is a great utility called <strong class="keyWord">Netshoot</strong> that contains a number<a id="_idIndexMarker486"/> of useful troubleshooting tools; it’s a great tool to have in your toolbox to test and troubleshoot clusters and pods.</p>
+<p class="normal">To run a Netshoot container, we can use the <code class="inlineCode">kubectl run</code> command. We only need the pod to run when we are using it to run tests in the cluster, so we will tell the <code class="inlineCode">kubectl run</code> command to run an interactive shell and to remove the pod after we exit. To run Netshoot, execute:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl run tmp-shell --rm -i --tty --image nicolaka/netshoot -- /bin/bash
+</code></pre>
+<p class="normal">The pod may take a minute or two to become available, but once it starts up, you will see a <code class="inlineCode">tmp-shell</code> prompt. At this prompt, we can use <code class="inlineCode">nslookup</code> to verify that the DNS entry was successfully added. If you attempt to look up <code class="inlineCode">nginx.foowidgets.k8s</code>, you should receive a reply with the IP address of the service.</p>
+<pre class="programlisting con"><code class="hljs-con">nslookup nginx.foowidgets.k8s
+</code></pre>
+<p class="normal">Your reply should look similar to the example below:</p>
+<pre class="programlisting con"><code class="hljs-con">Server:		10.96.0.10
+Address:	10.96.0.10#53
+Name:   nginx.foowidgets.k8s
+Address: 172.18.200.101
+</code></pre>
+<p class="normal">This confirms that our annotation<a id="_idIndexMarker487"/> was successful and ExternalDNS<a id="_idIndexMarker488"/> registered our hostname in the CoreDNS server.</p>
+<p class="normal">The <code class="inlineCode">nslookup</code> only proves that there is an entry for <code class="inlineCode">nginx.foowidgets.k8s</code>; it doesn’t test the application. To prove that we have a successful deployment that will work when someone enters the name in a browser, we can use the <code class="inlineCode">curl</code> utility that is included with Netshoot.</p>
+<figure class="mediaobject"><img alt="" height="503" src="../Images/B21165_05_02.png" width="873"/></figure>
+<p class="packt_figref">Figure 5.2: curl test using the ExternalDNS name</p>
+<p class="normal">The curl output confirms that we can use the dynamically created service name to access the NGINX web server.</p>
+<p class="normal">We realize that some of these tests<a id="_idIndexMarker489"/> aren’t very exciting<a id="_idIndexMarker490"/> since you can’t test them using a standard browser. To allow CoreDNS to be used outside of the cluster, we need to integrate CoreDNS with your main DNS server, which needs to delegate ownership for the zone(s) that are in CoreDNS. When you delegate a zone, any request to your main DNS server for a host in the delegated zone will forward the request to the DNS server that contains the requested zone.</p>
+<p class="normal">In the next section, we will integrate the CoreDNS running in our cluster with a Windows DNS server. While we are using Windows as our DNS server, the concepts for delegating a zone are similar between operating systems and DNS servers.</p>
+<h3 class="heading-3" id="_idParaDest-205">Integrating CoreDNS with an enterprise DNS server</h3>
+<p class="normal">This section will show you how<a id="_idIndexMarker491"/> to use a main DNS server to forward<a id="_idIndexMarker492"/> the name resolution of the <code class="inlineCode">foowidgets.k8s</code> zone to a CoreDNS server running on a Kubernetes cluster.</p>
+<div class="note">
+<p class="normal">The steps provided here are an example of integrating an enterprise DNS server with a Kubernetes DNS service. Because of the external DNS requirement and additional setup, the steps are for reference and <strong class="keyWord">should not be executed</strong> on your KinD cluster.</p>
+</div>
+<p class="normal">To find a record in a delegated zone, the main DNS server uses a process known as a recursive query. A recursive query<a id="_idIndexMarker493"/> refers to a DNS inquiry initiated by a DNS resolver, acting on behalf of a user. Through the recursive query process, the DNS resolver assumes the task of reaching out to multiple DNS servers in a hierarchical pattern. Its objective is to find the authoritative DNS server for the requested domain and initiate the retrieval of the requested DNS record.</p>
+<p class="normal">The diagram below illustrates the flow of how DNS resolution is provided by delegating a zone to a CoreDNS server in an enterprise environment.</p>
+<figure class="mediaobject"><img alt="" height="551" src="../Images/B21165_05_03.png" width="782"/></figure>
+<p class="packt_figref">Figure 5.3: DNS delegation flow</p>
+<ol>
+<li class="numberedList" value="1">The local client will look<a id="_idIndexMarker494"/> at its DNS cache<a id="_idIndexMarker495"/> for the name being requested.</li>
+<li class="numberedList">If the name is not in the local cache, a request is made to the main DNS server for <code class="inlineCode">nginx.foowidgets.k8s</code>.</li>
+<li class="numberedList">The DNS server receives the query and looks at the zones it knows about. It finds the <code class="inlineCode">foowidgets.k8s</code> zone and sees that the zone has been delegated to the CoreDNS running on <code class="inlineCode">192.168.1.200</code>.</li>
+<li class="numberedList">The main DNS server sends the query to the delegated CoreDNS server.</li>
+<li class="numberedList">CoreDNS looks for the name, <code class="inlineCode">nginx</code>, in the <code class="inlineCode">foowidgets.k8s</code> zone.</li>
+<li class="numberedList">CoreDNS sends the IP address for <code class="inlineCode">foowidgets.k8s</code> back to the main DNS server.</li>
+<li class="numberedList">The main DNS server sends the reply containing the address for <code class="inlineCode">nginx.foowidgets.k8s</code> to the client.</li>
+<li class="numberedList">The client connects to the NGINX server using the IP address returned from CoreDNS.</li>
+</ol>
+<p class="normal">Let’s move on to a real-world<a id="_idIndexMarker496"/> example. For our scenario, the main DNS server<a id="_idIndexMarker497"/> is running on a Windows 2019 server and we will delegate a zone to a CoreDNS server.</p>
+<p class="normal">The components deployed are as follows:</p>
+<ul>
+<li class="bulletList">Our network subnet is <code class="inlineCode">10.2.1.0/24</code></li>
+<li class="bulletList">Windows 2019 or higher server running DNS</li>
+<li class="bulletList">A Kubernetes cluster</li>
+<li class="bulletList">A MetalLB address pool with a range of <code class="inlineCode">10.2.1.70</code>-<code class="inlineCode">10.2.1.75</code></li>
+<li class="bulletList">A CoreDNS instance deployed in a cluster using a <code class="inlineCode">LoadBalancer</code> service assigned the IP address <code class="inlineCode">10.2.1.74</code> from our IP pool</li>
+<li class="bulletList">Deployed add-ons, using the configuration from this chapter including ExternalDNS, an ETCD deployment for CoreDNS, and a new CoreDNS ETCD integrated zone</li>
+<li class="bulletList">Bitnami NGINX deployment to test the delegation</li>
+</ul>
+<p class="normal">Now, let’s go through the configuration steps to integrate our DNS servers.</p>
+<h1 class="heading-1" id="_idParaDest-206">Exposing CoreDNS to external requests</h1>
+<p class="normal">We have already covered<a id="_idIndexMarker498"/> how to deploy most of the resources<a id="_idIndexMarker499"/> that you need to integrate – ETCD, ExternalDNS, and configuring CoreDNS with a new zone that is ETCD-integrated. To provide external access to CoreDNS, we need to create a new service that exposes CoreDNS on TCP and UDP port <code class="inlineCode">53</code>. A complete service manifest is shown below.</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Service</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">labels:</span>
+    <span class="hljs-attr">k8s-app:</span> <span class="hljs-string">kube-dns</span>
+    <span class="hljs-attr">kubernetes.io/cluster-service:</span> <span class="hljs-string">"true"</span>
+    <span class="hljs-attr">kubernetes.io/name:</span> <span class="hljs-string">CoreDNS</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">kube-dns-ext</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">kube-system</span>   
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ports:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-attr">name:</span> <span class="hljs-string">dns</span>
+    <span class="hljs-attr">port:</span> <span class="hljs-number">53</span>
+    <span class="hljs-attr">protocol:</span> <span class="hljs-string">UDP</span>
+    <span class="hljs-attr">targetPort:</span> <span class="hljs-number">53</span>
+   <span class="hljs-attr">selector:</span>
+    <span class="hljs-attr">k8s-app:</span> <span class="hljs-string">kube-dns</span>
+  <span class="hljs-attr">type:</span> <span class="hljs-string">LoadBalancer</span>
+  <span class="hljs-attr">loadBalancerIP:</span> <span class="hljs-number">10.2.1.74</span>
+</code></pre>
+<p class="normal">There is one new option in the service that we haven’t discussed yet – we have added the <code class="inlineCode">spec.loadBalancerIP</code> to our deployment. This option allows you to assign an IP address to the service so it will have a stable IP address, even if the service is recreated. We need a static IP since we need to enable forwarding from our main DNS server to the CoreDNS server in the Kubernetes cluster.</p>
+<p class="normal">Once CoreDNS<a id="_idIndexMarker500"/> is exposed using a <code class="inlineCode">LoadBalancer</code> on port <code class="inlineCode">53</code>, we can configure<a id="_idIndexMarker501"/> the main DNS server to forward requests for hosts in the <code class="inlineCode">foowidgets.k8s</code> domain to our CoreDNS server.</p>
+<h2 class="heading-2" id="_idParaDest-207">Configuring the primary DNS server</h2>
+<p class="normal">The first thing to do on our main DNS server<a id="_idIndexMarker502"/> is to create a conditional forwarder to the node running the CoreDNS pod.</p>
+<p class="normal">On the Windows DNS host, we need to create a new conditional forwarder for <code class="inlineCode">foowidgets.k8s</code> pointing to the IP address that we assigned to the new CoreDNS service. In our example, the CoreDNS service has been assigned to the host <code class="inlineCode">10.2.1.74</code>:</p>
+<figure class="mediaobject"><img alt="" height="224" src="../Images/B21165_05_04.png" width="877"/></figure>
+<p class="packt_figref">Figure 5.4: Windows conditional forwarder setup</p>
+<p class="normal">This configures the Windows DNS server<a id="_idIndexMarker503"/> to forward any request for a host in the <code class="inlineCode">foowidgets.k8s</code> domain to the CoreDNS service running on IP address <code class="inlineCode">10.2.1.74</code>.</p>
+<h2 class="heading-2" id="_idParaDest-208">Testing DNS forwarding to CoreDNS</h2>
+<p class="normal">To test the configuration, we will use<a id="_idIndexMarker504"/> a workstation on the main network<a id="_idIndexMarker505"/> that has been configured to use the Windows DNS server.</p>
+<p class="normal">The first test we will run is an <code class="inlineCode">nslookup</code> of the NGINX record that was created by the MetalLB annotation:</p>
+<p class="normal">From Command Prompt, we execute an <code class="inlineCode">nslookup nginx.foowidgets.k8s</code> command:</p>
+<pre class="programlisting con"><code class="hljs-con">Server:  AD2.hyper-vplanet.com
+Address:  10.2.1.14
+Name:    nginx.foowidgets.k8s
+Address:  10.2.1.75
+</code></pre>
+<p class="normal">Since the query returned the IP address we expected for the record, we can confirm that the Windows DNS server is forwarding requests to CoreDNS correctly.</p>
+<p class="normal">We can do one more additional NGINX test from the laptop’s browser. In Chrome, we can use the URL registered in CoreDNS, <code class="inlineCode">nginx.foowidgets.k8s</code>.</p>
+<figure class="mediaobject"><img alt="" height="214" src="../Images/B21165_05_05.png" width="877"/></figure>
+<p class="packt_figref">Figure 5.5: Success browsing from an external workstation using CoreDNS</p>
+<p class="normal">One test confirms that the forwarding works, but we want to create an additional deployment to verify the system is fully working.</p>
+<p class="normal">To test a new service, we deploy<a id="_idIndexMarker506"/> a different NGINX<a id="_idIndexMarker507"/> server called microbot, with a service<a id="_idIndexMarker508"/> that has an annotation assigning the name <code class="inlineCode">microbot.foowidgets.k8s</code>. MetalLB has assigned the service the IP address of <code class="inlineCode">10.2.1.65</code>.</p>
+<p class="normal">Like our previous test, we test the name resolution using <code class="inlineCode">nslookup</code>:</p>
+<pre class="programlisting con"><code class="hljs-con">Name:    AD2.hyper-vplanet.com
+Address:  10.2.1.65
+</code></pre>
+<p class="normal">To confirm that the web server is running correctly, we browse to the URL from a workstation:</p>
+<figure class="mediaobject"><img alt="Figure 6.22 – Successful browsing from an external workstation using CoreDNS " height="557" src="../Images/B21165_05_06.png" width="879"/></figure>
+<p class="packt_figref">Figure 5.6: Successful browsing from an external workstation using CoreDNS</p>
+<p class="normal">Success! We have now integrated<a id="_idIndexMarker509"/> an enterprise DNS server with a CoreDNS server<a id="_idIndexMarker510"/> running on a Kubernetes cluster. This integration provides users with the ability to register service names dynamically by simply adding an annotation to the service.</p>
+<h1 class="heading-1" id="_idParaDest-209">Load balancing between multiple clusters</h1>
+<p class="normal">There are various ways<a id="_idIndexMarker511"/> to configure running services in multiple clusters, often involving complex and costly add-ons like global load balancers. A global load balancer can be thought of as a traffic cop – it knows how to direct incoming traffic between multiple endpoints. At a high level, you can create a new DNS entry that the global load balancer will control. This new entry will have backend systems added to the endpoint list and based on factors like health, connections, or bandwidth, it will direct the traffic to the endpoint nodes. If an endpoint is unavailable for any reason, the load balancer will remove it from the endpoint list. By removing it from the list, traffic<a id="_idIndexMarker512"/> will only be sent to healthy nodes, providing a smooth end user experience. There’s nothing worse for a customer than getting a website not found error when they attempt to access a site.</p>
+<figure class="mediaobject"><img alt="" height="463" src="../Images/B21165_05_07.png" width="815"/></figure>
+<p class="packt_figref">Figure 5.7: Global load balancing traffic flow</p>
+<p class="normal">The figure above shows a healthy workflow where both clusters are running an application that we are load balancing between the clusters. When the request hits the load balancer, it will send the traffic in a round-robin fashion between the two clusters. The <code class="inlineCode">nginx.foowidgets.k8s</code> request will ultimately send the traffic to either <code class="inlineCode">nginx.clustera.k8s</code> or <code class="inlineCode">nginx.clusterb.k8s</code>.</p>
+<p class="normal">In <em class="italic">Figure 5.8</em>, we have a failure of our NGINX workload in cluster B. Since the global load balancer has a health check on the running workloads, it will remove the endpoint in cluster B from the <code class="inlineCode">nginx.foowidgets.k8s</code> entry.</p>
+<figure class="mediaobject"><img alt="" height="434" src="../Images/B21165_05_08.png" width="768"/></figure>
+<p class="packt_figref">Figure 5.8: Global load balancing traffic flow with a site failure</p>
+<p class="normal">Now, for any traffic that comes into the load balancer<a id="_idIndexMarker513"/> requesting <code class="inlineCode">nginx.foowidgets.k8s</code>, the only endpoint that will be used for traffic is running on cluster A. Once the issue has been resolved on cluster B, the load balancer will automatically add the cluster B endpoint back into the <code class="inlineCode">nginx.foowidgets.k8s</code> record.</p>
+<p class="normal">Such solutions are widespread in enterprises, with many organizations utilizing products from companies like <strong class="keyWord">F5</strong>, <strong class="keyWord">Citrix</strong>, <strong class="keyWord">Kemp</strong>, and <strong class="keyWord">A10</strong>, as well as CSP-native solutions like <strong class="keyWord">Route 53</strong> and <strong class="keyWord">Traffic Director</strong>, to manage workloads across multiple clusters. However, there are projects with similar functionality that integrate with Kubernetes, and they come at little to no cost. While these projects may not offer all the features of some vendor solutions, they often meet the needs of most use cases without requiring the full spectrum of expensive features.</p>
+<p class="normal">One such project is <strong class="keyWord">K8GB</strong>, an innovative open-source<a id="_idIndexMarker514"/> project that brings <strong class="keyWord">Global Server Load Balancing</strong> (<strong class="keyWord">GSLB</strong>) to Kubernetes. With K8GB, organizations<a id="_idIndexMarker515"/> can easily distribute incoming network traffic across multiple Kubernetes clusters located in different geographical locations. By intelligently routing requests, K8GB guarantees low latency, optimal response times, and redundancy, providing an exceptional solution to any enterprise.</p>
+<p class="normal">This section will introduce you to K8GB, but if you want to learn more about the project, browse<a id="_idIndexMarker516"/> to the project’s main page at <a href="https://www.k8gb.io"><span class="url">https://www.k8gb.io</span></a>.</p>
+<p class="normal">Since we are using KinD and a single host for our cluster, this section of the book is meant to introduce you to the project and the benefits it provides. This section is for reference only, since it is a complex topic that requires multiple components, some of which are outside of Kubernetes. If you decide you want to implement a solution for yourself, we have included example documentation and scripts in the book’s repo under the <code class="inlineCode">chapter5/k8gs-example</code> directory.</p>
+<p class="normal">K8GB is a CNCF sandbox<a id="_idIndexMarker517"/> project, which means it is in its early stages and any newer version after the writing of this chapter may have changes to objects and configurations.</p>
+<h2 class="heading-2" id="_idParaDest-210">Introducing the Kubernetes Global Balancer</h2>
+<p class="normal">Why should you care<a id="_idIndexMarker518"/> about a project like K8GB?</p>
+<p class="normal">Let’s consider an internal enterprise cloud as an example, operating a Kubernetes cluster at a production site alongside another cluster at a disaster recovery site. To ensure a smooth user experience, it is important to enable applications to transition seamlessly between these data centers, without requiring any manual intervention during disaster recovery events. The challenge lies in fulfilling the enterprise’s demand for high availability of microservices when multiple clusters are simultaneously serving these applications. We need to effectively address the need for continuous and uninterrupted service across geographically dispersed Kubernetes clusters.</p>
+<p class="normal">This is where <strong class="keyWord">K8GB </strong>comes in.</p>
+<p class="normal">What makes K8GB an ideal solution for addressing our high availability requirements? As documented on their site, the key features include the following:</p>
+<ul>
+<li class="bulletList">Load balancing is provided using a timeproof DNS protocol that is extremely reliable and works well for global deployments</li>
+<li class="bulletList">There is no requirement for a management cluster</li>
+<li class="bulletList">There is no single point of failure</li>
+<li class="bulletList">It uses native Kubernetes health checks for load balancing decisions</li>
+<li class="bulletList">Configuring is as simple as a single Kubernetes CRD</li>
+<li class="bulletList">It works with any Kubernetes cluster – on-prem or off-prem</li>
+<li class="bulletList">It’s free!</li>
+</ul>
+<p class="normal">As you will see in this section, K8GB<a id="_idIndexMarker519"/> provides an easy and intuitive configuration that makes providing global load balancing to your organization easy. This may make K8GB look like it doesn’t do very much, but behind the scenes, it provides a number of advanced<a id="_idIndexMarker520"/> features, including:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Global Load Balancing</strong>: Facilitates the distribution of incoming network traffic among multiple Kubernetes clusters located in different geographic regions. As a result, it enables optimized application delivery, ensuring reduced latency and improved user experience for users.</li>
+<li class="bulletList"><strong class="keyWord">Intelligent Traffic Routing</strong>: Utilizing sophisticated routing algorithms to intelligently steer client requests towards the closest or most appropriate Kubernetes cluster, considering factors like proximity, server health, and application-specific rules. This approach ensures efficient and highly responsive traffic management for optimal application performance.</li>
+<li class="bulletList"><strong class="keyWord">High Availability and Redundancy</strong>: Guarantees high availability and fault tolerance for applications by automatically redirecting traffic in the event of cluster, application, or data center failure. This failover mechanism minimizes downtime during disaster recovery scenarios, ensuring uninterrupted service delivery to users.</li>
+<li class="bulletList"><strong class="keyWord">Automated Failover</strong>: Simplifies operations by enabling automatic failover between data centers without the need for manual intervention. This eliminates the requirement<a id="_idIndexMarker521"/> for human-triggered <strong class="keyWord">Disaster Recovery</strong> (<strong class="keyWord">DR</strong>) events or tasks, ensuring quick and uninterrupted service delivery and streamlined operations.</li>
+<li class="bulletList"><strong class="keyWord">Integration with Kubernetes</strong>: Offers seamless integration with Kubernetes, simplifying the setup and configuration of GSLB for applications deployed on clusters. Leveraging Kubernetes’ native capabilities, K8GB delivers a scalable solution, enhancing the overall management and efficiency of global load balancing operations.</li>
+<li class="bulletList"><strong class="keyWord">On-Prem and Cloud Provider Support</strong>: Provides enterprises a way to efficiently manage GSLB for multiple Kubernetes clusters, enabling seamless handling of complex multi-region deployments and hybrid cloud scenarios. This ensures optimized application delivery across different environments, enhancing the overall performance and resilience of the infrastructure.</li>
+<li class="bulletList"><strong class="keyWord">Customization and Flexibility</strong>: Provides users the freedom to define personalized rules and policies for traffic routing, providing organizations with the flexibility to customize GSLB configurations to meet their unique requirements precisely. This empowers enterprises to optimize traffic management based on their specific needs and ensures seamless adaptation to ever-changing application demands.</li>
+<li class="bulletList"><strong class="keyWord">Monitoring, Metrics, and Tracing</strong>: Includes monitoring, metrics, and tracing capabilities, enabling administrators to access insights into traffic patterns, health, and performance metrics spanning across multiple clusters. This provides enhanced visibility, empowering administrators to make informed decisions and optimize<a id="_idIndexMarker522"/> the overall performance and reliability of the GSLB setup.</li>
+</ul>
+<p class="normal">Now that we have discussed the key features of K8GB, let’s get into the details.</p>
+<h2 class="heading-2" id="_idParaDest-211">Requirements for K8GB</h2>
+<p class="normal">For a product that provides<a id="_idIndexMarker523"/> a complex function like global load balancing, K8GB doesn’t require a lot of infrastructure or resources to provide load balancing to your clusters. The latest release, which, as of this chapter’s creation, is <code class="inlineCode">0.12.2</code> – has only a handful of requirements:</p>
+<ul>
+<li class="bulletList">The CoreDNS servers Load Balancer IP address in the main DNS zone using the naming standard <code class="inlineCode">gslb-ns-&lt;k8gb-name&gt;-gb.foowidgets.k8s</code> – for example, <code class="inlineCode">gslb-ns-us-nyc-gb.foowidgets.k8s and gslb-ns-us-buf-gb.foowidgets.k8s</code></li>
+</ul>
+<p class="normal-one">If you are using K8GB with a service like <strong class="keyWord">Route 53</strong>, <strong class="keyWord">Infoblox</strong>, or <strong class="keyWord">NS1</strong>, the CoreDNS servers will be added to the domain automatically. Since our example is using an on-premises DNS server running on a Windows 2019 server, we need to create the records manually.</p>
+<ul>
+<li class="bulletList">An Ingress controller</li>
+<li class="bulletList">A K8GB controller deployed in the cluster, which will deploy:<ul>
+<li class="bulletList level-2">The K8GB controller</li>
+<li class="bulletList level-2">A CoreDNS server with the CoreDNS CRD plugin configured – this is included in the deployment on K8GB</li>
+</ul>
+</li>
+</ul>
+<p class="normal">Since we have already explored NGINX<a id="_idIndexMarker524"/> ingress controllers in previous chapters, we now turn our attention to the additional requirements: deploying and configuring the K8GB controller within a cluster.</p>
+<p class="normal">In the next section, we will discuss the steps to implement K8GB.</p>
+<h2 class="heading-2" id="_idParaDest-212">Deploying K8GB to a cluster</h2>
+<p class="normal">We have included example files<a id="_idIndexMarker525"/> in the GitHub repo<a id="_idIndexMarker526"/> under the <code class="inlineCode">chapter5/k8gb-example</code> directory. The scripts are based on the example we will use for the remainder of the chapter. If you decide to use the files in a development cluster, you will need to meet the requirements below:</p>
+<ul>
+<li class="bulletList">Two Kubernetes clusters (a single-node <code class="inlineCode">kubeadm</code> cluster for each cluster will work)</li>
+<li class="bulletList">CoreDNS deployed in each cluster</li>
+<li class="bulletList">K8GB deployed in each cluster</li>
+<li class="bulletList">An edge DNS server that you can use to delegate the domain for K8GB</li>
+</ul>
+<p class="normal">Installing K8GB has been made very simple – you only need to deploy a single Helm chart using a <code class="inlineCode">values.yaml</code> file that has been configured for your infrastructure.</p>
+<p class="normal">To install K8GB, you will need to add the K8GB repository to your Helm repo list and then update the charts:</p>
+<pre class="programlisting con"><code class="hljs-con">helm repo add k8gb https://www.k8gb.io
+helm repo update
+</code></pre>
+<p class="normal">Before we execute a <code class="inlineCode">helm install</code> command, we need to customize the Helm <code class="inlineCode">values.yaml</code> file for each cluster deployment. We have included a values file for both of the clusters used in our example, <code class="inlineCode">k8gb-buff-values.yaml</code> and <code class="inlineCode">k8gb-nyc-values.yaml</code>, located in the <code class="inlineCode">chapter5/k8gb-example</code> directory. The options<a id="_idIndexMarker527"/> in the values file<a id="_idIndexMarker528"/> will be discussed in the <em class="italic">Customizing the Helm chart values</em> section.</p>
+<h3 class="heading-3" id="_idParaDest-213">Understanding K8GB load balancing options</h3>
+<p class="normal">For our example, we will configure<a id="_idIndexMarker529"/> K8GB as a failover load balancer between two on-premises clusters; however, K8GB is not limited to just failover. Like most load balancers, K8GB offers a variety of solutions that can be configured differently for each load-balanced URL. It offers the most commonly required strategies, including round robin, weighted round robin, failover, and GeoIP.</p>
+<p class="normal">Each of the strategies is described below:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Round Robin</strong>: If you do not specify<a id="_idIndexMarker530"/> a strategy, it will default to a simple round-robin load balancing configuration. Using round robin means that requests will be split between the configured clusters – request 1 will go to cluster 1, request 2 will go to cluster 2, request 3 will go to cluster 1, request 4 will go to cluster 2, and so on.</li>
+<li class="bulletList"><strong class="keyWord">Weighted Round Robin</strong>: Similar to round<a id="_idIndexMarker531"/> robin, this strategy provides the ability to specify the percentage of traffic to send to a cluster; for example, 75% of traffic will go to cluster 1 and 15% will go to cluster 2.</li>
+<li class="bulletList"><strong class="keyWord">Failover</strong>: All traffic will go to the primary cluster<a id="_idIndexMarker532"/> unless all pods for a deployment become unavailable. If all pods are down in cluster 1, cluster 2 will take over the workload until the pods in cluster 1 become available again, which will then become the primary cluster again.</li>
+<li class="bulletList"><strong class="keyWord">GeoIP: </strong>Directs requests to the closest cluster<a id="_idIndexMarker533"/> to the client connection. If the closest host is down, it will use a different cluster similar to how the failover strategy works. To use this strategy, you will need to create a GeoIP database (an example can be found here: <a href="https://github.com/k8gb-io/coredns-crd-plugin/tree/main/terratest/geogen"><span class="url">https://github.com/k8gb-io/coredns-crd-plugin/tree/main/terratest/geogen</span></a>), and your DNS server needs to support the <strong class="keyWord">EDNS0</strong> extension.</li>
+</ul>
+<div class="note">
+<p class="normal"><strong class="keyWord">EDNS0</strong> is based on RFC 2671, which outlines<a id="_idIndexMarker534"/> how EDNS0 works and its various components, including the format of EDNS0-enabled DNS messages, the structure of EDNS0 options, and guidelines for its implementation. The goal of RFC 2671 is to provide a standardized approach for extending the capabilities of the DNS protocol beyond its original limitations, allowing for the incorporation of new features, options, and enhancements</p>
+</div>
+<p class="normal">Now that you know the available<a id="_idIndexMarker535"/> strategies, let’s go over our example infrastructure for our clusters:</p>
+<table class="table-container" id="table001-5">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Cluster/Server Details</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Details</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal">Corporate DNS Server – New York City</p>
+<p class="normal">IP: <code class="inlineCode">10.2.1.14</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Main corporate zone</p>
+<p class="normal"><code class="inlineCode">foowidgets.k8s</code></p>
+<p class="normal">Host records for the CoreDNS servers</p>
+<p class="normal"><code class="inlineCode">gslb-ns-us-nyc-gb.foowidgets.k8s</code></p>
+<p class="normal"><code class="inlineCode">gslb-ns-us-buf-gb.foowidgets.k8s</code></p>
+<p class="normal">Global domain configured delegating to the CoreDNS servers in the clusters</p>
+<p class="normal"><code class="inlineCode">gb.foowidgets.k8s</code></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">New York City</code>, New York – Cluster 1</p>
+<p class="normal">Primary Site</p>
+<p class="normal">CoreDNS LB IP: <code class="inlineCode">10.2.1.221</code></p>
+<p class="normal">Ingress IP: <code class="inlineCode">10.2.1.98</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">NGINX Ingress Controller exposed using HostPort</p>
+<p class="normal">CoreDNS deployment exposed using MetalLB</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">Buffalo</code>, New York – Cluster 2</p>
+<p class="normal">Secondary Site</p>
+<p class="normal">CoreDNS LB IP: <code class="inlineCode">10.2.1.224</code></p>
+<p class="normal">Ingress IP: <code class="inlineCode">10.2.1.167</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">NGINX Ingress Controller exposed using HostPort</p>
+<p class="normal">CoreDNS deployment exposed using MetalLB</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 5.1: Cluster details</p>
+<p class="normal">We will use the details from the above table to explain how we would deploy K8GB in our example infrastructure.</p>
+<p class="normal">With the details of the infrastructure, we can<a id="_idIndexMarker536"/> now create our Helm <code class="inlineCode">values.yaml</code> files for each deployment. In the next section, we will show the values we need to configure using the example infrastructure, explaining each value.</p>
+<h3 class="heading-3" id="_idParaDest-214">Customizing the Helm chart values</h3>
+<p class="normal">Each cluster will have a similar values<a id="_idIndexMarker537"/> file; the main changes will be the tag values we use. The values file below is for the New York City cluster:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">k8gb:</span>
+  <span class="hljs-attr">dnsZone:</span> <span class="hljs-string">"gb.foowidgets.k8s"</span> 
+  <span class="hljs-attr">edgeDNSZone:</span> <span class="hljs-string">"foowidgets.k8s"</span> 
+  <span class="hljs-attr">edgeDNSServers:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-number">10.2.1.14</span>     
+  <span class="hljs-attr">clusterGeoTag:</span> <span class="hljs-string">"us-buf"</span> 
+  <span class="hljs-attr">extGslbClustersGeoTags:</span> <span class="hljs-string">"us-nyc"</span>
+<span class="hljs-attr">coredns:</span>
+  <span class="hljs-attr">isClusterService:</span> <span class="hljs-literal">false</span>
+  <span class="hljs-attr">deployment:</span>
+    <span class="hljs-attr">skipConfig:</span> <span class="hljs-literal">true</span>
+  <span class="hljs-attr">image:</span>
+    <span class="hljs-attr">repository:</span> <span class="hljs-string">absaoss/k8s_crd</span>
+    <span class="hljs-attr">tag:</span> <span class="hljs-string">v0.0.11</span>
+  <span class="hljs-attr">serviceAccount:</span>
+    <span class="hljs-attr">create:</span> <span class="hljs-literal">true</span>
+    <span class="hljs-attr">name:</span> <span class="hljs-string">coredns</span>
+  <span class="hljs-attr">serviceType:</span> <span class="hljs-string">LoadBalancer</span>
+</code></pre>
+<p class="normal">The same file contents will be used for the NYC cluster, with the exception of the <code class="inlineCode">clusterGeoTag</code> and <code class="inlineCode">extGslbClustersGeoTags</code> values, for the NYC cluster they need to be set to:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">clusterGeoTag:</span> <span class="hljs-string">"us-nyc"</span>
+<span class="hljs-attr">extGslbClustersGeoTags:</span> <span class="hljs-string">"us-buf"</span>
+</code></pre>
+<p class="normal">As you can see, the configuration isn’t very lengthy, requiring only a handful of options to configure a usually complex global load balancing configuration.</p>
+<p class="normal">Now, let’s go over some of the main details of the values we are using.</p>
+<p class="normal">The main details that we will explain are the values in the K8GB section, which configures all of the options K8GB<a id="_idIndexMarker538"/> will use for load balancing.</p>
+<table class="table-container" id="table002-4">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Chart Value</strong></p>
+</td>
+<td class="table-cell">
+<p class="normal"><strong class="keyWord">Description</strong></p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">dnsZone</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">This is the DNS zone that you will use for K8GB – basically, this is the zone that will be used for the DNS records that will be used to store our global load balanced DNS records.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">edgeDNSZone</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">The main DNS zone that contains the DNS records for the CoreDNS servers that are used by the previous option (<code class="inlineCode">dnsZone</code>).</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">edgeDNSServers</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">The edge DNS server – usually the main DNS server used for name resolution.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">clusterGeoTag</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">If you have multiple K8GB controllers, this tag is used to specify instances between each other. In our example, we set these to <code class="inlineCode">us-buf</code> and <code class="inlineCode">us-nyc</code> for our clusters.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">extGslbClusterGeoTags</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Specifies the other K8GB controllers to pair with. In our example, each cluster adds the other cluster <code class="inlineCode">clusterGeoTags</code> – the <code class="inlineCode">Buffalo</code> cluster adds the <code class="inlineCode">us-nyc</code> tag and the NYC cluster adds the <code class="inlineCode">us-buf</code> tag.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">isClusterService</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Set to <code class="inlineCode">true</code> or <code class="inlineCode">false</code>. Used for service upgrades; you can read more at <a href="https://www.k8gb.io/docs/service_upgrade.xhtml"><span class="url">https://www.k8gb.io/docs/service_upgrade.xhtml</span></a>.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">exposeCoreDNS</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">If set to <code class="inlineCode">true</code>, a <code class="inlineCode">LoadBalancer</code> service will be created, exposing the CoreDNS deployed in the <code class="inlineCode">k8gb</code> namespace on port <code class="inlineCode">53</code>/UDP for external access.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">deployment.skipConfig</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Set to true or false. Setting it to false tells the deployment to use the CoreDNS shipped with K8GB.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">image.repository</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Configures the repository to use for the CoreDNS image.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">image.tag</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Configures the tag to use when pulling the image.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">serviceAccount.create</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Set to <code class="inlineCode">true</code> or <code class="inlineCode">false</code>. When set to true, a service account will be created.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">serviceAccount.name</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Sets the name of the service account from the previous option.</p>
+</td>
+</tr>
+<tr>
+<td class="table-cell">
+<p class="normal"><code class="inlineCode">serviceType</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Configures the service type for CoreDNS.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 5.2: K8GB options</p>
+<h3 class="heading-3" id="_idParaDest-215">Using Helm to install K8GB</h3>
+<p class="normal">With the overview of K8GB<a id="_idIndexMarker539"/> and the Helm values file complete, we can move<a id="_idIndexMarker540"/> on to installing K8GB in the clusters. We have included scripts to deploy K8GB to the <code class="inlineCode">Buffalo</code> and <code class="inlineCode">NYC</code> clusters. In <code class="inlineCode">chapter5/k8gb-example/k8gb</code>, you will see two scripts, deploy-<code class="inlineCode">k8gb-buf.sh</code> and <code class="inlineCode">deploy-k8gb-nyc.sh</code> – these should be run in their corresponding clusters.</p>
+<p class="normal">The script will execute the following steps:</p>
+<ol>
+<li class="numberedList" value="1">Add the K8GB Helm repo to the server’s repo list</li>
+<li class="numberedList">Update the repos</li>
+<li class="numberedList">Deploy K8GB using the appropriate Helm values file</li>
+<li class="numberedList">Create a <strong class="keyWord">Gslb record</strong> (covered in the next section)</li>
+<li class="numberedList">Create a deployment to use for testing in a namespace called <code class="inlineCode">demo</code></li>
+</ol>
+<p class="normal">Once deployed, you will see two pods running in the <code class="inlineCode">k8gb</code> namespace, one for the <code class="inlineCode">k8gb</code> controller and the other for the CoreDNS server that will be used to resolve load balancing names:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME                           READY   STATUS    RESTARTS    AGE
+k8gb-8d8b4cb7c-mhglb           1/1     Running   0           7h58m
+k8gb-coredns-7995d54db5-ngdb2  1/1     Running   0           7h37m
+</code></pre>
+<p class="normal">We can also verify that the services were created to handle the incoming DNS requests. Since we exposed it using a <code class="inlineCode">LoadBalancer</code> type, we will see the <code class="inlineCode">LoadBalancer</code> service on port <code class="inlineCode">53</code> using the UDP protocol:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME		TYPE           CLUSTER-IP     EXTERNAL-IP   PORT(S)		AGE   
+k8gb-coredns	LoadBalancer   10.96.185.56   10.2.1.224    53:32696/UDP	2d18h
+</code></pre>
+<p class="normal">With the deployment of K8GB<a id="_idIndexMarker541"/> complete and verified<a id="_idIndexMarker542"/> in both clusters, let’s move on to the next section where we will explain how to create our edge delegation for our load balanced zone.</p>
+<h3 class="heading-3" id="_idParaDest-216">Delegating our load balancing zone</h3>
+<p class="normal">For our example, we are using a Windows server<a id="_idIndexMarker543"/> as our edge DNS server, which is where our K8s DNS names will be registered. On the DNS side, we need to add two DNS records for our CoreDNS servers, and then we need to delegate the load balancing zone to these servers.</p>
+<p class="normal">The two A records need to be in the main edge DNS zone. In our example, that is the <code class="inlineCode">foowidgets.k8s</code> zone. In this zone, we need to add two entries for the CoreDNS servers that are exposed using a <code class="inlineCode">LoadBalancer</code> service:</p>
+<figure class="mediaobject"><img alt="" height="68" src="../Images/B21165_05_09.png" width="878"/></figure>
+<p class="packt_figref">Figure 5.9: Adding our CoreDNS servers to the edge zone</p>
+<p class="normal">Next, we need to create a new delegated zone that will be used for our load balanced service names. In Windows, this is done by <em class="keystroke">right-clicking</em> the zone and selecting <strong class="screenText">New Delegation</strong>; in the delegation wizard, you will be asked for the <strong class="screenText">Delegated domain</strong>. In our example, we are going to delegate the <strong class="screenText">gb</strong> domain as our domain.</p>
+<figure class="mediaobject"><img alt="" height="413" src="../Images/B21165_05_10.png" width="877"/></figure>
+<p class="packt_figref">Figure 5.10: Creating a new delegated zone</p>
+<p class="normal">After you enter the zone name<a id="_idIndexMarker544"/> and click <strong class="screenText">Next</strong>, you will see a new screen to add DNS servers for the delegated domain; when you click <strong class="screenText">Add</strong>, you will enter the DNS names for your CoreDNS servers. Remember that we created two A records in the main domain, <code class="inlineCode">foowidgets.com</code>. As you add entries, Windows will verify that the entered name resolves correctly and that DNS queries work. Once you add both CoreDNS servers, the summary screen will show both with their IP addresses.</p>
+<figure class="mediaobject"><img alt="" height="686" src="../Images/B21165_05_11.png" width="878"/></figure>
+<p class="packt_figref">Figure 5.11: Adding the DNS names for the CoreDNS servers</p>
+<p class="normal">That completes the edge server<a id="_idIndexMarker545"/> configuration. For certain edge servers, K8GB will create the delegation records, but there are only a handful of servers that are compatible with that feature. For any edge server that doesn’t auto create the delegated servers, you need to create them manually like we did in this section.</p>
+<p class="normal">Now that we have CoreDNS in our clusters and we have delegated the load balanced zone, we will deploy an application that has global load balancing to test our configuration.</p>
+<h2 class="heading-2" id="_idParaDest-217">Deploying a highly available application using K8GB</h2>
+<p class="normal">There are two methods<a id="_idIndexMarker546"/> to enable global load balancing for an application. You can create a new record using a custom resource provided by K8GB, or you can annotate an Ingress rule. For our demonstration of K8GB, we will deploy a simple NGINX web server in a cluster and add it to K8GB<a id="_idIndexMarker547"/> using the natively supplied custom resource.</p>
+<h3 class="heading-3" id="_idParaDest-218">Adding an application to K8GB using custom resources</h3>
+<p class="normal">When we deployed<a id="_idIndexMarker548"/> K8GB, a new <strong class="keyWord">Custom Resource Definition</strong> (<strong class="keyWord">CRD</strong>) named <code class="inlineCode">Gslb</code> was added<a id="_idIndexMarker549"/> to the cluster. This CRD<a id="_idIndexMarker550"/> assumes the role of managing applications marked for global load balancing. Within the <code class="inlineCode">Gslb</code> object, we define a specification for the Ingress name, mirroring the format of a regular Ingress object. The sole distinction between a standard Ingress and a <code class="inlineCode">Gslb</code> object lies in the last portion of the manifest, the strategy.</p>
+<p class="normal">The strategy defines the type of load balancing we want to use, which is failover for our example, and the primary GeoTag to use for the object. In our example, the NYC cluster is our primary cluster, so our <code class="inlineCode">Gslb</code> object will be set to <code class="inlineCode">us-buf</code>.</p>
+<p class="normal">To deploy an application that will leverage load balancing, we need to create the following in both clusters:</p>
+<ol>
+<li class="numberedList" value="1">A standard deployment and service for the application. We will call the deployment <code class="inlineCode">nginx</code>, using the standard NGINX image.</li>
+<li class="numberedList">A <code class="inlineCode">Gslb</code> object in each cluster. For our example, we will use the manifest below, which will declare the Ingress rule and set the strategy to failover using <code class="inlineCode">us-buf</code> as the primary K8GB. Since the <code class="inlineCode">Gslb</code> object has the information for the Ingress rule, you do not need to create an Ingress rule; <code class="inlineCode">Gslb</code> will create the Ingress object for us. Let’s look at an example below:
+        <pre class="programlisting code-one"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">k8gb.absa.oss/v1beta1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">Gslb</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">gslb-failover-buf</span>
+  <span class="hljs-attr">namespace:</span> <span class="hljs-string">demo</span>
+<span class="hljs-attr">spec:</span>
+  <span class="hljs-attr">ingress:</span>
+    <span class="hljs-attr">ingressClassName:</span> <span class="hljs-string">nginx</span>
+    <span class="hljs-attr">rules:</span>
+    <span class="hljs-bullet">-</span> <span class="hljs-attr">host:</span> <span class="hljs-string">fe.gb.foowidgets.k8s</span>      <span class="hljs-comment"># Desired GSLB enabled FQDN</span>
+      <span class="hljs-attr">http:</span>
+        <span class="hljs-attr">paths:</span>
+        <span class="hljs-bullet">-</span> <span class="hljs-attr">backend:</span>
+            <span class="hljs-attr">service:</span>
+              <span class="hljs-attr">name:</span> <span class="hljs-string">nginx</span>             <span class="hljs-comment"># Service name to enable GSLB for</span>
+              <span class="hljs-attr">port:</span>
+                <span class="hljs-attr">number:</span> <span class="hljs-number">80</span>
+          <span class="hljs-attr">path:</span> <span class="hljs-string">/</span>
+          <span class="hljs-attr">pathType:</span> <span class="hljs-string">Prefix</span>
+  <span class="hljs-attr">strategy:</span>
+    <span class="hljs-attr">type:</span> <span class="hljs-string">failover</span>                    <span class="hljs-comment"># Global load balancing strategy</span>
+    <span class="hljs-attr">primaryGeoTag:</span> <span class="hljs-string">us-buf</span>             <span class="hljs-comment"># Primary cluster geo tag</span>
+</code></pre>
+</li>
+</ol>
+<p class="normal">When you deploy the manifest<a id="_idIndexMarker551"/> for the <code class="inlineCode">Gslb</code> object, it will create<a id="_idIndexMarker552"/> two Kubernetes objects, the <code class="inlineCode">Gslb</code> object and an Ingress object.</p>
+<p class="normal">If we looked at the <code class="inlineCode">demo</code> namespace for the <code class="inlineCode">Gslb</code> objects in the <code class="inlineCode">Buffalo</code> cluster, we would see the following:</p>
+<pre class="programlisting con"><code class="hljs-con">NAMESPACE   NAME                STRATEGY   GEOTAG
+demo        gslb-failover-buf   failover   us-buf
+</code></pre>
+<p class="normal">And if we looked at the Ingress objects in the NYC cluster, we would see:</p>
+<pre class="programlisting con"><code class="hljs-con">NAME                CLASS   HOSTS                  ADDRESS      PORTS   AGE
+gslb-failover-buf   nginx   fe.gb.foowidgets.k8s   10.2.1.167   80      15h
+</code></pre>
+<p class="normal">We would also have similar objects in the NYC cluster, which we will explain in the <em class="italic">Understanding how K8GB provides global load balancing</em> section.</p>
+<h3 class="heading-3" id="_idParaDest-219">Adding an application to K8GB using Ingress annotations</h3>
+<p class="normal">The second method for adding<a id="_idIndexMarker553"/> an application to K8GB<a id="_idIndexMarker554"/> is to add two annotations to a standard Ingress rule, which was primarily added to allow developers to add an existing Ingress rule to K8GB.</p>
+<p class="normal">To add an Ingress object to the global load balancing list, you only need to add two annotations to the Ingress object, <code class="inlineCode">strategy</code> and <code class="inlineCode">primary-geotag</code>. An example of the annotations is shown below:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">k8gb.io/strategy:</span> <span class="hljs-string">"failover"</span>
+<span class="hljs-attr">k8gb.io/primary-geotag:</span> <span class="hljs-string">"us-buf"</span>
+</code></pre>
+<p class="normal">This would add the Ingress<a id="_idIndexMarker555"/> to K8GB using the failover strategy<a id="_idIndexMarker556"/> using the <code class="inlineCode">us-buf</code> GeoTag as the primary tag.</p>
+<p class="normal">Now that we have deployed all of the required infrastructure components and all of the required objects to enable global load balancing for an application, let’s see it in action.</p>
+<h2 class="heading-2" id="_idParaDest-220">Understanding how K8GB provides global load balancing</h2>
+<p class="normal">The design of K8GB is complex, but once<a id="_idIndexMarker557"/> you deploy an application and understand how K8GB maintains zone files, it will become easier. This is a fairly complex topic, and it does assume some previous knowledge of how DNS works, but by the end of this section, you should be able to explain how K8GB works.</p>
+<h3 class="heading-3" id="_idParaDest-221">Keeping the K8GB CoreDNS servers in sync</h3>
+<p class="normal">The first topic to discuss is how K8GB manages<a id="_idIndexMarker558"/> to keep two, or more, zone files<a id="_idIndexMarker559"/> in sync to provide seamless failover for our deployments. Seamless failover is a process that ensures an application continues to run smoothly even during system issues or failures. It automatically transitions to the backup system or resource, maintaining an uninterrupted user experience.</p>
+<p class="normal">As we mentioned earlier, each K8GB CoreDNS server in the clusters must have an entry in the main DNS server.</p>
+<p class="normal">This is the DNS server and zone that we configured for the edge values in the <code class="inlineCode">values.yaml</code> file:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">edgeDNSZone:</span> <span class="hljs-string">"foowidgets.k8s"</span>
+<span class="hljs-attr">edgeDNSServer:</span> <span class="hljs-string">"10.2.1.14"</span>
+</code></pre>
+<p class="normal">So, in the edge DNS server (<code class="inlineCode">10.2.1.14</code>), we have a host record for each CoreDNS server using the required K8GB naming convention:</p>
+<pre class="programlisting con"><code class="hljs-con">gslb-ns-us-nyc-gb.gb.foowidgets.k8s    10.2.1.221  (The NYC CoreDNS load balancer IP)
+gslb-ns-us-buf-gb.gb.foowidgets.k8s    10.2.1.224  (The BUF CoreDNS load balancer IP)
+</code></pre>
+<p class="normal">K8GB will communicate between all of the CoreDNS servers and update any records that need to be updated due to being added, deleted, or updated.</p>
+<p class="normal">This becomes a little easier to understand with an example. Using our cluster example, we have deployed an NGINX web server and created all of the required objects in both clusters. After deploying, we would have a <code class="inlineCode">Gslb</code> and Ingress object in each cluster, as shown below:</p>
+<table class="table-container" id="table003-4">
+<tbody>
+<tr>
+<td class="table-cell">
+<p class="normal">Cluster: NYC</p>
+<p class="normal">Deployment: <code class="inlineCode">nginx</code></p>
+<p class="normal"><code class="inlineCode">Gslb: gslb-failover-nyc</code></p>
+<p class="normal">Ingress: <code class="inlineCode">fe.gb.foowidgets.k8s</code></p>
+<p class="normal">NGINX Ingress IP: <code class="inlineCode">10.2.1.98</code></p>
+</td>
+<td class="table-cell">
+<p class="normal">Cluster: <code class="inlineCode">Buffalo</code> (Primary)</p>
+<p class="normal">Deployment: <code class="inlineCode">nginx</code></p>
+<p class="normal"><code class="inlineCode">Gslb: gslb-failover-buf</code></p>
+<p class="normal">Ingress: <code class="inlineCode">fe.gb.foowidgets.k8s</code></p>
+<p class="normal">NGINX Ingress IP: <code class="inlineCode">10.2.1.167</code></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="packt_figref">Table 5.3: Objects in each cluster</p>
+<p class="normal">Since the deployment is healthy<a id="_idIndexMarker560"/> in both clusters, the CoreDNS servers<a id="_idIndexMarker561"/> will have a record for <code class="inlineCode">fe.gb.foowidgets.k8s</code> with an IP address of <code class="inlineCode">10.2.1.167</code>, the primary deployment. We can verify this by running a <code class="inlineCode">dig</code> command on any client machine that uses the edge DNS server (<code class="inlineCode">10.2.1.14</code>):</p>
+<pre class="programlisting con"><code class="hljs-con">; &lt;&lt;&gt;&gt; DiG 9.16.23-RH &lt;&lt;&gt;&gt; fe.gb.foowidgets.k8s
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 6654
+;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4000
+;; QUESTION SECTION:
+;fe.gb.foowidgets.k8s.          IN      A
+;; ANSWER SECTION:
+fe.gb.foowidgets.k8s.   30      IN      A       10.2.1.167
+;; Query time: 3 msec
+;; SERVER: 10.2.1.14#53(10.2.1.14)
+;; WHEN: Mon Aug 14 08:47:12 EDT 2023
+;; MSG SIZE  rcvd: 65
+</code></pre>
+<p class="normal">As you can see in the output from <code class="inlineCode">dig</code>, the host resolved to <code class="inlineCode">10.2.1.167</code> since the application is healthy in the primary cluster. If we curl the DNS name, we will see that the NGINX server in <code class="inlineCode">Buffalo</code> replies:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta"># </span>curl fe.gb.foowidgets.k8s
+&lt;html&gt;
+&lt;h1&gt;Welcome&lt;/h1&gt;
+&lt;/br&gt;
+&lt;h1&gt;Hi! This is a webserver in Buffalo for our K8GB example... &lt;/h1&gt;
+</code></pre>
+<p class="normal">We will simulate a failure by scaling<a id="_idIndexMarker562"/> the replicas for the deployment<a id="_idIndexMarker563"/> in the <code class="inlineCode">Buffalo</code> cluster to <code class="inlineCode">0</code>, which will look like a failed application to K8GB. When the K8GB controller in the NYC cluster sees that the application no longer has any healthy endpoints, it will update the CoreDNS record in all servers with the secondary IP address to fail the service over to the secondary cluster.</p>
+<p class="normal">Once scaled down, we can use <code class="inlineCode">dig</code> to verify what host is returned:</p>
+<pre class="programlisting con"><code class="hljs-con">; &lt;&lt;&gt;&gt; DiG 9.16.23-RH &lt;&lt;&gt;&gt; fe.gb.foowidgets.k8s
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 46104
+;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4000
+;; QUESTION SECTION:
+;fe.gb.foowidgets.k8s.          IN      A
+;; ANSWER SECTION:
+fe.gb.foowidgets.k8s.   27      IN      A       10.2.1.98
+;; Query time: 1 msec
+;; SERVER: 10.2.1.14#53(10.2.1.14)
+;; WHEN: Mon Aug 14 08:49:27 EDT 2023
+;; MSG SIZE  rcvd: 65
+</code></pre>
+<p class="normal">We will <code class="inlineCode">curl</code> again to verify that the workload has been moved to the NYC cluster. When we execute curl, we will see that the NGINX server is now located in the NYC cluster:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta"># </span>curl fe.gb.foowidgets.k8s
+&lt;html&gt;
+&lt;h1&gt;Welcome&lt;/h1&gt;
+&lt;/br&gt;
+&lt;h1&gt;Hi! This is a webserver in NYC for our K8GB example... &lt;/h1&gt;
+&lt;/html&gt;
+</code></pre>
+<p class="normal">Note that the IP address returned is now the IP address for the deployment in the <code class="inlineCode">Buffalo</code> cluster, the secondary cluster, <code class="inlineCode">10.2.1.98</code>. This proves that K8GB is working correctly and providing us with a Kubernetes-controlled global load balancer.</p>
+<p class="normal">Once the application<a id="_idIndexMarker564"/> becomes healthy<a id="_idIndexMarker565"/> in the primary cluster, K8GB will update CoreDNS and any requests will resolve to the main cluster again. To test this, we scaled the deployment in <code class="inlineCode">Buffalo</code> back up to <code class="inlineCode">1</code> and ran another dig test:</p>
+<pre class="programlisting con"><code class="hljs-con">; &lt;&lt;&gt;&gt; DiG 9.16.23-RH &lt;&lt;&gt;&gt; fe.gb.foowidgets.k8s
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 6654
+;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4000
+;; QUESTION SECTION:
+;fe.gb.foowidgets.k8s.          IN      A
+;; ANSWER SECTION:
+fe.gb.foowidgets.k8s.   30      IN      A       10.2.1.167
+;; Query time: 3 msec
+;; SERVER: 10.2.1.14#53(10.2.1.14)
+;; WHEN: Mon Aug 14 08:47:12 EDT 2023
+;; MSG SIZE  rcvd: 65
+</code></pre>
+<p class="normal">We can see that the IP has been updated to reflect the NYC Ingress controller on address <code class="inlineCode">10.2.1.167</code>, the primary location.</p>
+<p class="normal">Finally, a last curl to verify that the workload is being serviced out of the <code class="inlineCode">Buffalo</code> cluster:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta"># </span>curl fe.gb.foowidgets.k8s
+&lt;html&gt;
+&lt;h1&gt;Welcome&lt;/h1&gt;
+&lt;/br&gt;
+&lt;h1&gt;Hi! This is a webserver in Buffalo for our K8GB example... &lt;/h1&gt;
+&lt;/html&gt;
+</code></pre>
+<p class="normal">K8GB is a unique, and impressive, project from the CNCF that offers global load balancing similar to what other, more expensive, products offer today.</p>
+<p class="normal">It’s a project that we are watching<a id="_idIndexMarker566"/> carefully, and if you need to deploy<a id="_idIndexMarker567"/> applications across multiple clusters, you should consider looking into the K8GB project as it matures.</p>
+<h1 class="heading-1" id="_idParaDest-222">Summary</h1>
+<p class="normal">In this chapter, you learned how to provide automatic DNS registration to any service that uses a <code class="inlineCode">LoadBalancer</code> service. You also learned how to deploy a highly available service using the CNCF project, K8GB, which provides global load balancing to a Kubernetes cluster.</p>
+<p class="normal">These projects have become integral to numerous enterprises, offering users capabilities that previously required the efforts of multiple teams and, often, extensive paperwork, to deliver applications to customers. Now, your teams can swiftly deploy and update applications using standard agile practices, providing your organization with a competitive advantage.</p>
+<p class="normal">In the next chapter, <em class="italic">Integrating Authentication into Your Cluster</em>, we will explore the best methods and practices for implementing secure authentication in Kubernetes. You will learn how to integrate enterprise authentication using the OpenID Connect protocol and how to use Kubernetes impersonation. We will also discuss the challenges of managing credentials in a cluster and offer practical solutions for authenticating users and pipelines.</p>
+<h1 class="heading-1" id="_idParaDest-223">Questions</h1>
+<ol>
+<li class="numberedList" value="1">Kubernetes does not support using both TCP and UDP with services.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<p class="normal-one">Answer: b</p>
+<ol>
+<li class="numberedList" value="2">ExternalDNS only integrates with CoreDNS.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<p class="normal-one">Answer: b</p>
+<ol>
+<li class="numberedList" value="3">What do you need to configure on your edge DNS server for K8GB to provide load balancing to a domain?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Nothing, it works without additional configuration</li>
+<li class="alphabeticList level-2">It must point to a cloud-provided DNS server</li>
+<li class="alphabeticList level-2">You must delegate a zone that points to your cluster IP</li>
+<li class="alphabeticList level-2">Create a delegation to your CoreDNS instances</li>
+</ol>
+</li>
+</ol>
+<p class="normal-one">Answer: d</p>
+<ol>
+<li class="numberedList" value="4">What strategy is not supported by K8GB?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Failover</li>
+<li class="alphabeticList level-2">Round robin</li>
+<li class="alphabeticList level-2">Random distribution</li>
+<li class="alphabeticList level-2">GeoIP</li>
+</ol>
+</li>
+</ol>
+<p class="normal-one">Answer: c</p>
+<h1 class="heading-1" id="_idParaDest-224">Join our book’s Discord space</h1>
+<p class="normal">Join the book’s Discord workspace for a monthly <em class="italic">Ask Me Anything</em> session with the authors:</p>
+<p class="normal"><a href="https://packt.link/K8EntGuide"><span class="url">https://packt.link/K8EntGuide</span></a></p>
+<p class="normal"><img alt="" height="176" src="../Images/QR_Code965214276169525265.png" width="176"/></p>
+</div>
+</div></body></html>

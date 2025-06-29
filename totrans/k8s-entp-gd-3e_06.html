@@ -1,0 +1,937 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div class="Basic-Text-Frame" id="_idContainer139">
+<h1 class="chapterNumber">6</h1>
+<h1 class="chapterTitle" id="_idParaDest-225">Integrating Authentication into Your Cluster</h1>
+<p class="normal">Once a cluster has been built, users will need to interact with it securely. For most enterprises, this means authenticating individual users and pipelines, making sure they can only access what they need in order to do their jobs. This<a id="_idIndexMarker568"/> is known as least privileged access. The principle of least privilege is a security practice that centers on providing users, systems, applications, or processes with only the essential access and permissions required to execute their tasks. With Kubernetes, this can be challenging because a cluster is a collection of APIs, not an application with a frontend that can prompt for authentication, nor does it provide a secure way to manage credentials on its own.</p>
+<p class="normal">Failing to create an authentication strategy can lead to your cluster being taken over. Once a cluster is potentially compromised, it’s almost impossible to determine if an attacker has been purged, and you’ll need to start over. A breached cluster can also lead to breaches in other systems too, such as a database your applications may be accessing. Authentication is the first step to make sure this doesn’t happen.</p>
+<p class="normal">In this chapter, you’ll learn how to integrate enterprise authentication into your<a id="_idIndexMarker569"/> cluster using the <strong class="keyWord">OpenID Connect</strong> protocol and Kubernetes impersonation. We’ll also cover several anti-patterns and explain why you should avoid using them. To close out the chapter, you’ll also learn how to integrate your pipelines into your clusters securely.</p>
+<p class="normal">In this chapter, we will cover the following topics:</p>
+<ul>
+<li class="bulletList">Understanding how Kubernetes knows who you are</li>
+<li class="bulletList">Understanding OpenID Connect</li>
+<li class="bulletList">Configuring KinD for OpenID Connect</li>
+<li class="bulletList">Introducing impersonation to integrate authentication with cloud-managed clusters</li>
+<li class="bulletList">Configuring your cluster for impersonation</li>
+<li class="bulletList">Configuring impersonation without OpenUnison</li>
+<li class="bulletList">Authenticating from pipelines</li>
+</ul>
+<p class="normal">Let’s get started!</p>
+<h1 class="heading-1" id="_idParaDest-226">Technical requirements</h1>
+<p class="normal">To complete the exercises in this chapter, you will require the following:</p>
+<ul>
+<li class="bulletList">An Ubuntu 22.04 server with 8 GB of RAM</li>
+<li class="bulletList">A fresh KinD cluster running with the configuration from <em class="chapterRef">Chapter 2</em>, <em class="italic">Deploying Kubernetes Using KinD</em></li>
+</ul>
+<p class="normal">You can access the code for this chapter at the following GitHub repository: <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter6"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter6</span></a>.</p>
+<h1 class="heading-1" id="_idParaDest-227">Getting Help</h1>
+<p class="normal">We do our best to test everything, but there are sometimes half a dozen systems or more in our integration labs. Given the fluid nature of technology, sometimes things that work in our environment don’t work in yours. Don’t worry – we’re here to help! Open an issue on our GitHub repo at <a href="https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues"><span class="url">https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues</span></a>, and we’ll be happy to help you out!</p>
+<h1 class="heading-1" id="_idParaDest-228">Understanding how Kubernetes knows who you are</h1>
+<p class="normal">In the 1999 sci-fi film <em class="italic">The Matrix</em>, Neo talks<a id="_idIndexMarker570"/> to a child about the Matrix as he waits to see the Oracle. The child explains to him that the trick to manipulating the Matrix is to realize that “<em class="italic">There is no spoon</em>.”</p>
+<p class="normal">This is a great way to look at users in Kubernetes because they don’t exist. With the exception of service accounts, which we’ll talk about later, there are no objects in Kubernetes called “User” or “Group.” Every API interaction must include enough information to tell the API server who the user is and what groups the user is a member of. This assertion can take different forms, depending on how you plan to integrate authentication into your cluster.</p>
+<p class="normal">In this section, we will get into the details of the different ways Kubernetes can associate a user with a cluster.</p>
+<h2 class="heading-2" id="_idParaDest-229">External users</h2>
+<p class="normal">Users who access the Kubernetes API<a id="_idIndexMarker571"/> from outside the cluster will usually<a id="_idIndexMarker572"/> do so using one of two authentication methods:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Certificate</strong>: You can assert who you are by using a client certificate that has information about you, such as your username and groups. The certificate is used as part of the TLS negotiation process.</li>
+<li class="bulletList"><strong class="keyWord">Bearer token</strong>: Embedded in each request, a bearer token can either be a self-contained token that contains all the information needed to verify itself, or a token that can be exchanged by a webhook in the API server for that information.</li>
+</ul>
+<p class="normal">There is a third method that can be used<a id="_idIndexMarker573"/> for authentication, using a <strong class="keyWord">service account</strong>. However, using service accounts to access the API server outside the cluster is strongly discouraged. We’ll cover the risks and concerns around using service accounts in the <em class="italic">Other authentication options</em> section.</p>
+<h2 class="heading-2" id="_idParaDest-230">Groups in Kubernetes</h2>
+<p class="normal">Different users can be assigned the same permissions without creating <code class="inlineCode">RoleBinding</code> objects for each user individually via groups. Kubernetes<a id="_idIndexMarker574"/> includes two types of groups:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">System assigned</strong>: These groups start with the <code class="inlineCode">system:</code> prefix<a id="_idIndexMarker575"/> and are assigned by the API server. An example group is <code class="inlineCode">system:authenticated</code>, which is assigned to all authenticated users. Another example of system-assigned groups is the <code class="inlineCode">system:serviceaccounts:namespace</code> group, where <code class="inlineCode">Namespace</code> is the name of the namespace that contains all the service accounts for the namespace named in the group.</li>
+<li class="bulletList"><strong class="keyWord">User-asserted groups</strong>: These groups are asserted<a id="_idIndexMarker576"/> by the authentication system, either in the token provided to the API server or via the authentication webhook. There are no standards or requirements for how these groups are named. Just as with users, groups don’t exist as objects in the API server. Groups are asserted at authentication time by external users and tracked locally for system-generated groups. When asserting a user’s groups, the primary difference between a user’s unique ID and groups is that the unique ID is expected<a id="_idIndexMarker577"/> to be unique, whereas groups are not.</li>
+</ul>
+<p class="normal">While you may be authorized for access by groups, all access is still tracked and audited based on your user’s unique ID.</p>
+<h2 class="heading-2" id="_idParaDest-231">Service accounts</h2>
+<p class="normal">Service accounts are objects<a id="_idIndexMarker578"/> that exist in the API server to track which pods can access the various APIs. Service account<a id="_idIndexMarker579"/> tokens are called <strong class="keyWord">JSON Web Tokens</strong>, or <strong class="keyWord">JWTs</strong>, and depending on how the token was generated, there are two ways to obtain a service account:</p>
+<ul>
+<li class="bulletList">The first is from a secret that can be generated by Kubernetes when a ServiceAccount is created.</li>
+<li class="bulletList">The second is via the <code class="inlineCode">TokenRequest</code> API, which is used to inject a secret into pods via a mount point or externally from the cluster. All service accounts are used by injecting the token as a header in the request into the API server. The API server recognizes it as a service account and validates it internally.</li>
+</ul>
+<p class="normal">We will cover how to create these tokens in a specific context later in the chapter.</p>
+<p class="normal">Unlike users, service accounts <strong class="keyWord">CANNOT</strong> be assigned to arbitrary groups. Service accounts are members of pre-built groups only; you can’t create a group of specific service accounts to assign roles.</p>
+<p class="normal">Now that we have explored the fundamentals of how Kubernetes identifies users, we’ll explore how this framework<a id="_idIndexMarker580"/> fits into the <strong class="keyWord">OpenID Connect</strong> (<strong class="keyWord">OIDC</strong>) protocol. OIDC provides the security most enterprises require and is standards-based, but Kubernetes doesn’t use it in a way that is typical of many web applications. Understanding these differences and why Kubernetes needs them is an important step in integrating a cluster into an enterprise security environment.</p>
+<h1 class="heading-1" id="_idParaDest-232">Understanding OpenID Connect</h1>
+<p class="normal"><strong class="keyWord">OpenID Connect</strong> is a standard identity federation<a id="_idIndexMarker581"/> protocol. It’s built on the <strong class="keyWord">OAuth2</strong> specification and has some<a id="_idIndexMarker582"/> very powerful features that make it the preferred choice to interact with Kubernetes clusters.</p>
+<p class="normal">The main benefits<a id="_idIndexMarker583"/> of OpenID Connect are as follows:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Short-lived tokens</strong>: If a token is leaked, such as via a log message or breach, you want the token to expire as quickly as possible. With OIDC, you’re able to specify tokens that can live for 1–2 minutes, which means the token will likely have expired by the time an attacker attempts to use it.</li>
+<li class="bulletList"><strong class="keyWord">User and group memberships</strong>: When we start discussing authorization in <em class="chapterRef">Chapter 7</em>, <em class="italic">RBAC Policies and Auditing</em>, we’ll see immediately that it’s important to manage access by group instead of managing access by referencing users directly. OIDC tokens can embed both the user’s identifier and their groups, leading to easier access management.</li>
+<li class="bulletList"><strong class="keyWord">Refresh tokens scoped to timeout policies</strong>: With short-lived tokens, you need to be able to refresh them as needed. The time that a refresh token remains valid can be scoped to your enterprise’s web application idle timeout policy, keeping your cluster in compliance with other web-based applications.</li>
+<li class="bulletList"><strong class="keyWord">No plugins required for kubectl</strong>: The <code class="inlineCode">kubectl</code> binary supports OpenID Connect natively, so there’s no need for any additional plugins. This is especially useful if you need to access your cluster from a jump box or VM because you’re unable to install the <strong class="keyWord">Command-Line Interface</strong> (<strong class="keyWord">CLI</strong>) tools directly onto<a id="_idIndexMarker584"/> your workstation. There are convenient plugins though, which we will discuss later in the chapter.</li>
+<li class="bulletList"><strong class="keyWord">More multi-factor authentication options</strong>: Many of the strongest multi-factor authentication options require a web browser. Examples include FIDO<a id="_idIndexMarker585"/> and WebAuthn, which use hardware tokens.</li>
+</ul>
+<p class="normal">OIDC is a peer-reviewed standard that has been in use for several years and is quickly becoming the preferred standard for identity federation. Using an existing standard, over something custom-developed, means that Kubernetes leverages the existing expertise of those peer reviews, instead of creating a new authentication protocol where that experience hasn’t been tested.</p>
+<p class="normal">Identity federation is the term used to describe<a id="_idIndexMarker586"/> the assertion of identity data and authentication without sharing a user’s confidential secret or password. A classic example of identity federation is logging into your employee website and being able to access your benefits provider without having to log in again. Your employee website doesn’t share your password with your benefits provider. Instead, your employee website asserts that you logged in at a certain date and time and provides some information about you. This way, your account is federated across two silos (your employee website and benefits portal), without your benefits portal knowing your employee website password.</p>
+<p class="normal">As you can see, there are multiple<a id="_idIndexMarker587"/> components to OIDC. To fully understand how OIDC works, let’s begin by understanding the OpenID Connect protocol.</p>
+<h2 class="heading-2" id="_idParaDest-233">The OpenID Connect protocol</h2>
+<p class="normal">The two aspects of the OIDC protocol<a id="_idIndexMarker588"/> we will focus on are:</p>
+<ul>
+<li class="bulletList">Using tokens with <code class="inlineCode">kubectl</code> and the API server</li>
+<li class="bulletList">Refreshing tokens to keep your tokens up to date</li>
+</ul>
+<p class="normal">We won’t focus too much on obtaining tokens. While the protocol to get a token does follow a standard, the login process does not. How you obtain tokens from an identity provider will vary, and it’s based on how you choose<a id="_idIndexMarker589"/> to implement your OIDC <strong class="keyWord">Identity Provider</strong> (<strong class="keyWord">IdP</strong>).</p>
+<p class="normal">Three tokens are generated from<a id="_idIndexMarker590"/> the OIDC login process:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">access_token</code>: This token is used to make authenticated requests to web services your identity provider may provide, such as obtaining user information. It is NOT used by Kubernetes and can be discarded. This token does not have a standard form. It may be a JWT, or it may not.</li>
+<li class="bulletList"><code class="inlineCode">id_token</code>: This token is a JWT that encapsulates your identity, including your unique identifier, groups, and expiration information about you that the API server can use to authorize your access. The JWT is signed by your identity provider’s certificate and can be verified by Kubernetes, simply by checking the JWT’s signature. This is the token you pass to Kubernetes for each request to authenticate yourself.</li>
+<li class="bulletList"><code class="inlineCode">refresh_token</code>: <code class="inlineCode">kubectl</code> knows how to refresh your <code class="inlineCode">id_token</code> for you automatically once it expires. To do this, it makes a call to your IdP’s <code class="inlineCode">token</code> endpoint using a <code class="inlineCode">refresh_token</code> to obtain a new <code class="inlineCode">id_token</code>. A <code class="inlineCode">refresh_token</code> should only be used once and is opaque, meaning that you, as the holder of the token, have no visibility into its format, and it really doesn’t matter to you. It either works, or it doesn’t. The <code class="inlineCode">refresh_token</code> never goes to Kubernetes (or any other application). It is only used in communications with the IdP.</li>
+</ul>
+<p class="normal">The <code class="inlineCode">refresh_token</code>'s ability to be used multiple times can be allowed in specific circumstances. There are well-known<a id="_idIndexMarker591"/> issues with the Kubernetes <strong class="keyWord">Go SDK</strong> when multiple processes attempt to refresh a token from the same <code class="inlineCode">kubectl</code> configuration file at nearly the same time, causing the user’s session to be lost and forcing the user to log in again to obtain a new set of tokens. Many identity providers handle this process differently. Some allow <code class="inlineCode">refresh_tokens</code> to be reused for varying amounts of time. When reviewing your choice for an identity provider, it’s important to review this part of the functionality because it’s often left more “open” by default to give a better user experience. Allowing the long-lived reuse of a <code class="inlineCode">refresh_token</code> invalidates much of the security provided by a <code class="inlineCode">refresh_token</code> and should be used very carefully.</p>
+<p class="normal">Once you have your tokens, you can use them to authenticate with the API server. The easiest way to use your tokens is to add them to the <code class="inlineCode">kubectl</code> configuration, using command-line parameters:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl config set-credentials username --auth-provider=oidc --auth-provider-arg=idp-issuer-url=https://host/uri --auth-provider-arg=client-id=kubernetes --auth-provider-arg=refresh-token=$REFRESH_TOKEN --auth-provider-arg=id-token=$ID_TOKEN
+</code></pre>
+<p class="normal"><code class="inlineCode">config set-credentials</code> has a few options that need to be provided. We have already explained <code class="inlineCode">id-token</code> and <code class="inlineCode">refresh-token</code>, but there are two additional options:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">idp-issuer-url</code>: This is the same URL we will use to configure the API server and points to the base URL used for the IdP’s discovery URL.</li>
+<li class="bulletList"><code class="inlineCode">client-id</code>: This is used by your IdP to identify your configuration. This is unique to a Kubernetes deployment and is not considered secret information.</li>
+</ul>
+<p class="normal">The OpenID Connect protocol<a id="_idIndexMarker592"/> has an optional element, known as a <code class="inlineCode">client_secret</code>, that is shared between an OIDC client and the IdP. It is used to “authenticate” the client before making any requests, such as refreshing a token. While it’s supported by Kubernetes as an option, it’s recommended to not use it and instead configure your IdP to use a public endpoint (which doesn’t use a secret at all).</p>
+<p class="normal">The client secret has no practical value, since you’d need to share it with every potential user, and since it’s a password, your enterprise’s compliance framework will likely require that it is rotated regularly, causing support headaches. Overall, it’s just not worth any potential downsides in terms of security.</p>
+<p class="normal">Instead of using a client secret, you should<a id="_idIndexMarker593"/> make sure your endpoint leverages the <strong class="keyWord">Proof Key for Code Exchange</strong> (<strong class="keyWord">PKCE</strong>) protocol. This protocol was originally created to add a layer of randomness to OIDC requests that don’t have client secrets. While this is not something that would be leveraged by the <code class="inlineCode">kubectl</code> command during the refresh process, you’re likely to integrate multiple applications from your cluster into your identity provider (such as dashboards) that may have CLI components and won’t be able to use a client secret either. <strong class="keyWord">ArgoCD</strong>, which we will integrate<a id="_idIndexMarker594"/> in the last two chapters, is a great example. Its CLI utility works with SSO, but unlike <code class="inlineCode">kubectl</code>, it will initiate SSO for you. When it does, it includes PKCE because you won’t have a <code class="inlineCode">client_secret</code> on each user’s workstation.</p>
+<p class="normal">Kubernetes requires that your identity provider supports the discovery URL endpoint, which is a URL that provides some JSON to tell you where you can get keys to verify JWTs and the various endpoints available. To access the discovery endpoint, take any issuer URL and add <code class="inlineCode">/.well-known/openid-configuration</code>, which will provide the OIDC endpoint information.</p>
+<p class="normal">Having worked through how the OpenID Connect protocol<a id="_idIndexMarker595"/> and tokens work with Kubernetes, let’s next walk through how the various components in Kubernetes and <code class="inlineCode">kubectl</code> interact with each other.</p>
+<h2 class="heading-2" id="_idParaDest-234">Following OIDC and the API’s interaction</h2>
+<p class="normal">Once <code class="inlineCode">kubectl</code> has been configured, all of your API interactions<a id="_idIndexMarker596"/> will follow the following sequence:</p>
+<figure class="mediaobject"><img alt="Figure 7.1 – Kubernetes/kubectl OpenID Connect sequence diagram " height="321" src="../Images/B21165_06_01.png" width="878"/></figure>
+<p class="packt_figref">Figure 6.1: Kubernetes/kubectl OpenID Connect sequence diagram</p>
+<p class="normal">The preceding diagram<a id="_idIndexMarker597"/> is from Kubernetes’ authentication page at <a href="https://kubernetes.io/docs/reference/access-authn-authz/authentication/#openid-connect-tokens"><span class="url">https://kubernetes.io/docs/reference/access-authn-authz/authentication/#openid-connect-tokens</span></a>. Authenticating a request involves the following:</p>
+<ol>
+<li class="numberedList" value="1"><strong class="keyWord">Log into your IdP</strong>: This will be different for each IdP. This could involve providing a username and password to a form in a web browser, a multi-factor token, or a certificate. This will be specific to every implementation.</li>
+<li class="numberedList"><strong class="keyWord">Provide tokens to the user</strong>: Once authenticated, the user needs a way to generate the tokens needed by <code class="inlineCode">kubectl</code> to access the Kubernetes APIs. This can take the form of an application that makes it easy for the user to copy and paste them into the configuration file, or it can be a new file to download.</li>
+<li class="numberedList">This step is where <code class="inlineCode">id_token</code> and <code class="inlineCode">refresh_token</code> are added to the <code class="inlineCode">kubectl</code> configuration. If the tokens were presented to the user in the browser, they can be manually added to the configuration. Alternatively, some solutions provide a new <code class="inlineCode">kubectl</code> configuration to download at this step. There are also <code class="inlineCode">kubectl</code> plugins that will launch a web browser to start the authentication process and, once completed, generate your configuration for you.</li>
+<li class="numberedList"><strong class="keyWord">Inject id_token</strong>: Once the <code class="inlineCode">kubectl</code> command has been called, each API call includes an additional<a id="_idIndexMarker598"/> header, called the <strong class="keyWord">Authorization</strong> header, that includes <code class="inlineCode">id_token</code>.</li>
+<li class="numberedList"><strong class="keyWord">JWT signature validation</strong>: Once the API server receives <code class="inlineCode">id_token</code> from the API call, it validates the signature against the public key provided by the identity provider. The API server will also validate whether the issuer matches the issuer for the API server configuration, and also that the recipient matches the client ID from the API server configuration.</li>
+<li class="numberedList"><strong class="keyWord">Check the JWT’s expiration</strong>: Tokens are only good for a limited amount of time. The API server ensures that the token hasn’t expired. If it has expired, the API server will return with a 401 error code.</li>
+<li class="numberedList"><strong class="keyWord">Authorization check</strong>: Now that the user has been authenticated, the API server will determine whether the user identified by the provided <code class="inlineCode">id_token</code> is able to perform the requested action by matching the user’s identifier and asserted groups to internal policies.</li>
+<li class="numberedList"><strong class="keyWord">Execute the API</strong>: All checks are complete, and the API server executes the request, generating a response that will be sent back to <code class="inlineCode">kubectl</code>.</li>
+<li class="numberedList"><strong class="keyWord">Format the response for the user</strong>: Once the API call (or a series of API calls) is complete, the response in JSON<a id="_idIndexMarker599"/> is formatted and presented to the user by <code class="inlineCode">kubectl</code>.</li>
+</ol>
+<p class="normal">In general terms, authentication<a id="_idIndexMarker600"/> is the process of validating that you are you. Most of us encounter this when we put our username and password into a website; we’re proving who we are. In the enterprise world, authorization then becomes the decision of whether we’re allowed to do something. First, we authenticate, and then we authorize.</p>
+<p class="normal">The standards built around API security don’t assume authentication and go straight to authorization, based on some sort of token. It’s not assumed that the caller has to be identified. For instance, when you use a physical key to open a door, the door doesn’t know who you are, only that you have the right key. This terminology can become very confusing, so don’t feel bad if you get a bit lost. You’re in good company!</p>
+<p class="normal">The <code class="inlineCode">id_token</code> is self-contained; everything the API <a id="_idIndexMarker601"/>server needs to know about you is in that token. The API server verifies the <code class="inlineCode">id_token</code> using the certificate provided by the identity provider and verifies that the token hasn’t expired. As long as that all lines up, the API server will move on to authorizing your request based on its own RBAC configuration. We’ll cover the details of that process later. Finally, assuming you’re authorized, the API server provides a response.</p>
+<p class="normal">Note that Kubernetes never sees your password or any other secret information that you, and only you, know. The only thing that’s shared is the <code class="inlineCode">id_token</code>, and that’s ephemeral. This leads to several important points:</p>
+<ul>
+<li class="bulletList">Since Kubernetes never sees your password or other credentials, it can’t compromise them. This can save you a tremendous amount of time working with your security team, as all the tasks and controls related to securing passwords can be skipped!</li>
+<li class="bulletList">The <code class="inlineCode">id_token</code> is self-contained, which means that if it’s compromised, there is nothing you can do, short of rekeying your identity provider, to stop it from being abused. This is why it’s so important for your <code class="inlineCode">id_token</code> to have a short lifespan. At 1–2 minutes, the likelihood that an attacker will be able to obtain an <code class="inlineCode">id_token</code>, realize what it is, and abuse it is very low.</li>
+</ul>
+<p class="normal">If, while performing its calls, <code class="inlineCode">kubectl</code> finds that <code class="inlineCode">id_token</code> has expired, it will attempt to refresh it by calling the IdP’s token endpoint using <code class="inlineCode">refresh_token</code>. If the user’s session is still valid, the IdP will generate a new <code class="inlineCode">id_token</code> and <code class="inlineCode">refresh_token</code>, which <code class="inlineCode">kubectl</code> will store for you in the <code class="inlineCode">kubectl</code> configuration. This happens automatically with no user intervention. Additionally, a <code class="inlineCode">refresh_token</code> has a one-time use, so if someone tries to use a previously used <code class="inlineCode">refresh_token</code>, your IdP will fail the refresh process.</p>
+<p class="normal">A sudden security event is bound to happen. Someone may need to be locked out immediately; it may be that they’re being walked out or that their session has been compromised. Revocation of tokens is dependent on your IdP, so when choosing an IdP, make sure it supports some form of session revocation.</p>
+<p class="normal">Finally, if the <code class="inlineCode">refresh_token</code> has expired or the session has been revoked, the API server will return a <code class="inlineCode">401 Unauthorized</code> message to indicate that it will no longer support the token.</p>
+<p class="normal">We’ve spent a considerable amount of time examining the OIDC protocol. Now, let’s take an in-depth look at the <code class="inlineCode">id_token</code>.</p>
+<h3 class="heading-3" id="_idParaDest-235">id_token</h3>
+<p class="normal">An <code class="inlineCode">id_token</code> is a JSON web token<a id="_idIndexMarker602"/> that is base64-encoded and digitally signed. The JSON contains a series of attributes, known as claims, in OIDC. There are some standard claims in the <code class="inlineCode">id_token</code>, but for the most part, the claims you will be most concerned with are as follows:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">iss</code>: The issuer, which MUST line up with the issuer in your <code class="inlineCode">kubectl</code> configuration</li>
+<li class="bulletList"><code class="inlineCode">aud</code>: Your client ID</li>
+<li class="bulletList"><code class="inlineCode">sub</code>: Your unique identifier</li>
+<li class="bulletList"><code class="inlineCode">groups</code>: Not a standard claim, but it should be populated with groups specifically related to your Kubernetes deployment</li>
+</ul>
+<p class="normal">Many deployments attempt to identify you by your email address. This is an anti-pattern, as your email address is generally based on your name, and names can change. The <code class="inlineCode">sub</code> claim is supposed to be a unique identifier that is immutable and will never change. This way, it doesn’t matter if your email changes because your name changes. While this can make it harder to debug “who is cd25d24d-74b8-4cc4-8b8c-116bf4abbd26?”, it will provide a cleaner and easier-to-maintain cluster.</p>
+<p class="normal">There are several other claims that indicate when an <code class="inlineCode">id_token</code> should no longer be accepted. These claims are all measured in seconds from epoch (January 1, 1970) UTC time:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">exp</code>: When the <code class="inlineCode">id_token</code> expires</li>
+<li class="bulletList"><code class="inlineCode">iat</code>: When the <code class="inlineCode">id_token</code> was created</li>
+<li class="bulletList"><code class="inlineCode">nbf</code>: The absolute earliest an <code class="inlineCode">id_token</code> should be allowed</li>
+</ul>
+<p class="normal">Why doesn’t a token just have a single expiration time?</p>
+<p class="normal">It’s unlikely that the clock on the system that created the <code class="inlineCode">id_token</code> has the exact same time as the system that evaluates it. There’s often a skew and, depending on how the clock is set, it may be a few minutes. Having a not-before in addition to an expiration gives some room for standard time deviation.</p>
+<p class="normal">There are other claims in an <code class="inlineCode">id_token</code> that don’t really matter but are there for additional context. Examples include your name, contact information, organization, and so on.</p>
+<p class="normal">While the primary use for tokens is to interact with the Kubernetes API server, they are not limited to only API interaction. In addition to going to the API server, webhook calls may also receive your <code class="inlineCode">id_token</code>.</p>
+<p class="normal">You may have deployed OPA as a validating webhook on a cluster. When someone submits a pod creation request, the webhook will receive the user’s <code class="inlineCode">id_token</code>, which can be used to make decisions. <strong class="keyWord">Open Policy Agent </strong>(<strong class="keyWord">OPA</strong>), is a tool to validate and<a id="_idIndexMarker603"/> authorize requests. It’s often deployed in Kubernetes as an admission controller webhook. If you haven’t worked with OPA or admission controllers, we cover both in depth, starting in <em class="chapterRef">Chapter 11</em>, <em class="italic">Extending Security Using Open Policy Agent</em>.</p>
+<p class="normal">One example of when an admission controller would inspect the user’s <code class="inlineCode">id_token</code> is that you want to ensure that the PVCs are mapped to specific PVs based on the submitter’s organization. The organization is included in the <code class="inlineCode">id_token</code>, which is passed to Kubernetes, and then onto the OPA webhook. Since the token has been passed to the webhook, the information can then be used in your OPA policies.</p>
+<p class="normal">We’ve spent an extensive<a id="_idIndexMarker604"/> amount of time on OpenID Connect and how it’s used to authenticate API calls to your Kubernetes cluster. While it may be the best overall option, it’s not the only one. In the next section, we’ll look at other options and when they would be appropriate.</p>
+<h2 class="heading-2" id="_idParaDest-236">Other authentication options</h2>
+<p class="normal">In this section, we focused<a id="_idIndexMarker605"/> on OIDC and presented reasons why it’s the best mechanism for authentication. It is certainly not the only option, and we will cover the other options in this section and when they’re appropriate.</p>
+<h3 class="heading-3" id="_idParaDest-237">Certificates</h3>
+<p class="normal">This is generally everyone’s first experience<a id="_idIndexMarker606"/> authenticating<a id="_idIndexMarker607"/> to a Kubernetes cluster.</p>
+<p class="normal">Once a Kubernetes installation is complete, a pre-built <code class="inlineCode">kubectl config</code> file that contains a certificate and private key is created and ready to be used. Where this file is created is dependent on the distribution. This file should only be used in “break glass in case of emergency” scenarios, where all other forms of authentication are not available. It should be controlled by your organization’s standards for privileged access. When this configuration file is used, it doesn’t identify the user and can easily be abused, since it doesn’t allow for an easy audit trail.</p>
+<p class="normal">While this is a standard use case for certificate authentication, it’s not the only use case for certificate authentication. Certificate authentication, when done correctly, is one of the strongest recognized credentials in the industry.</p>
+<p class="normal">Certificate authentication is used by the US Federal Government for its most important tasks. At a high level, certificate authentication involves using a client key and certificate to negotiate your HTTPS connection to the API server. The API server can get the certificate you used to establish the connection<a id="_idIndexMarker608"/> and validate it against a <strong class="keyWord">Certificate Authority</strong> (<strong class="keyWord">CA</strong>) certificate. Once verified, it maps attributes from the certificate to a user and groups the API server can recognize.</p>
+<p class="normal">To get the security benefits of certificate<a id="_idIndexMarker609"/> authentication, the private key<a id="_idIndexMarker610"/> needs to be generated on isolated hardware, usually in the form of a smartcard, and never leave that hardware. A certificate signing request is generated and submitted to a CA that signs the public key, thus creating a certificate that is then installed on the dedicated hardware. At no point does the CA get the private key, so even if the CA were compromised, you couldn’t gain the user’s private key. If a certificate needs to be revoked, it’s added to a revocation list that can either<a id="_idIndexMarker611"/> be pulled from an <strong class="keyWord">LDAP</strong> directory or a file, or it can <a id="_idIndexMarker612"/>be checked using the <strong class="keyWord">OCSP</strong> protocol.</p>
+<p class="normal">This may look like an attractive option, so why shouldn’t you use certificates with Kubernetes?</p>
+<ul>
+<li class="bulletList">Smartcard integration<a id="_idIndexMarker613"/> uses a standard called <strong class="keyWord">PKCS11</strong>, which is not supported by either <code class="inlineCode">kubectl</code> or the API server.</li>
+<li class="bulletList">The API server has no way of checking certificate revocation lists or using <strong class="keyWord">OCSP</strong>, so once a certificate has been minted, there’s no way to revoke it. Since the API server can’t revoke it, anyone who has it can continue to use it until it expires.</li>
+</ul>
+<p class="normal">Additionally, the process to correctly generate a key pair is rarely used. It requires a complex interface to be built that is difficult for users to use, combined with command-line tools that need to be run. To get around this, the certificate and key pair are generated for you, and you download them or they’re emailed to you, negating the security of the process.</p>
+<p class="normal">The other reason you shouldn’t use certificate authentication for users is that it’s difficult to leverage groups. While you can embed groups into the subject of the certificate, you can’t revoke a certificate. So if a user’s role changes, you can give them a new certificate, but you can’t keep them from using the old one. While you could reference users directly in your <code class="inlineCode">RoleBindings</code> and <code class="inlineCode">ClusterRoleBindings</code>, this is an anti-pattern that will make it difficult to keep track of access across even small clusters.</p>
+<p class="normal">As stated in the introduction to this section, using a certificate to authenticate in “break glass in case of emergency” situations is a good use of certificate authentication. It may be the only way to get<a id="_idIndexMarker614"/> into a cluster if all other authentication<a id="_idIndexMarker615"/> methods experience issues.</p>
+<p class="normal">After certificates, the next most common alternative is to use <code class="inlineCode">ServiceAccount</code> tokens. We’ll walk through that next and why you shouldn’t use them from outside of your cluster.</p>
+<h3 class="heading-3" id="_idParaDest-238">Service accounts</h3>
+<p class="normal">A <code class="inlineCode">ServiceAccount</code> is designed to provide<a id="_idIndexMarker616"/> an identity to containers<a id="_idIndexMarker617"/> running in a cluster so that when those containers call the API server, they can be authenticated and have RBAC rules applied. Unfortunately, users began using the tokens associated with <code class="inlineCode">ServiceAccount</code> objects to access the API server from outside of the cluster, which is problematic for multiple reasons:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Secure transmission of the token</strong>: Service accounts are self-contained and need nothing to unlock them or verify ownership, so if a token is taken in transit, you have no way of stopping its use. You could set up a system where a user logs in to download a file with the token in it, but you now have a much less secure version of OIDC.</li>
+<li class="bulletList"><strong class="keyWord">No expiration</strong>: When you decode a legacy service account token, there is nothing that tells you when the token expires. That’s because the token never expires. You can revoke a token by deleting the service account and recreating it, but that means you need a system in place to do that. Again, you’ve built a less capable version of OIDC.</li>
+<li class="bulletList"><strong class="keyWord">Auditing</strong>: The service account can easily be handed out by the owner once the key has been retrieved. If multiple users use a single key, it becomes very difficult to audit the use of the account.</li>
+</ul>
+<p class="normal">Beginning in Kubernetes 1.24, static <code class="inlineCode">ServiceAccount</code> tokens were disabled by default and replaced with short-lived tokens that are “projected” into your containers, using the <code class="inlineCode">TokenRequest</code> API. We’ll cover these tokens in more detail in the next section. We’re including instructions here for how to generate static tokens as an example of an anti-pattern. While there are some narrow use cases where static tokens are useful, they should be avoided for use from outside of your cluster. They’re most often used by pipelines, and later in this chapter, we will explore alternative approaches.</p>
+<p class="normal">Service accounts appear to provide an easy access method. Creating them is easy. The following commands<a id="_idIndexMarker618"/> create a service account object<a id="_idIndexMarker619"/> and a secret to go with it that stores the service account’s token:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl create sa mysa -n default
+kubectl create -n default -f - &lt;&lt;EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysa-secret
+  annotations:
+    kubernetes.io/service-account.name: mysa
+type: kubernetes.io/service-account-token
+EOF
+</code></pre>
+<p class="normal">The above steps:</p>
+<ol>
+<li class="numberedList" value="1">Create a <code class="inlineCode">ServiceAccount</code> object</li>
+<li class="numberedList">Create a <code class="inlineCode">Secret</code> with a token that is bound to the <code class="inlineCode">ServiceAccount</code></li>
+</ol>
+<p class="normal">Next, the following command will retrieve the service account’s token in the JSON format and return only the value of the token. This token can then be used to access the API server:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl get secret mysa-secret -o json | jq -r '.data.token' | base64 -d
+</code></pre>
+<p class="normal">To show an example of this, let’s call the API endpoint directly, without providing any credentials (make sure you use the port for your own local control plane):</p>
+<pre class="programlisting con"><code class="hljs-con">curl -v --insecure https://0.0.0.0:6443/api
+</code></pre>
+<p class="normal">You will receive the following:</p>
+<pre class="programlisting con"><code class="hljs-con">.
+.
+.
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {
+  },
+  "status": "Failure",
+  "message": "forbidden: User \"system:anonymous\" cannot get path
+\"/api\"",
+  "reason": "Forbidden",
+  "details": {
+  },
+  "code": 403
+* Connection #0 to host 0.0.0.0 left intact
+</code></pre>
+<p class="normal">By default, most Kubernetes distributions do not allow anonymous access to the API server, so we received a <code class="inlineCode">403</code> error because we didn’t specify a user.</p>
+<p class="normal">Now, let’s add our service account to an API request:</p>
+<pre class="programlisting con"><code class="hljs-con">export KUBE_AZ=$(kubectl get secret mysa-secret -o json | jq -r '.data.token' | base64 -d)
+curl  -H "Authorization: Bearer $KUBE_AZ" --insecure
+https://0.0.0.0:6443/api
+{
+  "kind": "APIVersions",
+  "versions": [
+    "v1"
+  ],
+  "serverAddressByClientCIDRs": [
+    {
+      "clientCIDR": "0.0.0.0/0",
+      "serverAddress": "172.17.0.3:6443"
+    }
+  ]
+}
+</code></pre>
+<p class="normal">Success! We were able to use a static <code class="inlineCode">ServiceAccount</code> token to authenticate to our API server. As we said<a id="_idIndexMarker620"/> earlier, this<a id="_idIndexMarker621"/> is an anti-pattern. In addition to the issues with the token itself that we covered, you can’t put a service account into arbitrary groups. This means that RBAC bindings have to either be direct to the service account or use one of the pre-built groups that service accounts are a member of. We’ll explore why this is an issue when we discuss authorization, but here’s an example of why this is an issue: directly binding means that in order to know if a user should have access, you need to process each binding, looking for the user instead of simply looking in an external database that has users organized into groups, which increases compliance burdens.</p>
+<p class="normal">Finally, service accounts were never designed to be used outside of the cluster. It’s like using a hammer to drive in a screw. With enough muscle and aggravation, you will drive it in, but it won’t be pretty and no one will be happy with the result.</p>
+<p class="normal">Now that we have covered how <code class="inlineCode">ServiceAccount</code> tokens work, and that you shouldn’t use them for users, we’ll explore next why you should<a id="_idIndexMarker622"/> leverage the <code class="inlineCode">TokenRequest</code> API to generate short-lived tokens<a id="_idIndexMarker623"/> for your <code class="inlineCode">ServiceAccounts</code>. </p>
+<h3 class="heading-3" id="_idParaDest-239">TokenRequest API</h3>
+<p class="normal">The <code class="inlineCode">TokenRequest</code> API is how <code class="inlineCode">ServiceAccount</code> tokens<a id="_idIndexMarker624"/> are generated<a id="_idIndexMarker625"/> in Kubernetes 1.24+. This API eliminates the use of static legacy service accounts and instead projects accounts into your pods. These projected tokens are short-lived and unique for each individual pod. Finally, these tokens become invalid once the pods they’re associated with are destroyed. This makes service account tokens embedded into a pod much more secure.</p>
+<p class="normal">This API provides another great feature: you can use it with third-party services. One example is using HashiCorp’s Vault secret management system to authenticate pods without having to do a token review API call against the API server to validate it. We’ll explore this approach when we get to <em class="chapterRef">Chapter 8</em>, <em class="italic">Managing Secrets</em>.</p>
+<p class="normal">This feature makes it much easier, and more secure, for your pods to call external APIs.</p>
+<p class="normal">The <code class="inlineCode">TokenRequest</code> API lets you request a short-lived service account for a specific scope. While it provides slightly better security, since it will expire and has a limited scope, it’s still bound to a service account, which means no groups, and there’s still the issue of securely getting the token to the user and auditing its use.</p>
+<p class="normal">Starting in 1.24, all service account tokens are projected into pods via the <code class="inlineCode">TokenRequest</code> API by default. The new tokens are good for a year though, so not very short-lived! That said, even if a token is set up to expire quickly, the API server won’t reject it. It will log that someone is using an expired token. This is intended to make the transition from unlimited-life tokens to short-lived tokens easier.</p>
+<p class="normal">Some people may be tempted to use tokens for user authentication. However, tokens generated by the <code class="inlineCode">TokenRequest</code> API are still built for pods to talk to your cluster or to talk to third-party APIs; they are not meant to be used by users. In order to use them, you need to create them and securely transfer them. Since they’re still bearer tokens, this could lead to a loss of the token and an eventual breach. If you’re in a situation where you need to use them because there’s no other technical option:</p>
+<ol>
+<li class="numberedList" value="1">Make the tokens as short-lived as possible</li>
+<li class="numberedList">Create an automated rotation process</li>
+<li class="numberedList">Make sure your SIEM monitors these accounts usages outside of expected scenarios</li>
+</ol>
+<p class="normal">Similar to static <code class="inlineCode">ServiceAccount</code> tokens, there are use cases where you may need a token that can be used from outside the cluster, such as bootstrapping integrations or simple testing. The <code class="inlineCode">kubectl</code> command now includes the <code class="inlineCode">token</code> sub-command that can generate a short-lived token for a <code class="inlineCode">ServiceAccount</code> without having to create a static <code class="inlineCode">Secret</code>:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">export</span><span class="language-bash"> KUBE_AZ=$(kubectl create token mysa -n default)</span>
+<span class="hljs-con-meta">$ </span><span class="language-bash">curl  -H </span><span class="hljs-con-string">"Authorization: Bearer </span><span class="hljs-con-variable">$KUBE_AZ</span><span class="hljs-con-string">"</span><span class="language-bash"> --insecure \</span>
+<span class="language-bash">https://0.0.0.0:6443/api</span>
+{
+  "kind": "APIVersions",
+  "versions": [
+    "v1"
+  ],
+  "serverAddressByClientCIDRs": [
+    {
+      "clientCIDR": "0.0.0.0/0",
+      "serverAddress": "172.17.0.3:6443"
+    }
+  ]
+}
+</code></pre>
+<p class="normal">Our token from <code class="inlineCode">kubectl</code> is good for an hour. This can be adjusted, but this is a much better approach<a id="_idIndexMarker626"/> for the few use cases<a id="_idIndexMarker627"/> where an external token is needed than creating a static token.</p>
+<h3 class="heading-3" id="_idParaDest-240">Custom authentication webhooks</h3>
+<p class="normal">If you already have <a id="_idIndexMarker628"/>an identity platform<a id="_idIndexMarker629"/> that doesn’t use an existing standard, a custom authentication webhook will let you integrate it without having to customize the API server. This feature is commonly used by cloud providers who host managed Kubernetes instances.</p>
+<p class="normal">You can define an authentication webhook that the API server will call with a token to validate it and get information about the user. Unless you manage a public cloud with a custom IAM token system that you are building a Kubernetes distribution for, don’t do this. Writing your own authentication is like writing your own encryption – just don’t do it. Every custom authentication system we’ve seen for Kubernetes boils down to either a pale imitation of OIDC or “pass the password.” Much like the analogy of driving a screw in with a hammer, you could do it, but it will be very painful. This is mostly because<a id="_idIndexMarker630"/> instead of driving the screw through a board, you’re more likely to drive<a id="_idIndexMarker631"/> it into your own foot.</p>
+<p class="normal">So far, we’ve focused on the fundamentals of Kubernetes authentication, looking at both the recommended patterns and antipatterns. Next, let’s put that theory into practice by configuring authentication in a Kubernetes cluster.</p>
+<h1 class="heading-1" id="_idParaDest-241">Configuring KinD for OpenID Connect</h1>
+<p class="normal">For our example deployment, we will use<a id="_idIndexMarker632"/> a scenario from our customer, FooWidgets. FooWidgets<a id="_idIndexMarker633"/> has a Kubernetes cluster that they would like integrated using OIDC. The proposed solution needs to address the following requirements:</p>
+<ul>
+<li class="bulletList">Kubernetes must use our central authentication system, Active Directory</li>
+<li class="bulletList">We need to be able to map Active Directory groups into our RBAC <code class="inlineCode">RoleBinding</code> objects</li>
+<li class="bulletList">Users need access to the Kubernetes Dashboard</li>
+<li class="bulletList">Users need to be able to use the CLI</li>
+<li class="bulletList">All enterprise compliance requirements must be met</li>
+<li class="bulletList">Additional cluster management applications need to be managed centrally as well</li>
+</ul>
+<p class="normal">Let’s explore each of these in detail and explain how we can address the customer’s requirements.</p>
+<h2 class="heading-2" id="_idParaDest-242">Addressing the requirements</h2>
+<p class="normal">Our enterprise’s requirements require multiple moving parts, both inside and outside our cluster. We’ll examine each of these components and how they relate to building an authenticated cluster.</p>
+<h3 class="heading-3" id="_idParaDest-243">Using LDAP and Active Directory with Kubernetes</h3>
+<p class="normal">Most enterprises<a id="_idIndexMarker634"/> today<a id="_idIndexMarker635"/> use <strong class="keyWord">Active Directory</strong> from Microsoft™ to store <a id="_idIndexMarker636"/>information about users<a id="_idIndexMarker637"/> and their credentials. Depending on the size of your enterprise, it’s not unusual to have multiple domains or forests where users’ data is stored. </p>
+<p class="normal">We’ll need a solution that knows how to talk to each domain. Your enterprise may have one of many tools and products for OpenID Connect integration, or you may just want to connect via LDAP. <strong class="keyWord">LDAP</strong>, the <strong class="keyWord">Lightweight Directory Access Protocol</strong>, is a standard protocol that has been used for over 30 years and is still the standard way to talk directly to Active Directory. Using LDAP, you can look up users and validate their passwords. It’s also the simplest way to start because it doesn’t require integration with an identity provider. All you need is a service account and credentials!</p>
+<p class="normal">For FooWidgets, we’re going <a id="_idIndexMarker638"/>to connect directly<a id="_idIndexMarker639"/> to our Active Directory<a id="_idIndexMarker640"/> for all <a id="_idIndexMarker641"/>authentication.</p>
+<p class="normal">Don’t worry – you don’t need Active Directory ready to go to run this exercise. We’ll walk through deploying a demo directory into our KinD cluster.</p>
+<h3 class="heading-3" id="_idParaDest-244">Mapping Active Directory groups to RBAC RoleBindings</h3>
+<p class="normal">This will become important<a id="_idIndexMarker642"/> when we start talking<a id="_idIndexMarker643"/> about authorization. Active Directory lists all the groups a user is a member of in the <code class="inlineCode">memberOf</code> attribute. We can read this attribute directly from our logged-in user’s account to get their groups. These groups will be embedded into our <code class="inlineCode">id_token</code> in the <code class="inlineCode">groups</code> claim and can be referenced directly in RBAC bindings. This allows us to centralize the management of authorizations instead of having to manually manipulate RBAC bindings, simplifying management and decreasing the number of objects we need to manage and maintain in our cluster.</p>
+<h3 class="heading-3" id="_idParaDest-245">Kubernetes Dashboard access</h3>
+<p class="normal">The Dashboard is a powerful way to quickly access<a id="_idIndexMarker644"/> information about your cluster and make quick updates. Unlike what is commonly thought about the dashboard’s security, when deployed correctly, it does not create any security issues. The proper way to deploy the dashboard is with no privileges, instead relying on the user’s own credentials. We’ll do this with a reverse proxy that injects the user’s OIDC token on each request, which the dashboard will then use when it makes calls to the API server. Using this method, we’ll be able to constrain access to our dashboard the same way we would with any other web application.</p>
+<p class="normal">There are a few reasons why using the <code class="inlineCode">kubectl</code> built-in proxy and port-forward isn’t a great strategy for accessing the dashboard. Many enterprises will not install CLI utilities locally, forcing you to use a jump box to access privileged systems such as Kubernetes, meaning port forwarding won’t work. Even if you can run <code class="inlineCode">kubectl</code> locally, opening a port on loopback (<code class="inlineCode">127.0.0.1</code>) means anything on your system can use it, not just you from your browser. While browsers have controls in place to keep you from accessing ports on loopback using a malicious script, that won’t stop anything<a id="_idIndexMarker645"/> else on your workstation. Finally, it’s just not a great user experience.</p>
+<p class="normal">We’ll dig into the details of how and why this works in <em class="chapterRef">Chapter 10</em>, <em class="italic">Deploying a Secured Kubernetes Dashboard</em>.</p>
+<h3 class="heading-3" id="_idParaDest-246">Kubernetes CLI access</h3>
+<p class="normal">Most developers want to be able<a id="_idIndexMarker646"/> to access <code class="inlineCode">kubectl</code> and other tools that rely on the <code class="inlineCode">kubectl</code> configuration. For instance, the Visual Studio Code Kubernetes plugin doesn’t require any special configuration. It just uses the <code class="inlineCode">kubectl</code> built-in configuration. Most enterprises tightly constrain what binaries you’re able to install, so we want to minimize any additional tools and plugins we want to install.</p>
+<h3 class="heading-3" id="_idParaDest-247">Enterprise compliance requirements</h3>
+<p class="normal">Being cloud-native doesn’t mean<a id="_idIndexMarker647"/> you can ignore your enterprise’s compliance requirements. Most enterprises have requirements such as having 20-minute idle timeouts, multi-factor authentication for privileged access, and so on. Any solution we put in place has to make it through the control spreadsheets needed to go live. Also, and this goes without saying, everything needs to be encrypted (and I do mean everything).</p>
+<h3 class="heading-3" id="_idParaDest-248">Pulling it all together</h3>
+<p class="normal">To fulfill these<a id="_idIndexMarker648"/> requirements, we’re going to use <strong class="keyWord">OpenUnison</strong>. This has prebuilt <a id="_idIndexMarker649"/>configurations to work with Kubernetes, the Dashboard, the CLI, and Active Directory.</p>
+<p class="normal">It’s also pretty quick to deploy, so we don’t need to concentrate on provider-specific implementation details and instead can focus on Kubernetes’ configuration options. Our architecture will look like this:</p>
+<figure class="mediaobject"><img alt="Diagram  Description automatically generated" height="525" src="../Images/B21165_06_02.png" width="774"/></figure>
+<p class="packt_figref">Figure 6.2: Authentication architecture</p>
+<p class="normal">Although we’re using<a id="_idIndexMarker650"/> an “Active Directory” in this instance, your enterprise might<a id="_idIndexMarker651"/> have an existing<a id="_idIndexMarker652"/> identity provider<a id="_idIndexMarker653"/> in place, such as <strong class="keyWord">Okta</strong>, <strong class="keyWord">Entra</strong> (formerly Azure Active Directory), <strong class="keyWord">KeyCloak</strong>, etc. In these instances, it’s still a good idea to have an identity provider in-cluster to support not only SSO in your cluster but also your cluster management applications. As we continue through this book, we’re going to be integrating monitoring systems, logging, GitOps systems, etc. It can be difficult from a management perspective to set up SSO with all of these applications, so having your own identity provider that you, as the cluster owner, control can give you greater flexibility over your clusters, making it easier to provide better security by integrating management applications with enterprise authentication, rather than relying on unauthenticated approaches like port-forwarding.</p>
+<p class="normal">For our implementation, we’re going to use two hostnames:</p>
+<ul>
+<li class="bulletList"><code class="inlineCode">k8s.apps.X-X-X-X.nip.io</code>: Access to the OpenUnison portal, where we’ll initiate our login and get our tokens</li>
+<li class="bulletList"><code class="inlineCode">k8sdb.apps.X-X-X-X.nip.io</code>: Access to the Kubernetes dashboard</li>
+</ul>
+<p class="normal">As a quick refresher, <code class="inlineCode">nip.io</code> is a public DNS service that will return an IP address from the one embedded in your hostname. This is really useful in a lab environment where setting up DNS can be painful. In our examples, <code class="inlineCode">X-X-X-X</code> is the IP of your Docker host.</p>
+<p class="normal">When a user attempts to access <code class="inlineCode">https://k8s.apps.X-X-X-X.nip.io/</code>, they’ll be asked for their username and password. After the user hits submit, OpenUnison will look up the user against Active Directory, retrieving the user’s profile information. At that point, OpenUnison will create user objects in the OpenUnison namespace to store the user’s information and create OIDC sessions.</p>
+<p class="normal">Earlier, we described how Kubernetes doesn’t have user objects. Kubernetes<a id="_idIndexMarker654"/> lets you extend the base API with <strong class="keyWord">Custom Resource Definitions</strong> (<strong class="keyWord">CRDs</strong>). OpenUnison defines a User CRD to help with high availability and to avoid needing a database to store state in. These user objects can’t be used for RBAC.</p>
+<p class="normal">Once the user is logged into OpenUnison, they can get their <code class="inlineCode">kubectl</code> configuration to use the CLI or the <a id="_idIndexMarker655"/>Kubernetes Dashboard (<a href="https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/"><span class="url">https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/</span></a>) to access the cluster from their browser. Once the user is ready, they can log out of OpenUnison, which will end their session and invalidate their <code class="inlineCode">refresh_token</code>, making it impossible for them to use <code class="inlineCode">kubectl</code> or the dashboard until after they log in again. If they walk away from their desk for lunch without logging out, when they return, their <code class="inlineCode">refresh_token</code> will have expired, so they’ll no longer be able to interact with Kubernetes<a id="_idIndexMarker656"/> without logging back in.</p>
+<p class="normal">Now that we have walked through how users will log in and interact with Kubernetes, we’ll deploy OpenUnison and integrate it into the cluster for authentication.</p>
+<h3 class="heading-3" id="_idParaDest-249">Deploying OpenUnison</h3>
+<p class="normal">We’ve automated <a id="_idIndexMarker657"/>the deployment<a id="_idIndexMarker658"/> for OpenUnison, so there aren’t any manual steps. Since we want to start with a new cluster, we will delete the current cluster and execute the <code class="inlineCode">create-cluster.sh</code> script in the <code class="inlineCode">chapter2</code> folder to create a fresh KinD cluster. We have also added a script to the <code class="inlineCode">chapter6</code> directory called <code class="inlineCode">deploy_openunison_imp_noimpersonation.sh</code>. You can create the new cluster and integrate OIDC using the steps below:</p>
+<pre class="programlisting con"><code class="hljs-con">cd Kubernetes-An-Enterprise-Guide-Third-Edition/chapter2
+kind delete cluster -n cluster01
+./create-cluster.sh
+cd  ../chapter6/user-auth
+./deploy_openunison_imp_noimpersonation.sh
+</code></pre>
+<p class="normal">This will take a few minutes, depending on your hardware. This script does several things:</p>
+<ol>
+<li class="numberedList" value="1">Creates a stand-in “Active Directory” using<a id="_idIndexMarker659"/> a project called <strong class="keyWord">ApacheDS</strong>. You don’t need to know anything about ApacheDS other than it’s acting as our “Active Directory.”</li>
+<li class="numberedList">Deploys the Kubernetes Dashboard version 2.7.</li>
+<li class="numberedList">Downloads the <code class="inlineCode">ouctl</code> utility and the OpenUnison helm charts.</li>
+<li class="numberedList">Updates the <code class="inlineCode">values.yaml</code> file for use with your Ubuntu VM’s IP.</li>
+<li class="numberedList">Deploys OpenUnison.</li>
+</ol>
+<p class="normal">You can log into the OIDC provider<a id="_idIndexMarker660"/> with any machine on your network<a id="_idIndexMarker661"/> by using the assigned nip.io address. Since we will test access using the dashboard, you can use any machine with a browser.</p>
+<p class="normal">Navigate your browser to <code class="inlineCode">network.openunison_host</code> in your <code class="inlineCode">/tmp/openunison-values.yaml</code> file, which was created for you by running the above scripts. When prompted, use the username <code class="inlineCode">mmosley</code> and the password <code class="inlineCode">start123</code>, and then click on <strong class="screenText">Sign in</strong>.</p>
+<div class="note">
+<p class="normal">There are instructions on how to add your own user accounts in the repository’s <code class="inlineCode">README</code> file, located in the <code class="inlineCode">chapter6</code> directory.</p>
+</div>
+<p class="packt_figref"><img alt="Graphical user interface, application  Description automatically generated" height="534" src="../Images/B21165_06_03.png" width="781"/></p>
+<p class="packt_figref">Figure 6.3: OpenUnison login screen</p>
+<p class="normal">When you do, you’ll see<a id="_idIndexMarker662"/> this <a id="_idIndexMarker663"/>screen:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application, Teams  Description automatically generated" height="373" src="../Images/B21165_06_04.png" width="877"/></figure>
+<p class="packt_figref">Figure 6.4: OpenUnison home screen</p>
+<p class="normal">Let’s test the OIDC provider by clicking on the <strong class="screenText">Kubernetes Dashboard</strong> link. Don’t panic when you see the initial dashboard screen – something like the following:</p>
+<figure class="mediaobject"><img alt="Graphical user interface, application  Description automatically generated" height="485" src="../Images/B21165_06_05.png" width="878"/></figure>
+<p class="packt_figref">Figure 6.5: Kubernetes Dashboard before SSO integration has been completed with the API server</p>
+<p class="normal">That looks like a lot of errors! We’re in the dashboard, but nothing<a id="_idIndexMarker664"/> seems to be authorized. That’s because the API server<a id="_idIndexMarker665"/> doesn’t trust the tokens that have been generated by OpenUnison, yet. To resolve this, the next step is to tell Kubernetes to trust OpenUnison as its OpenID Connect Identity Provider.</p>
+<h3 class="heading-3" id="_idParaDest-250">Configuring the Kubernetes API to use OIDC</h3>
+<p class="normal">At this point, you have deployed<a id="_idIndexMarker666"/> OpenUnison as an OIDC provider<a id="_idIndexMarker667"/> and it’s working, but your Kubernetes cluster has not been configured to use it as a provider yet.</p>
+<p class="normal">To configure the API server to use an OIDC provider, you need to add the OIDC options to the API server and provide the OIDC certificate so that the API will trust the OIDC provider.</p>
+<p class="normal">Since we are using KinD, we can add the required options using a few <code class="inlineCode">kubectl</code> and <code class="inlineCode">docker</code> commands.</p>
+<p class="normal">To provide the OIDC certificate to the API server, we need to retrieve the certificate and copy it over to the KinD master server. We can do this using two commands on the Docker host:</p>
+<ol>
+<li class="numberedList" value="1">The first command extracts OpenUnison’s TLS certificate from its secret. This is the same secret referenced by OpenUnison’s Ingress object. We use the <code class="inlineCode">jq</code> utility to extract the data from the secret and then Base64-decode it:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl get secret ou-tls-certificate -n openunison -o json | jq -r '.data["tls.crt"]' | base64 -d &gt; ou-ca.pem
+</code></pre>
+</li>
+<li class="numberedList">The second command will copy the certificate to the master server into the <code class="inlineCode">/etc/kubernetes/pki</code> directory:
+        <pre class="programlisting con-one"><code class="hljs-con">docker cp ou-ca.pem cluster01-control-plane:/etc/kubernetes/pki/ou-ca.pem
+</code></pre>
+</li>
+<li class="numberedList">As we mentioned<a id="_idIndexMarker668"/> earlier, to integrate the API server<a id="_idIndexMarker669"/> with OIDC, we need to have the OIDC values for the API options. To list the options we will use, describe the <code class="inlineCode">api-server-config</code> ConfigMap in the <code class="inlineCode">openunison</code> namespace:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl describe configmap api-server-config -n openunison
+Name:         api-server-config
+Namespace:    openunison
+Labels:       &lt;none&gt;
+Annotations:  &lt;none&gt;
+Data
+====
+oidc-api-server-flags:
+----
+--oidc-issuer-url=https://k8sou.apps.192-168-2-131.nip.io/auth/idp/k8sIdp
+--oidc-client-id=Kubernetes
+--oidc-username-claim=sub
+--oidc-groups-claim=groups
+--oidc-ca-file=/etc/kubernetes/pki/ou-ca.pem
+</code></pre>
+</li>
+<li class="numberedList">Next, edit the API server configuration. OpenID Connect is configured by changing flags on the API server. This is why managed Kubernetes generally doesn’t offer OpenID Connect as an option, but we’ll cover that later in this chapter. Every distribution handles these changes differently, so check with your vendor’s documentation. For KinD, shell into the control plane and update the manifest file:
+        <pre class="programlisting con-one"><code class="hljs-con">docker exec -it cluster01-control-plane bash
+apt-get update
+apt-get install vim -y
+vi /etc/kubernetes/manifests/kube-apiserver.yaml
+</code></pre>
+</li>
+<li class="numberedList">Add the flags from the output of the ConfigMap under <code class="inlineCode">command</code>. Make sure to add spacing and a dash (<code class="inlineCode">-</code>) in front. Make sure to update the URLs to match yours. It should look something like this when you’re done:
+        <pre class="programlisting con-one"><code class="hljs-con">    - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+    - --oidc-issuer-url=https://k8sou.apps.192-168-2-131.nip.io/auth/idp/k8sIdp
+    - --oidc-client-id=Kubernetes
+    - --oidc-username-claim=sub
+    - --oidc-groups-claim=groups
+    - --oidc-ca-file=/etc/kubernetes/pki/ou-ca.pem
+    - --proxy-client-cert-file=/etc/kubernetes/pki/front-proxy-client.crt
+</code></pre>
+</li>
+<li class="numberedList">Exit vim and the Docker environment (<em class="keystroke">Ctrl</em> + <em class="keystroke">D</em>), and then take a look at the <code class="inlineCode">api-server</code> pod:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl get pod kube-apiserver-cluster01-control-plane -n kube-system
+NAME                                       READY  STATUS       RESTARTS  AGE
+kube-apiserver-cluster-auth-control-plane  1/1    Running      0         73s
+</code></pre>
+</li>
+</ol>
+<p class="normal-one">Note that it’s only <code class="inlineCode">73s</code> old. That’s because KinD saw that there was a change in the manifest and restarted the API server.</p>
+<p class="normal">The API server<a id="_idIndexMarker670"/> pod is known as a static pod. This pod can’t be changed directly; its configuration has to be changed from the manifest on disk. This gives you a process that’s managed by the API server as a container, but without giving you a situation where you need to edit pod manifests in etcd directly if something goes wrong.</p>
+<p class="normal">Once you have updated<a id="_idIndexMarker671"/> your API server flags, the next step<a id="_idIndexMarker672"/> is to verify that you can now log in to your cluster. Let’s walk through those steps next.</p>
+<h3 class="heading-3" id="_idParaDest-251">Verifying OIDC integration</h3>
+<p class="normal">Once OpenUnison<a id="_idIndexMarker673"/> and the API server<a id="_idIndexMarker674"/> have been integrated, we need to test that the connection is working:</p>
+<ol>
+<li class="numberedList" value="1">To test the integration, log back into OpenUnison and click on the <strong class="keyWord">Kubernetes Dashboard</strong> link again.</li>
+<li class="numberedList">Click on the bell in the upper right and you’ll see a different error:</li>
+</ol>
+<figure class="mediaobject"><img alt="A screenshot of a computer  Description automatically generated" height="586" src="../Images/B21165_06_06.png" width="813"/></figure>
+<p class="packt_figref">Figure 6.6: SSO enabled but the user is not authorized to access any resources</p>
+<p class="normal-one">SSO between OpenUnison<a id="_idIndexMarker675"/> and Kubernetes<a id="_idIndexMarker676"/> is working! However, the new error, <code class="inlineCode">service is forbidden: User https://...</code>, is an authorization error, <strong class="keyWord">not</strong> an authentication error. At this point, the API server knows who we are but isn’t letting us access the APIs.</p>
+<ol>
+<li class="numberedList" value="3">We’ll dive into the details of RBAC and authorizations in the next chapter, but for now, create this RBAC binding:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl create -f - &lt;&lt;EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+   name: ou-cluster-admins
+subjects:
+- kind: Group
+  name: cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com 
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+EOF
+clusterrolebinding.rbac.authorization.k8s.io/ou-cluster-admins created
+</code></pre>
+</li>
+<li class="numberedList">Finally, go back to the Dashboard, and you’ll see that you have full access to your cluster and all the error messages are gone.</li>
+</ol>
+<p class="normal">The API server<a id="_idIndexMarker677"/> and OpenUnison<a id="_idIndexMarker678"/> are now connected. Additionally, an RBAC policy has been created to enable our test user to manage the cluster as an administrator. Access was verified by logging into the Kubernetes Dashboard, but most interactions will take place using the <code class="inlineCode">kubectl</code> command. The next step is to verify that we’re able to access the cluster using <code class="inlineCode">kubectl</code>.</p>
+<h3 class="heading-3" id="_idParaDest-252">Using your tokens with kubectl</h3>
+<p class="normal">This section assumes<a id="_idIndexMarker679"/> you have a machine<a id="_idIndexMarker680"/> on your network that has a browser and <code class="inlineCode">kubectl</code> running.</p>
+<p class="normal">Using the Dashboard has its use cases, but you will likely interact with the API server using <code class="inlineCode">kubectl</code>, rather than the Dashboard, for the majority of your day. In this section, we will explain how to retrieve your JWT and how to add it to your Kubernetes config file so that you can use <code class="inlineCode">kubectl</code>:</p>
+<ol>
+<li class="numberedList" value="1">You can retrieve your token from the OpenUnison dashboard. Navigate to the OpenUnison home page and click on the key that says <strong class="keyWord">Kubernetes Tokens</strong>. You’ll see a screen that looks as follows:</li>
+</ol>
+<figure class="mediaobject"><img alt="Graphical user interface, text, application, email  Description automatically generated" height="573" src="../Images/B21165_06_07.png" width="811"/></figure>
+<p class="packt_figref">Figure 6.7: OpenUnison kubectl configuration tool</p>
+<p class="normal-one">OpenUnison provides<a id="_idIndexMarker681"/> a command line that you can copy<a id="_idIndexMarker682"/> and paste into your host session that adds all the required information to your config.</p>
+<ol>
+<li class="numberedList" value="2">First, click on the double documents button next to the <strong class="screenText">kubectl Command</strong> (or <strong class="screenText">kubectl Windows Command</strong> if you’re on Windows) to copy your <code class="inlineCode">kubectl</code> command into your buffer. Leave the web browser open in the background.</li>
+<li class="numberedList">You may want to back up your original config file before pasting the <code class="inlineCode">kubectl</code> command from OpenUnison:
+        <pre class="programlisting con-one"><code class="hljs-con">export KUBECONFIG=$(mktemp)
+kubectl get nodes
+W0804 13:43:26.624417 3878806 loader.go:222] Config not found: /tmp/tmp.tqcXxwBh0H
+to the server localhost:8080 was refused - did you specify the right host or port?
+</code></pre>
+</li>
+<li class="numberedList">Then, go to your host console and paste the command into the console (the following output has been shortened, but your paste will start with the same output):
+        <pre class="programlisting con-one"><code class="hljs-con">export TMP_CERT=$(mktemp) &amp;&amp; echo -e "-----BEGIN CER. . .
+Cluster "no-impersonation" set.
+Context "no-impersonation" created
+User "mmosley@no-impersonation" set.
+Switched to context "no-impersonation".
+</code></pre>
+</li>
+<li class="numberedList">Now, verify that you can view the cluster nodes using <code class="inlineCode">kubectl get nodes</code>:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl get nodes
+NAME                      STATUS   ROLES           AGE     VERSION
+cluster01-control-plane   Ready    control-plane   7m47s   v1.27.3
+cluster01-worker          Ready    &lt;none&gt;          7m26s   v1.27.3
+</code></pre>
+</li>
+<li class="numberedList">You’re now using your login<a id="_idIndexMarker683"/> credentials instead of the master<a id="_idIndexMarker684"/> certificate! As you work, the session will refresh. You can verify your identity using the <code class="inlineCode">kubectl auth whoami</code> command:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl auth whoami
+ATTRIBUTE   VALUE
+Username    https://k8sou.apps.192-168-2-82.nip.io/auth/idp/k8sIdp#mmosley
+Groups      [cn=group2,ou=Groups,DC=domain,DC=com cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com system:authenticated]
+</code></pre>
+</li>
+</ol>
+<p class="normal-one">This command will tell you who the API server thinks you are, including your groups. This can be very handy when debugging authorizations.</p>
+<div class="note-one">
+<p class="normal">When I first began working with Kubernetes in 2015, the first issue I opened was for this feature while I was debugging the integration of OpenUnison and Kubernetes. I was thrilled to see it implemented initially in 1.0.26 and for it to go GA in 1.0.28. It’s a beta feature in 1.27, and we have pre-configured our KinD cluster to support it. If you want to use this feature with other clusters, you may need to work with your vendor, since it requires a command-line argument for the API server.</p>
+</div>
+<ol>
+<li class="numberedList" value="7">Log out of OpenUnison and watch the list of nodes. Within a minute or two, your token will expire and no longer work:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl get nodes
+Unable to connect to the server: failed to refresh token: oauth2: cannot fetch token: 401 Unauthorized
+</code></pre>
+</li>
+</ol>
+<p class="normal">Congratulations! You’ve now set up your cluster so that it does the following:</p>
+<ul>
+<li class="bulletList">Authenticates using LDAP, using your enterprise’s existing authentication system</li>
+<li class="bulletList">Uses groups from your centralized authentication system to authorize access to Kubernetes (we’ll get into the details of how in the next chapter)</li>
+<li class="bulletList">Gives user access to both the CLI and the dashboard using the centralized credentials</li>
+<li class="bulletList">Maintains your enterprise’s compliance requirements by having short-lived tokens that provide a way to time out</li>
+<li class="bulletList">Ensures everything uses TLS, from the user’s browser to the Ingress Controller, to OpenUnison, the Dashboard, and finally, the API server</li>
+</ul>
+<p class="normal">You’ve integrated most of the advice from this chapter into your cluster. You’ve also made it easier to access<a id="_idIndexMarker685"/> because you don’t need to have a pre-configured configuration file<a id="_idIndexMarker686"/> anymore.</p>
+<p class="normal">Next, you’ll learn how to integrate centralized authentication into your managed clusters.</p>
+<h1 class="heading-1" id="_idParaDest-253">Introducing impersonation to integrate authentication with cloud-managed clusters</h1>
+<p class="normal">It’s very popular to use<a id="_idIndexMarker687"/> managed Kubernetes<a id="_idIndexMarker688"/> services from cloud vendors such as Google, Amazon, Microsoft, and DigitalOcean (among many others).</p>
+<p class="normal">When it comes to these services, they are generally very quick to get up and running, and they all share a common thread: they mostly don’t support OpenID Connect (Amazon’s EKS does support OpenID Connect now, but the cluster must be running on a public network and have a commercially signed TLS certificate).</p>
+<p class="normal">Earlier in this chapter, we talked about how Kubernetes supports custom authentication solutions through webhooks and that you should never, ever, use this approach unless you are a public cloud provider or some other host of Kubernetes systems. It turns out that pretty much every cloud vendor has its own approach to using these webhooks that uses its own identity and access management implementations. In that case, why not just use what the vendor provides? There are several reasons why you may not want to use a cloud vendor’s IAM system:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Technical</strong>: You may want to support features not offered by the cloud vendor, such as the dashboard, in a secure fashion.</li>
+<li class="bulletList"><strong class="keyWord">Organizational</strong>: Tightly coupling access to managed Kubernetes with that cloud’s IAM puts an additional burden on the cloud team, which means that they may not want to manage access to your clusters.</li>
+<li class="bulletList"><strong class="keyWord">User experience</strong>: Your developers and admins may have to work across multiple clouds. Providing a consistent login experience makes it easier for them and requires learning fewer tools.</li>
+<li class="bulletList"><strong class="keyWord">Security and compliance</strong>: The cloud implementation may not offer choices that line up with your enterprise’s security requirements, such as short-lived tokens and idle timeouts.</li>
+</ul>
+<p class="normal">All that being said, there may be reasons<a id="_idIndexMarker689"/> to use the cloud vendor’s implementation. However, you’ll need to balance<a id="_idIndexMarker690"/> out the requirements. If you want to continue to use centralized authentication and authorization with hosted Kubernetes, you’ll need to learn how to work with Impersonation.</p>
+<h2 class="heading-2" id="_idParaDest-254">What is Impersonation?</h2>
+<p class="normal">Kubernetes <strong class="keyWord">Impersonation</strong> is a way of telling the API server<a id="_idIndexMarker691"/> who you are without knowing your credentials or forcing the API server to trust an OpenID Connect IdP. This is useful when you can’t configure OpenID Connect, as is generally the case with managed Kubernetes offerings, or you want to support multiple access from multiple identity providers.</p>
+<p class="normal">When you use <code class="inlineCode">kubectl</code>, instead of the API server receiving your <code class="inlineCode">id_token</code> directly, it will receive a service account or identifying certificate that will be authorized to impersonate users, as well as a set of headers that tell the API server who the proxy acts on behalf of:</p>
+<figure class="mediaobject"><img alt="Figure 7.11 – Diagram of how a user interacts with the API server when using Impersonation " height="530" src="../Images/B21165_06_08.png" width="533"/></figure>
+<p class="packt_figref">Figure 6.8: Diagram of how a user interacts with the API server when using Impersonation</p>
+<p class="normal">The reverse proxy is responsible<a id="_idIndexMarker692"/> for determining how to map from the <code class="inlineCode">id_token</code>, which the user provides (or any other token, for that matter) to the <code class="inlineCode">Impersonate-User</code> and <code class="inlineCode">Impersonate-Group</code> HTTP headers. The dashboard should never be deployed with a privileged identity, which the ability to impersonate falls under.</p>
+<p class="normal">To allow Impersonation with the 2.x dashboard, use a similar model, but instead of going to the API server, you go to the dashboard:</p>
+<figure class="mediaobject"><img alt="Figure 7.12 – Kubernetes Dashboard with Impersonation " height="656" src="../Images/B21165_06_09.png" width="533"/></figure>
+<p class="packt_figref">Figure 6.9: Kubernetes Dashboard with Impersonation</p>
+<p class="normal">The user interacts with the reverse proxy just like any web application. The reverse proxy uses its own service account and adds the impersonation headers. The dashboard passes this information through to the API server on all requests. The dashboard never has its own identity.</p>
+<p class="normal">Now that we see what<a id="_idIndexMarker693"/> impersonation is, and how it can help us secure access to the Kubernetes Dashboard and Kubernetes APIs, we’ll walk through what you need to think about from a security perspective when implementing it.</p>
+<h2 class="heading-2" id="_idParaDest-255">Security considerations</h2>
+<p class="normal">The service account has a certain<a id="_idIndexMarker694"/> superpower: it can be used to impersonate <strong class="keyWord">anyone</strong> (depending on your RBAC definitions). If you’re running your reverse proxy from inside the cluster, a service account is OK, especially if combined with the <code class="inlineCode">TokenRequest</code> API to keep the token short-lived.</p>
+<p class="normal">Earlier in the chapter, we talked about the legacy tokens for <code class="inlineCode">ServiceAccount</code> objects having no expiration. That’s important here because if you’re hosting your reverse proxy off-cluster, then if it were compromised, someone could use that service account to access the API service as anyone. Make sure you’re rotating that service account often. If you’re running the proxy off-cluster, it’s probably best to use a shorter-lived certificate instead of a service account.</p>
+<p class="normal">When running the proxy on a cluster, you want to make sure it’s locked down. It should run in its own namespace at a minimum, not <code class="inlineCode">kube-system</code> either. You want to minimize the number of people who have access. Using multi-factor authentication to get to that namespace is always a good idea, as is using network policies that control what pods can reach out to the reverse proxy.</p>
+<p class="normal">Based on the concepts we’ve just learned about regarding impersonation, the next step is to update our cluster’s configuration to use impersonation instead of using OpenID Connect directly. You don’t need a cloud-managed cluster to work with impersonation.</p>
+<h1 class="heading-1" id="_idParaDest-256">Configuring your cluster for impersonation</h1>
+<p class="normal">Let’s deploy an impersonating<a id="_idIndexMarker695"/> proxy for our cluster. Just like integrating our cluster directly into OpenUnison using OpenID Connect, we’ve automated the deployment so that you don’t need to manually configure OpenUnison. We’ll clear out our old cluster and start afresh:</p>
+<pre class="programlisting con"><code class="hljs-con">cd Kubernetes-An-Enterprise-Guide-Third-Edition/chapter2
+kind delete cluster -n cluster01
+./create-cluster.sh
+cd  ../chapter6/user-auth
+./deploy_openunison_imp_impersonation.sh
+</code></pre>
+<p class="normal">The differences between this script and our original script are:</p>
+<ul>
+<li class="bulletList">Configuring OpenUnison to generate <code class="inlineCode">NetworkPolicy</code> objects to limit access to just requests from our NGINX <code class="inlineCode">Ingress</code> controller and the API server</li>
+<li class="bulletList">Configuring OpenUnison’s <code class="inlineCode">ServiceAccount</code> token to only be valid for 10 minutes instead of the typical hour or day</li>
+<li class="bulletList">Configuring the OpenUnison <code class="inlineCode">values.yaml</code> to deploy the kube-oidc-proxy to handle incoming API server requests</li>
+<li class="bulletList">Creating the cluster-admin <code class="inlineCode">ClusterRoleBinding</code> so that your user can work with your cluster</li>
+</ul>
+<p class="normal">Once the script is finished running, you can log in with the same account, <code class="inlineCode">mmosley</code>, as before. </p>
+<p class="normal">The OpenUnison helm charts create <code class="inlineCode">NetworkPolicies</code> and constraints the lifetime of its <code class="inlineCode">ServiceAccount</code> token to line up with the security best practices we discussed above. It’s important that we keep any system that shouldn’t interact with our impersonation proxy from doing so to cut down on the potential attack surface, ensuring that any tokens<a id="_idIndexMarker696"/> that are minted with the ability to impersonate other users expire quickly.</p>
+<p class="normal">Next, we’ll walk through testing our impersonation-based integration.</p>
+<h2 class="heading-2" id="_idParaDest-257">Testing Impersonation</h2>
+<p class="normal">Now, let’s test our<a id="_idIndexMarker697"/> Impersonation<a id="_idIndexMarker698"/> setup. Follow these steps:</p>
+<ol>
+<li class="numberedList" value="1">In a browser, enter the URL for your OpenUnison deployment. This is the same URL you used for your initial OIDC deployment.</li>
+<li class="numberedList">Log into OpenUnison, and then click on the dashboard.</li>
+<li class="numberedList">Click on the little circular icon in the upper right-hand corner to see who you’re logged in as.</li>
+<li class="numberedList">Next, go back to the main OpenUnison dashboard and click on the <strong class="keyWord">Kubernetes Tokens</strong> badge.</li>
+<li class="numberedList">Note that the <code class="inlineCode">--server</code> flag being passed to <code class="inlineCode">kubectl</code> no longer has an IP. Instead, it has the hostname from <code class="inlineCode">network.api_server_host</code> in the <code class="inlineCode">/tmp/openunison-values.yaml</code> file. This is Impersonation. Instead of interacting directly with the API server, you’re now interacting with <code class="inlineCode">kube-oidc-proxy's</code> reverse proxy.</li>
+<li class="numberedList">Finally, let’s copy and paste our <code class="inlineCode">kubectl</code> command from the OpenUnison tokens screen into a shell:
+        <pre class="programlisting con-one"><code class="hljs-con">export TMP_CERT=$(mktemp) &amp;&amp; echo -e "-----BEGIN CERTIFI...
+Cluster "impersonation" set.
+Context "impersonation" created.
+User "mmosley@impersonation" set.
+Switched to context "impersonation".
+</code></pre>
+</li>
+<li class="numberedList">To verify you have access, list the cluster nodes:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl get nodes
+NAME                      STATUS   ROLES           AGE   VERSION
+cluster01-control-plane   Ready    control-plane   37m   v1.27.3
+cluster01-worker          Ready    &lt;none&gt;          37m   v1.27.3
+</code></pre>
+</li>
+<li class="numberedList">Just as with OIDC integration, you can use <code class="inlineCode">kubectl auth whoami</code> to verify your identity:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl auth whoami
+ATTRIBUTE   VALUE
+Username    mmosley
+Groups      [cn=group2,ou=Groups,DC=domain,DC=com cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com system:authenticated]
+</code></pre>
+</li>
+</ol>
+<p class="normal-one">The main difference between your identity when using impersonation instead of OIDC integration is that your username doesn’t have the identity provider’s URL in the front.</p>
+<ol>
+<li class="numberedList" value="9">Just like when you integrated the original deployment of OpenID Connect, once you’ve logged out of the OpenUnison page, within a minute or two, the tokens will expire and you won’t be able to refresh them:
+        <pre class="programlisting con-one"><code class="hljs-con">kubectl get nodes
+Unable to connect to the server: failed to refresh token: oauth2: cannot fetch token: 401 Unauthorized
+</code></pre>
+</li>
+</ol>
+<p class="normal">You’ve now validated<a id="_idIndexMarker699"/> that your cluster<a id="_idIndexMarker700"/> works correctly with Impersonation. Instead of authenticating directly to the API server, the impersonating reverse proxy (OpenUnison) forwards all requests to the API server with the correct impersonation headers. You’re still meeting your enterprise’s needs by providing both a login and logout process and integrating your Active Directory groups.</p>
+<p class="normal">You’ll also notice that you can now access your cluster from any system on your network! This might make doing the rest of the examples throughout the book easier.</p>
+<p class="normal">Impersonation is farmore<a id="_idIndexMarker701"/> than accessing<a id="_idIndexMarker702"/> your cluster. Next, we’ll look at how to use impersonation from <code class="inlineCode">kubectl get debug</code> authorization policies.</p>
+<h2 class="heading-2" id="_idParaDest-258">Using Impersonation for Debugging</h2>
+<p class="normal">Impersonation can be used<a id="_idIndexMarker703"/> to debug authentication and authorization<a id="_idIndexMarker704"/> configurations. This will become more useful when you begin writing RBAC policies. As an administrator, you can use impersonation from the <code class="inlineCode">kubectl</code> command by adding the <code class="inlineCode">--as</code> and <code class="inlineCode">--as-groups</code> parameters to run a command as someone else. For instance, if you ran <code class="inlineCode">kubectl get nodes</code> as a random user from your command line, it would fail:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl get nodes --as somerandomuser
+Error from server (Forbidden): nodes is forbidden: User "somerandomuser" cannot list resource "nodes" in API group "" at the cluster scope
+</code></pre>
+<p class="normal">However, if we add our administrative group:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl get nodes --as somerandomuser --as-group=cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com
+NAME                      STATUS   ROLES           AGE   VERSION
+cluster01-control-plane   Ready    control-plane   17m   v1.27.3
+cluster01-worker          Ready    &lt;none&gt;          17m   v1.27.3
+</code></pre>
+<p class="normal">You can see that it worked. That’s because the API server interpreted our user as being a member of the group <code class="inlineCode">cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com</code>, which we created an RBAC binding for. In fact, if we run <code class="inlineCode">kubectl auth whoami</code> with these parameters, we’ll just see how the API server sees us:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl auth whoami --as=someuser --as-group=cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com
+ATTRIBUTE                                VALUE
+Username                                 someuser
+Groups                                   [cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com system:authenticated]
+Extra: originaluser.jetstack.io-groups   [cn=group2,ou=Groups,DC=domain,DC=com cn=k8s
+cluster-admins,ou=Groups,DC=domain,DC=com]
+Extra: originaluser.jetstack.io-user     [mmosley]
+</code></pre>
+<p class="normal">In the above example, the API server sees the request as being from <em class="italic">someuser</em>, with the appropriate group based on the impersonation headers sent by <code class="inlineCode">kubectl</code>.</p>
+<p class="normal">The additional <code class="inlineCode">Extra</code> attributes are there because while we are performing an impersonation request from <code class="inlineCode">kubectl -&gt; the kube-oidc-proxy</code>, <code class="inlineCode">kube-oidc-proxy</code> does a separate impersonation with new headers, adding the <code class="inlineCode">extra-info</code> headers to be included, so the audit logs show who the original user who made the request was. Before forwarding the request to the API server, the kube-oidc-proxy first performs a <code class="inlineCode">SubjectAccessReview</code> to make sure that the user <code class="inlineCode">mmosley</code> with their groups is allowed to impersonate <code class="inlineCode">someuser</code> and the group.</p>
+<p class="normal">We were able to quickly configure impersonation using OpenUnison, where most of the details of the implementation were hidden from you. What if you want to configure<a id="_idIndexMarker705"/> an impersonating<a id="_idIndexMarker706"/> proxy without OpenUnison?</p>
+<h2 class="heading-2" id="_idParaDest-259">Configuring Impersonation without OpenUnison</h2>
+<p class="normal">OpenUnison automated<a id="_idIndexMarker707"/> a couple of key steps to get impersonation<a id="_idIndexMarker708"/> working. You can use any reverse proxy that can generate the correct headers. There are three critical items to understand when doing this on your own: RBAC, default groups, and inbound impersonation.</p>
+<h2 class="heading-2" id="_idParaDest-260">Impersonation RBAC policies</h2>
+<p class="normal">RBAC will be covered<a id="_idIndexMarker709"/> in the next<a id="_idIndexMarker710"/> chapter, but for now, the correct policy to authorize a service account for Impersonation is as follows:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">rbac.authorization.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ClusterRole</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">impersonator</span>
+<span class="hljs-attr">rules:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">apiGroups:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">""</span>
+  <span class="hljs-attr">resources:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">users</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">groups</span>
+  <span class="hljs-attr">verbs:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">impersonate</span>
+</code></pre>
+<p class="normal">To constrain what accounts can be impersonated, add <code class="inlineCode">resourceNames</code> to your rule. For instance, if you only want to allow the impersonation of the user <code class="inlineCode">mmosley</code>:</p>
+<pre class="programlisting code"><code class="hljs-code"><span class="hljs-attr">apiVersion:</span> <span class="hljs-string">rbac.authorization.k8s.io/v1</span>
+<span class="hljs-attr">kind:</span> <span class="hljs-string">ClusterRole</span>
+<span class="hljs-attr">metadata:</span>
+  <span class="hljs-attr">name:</span> <span class="hljs-string">impersonator</span>
+<span class="hljs-attr">rules:</span>
+<span class="hljs-bullet">-</span> <span class="hljs-attr">apiGroups:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">""</span>
+  <span class="hljs-attr">resources:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">users</span>   <span class="hljs-attr">resourceNames:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">mmosley</span>
+  <span class="hljs-attr">verbs:</span>
+  <span class="hljs-bullet">-</span> <span class="hljs-string">impersonate</span>
+</code></pre>
+<p class="normal">The first <code class="inlineCode">ClusterRole</code> above is what tells Kubernetes that a member can impersonate all users and groups (or specific users or groups if <code class="inlineCode">resourceNames</code> is specified). Be very careful as to which accounts are granted this <code class="inlineCode">ClusterRole</code>, as it makes you essentially a <code class="inlineCode">cluster</code>-<code class="inlineCode">admin</code> because you could impersonate the <code class="inlineCode">system</code>:<code class="inlineCode">masters</code> group, for example, bypassing RBAC and allowing anyone who is authorized by this role to become a global administrator and compromise your cluster however they wish.</p>
+<p class="normal">When configuring the impersonation of specific users and groups, break the <code class="inlineCode">ClusterRole</code> into one <code class="inlineCode">ClusterRole</code> for each. This way, you won’t have someone impersonating a group with the name<a id="_idIndexMarker711"/> of the user creating unintended<a id="_idIndexMarker712"/> consequences.</p>
+<p class="normal">With RBAC having been configured, the next requirement is adding default groups to impersonation requests.</p>
+<h2 class="heading-2" id="_idParaDest-261">Default groups</h2>
+<p class="normal">When impersonating a user, Kubernetes<a id="_idIndexMarker713"/> does not add the default group, <code class="inlineCode">system:authenticated</code>, to the list of impersonated groups. When using a reverse proxy that doesn’t specifically know to add the header for this group, configure the proxy to add it manually. Otherwise, simple acts such as calling the <code class="inlineCode">/api</code> endpoint will fail, as this will be unauthorized for anyone except cluster administrators.</p>
+<p class="normal">We’ve focused the bulk of this chapter on authenticating users who will interact with the API server. A major advantage of Kubernetes and the APIs it provides is to automate your systems. Next, we’ll look at how you apply what we’ve learned so far to authenticating those automated systems.</p>
+<h2 class="heading-2" id="_idParaDest-262">Inbound Impersonation</h2>
+<p class="normal">We’ve shown how<a id="_idIndexMarker714"/> to use <code class="inlineCode">kubectl</code> with the <code class="inlineCode">--as</code> and <code class="inlineCode">--as-group</code> parameters<a id="_idIndexMarker715"/> to impersonate users for debugging. If you’re using impersonation to manage access to your clusters, how does your impersonating proxy know that the user attempting to impersonate another user is, in fact, authorized to do so? In Kubernetes, you need to build a <code class="inlineCode">ClusterRole</code> and a <code class="inlineCode">ClusterRoleBinding</code> to enable impersonation for a specific user to a specific user, but how does your proxy know that you can impersonate someone?</p>
+<p class="normal">In our previous example:</p>
+<pre class="programlisting con"><code class="hljs-con">kubectl auth whoami --as=someuser --as-group=cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com
+ATTRIBUTE                                VALUE
+Username                                 someuser
+Groups                                   [cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com system:authenticated]
+Extra: originaluser.jetstack.io-groups   [cn=group2,ou=Groups,DC=domain,DC=com cn=k8s
+cluster-admins,ou=Groups,DC=domain,DC=com]
+Extra: originaluser.jetstack.io-user     [mmosley]
+</code></pre>
+<p class="normal">We see <code class="inlineCode">mmosley</code> impersonated <code class="inlineCode">someuser</code>. Kubernetes<a id="_idIndexMarker716"/> allowed this impersonation because <code class="inlineCode">mmosley</code> is a member of the group <code class="inlineCode">cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com</code> , which has a <code class="inlineCode">ClusterRoleBinding</code> to the <code class="inlineCode">cluster-admin ClusterRole</code>. However, this request went through <code class="inlineCode">kube-oidc-proxy</code>, so how did kube-oidc-proxy know that the cluster would authorize the request? On each request to kube-oidc-proxy that includes impersonation headers, a <code class="inlineCode">SubjectAccessReview</code> is created to check if <code class="inlineCode">mmosley</code> is allowed to impersonate <code class="inlineCode">someuser</code>. If this check fails, the kube-oidc-proxy denies the request. </p>
+<p class="normal">Your impersonating proxy will need to make the same choice. There are three approaches:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Delete and ignore all inbound impersonation headers</strong>: Your proxy will ignore and remove all inbound headers for impersonation, making the <code class="inlineCode">--as</code> and <code class="inlineCode">--as-group</code> flags useless. This locks down access but limits functionality.</li>
+<li class="bulletList"><strong class="keyWord">Maintain a custom authorization scheme</strong>: Before generating impersonation headers, a proxy can have its own authorization system to determine which users are allowed to impersonate other users. This means maintaining an additional authorization system, which can lead to issues with misconfiguration and, eventually, breaches.</li>
+<li class="bulletList"><strong class="keyWord">Query Kubernetes for Authorization Decisions</strong>: This is what kube-oidc-proxy and Pinniped (a tool from VMware that serves a similar role to OpenUnison) use to make sure that the inbound impersonation is authorized. This is best, as it uses the same rules as your cluster to manage access, simplifying management and making it less likely a misconfiguration will lead to a breach.</li>
+</ul>
+<p class="normal">Even once you’ve authorized an inbound impersonation, it’s important to log that the impersonation has occurred. The kube-oidc-proxy project does this in two places:</p>
+<ul>
+<li class="bulletList"><strong class="keyWord">Proxy logs</strong>: Each inbound impersonation gets logged to the console (which should be captured by a log aggregator)</li>
+<li class="bulletList"><strong class="keyWord">API Server Audit Logs</strong>: The extra-info headers tell the API server who the original user was which is included in the audit logs. We’ll see how to set up and inspect the audit logs in the next section.</li>
+</ul>
+<p class="normal">Inbound impersonation is a very difficult process to manage. If it’s something you want to allow, you should stick with a purpose-built impersonating proxy. Otherwise, it’s best to just strip all inbound impersonation headers to avoid an account takeover.</p>
+<p class="normal">So far, we’ve only discussed<a id="_idIndexMarker717"/> users as a whole, without adding<a id="_idIndexMarker718"/> any context. Many enterprises require that users who interact with a cluster to perform administrative work have privileges beyond their typical account. Next, we’ll look at how to implement privileged access management in Kubernetes.</p>
+<h2 class="heading-2" id="_idParaDest-263">Privileged Access to Clusters</h2>
+<p class="normal">In addition to managing<a id="_idIndexMarker719"/> authentication, most enterprises require<a id="_idIndexMarker720"/> a concept of “privileged access management,” where not only is access limited by the user but also by time. Most enterprises require a change control process of some kind to ensure that changes to production systems are tracked and approved. This requirement generally comes from any of the various compliance and regulatory frameworks needed in large enterprises. </p>
+<p class="normal">There are generally three ways to manage privileged access in Kubernetes, and we’ll cover all three with their benefits and drawbacks.</p>
+<h2 class="heading-2" id="_idParaDest-264">Using a Privileged User Account</h2>
+<p class="normal">It is common for enterprises<a id="_idIndexMarker721"/> to require that administrators have<a id="_idIndexMarker722"/> two accounts, one for day-to-day tasks and one to make administrative changes. This approach<a id="_idIndexMarker723"/> is generally implemented using a <strong class="keyWord">Privilege Access Manager</strong> (<strong class="keyWord">PAM</strong>) that generates a new password for the user when they’re authorized to do their work. This approach enables compliance with most frameworks because there’s a process by which someone has to approve the administrative account’s unlocking inside of the PAM. Once the admin is has completed their work, they check the account back into the PAM, which locks it. Alternatively, a time limit is usually set for how long the account can be checked out for, and when that time expires, the account is automatically locked by the PAM.</p>
+<p class="normal">The major benefit of this approach is that the management of the privileged accounts is done outside of Kubernetes. It’s someone else’s responsibility and eliminates something that cluster owners need to manage, either via the previously mentioned PAM or some other engine. It’s important to note that as the cluster manager, you’re still responsible for authorizing access, so the same recommendations from this chapter apply.</p>
+<p class="normal">Another reason for this approach is to protect against phishing attacks against administrators. For instance, if your cluster is integrated with your Active Directory in a way that allows desktop SSO, a bad actor could send your admins an email that runs a command as that user, without having to even know the admin’s credentials! If you are at least forcing a password, there’s an additional step an attacker needs to take.</p>
+<p class="normal">There are arguments<a id="_idIndexMarker724"/> to be made that this isn’t the most efficient or secure approach, but it’s often what’s already in place. You will find it much easier to work within existing frameworks than trying to reinvent them.</p>
+<h2 class="heading-2" id="_idParaDest-265">Impersonating a Privileged User</h2>
+<p class="normal">Instead of using<a id="_idIndexMarker725"/> an external PAM<a id="_idIndexMarker726"/> to unlock users via passwords, another approach is to impersonate a privileged user using the <code class="inlineCode">--as</code> command line parameter for <code class="inlineCode">kubectl</code>. The idea is to simulate the Unix <code class="inlineCode">sudo</code> command to escalate your privileges, to protect against accidental administrative actions.</p>
+<p class="normal">This approach is more likely to do more harm than good. To make it work, you need at least one RBAC <code class="inlineCode">ClusterRole</code> and <code class="inlineCode">ClusterRoleBinding</code> for each user to maintain individual privileged accounts. If you have 100 admins, that’s 200 additional objects to create even before you authorize access to resources. In addition to creating those objects, you need to delete them when the time comes. While automation can help, the proliferation of objects makes it easier to hide misconfigurations. The fewer objects, the better.</p>
+<p class="normal">Any security that is too complicated to be easily tracked is more likely to create security holes. In this case, you may decide you’re going to cut down on the objects created by only creating one <code class="inlineCode">ClusterRole</code> for impersonation and a single <code class="inlineCode">ClusterRoleBinding</code> with multiple <code class="inlineCode">Subjects</code>. This doesn’t really cut down on the complexity of managing this solution because:</p>
+<ul>
+<li class="bulletList">You still have to manage a Subjects list that can grow very quickly</li>
+<li class="bulletList">Your privileged users all now look to have the same identity as the API server, losing a considerable amount of granularity and value</li>
+</ul>
+<p class="normal">It’s important to note that the API server does track and log who the original requestor was, but that’s now in a different field which your systems need to look for.</p>
+<p class="normal">This additional work provides little, if any, benefit. You can’t effectively time-box access without some kind of additional automation, and just requiring the addition of a command-line parameter to <code class="inlineCode">kubectl</code> isn’t likely to stop someone from hitting the up arrow to find the previous command they ran that has the <code class="inlineCode">--as</code> parameter, even if they didn’t mean to.</p>
+<p class="normal">This approach is more trouble<a id="_idIndexMarker727"/> than it’s worth. It won’t provide any meaningful<a id="_idIndexMarker728"/> security but will complicate your cluster’s management in ways that are more likely to create security holes than plug them.</p>
+<h2 class="heading-2" id="_idParaDest-266">Temporarily Authorizing Privilege</h2>
+<p class="normal">Assuming you write your RBAC policies<a id="_idIndexMarker729"/> based on groups, the only thing you really need to do to escalate privileges is temporarily assign a user to a privileged group. The workflow would look similar to using a privileged account, but instead of having an entirely separate account, you use your standard account. As an example, in our current cluster, let’s assume that <code class="inlineCode">mmosley</code> was NOT a member of the AD group <code class="inlineCode">cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com</code>. An external workflow engine would add them after the approval of whatever work needs to be done. Once provisioned, <code class="inlineCode">mmosley</code> performs their tasks, and when completed, their membership to <code class="inlineCode">cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com</code> is revoked.</p>
+<p class="normal">This gives us the same benefits of having a privileged account, without having to have an additional account to manage. There are multiple risks associated with this approach:</p>
+<ul>
+<li class="bulletList">Phishing: If you’re using your standard account that’s used for everyday tasks like email, then there’s a higher risk that your credentials will be stolen.</li>
+<li class="bulletList">Overstaying your welcome: A long-lived credential, such as a token or a certificate, may grant access beyond when policy dictates that access has expired.</li>
+</ul>
+<p class="normal">To combat these risks, it’s important that privileged users are:</p>
+<ul>
+<li class="bulletList">Required to re-authenticate: Making sure that the administrator has to re-enter credentials helps protect against malicious scripts and executables.</li>
+<li class="bulletList">Use multi-factor authentication: Requiring an admin to provide a second factor, preferably one that can’t be phished, will protect against most attacks.</li>
+<li class="bulletList">Use short-lived tokens: What’s the point of a four-hour change window if your token is good for eight hours?</li>
+</ul>
+<p class="normal">With these additional mitigations in place, privileged authorization puts the least amount of work on cluster owners because everything is externalized. Just authorize by group!</p>
+<p class="normal">While this provides the best user experience, most large enterprises are likely to have a privileged access manager already, making that the most likely approach.</p>
+<p class="normal">Having walked through multiple<a id="_idIndexMarker730"/> ways of authenticating users who interact with our clusters, the next step is to look at how pipelines and automation need to authenticate.</p>
+<h1 class="heading-1" id="_idParaDest-267">Authenticating from pipelines</h1>
+<p class="normal">This chapter so far has focused exclusively<a id="_idIndexMarker731"/> on authentication to Kubernetes by users. Whether an operator or a developer, a user will often interact with a cluster to update objects, debug issues, view logs, and so on. However, this doesn’t quite handle all use cases. Most Kubernetes deployments are partnered with pipelines, a process by which code is moved from source to binaries to containers and, ultimately, into a running cluster. We’ll cover pipelines in more detail in <em class="chapterRef">Chapter 18, Provisioning a Multitenant Platform</em>. For now, the main question is, “<em class="italic">How will your pipeline talk to Kubernetes securely?</em>”</p>
+<p class="normal">If your pipeline runs in the same cluster that is being updated, this is a simple question to answer. You would grant access to the pipeline’s service account via RBAC to do what it needs to do. This is why service accounts exist – to provide identities to processes inside the cluster.</p>
+<p class="normal">What if your pipeline runs outside of the cluster? Kubernetes is an API, and all the options presented in this chapter apply to a pipeline as they would to a user. Legacy service account tokens don’t provide an expiration and can easily be abused. The <code class="inlineCode">TokenRequest</code> API could give you a short-lived token, but you still need to be authenticated to get it. If your cluster runs on the same cloud provider as your pipeline, you may be able to use its integrated IAM system. For instance, you<a id="_idIndexMarker732"/> can generate an IAM role in <strong class="keyWord">Amazon CodeBuild</strong> that can talk to an EKS cluster without having a static service account. The same is true for Azure DevOps and AKS.</p>
+<p class="normal">If a cloud’s IAM capabilities won’t cover your needs, there are three options. The first is to dynamically generate a token for a pipeline the same way you would for a user, by authenticating to an identity provider and then using the returned <code class="inlineCode">id_token</code> with your API calls. The second is to generate a certificate that can be used with your API server. Finally, you can leverage impersonation to authenticate your pipeline’s token. Let’s look at all three options<a id="_idIndexMarker733"/> and see how our pipelines can use them.</p>
+<h2 class="heading-2" id="_idParaDest-268">Using tokens</h2>
+<p class="normal">Kubernetes doesn’t distinguish<a id="_idIndexMarker734"/> between an API call from a human or a pipeline. A short-lived token is a great way to interact with your API server as a pipeline, given the risks we have provided throughout this chapter of potentially losing a token. Most of the client SDKs for Kubernetes know how to refresh these tokens. The biggest issue is, how do you get a token your pipeline can use?</p>
+<p class="normal">Most enterprises already have some kind of service account management system. Here, the term “service account” is generic and means an account used by a service of some kind, instead of being the <code class="inlineCode">ServiceAccount</code> object in Kubernetes. These service account management systems often have their own way of handling tasks, such as credential rotation and authorization management. They also have their own compliance tools, making it easier to get through your security review processes!</p>
+<p class="normal">Assuming that you have an enterprise service account for your pipeline, how do you translate that credential into a token? We generate tokens based on credentials in our OIDC integrated identity provider; it would be great to use that from our pipelines too! With OpenUnison, this is pretty easy because the page that gave us our token is just a frontend for an API. The next question to answer is how to authenticate to OpenUnison. We could write some code to simulate a browser and reverse-engineer the login process, but that’s just ugly. And if the form changes, our code will break. It would be better to configure the API to authenticate with something that is more API-friendly, such as HTTP Basic authentication.</p>
+<p class="normal">OpenUnison can be extended by creating configuration custom resources. In fact, most of OpenUnison is configured using these custom resources. The current token service assumes you are authenticating using the default OpenUnison form login mechanism, instead of a basic authentication that would be helpful from a pipeline. In order to tell OpenUnison to support API authentication, we need to tell it to:</p>
+<ul>
+<li class="bulletList">Enable authentication via HTTP Basic authentication by defining an authentication mechanism</li>
+<li class="bulletList">Create an authentication chain that uses the basic authentication mechanism to complete the authentication process</li>
+<li class="bulletList">Define an application that can provide the token API, authenticating using the newly created chain</li>
+</ul>
+<p class="normal">We won’t go through the details <a id="_idIndexMarker735"/>of how to make this work in OpenUnison, instead focusing on the end results. The <code class="inlineCode">chapter6</code> folder contains a Helm chart that was created for you to configure this API. Run it using the same <code class="inlineCode">openunison-values.yaml</code> file you used to deploy OpenUnison:</p>
+<pre class="programlisting con"><code class="hljs-con">cd chapter6/pipelines
+helm install orchestra-token-api token-login -n openunison -f /tmp/openunison-values.yaml
+NAME: orchestra-token-api
+LAST DEPLOYED: Mon Jul 24 18:47:04 2023
+NAMESPACE: openunison
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+</code></pre>
+<p class="normal">Once deployed, we can test it using <code class="inlineCode">curl</code>:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">export</span><span class="language-bash"> KUBE_AZ=$(curl --insecure -u </span><span class="hljs-con-string">'pipeline_svc_account:start123'</span><span class="language-bash"> \</span>
+<span class="language-bash">https://k8sou.apps.192-168-2-114.nip.io/k8s-api-token/token/user\</span>
+<span class="language-bash"> | jq -r </span><span class="hljs-con-string">'</span><span class="hljs-con-string">.token.id_token'</span><span class="language-bash">)</span>
+curl --insecure   -H "Authorization: Bearer $KUBE_AZ"  https://k8sapi.apps.192-168-2-114.nip.io/api
+{
+  "kind": "APIVersions",
+  "versions": [
+    "v1"
+  ],
+  "serverAddressByClientCIDRs": [
+    {
+      "clientCIDR": "0.0.0.0/0",
+      "serverAddress": "172.18.0.2:6443"
+    }
+  ]
+}
+</code></pre>
+<div class="note">
+<p class="normal">If you’re using direct integration with OpenID Connect, replace <code class="inlineCode">k8sapi.apps.192-168-2-114.nip.io</code> with <code class="inlineCode">0.0.0.0:6443</code> to run the <code class="inlineCode">curl</code> command directly against the API server.</p>
+</div>
+<p class="normal">Now, wait a minute or two and try the <code class="inlineCode">curl</code> command again, and you’ll see that you’re not authenticated anymore. This example is great if you’re running a single command, but most pipelines run multiple steps, and a single token’s lifetime isn’t enough. We could write code to make use of the <code class="inlineCode">refresh_token</code>, but most of the SDKs will do that for us. Instead of getting just the <code class="inlineCode">id_token</code>, let’s generate an entire <code class="inlineCode">kubectl</code> configuration:</p>
+<pre class="programlisting con"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">export</span><span class="language-bash"> KUBECONFIG=$(</span><span class="hljs-con-built_in">mktemp</span><span class="language-bash">)</span>
+<span class="hljs-con-meta">$ </span><span class="language-bash">kubectl get nodes</span>
+The connection to the server localhost:8080 was refused – did you specify the right host or port?
+curl --insecure -u 'pipeline_svc_account:start123' https://k8sou.apps.192-168-2-114.nip.io/k8s-api-token/token/user 2&gt;/dev/null | jq -r '.token["kubectl Command"]' | bash
+Cluster "impersonation" set.
+Context "impersonation" created.
+User "pipelinex-95-xsvcx-95-xaccount@impersonation" set.
+Switched to context "impersonation".
+<span class="hljs-con-meta">$ </span><span class="language-bash">kubectl get nodes</span>
+<span class="language-bash">NAME                      STATUS   ROLES           AGE    VERSION</span>
+cluster01-control-plane   Ready    control-plane   130m   v1.27.3
+cluster01-worker          Ready    &lt;none&gt;          129m   v1.27.3
+</code></pre>
+<p class="normal">We’re getting a short-lived token securely, while also interacting with the API server using our standard tools! This solution only works if your service accounts are stored and accessed via an LDAP directory. If that’s not the case, you can extend OpenUnison’s configuration to support any number of configuration options. To learn more, visit<a id="_idIndexMarker736"/> OpenUnison’s documentation at <a href="https://openunison.github.io/"><span class="url">https://openunison.github.io/</span></a>.</p>
+<p class="normal">This solution is specific to OpenUnison<a id="_idIndexMarker737"/> because there is no standard to convert a user’s credentials into an <code class="inlineCode">id_token</code>. That is a detail left to each identity provider. Your identity provider may have an API to generate an <code class="inlineCode">id_token</code> easily, but it’s more likely you’ll need something to act as a broker, since an identity provider won’t know how to generate a full <code class="inlineCode">kubectl</code> configuration.</p>
+<h2 class="heading-2" id="_idParaDest-269">Using certificates</h2>
+<p class="normal">The preceding process works<a id="_idIndexMarker738"/> well but requires OpenUnison or something similar. If you wanted to take a vendor-neutral approach, you could use certificates as your credential instead of trying to generate a token. Earlier in the chapter, I said that certificate authentication should be avoided for users because of Kubernetes’ lack of revocation support and the fact that most certificates aren’t deployed correctly. Both of these issues are generally easier to mitigate with pipelines because the deployment can be automated.</p>
+<p class="normal">If your enterprise requires you to use a central store for service accounts, this approach may not be possible. Another potential issue with this approach is that you may want to use an enterprise CA to generate the certificates for service accounts, but Kubernetes doesn’t know how to trust third-party CAs. There are active discussions about enabling the feature, but it’s not there yet.</p>
+<p class="normal">Finally, you can’t generate certificates for many managed clusters. Most managed Kubernetes distributions, such as EKS, do not make the private keys needed to sign requests via the built-in API available to clusters directly. In that case, you’ll be unable to mint certificates that will be accepted by your cluster.</p>
+<p class="normal">With all that said, let’s walk through the process:</p>
+<ol>
+<li class="numberedList" value="1">First, we’ll generate a keypair and <strong class="keyWord">certificate signing request</strong> (<strong class="keyWord">CSR</strong>):
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="language-bash">openssl req -out sa_cert.csr \</span>
+<span class="language-bash">-new -newkey rsa:2048 -nodes -keyout sa_cert.key \</span>
+<span class="language-bash">-subj </span><span class="hljs-con-string">'/O=k8s/O=sa-cluster-admins/CN=sa-cert/'</span>
+<span class="language-bash">Generating a RSA private key</span>
+<span class="language-bash">..........+++++</span>
+<span class="language-bash">.................................+++++</span>
+<span class="language-bash">writing new private key to </span><span class="hljs-con-string">'sa_cert.key'</span>
+<span class="language-bash">-----</span>
+</code></pre>
+</li>
+<li class="numberedList">Next, we’ll submit the CSR to Kubernetes:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cat</span><span class="language-bash"> &lt;&lt;</span><span class="hljs-con-string">EOF | kubectl apply -f -</span>
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: sa-cert
+spec:
+  request: $(cat sa_cert.csr | base64 | tr -d '\n')
+  signerName: kubernetes.io/kube-apiserver-client
+  usages:
+  - digital signature
+  - key encipherment
+  - client auth
+EOF
+</code></pre>
+</li>
+<li class="numberedList">Once the CSR is submitted to Kubernetes, we need to approve the submission:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="language-bash">kubectl certificate approve sa-cert</span>
+<span class="language-bash">certificatesigningrequest.certificates.k8s.io/sa-cert approved</span>
+</code></pre>
+</li>
+<li class="numberedList">After being approved, we download the minted certificate into a <code class="inlineCode">pem</code> file:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="language-bash">kubectl get csr sa-cert -o jsonpath=</span><span class="hljs-con-string">'{.status.certificate}'</span><span class="language-bash"> | </span><span class="hljs-con-built_in">base64</span><span class="language-bash"> --decode &gt; sa_cert.crt</span>
+</code></pre>
+</li>
+<li class="numberedList">Next, we’ll configure <code class="inlineCode">kubectl</code> to use our newly approved certificate:
+        <pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">cp</span><span class="language-bash"> ~/.kube/config ./sa-config</span>
+<span class="hljs-con-meta">$</span><span class="hljs-con-built_in">export</span><span class="language-bash"> KUBECONFIG=./sa-config</span>
+<span class="hljs-con-meta">$ </span><span class="language-bash">kubectl config set-credentials kind-cluster01 --client-key=./sa_cert.key \</span>
+<span class="language-bash">--client-certificate=./sa_cert.crt</span>
+<span class="hljs-con-meta">$ </span><span class="language-bash">kubectl get nodes</span>
+Error from server (Forbidden): nodes is forbidden: User "sa-cert" cannot list resource "nodes" in API group "" at the cluster scope
+</code></pre>
+</li>
+</ol>
+<p class="normal-one">The API server<a id="_idIndexMarker739"/> has accepted our certificate but has not authorized it. Our CSR had an <code class="inlineCode">o</code> in the subject called <code class="inlineCode">sa-cluster-admins</code>, which Kubernetes translates to “the user <code class="inlineCode">sa-cert</code> is in the group <code class="inlineCode">sa-cluster-admins</code>.” We need to authorize that group to be a cluster admin next:</p>
+<pre class="programlisting con-one"><code class="hljs-con"><span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">export</span><span class="language-bash"> KUBECONFIG=</span>
+<span class="hljs-con-meta">$ </span><span class="language-bash">kubectl create -f chapter6/pipelines/sa-cluster-admins.yaml</span>
+<span class="hljs-con-meta">$ </span><span class="hljs-con-built_in">export</span><span class="language-bash"> KUBECONFIG=./sa-config</span>
+<span class="hljs-con-meta">$ </span><span class="language-bash">kubectl get nodes</span>
+NAME                      STATUS   ROLES           AGE    VERSION
+cluster01-control-plane   Ready    control-plane   138m   v1.27.3
+cluster01-worker          Ready    &lt;none&gt;          138m   v1.27.3
+</code></pre>
+<p class="normal">You now have a key pair that can be used from your pipelines with your cluster! Beware while automating this process. The CSR submitted to the API server can set any groups it wants, including <code class="inlineCode">system:masters</code>. If a certificate is minted with <code class="inlineCode">system:masters</code> as an <code class="inlineCode">o</code> in the subject, it will not only be able to do anything on your cluster; it will also bypass all RBAC authorization. In fact, it will bypass all authorization!</p>
+<p class="normal">If you’re going to go down the certificate route, think about potential alternatives, such as using certificates with your identity provider instead of going directly to the API server. This is similar to our token-based authentication, but instead of using a username and password in HTTP Basic authentication, you use a certificate. This gives you a strong credential that can be issued by your enterprise certificate authority while avoiding<a id="_idIndexMarker740"/> having to use passwords.</p>
+<p class="normal">Next, we’ll explore how to authenticate a pipeline using its own identity.</p>
+<h2 class="heading-2" id="_idParaDest-270">Using a pipeline’s identity</h2>
+<p class="normal">Over the last year or two, discussions<a id="_idIndexMarker741"/> about increased supply chain security have become a front-and-center topic for Kubernetes and security professionals. Part of that discussion has led to more pipeline systems providing unique identities to workflows that can be used to interact with remote systems, such as a Kubernetes cluster. This offers the best approach because each workflow is unique, and it can have a short-lived token that doesn’t require a shared secret between the Kubernetes cluster and the workflow.</p>
+<p class="normal">The challenge with using a workflow’s identity with a Kubernetes cluster is that a cluster can only accept a single OpenID Connect issuer, and managed clusters aren’t even capable of that. Earlier, we explored how your clusters can use impersonation to authenticate API requests to your cluster without enabling OpenID Connect directly in the API server flags. It turns out that this approach works well with CI/CD pipelines too. Instead of configuring your impersonating proxy to trust the identity provider that issues tokens for your users, you can configure it to trust the identity provider that issues tokens for your workflows.</p>
+<p class="normal">We’ll demonstrate this<a id="_idIndexMarker742"/> using the CI/CD Proxy (<a href="https://cicd-proxy.github.io"><span class="url">https://cicd-proxy.github.io</span></a>). This is a collection of Helm charts that Tremolo Security built around the <code class="inlineCode">kube-oidc-proxy</code> project to simplify integration with pipelines. The <code class="inlineCode">kube-oidc-proxy</code> was created by <strong class="keyWord">JetStack</strong>, but development ended in early 2021. Tremolo Security forked the project, adding several features, and has since kept it up to date with dependencies and bug fixes as needed. If you ran the lab to deploy authentication with impersonation earlier in this chapter, you’ve already run Tremolo’s kube-oidc-proxy. The OpenUnison Helm charts automate its integration for you.</p>
+<p class="normal">We’re going to simulate a workflow deleting some pods in our cluster using the CI/CD Proxy. While we’ll be working with GitLab later in the book, that’s a very heavy deployment just to show how pipelines can securely authenticate. To simulate our workflow, we’re going<a id="_idIndexMarker743"/> to run a simple <code class="inlineCode">Job</code> that will have a token mounted via the <code class="inlineCode">TokenRequest</code> API, with our CI/CD proxy as the audience, instead of the API server. Our CI/CD proxy will then impersonate the ServiceAccount in the projected token’s sub-claim, which will be allowed to delete pods in our namespace. The CI/CD proxy will be configured to trust our cluster’s OIDC discovery URL, completing the circle of trust. Let’s walk through how these trusts come together.</p>
+<figure class="mediaobject"><img alt="" height="569" src="../Images/B21165_06_10.png" width="878"/></figure>
+<p class="packt_figref">Figure 6.10: Workflow authentication sequence</p>
+<p class="normal">The above diagram shows the following sequence of events:</p>
+<ol>
+<li class="numberedList" value="1">When the CI/CD proxy starts, it reaches out to the cluster’s OIDC discovery document to pull in the correct keys to validate inbound tokens. Since we’re trusting our own cluster’s tokens, we’re using <a href="https://kubernetes.default.svc.cluster.local/"><span class="url">https://kubernetes.default.svc.cluster.local/</span></a> as our issuer, so we’ll pull in <a href="https://kubernetes.default.svc.cluster.local/.well-known/openid-configuration"><span class="url">https://kubernetes.default.svc.cluster.local/.well-known/openid-configuration</span></a>.</li>
+<li class="numberedList">When our workflow <code class="inlineCode">Job</code> starts, it will have a token projected into it that will have our CI/CD proxy as an audience. This is in addition to the <code class="inlineCode">ServiceAccount</code> token that every <code class="inlineCode">pod</code> is provided by default. If we inspect this token, we’ll see how it differs from the standard token.<p class="packt_figref"><img alt="" height="349" src="../Images/B21165_06_11.png" width="812"/></p>
+<p class="packt_figref">Figure 6.11: Comparing tokens</p>
+</li>
+</ol>
+<p class="normal-one">The above image is a side-by-side comparison<a id="_idIndexMarker744"/> of the typical <code class="inlineCode">ServiceAccount</code> token on the left and a token meant for the CI/CD proxy on the right. Both are bound to the specific <code class="inlineCode">pod</code>, but the left-hand side is meant for the API server where whereas the right-hand token is meant for our proxy. They can’t be used interchangeably, even though they’re signed by the same set of keys and have the same issuer. If you try to use the token on the right with the API server, it will be rejected for having an invalid audience. The same would be true if you tried to use the token on the left with our proxy. The other major difference between the two tokens is that the expiration of the token on the right is only 10 minutes after creation. This means that if an attacker were to get access to this token, they’d only have 10 minutes to use it, increasing the security of the token.</p>
+<ol>
+<li class="numberedList" value="3">Once our <code class="inlineCode">Job</code> makes a call using <code class="inlineCode">kubectl</code> to our proxy, not directly to an API server, the proxy checks the token to make sure it was signed correctly and built correctly. The proxy then forwards the request to the API server but with its own token and the addition of the impersonation headers.</li>
+<li class="numberedList">Finally, the API server acts on the request as if it were made by our <code class="inlineCode">Job</code>.</li>
+</ol>
+<p class="normal">Throughout this transaction, there are no shared secrets that need to be distributed or rotated. There’s very little that can be compromised. Since the OIDC discovery document is controlled by our identity provider, if the keys need to be rotated, our proxy will pick it up. Having walked through the theory, let’s deploy our example.</p>
+<p class="normal">First, start with a fresh cluster:</p>
+<pre class="programlisting con"><code class="hljs-con">cd Kubernetes-An-Enterprise-Guide-Third-Edition/chapter2
+kind delete cluster -n cluster01
+./create-cluster.sh
+</code></pre>
+<p class="normal">Once the cluster<a id="_idIndexMarker745"/> is created, let’s deploy the CI/CD proxy. We didn’t want to get bogged down with specific steps, so we automated the deployment:</p>
+<pre class="programlisting con"><code class="hljs-con">cd ../chapter6/pipelines/cicd-proxy
+./deploy-proxy.sh
+</code></pre>
+<p class="normal">This script will take a minute or two to run. It does a few things:</p>
+<ol>
+<li class="numberedList" value="1">Deploys the cert-manager project from JetStack and creates an internal CA that we’ll use to sign certificates</li>
+<li class="numberedList">Enables anonymous access to the API server’s OIDC discovery document</li>
+<li class="numberedList">Deploys the CI/CD proxy using Tremolo Security’s Helm charts</li>
+<li class="numberedList">Creates a target namespace and <code class="inlineCode">Deployment</code> we can use to test deleting pods in</li>
+<li class="numberedList">Creates an RBAC binding for our impersonated user to be able to list and delete pods in our target namespace</li>
+</ol>
+<p class="normal">Once everything is deployed, the next step is to create our <code class="inlineCode">Job</code> and check the logs:</p>
+<pre class="programlisting con"><code class="hljs-con">./run_workflow.sh
+kubectl logs -l job-name=workflow -n cicd-ns
+User "remote" set.
+Context "remote" created.
+Switched to context "remote".
+pod "test-pods-777b69dc55-4bmwd" deleted
+</code></pre>
+<p class="normal">We can see that we were able to delete our pods, using the projected token! </p>
+<p class="normal">This seems like quite a bit of work just to delete a <code class="inlineCode">Pod</code>. It might have been easier to just create a <code class="inlineCode">ServiceAccount</code> token and store it somewhere our workflow could access it. However, that would be a security and Kubernetes anti-pattern. It means that so long as the pod exists in the cluster’s etcd database, it could be used without restriction. You could create a rotation system, but just like with custom authentication, you’re now creating a pale imitation of OpenID Connect’s existing security. You’re also building out additional automation that also needs to be secured. So what looks like quite a bit of additional work will actually save you time and make your security <a id="_idIndexMarker746"/>team happy!</p>
+<p class="normal">Having discussed how to properly authenticate to your cluster from your pipeline, let’s examine some anti-patterns with pipeline authentication.</p>
+<h2 class="heading-2" id="_idParaDest-271">Avoiding anti-patterns</h2>
+<p class="normal">It turns out most of the anti-patterns<a id="_idIndexMarker747"/> that apply to user authentication also apply to pipeline authentication. Given the nature of code which authenticates, there are some specific things to look out for.</p>
+<p class="normal">First, don’t use a person’s account for a pipeline. It will likely violate your enterprise’s policies and can expose your account, and maybe your employer, to issues. Your enterprise account (which is assigned to everyone else in the enterprise) generally has several rules attached to it. Simply using it in code can breach these rules. The other anti-patterns we’ll discuss add to the risk.</p>
+<p class="normal">Next, never put your service account’s credentials into Git, even when encrypted. It’s popular to include credentials directly in objects stored in Git because you now have change control, but it’s just so easy to accidentally push a Git repository out to a public space. Much of security is about protecting users from accidents that can leak sensitive information. Even encrypted credentials in Git can be abused if the encryption keys are also stored in Git. Every cloud provider has a secret management system that will synchronize your credentials into Kubernetes Secret objects. You can do this with Vault as well, which we’ll do later in this book. This is a much better approach, as these tools are specifically designed to manage sensitive data. Git is meant to make it easy to share and collaborate, which makes for poor secret management.</p>
+<p class="normal">Finally, don’t use legacy service account tokens from outside of your cluster. I know that I’ve said this a dozen times in this chapter, but it’s incredibly important. When using a bearer token, anything that carries that token is a potential attack vector. There have been network providers that leak tokens, for example. It’s a common anti-pattern. If a vendor tells you to generate a service account token, push back – you’re putting your enterprise’s data at risk.</p>
+<h1 class="heading-1" id="_idParaDest-272">Summary</h1>
+<p class="normal">This chapter detailed how Kubernetes identifies users and what groups their members are in. We detailed how the API server interacts with identities and explored several options for authentication. Finally, we detailed the OpenID Connect protocol and how it’s applied to Kubernetes.</p>
+<p class="normal">Learning how Kubernetes authenticates users and the details of the OpenID Connect protocol is an important part of building security in a cluster. Understanding the details and how they apply to common enterprise requirements will help you decide the best way to authenticate to clusters, and also provide justification regarding why the anti-patterns we explored should be avoided.</p>
+<p class="normal">In the next chapter, we’ll apply our authentication process to authorizing access to Kubernetes resources. Knowing who somebody is isn’t enough to secure your clusters. You also need to control what they have access to.</p>
+<h1 class="heading-1" id="_idParaDest-273">Questions</h1>
+<ol>
+<li class="numberedList" value="1">OpenID Connect is a standard protocol with extensive peer review and usage.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">Which token does Kubernetes use to authorize your access to an API?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1"><code class="inlineCode">access_token</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">id_token</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">refresh_token</code></li>
+<li class="alphabeticList level-2"><code class="inlineCode">certificate_token</code></li>
+</ol>
+</li>
+<li class="numberedList">In which situation is certificate authentication a good idea?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Day-to-day usage by administrators and developers</li>
+<li class="alphabeticList level-2">Access from external CI/CD pipelines and other services</li>
+<li class="alphabeticList level-2">Break glass in case of emergency, when all other authentication solutions are unavailable</li>
+</ol>
+</li>
+<li class="numberedList">How should you identify users accessing your cluster?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Email address</li>
+<li class="alphabeticList level-2">Unix login ID</li>
+<li class="alphabeticList level-2">Windows login ID</li>
+<li class="alphabeticList level-2">An immutable ID not based on a user’s name</li>
+</ol>
+</li>
+<li class="numberedList">Where are OpenID Connect configuration options set in Kubernetes?<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">Depends on the distribution</li>
+<li class="alphabeticList level-2">In a ConfigMap object</li>
+<li class="alphabeticList level-2">In a secret</li>
+<li class="alphabeticList level-2">Set as flags on the Kubernetes API server executable</li>
+</ol>
+</li>
+<li class="numberedList">When using Impersonation with your cluster, the groups your user brings are the only ones needed.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+<li class="numberedList">The dashboard should have its own privileged identity to work properly.<ol class="alphabeticList level-2" style="list-style-type: lower-alpha;">
+<li class="alphabeticList level-2" value="1">True</li>
+<li class="alphabeticList level-2">False</li>
+</ol>
+</li>
+</ol>
+<h1 class="heading-1" id="_idParaDest-274">Answers</h1>
+<ol>
+<li class="numberedList" value="1">a: True</li>
+<li class="numberedList">b: <code class="inlineCode">id_token</code></li>
+<li class="numberedList">c: Break glass in case of emergency, when all other authentication solutions are unavailable</li>
+<li class="numberedList">d: An immutable ID not based on a user’s name</li>
+<li class="numberedList">d: Set as flags on the Kubernetes API server executable</li>
+<li class="numberedList">b: False</li>
+<li class="numberedList">b: False</li>
+</ol>
+</div>
+</div></body></html>

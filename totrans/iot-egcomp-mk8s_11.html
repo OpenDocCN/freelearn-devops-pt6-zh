@@ -1,0 +1,489 @@
+<html><head></head><body>
+<div id="sbo-rt-content"><div id="_idContainer327">
+<h1 class="chapter-number" id="_idParaDest-178"><a id="_idTextAnchor180"/>11</h1>
+<h1 id="_idParaDest-179"><a id="_idTextAnchor181"/>Managing Storage Replication with OpenEBS</h1>
+<p>In the previous chapter, we looked at two serverless frameworks that are available with MicroK8s, both of which are Kubernetes-based platforms for designing, deploying, and managing modern serverless workloads. We also noticed that the ease with which serverless frameworks can be implemented appears to be tied to the ease with which MicroK8s can be deployed. Some guiding principles to remember when creating and deploying serverless apps were also highlighted. We also realized that we needed to follow best practices to safeguard our resources, apps, and infrastructure service provider accounts.</p>
+<p>In this chapter, we will look into the next use case for supporting cloud-native storage solutions, such as OpenEBS, to provide persistent storage for our container applications. Cloud-native storage solutions enable comprehensive storage mechanisms. These solutions mimic the properties of cloud environments, such as scalability, reliability, container architecture, and high availability. These features make it simple to interface with the container management platform and provide persistent storage for container-based applications.</p>
+<p>First, we will look at the Kubernetes storage basics before diving into OpenEBS concepts. Containers are ephemeral, which means they are established for a specific reason and then shut down after that task is completed. Containers do not maintain state data on their own, and a new container instance has no memory/state of prior ones. Although a container provides storage, it is only ephemeral storage, so it is wiped when the container is turned off. Developers will need to manage persistent storage as part of containerized applications as they adopt containers for new use cases. A developer, for example, may want to operate a database in a container and store the data in a volume that survives the container’s shutdown process.</p>
+<p>Kubernetes provides a variety of management options for clusters of containers. The ability to manage persistent storage is one of these capabilities. Administrators can use Kubernetes persistent storage to keep track of both persistent and non-persistent data in a Kubernetes cluster. Multiple applications that operate on the cluster can then utilize storage resources dynamically.</p>
+<p>To help manage persistent storage, Kubernetes supports two primary mechanisms:</p>
+<ul>
+<li>A <strong class="bold">PersistentVolume</strong> (<strong class="bold">PV</strong>) is a storage element that can be created manually<a id="_idIndexMarker970"/> or dynamically, depending on the storage class. It has a life cycle that is unaffected by the life cycle of Kubernetes pods. A pod can mount a PV, but the PV remains after the pod has shut down, and its data can still be accessed. Each PV can have its own set of parameters, such as disc type, storage tier, and performance.</li>
+<li>A <strong class="bold">PersistentVolumeClaim</strong> (<strong class="bold">PVC</strong>) is a storage request that’s made by<a id="_idIndexMarker971"/> a Kubernetes user. Based on the custom parameters, any application operating on a container can request storage and define the size and other properties of the storage it requires (for example, the specific type of storage, such as SSD storage). Based on the available storage resources, the Kubernetes cluster can provision a PV.</li>
+</ul>
+<p><strong class="source-inline">StorageClass</strong> is a Kubernetes API object for configuring storage parameters. It’s a way of configuring a dynamic setup that generates new volumes based on demand. <strong class="source-inline">StorageClass</strong> defines the name of the volume<a id="_idIndexMarker972"/> plugin, as well as any external providers and a <strong class="bold">Container Storage Interface</strong> (<strong class="bold">CSI</strong>) driver, which allows containers to communicate with storage devices. CSI is a standard that allows containerized workloads to access any block and file storage systems. </p>
+<p><strong class="source-inline">StorageClass</strong> can be defined and PVs assigned by Kubernetes administrators. Each <strong class="source-inline">StorageClass</strong> denotes a different form of storage, such as fast SSD storage versus traditional magnetic drives or remote cloud storage. This enables a Kubernetes cluster to supply different types of storage based on the workload’s changing requirements.</p>
+<p>Dynamic volume provisioning is a feature of Kubernetes that allows storage volumes to be created on-demand. Administrators no longer need to manually build new storage volumes in their cloud or storage provider, then create PV objects to make them available in the cluster. When users request a specific storage type, the entire process is automated and provisioned. <strong class="source-inline">StorageClass</strong> objects are defined by the cluster administrator as needed. A volume plugin such as OpenEBS, also known as a provisioner, is referenced by<a id="_idIndexMarker973"/> each <strong class="source-inline">StorageClass</strong>. When a storage volume is automatically provisioned, the volume plugin provides a set of parameters and passes them to the provisioner.</p>
+<p>The administrator can define many <strong class="source-inline">StorageClass</strong>, each of which can represent a distinct type of storage or the same storage with different specifications. This allows users to choose from a variety of storage solutions without having to worry about the implementation details.</p>
+<p><strong class="bold">Container Attached Storage</strong> (<strong class="bold">CAS</strong>) is quickly gaining traction as a viable option<a id="_idIndexMarker974"/> for managing stateful workloads and is becoming the favored method for executing durable, fault-tolerant stateful applications. CAS was brought to the Kubernetes platform via the OpenEBS project. It can be readily deployed in on-premises clusters, managed clusters in the public cloud, and even isolated air-gapped clusters. MicroK8s offers in-built support for OpenEBS via an add-on, making it the best solution for running Kubernetes clusters in air-gapped Edge/IoT scenarios. </p>
+<p>In this chapter, we’re going to cover the following main topics: </p>
+<ul>
+<li>Overview of OpenEBS</li>
+<li>Configuring and implementing a PostgreSQL stateful workload</li>
+<li>Kubernetes storage best practices</li>
+</ul>
+<h1 id="_idParaDest-180"><a id="_idTextAnchor182"/>Overview of OpenEBS </h1>
+<p>In Kubernetes, storage<a id="_idIndexMarker975"/> is often integrated as an OS kernel module with individual nodes. Even the PVs are monolithic and legacy resources since they are strongly tied to the underlying components. CAS allows Kubernetes users to treat storage entities as microservices. CAS is made up of two parts: the control plane and the data plane. The<a id="_idIndexMarker976"/> control plane is implemented as a set of <strong class="bold">Custom Resource Definitions</strong> (<strong class="bold">CRDs</strong>) that deal with low-level storage entities. The data plane runs as a collection of pods close to the workload. It is in charge of the I/O transactions, which translate into read and write operations.</p>
+<p>The clean separation of the control plane and data plane provides the same benefits as running microservices on Kubernetes. This architecture decouples persistence from the underlying storage entities, allowing workloads to be more portable. It also adds scale-out capabilities to storage, allowing administrators and operators to dynamically expand volumes in response to the workload. Finally, CAS ensures that the data (PV) and compute (pod) are always co-located in a hyper-converged mode to maximize throughput and fault tolerance.</p>
+<p>Data is copied across<a id="_idIndexMarker977"/> many nodes using the synchronous replication feature of OpenEBS. The failure of a node would only affect the volume replicas on that node. The data on other nodes would remain available at the same performance levels, allowing applications to be more resilient to failures:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer295">
+<img alt="Figure 11.1 – Synchronous replication  " height="595" src="image/Figure_11.01_B18115.jpg" width="1288"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.1 – Synchronous replication </p>
+<p>Creating instantaneous snapshots are also possible with the OpenEBS CAS architecture. These can be made and managed with the regular <strong class="source-inline">kubectl</strong> command. This extensive integration with Kubernetes allows for job portability and easier data backup and migration.</p>
+<p>The following diagram shows the typical components<a id="_idIndexMarker978"/> of OpenEBS:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer296">
+<img alt="Figure 11.2 – OpenEBS control plane and data plane " height="912" src="image/Figure_11.02_B18115.jpg" width="1486"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.2 – OpenEBS control plane and data plane</p>
+<p>OpenEBS is a well-designed system<a id="_idIndexMarker979"/> built on CAS concepts. We’ll look at the architecture in more detail in the following sections.</p>
+<h2 id="_idParaDest-181"><a id="_idTextAnchor183"/>Control plane</h2>
+<p>The control plane, disk manager, and data<a id="_idIndexMarker980"/> plane are assigned to each storage volume<a id="_idIndexMarker981"/> that’s been installed. The control plane is closer to the storage infrastructure; it keeps track of the storage volumes that are joined to each cluster node through SAN or block storage. Provisioning volumes, initiating snapshots, creating clones, creating storage policies, enforcing storage policies, and exporting volume metrics to other systems such as Prometheus are all handled directly by the control plane.</p>
+<p>An OpenEBS storage administrator interacts with the control plane to manage cluster-wide storage activities. Through an API server, the OpenEBS control plane is accessible to the outside world. A pod exposes the REST API for controlling resources such as volumes and policies. The declaration is initially submitted as a YAML file to the API server, which then starts the workflow. The API server communicates with the Kubernetes master’s API server to schedule volume pods in the data plane.</p>
+<p>Dynamic provisioning is implemented via the control plane’s provisioner component using the standard Kubernetes external storage plugin. When an application builds a PVC from an existing storage class, the OpenEBS provisioner constructs a PV from the primitives in the storage class and binds it to the PVC.</p>
+<p>The OpenEBS <a id="_idIndexMarker982"/>control plane relies heavily on the <strong class="bold">Node Device Manager</strong> (<strong class="bold">NDM</strong>). Each node in the Kubernetes <a id="_idIndexMarker983"/>cluster runs an NDM DaemonSet that is responsible<a id="_idIndexMarker984"/> for identifying new block storage devices and reporting them to the NDM operator to be registered as a block device resource if they meet the filter. NDM serves as a link between the control plane and the physical discs that each node is connected to. It keeps track of all registered block storage devices in the <strong class="source-inline">etcd</strong> database, which serves as the cluster’s single source of truth.</p>
+<p>Now that we’ve seen what the control plane it’s, let’s learn more about the data plane.</p>
+<h2 id="_idParaDest-182"><a id="_idTextAnchor184"/>Data plane</h2>
+<p>The data plane<a id="_idIndexMarker985"/> is close to the workload, which remains<a id="_idIndexMarker986"/> in the volume’s I/O path. It manages the life cycle of the PV and PVCs while running in the user space. A variety of storage engines with varied capabilities are available on the data plane. <strong class="bold">Jiva</strong>, <strong class="bold">cStor</strong>, and <strong class="bold">Local PV</strong> are the three storage engines that are available at the time of writing. Jiva provides standard storage capabilities (block storage) and is typically used for smaller-scale workloads compared to cStor, which offers enterprise-grade functionality and extensive snapshot features. Local PV, on the other hand, provides performance through advanced features such as replication and snapshots.</p>
+<p>Let’s take a closer look at each storage engine.</p>
+<h2 id="_idParaDest-183"><a id="_idTextAnchor185"/>Storage engines</h2>
+<p>OpenEBS’s preferred storage engine<a id="_idIndexMarker987"/> is cStor. It’s a feature-rich<a id="_idIndexMarker988"/> and lightweight<a id="_idIndexMarker989"/> storage engine designed for high-availability workloads such as databases. It includes enterprise-level capabilities such as synchronous data replication, snapshots, clones, thin data provisioning, high data resiliency, data consistency, and on-demand capacity or performance increases. With just a single replica, cStor’s synchronous replication ensures excellent availability for stateful Kubernetes deployments. When a stateful application requires high data availability, cStor<a id="_idIndexMarker990"/> is set up with three replicas, with data written synchronously to each of the three replicas. Terminating and scheduling a new pod in a different node does not result in data loss because data is written to multiple replicas.</p>
+<p>Jiva was the first storage engine<a id="_idIndexMarker991"/> to be included in early OpenEBS versions. Jiva is the simplest<a id="_idIndexMarker992"/> of the options, as it runs entirely in user space and has conventional block storage features such as synchronous replication. Smaller applications running on nodes without the ability to install extra block storage devices benefit from Jiva. As a result, it is not appropriate for mission-critical tasks that require high performance or advanced storage capacities.</p>
+<p><strong class="bold">Local persistent volume</strong> (<strong class="bold">Local PV</strong>) is OpenEBS’s third and simplest storage<a id="_idIndexMarker993"/> engine. Local PV is a local disc that’s attached directly to a single Kubernetes mode. Kubernetes applications can now consume high-performance local storage using the traditional volume APIs. OpenEBS’s Local PV is a storage engine that may build PVs on worker nodes using local discs or host paths. Local PV can be used by cloud-native apps that do not require advanced storage features such as replication, snapshots, or clones. A StatefulSet that manages replication and HA on its own, for example, can set up a Local PV based on OpenEBS.</p>
+<p>In addition to the storage engines mentioned previously, the <strong class="bold">Mayastor data engine</strong>, a low latency engine that is currently in development, has a declarative data plane, which provides flexible, persistent storage for stateful applications. It is Kubernetes-native and provides fast, redundant storage that works in any Kubernetes cluster. The Mayastor add-on<a id="_idIndexMarker994"/> will become available with MicroK8s 1.24: <a href="https://microk8s.io/docs/addon-mayastor">https://microk8s.io/docs/addon-mayastor</a>.</p>
+<p>Another optional and popular feature of OpenEBS is copy-on-write snapshots. Snapshots are created instantly, and there is no limit to the number of snapshots that can be created. The incremental snapshot feature improves data migration and portability across Kubernetes clusters, as well as between cloud providers or data centers. Common application scenarios include efficient replication for backups and the use of clones for troubleshooting or development against a read-only copy of data. </p>
+<p>OpenEBS volumes also support backup and restore facilities that are compatible with Kubernetes backup<a id="_idIndexMarker995"/> and restore solutions such as Velero (<a href="https://velero.io/">https://velero.io/</a>).</p>
+<p>To learn more, you can check out my blog post on how to back up<a id="_idIndexMarker996"/> and restore Kubernetes cluster resources, including PVs: <a href="https://www.upnxtblog.com/index.php/2019/12/16/how-to-back-up-and-restore-your-kubernetes-cluster-resources-and-persistent-volumes/">https://www.upnxtblog.com/index.php/2019/12/16/how-to-back-up-and-restore-your-kubernetes-cluster-resources-and-persistent-volumes/</a>.</p>
+<p>Through the container <a id="_idIndexMarker997"/>attached storage technique, OpenEBS extends the benefits<a id="_idIndexMarker998"/> of software-defined storage to cloud-native applications. For a thorough comparison and preferred use cases for each of the storage engines, see <a id="_idIndexMarker999"/>the OpenEBS documentation at <a href="https://openebs.io/docs/">https://openebs.io/docs/</a>.</p>
+<p>To recap, OpenEBS creates local or distributed Kubernetes PVs from any storage available to Kubernetes worker nodes. This makes it simple for application and platform teams to implement Kubernetes stateful workloads that require fast, reliable, and scalable CAS. It also ensures that each storage volume has a separate pod and a set of replica pods, which are managed and deployed in Kubernetes like any other container or microservice. OpenEBS is also installed as a container, allowing for convenient storage service allocation on a per-application, cluster, or container basis.</p>
+<p>Now, let’s learn how to configure and implement a PostgreSQL stateful application while utilizing the OpenEBS Jiva storage engine. </p>
+<h1 id="_idParaDest-184"><a id="_idTextAnchor186"/>Configuring and implementing a PostgreSQL stateful workload </h1>
+<p>In this section, we’ll configure<a id="_idIndexMarker1000"/> and implement a PostgreSQL stateful workload<a id="_idIndexMarker1001"/> while utilizing the OpenEBS storage engine. We’ll be using the Jiva storage engine for PostgreSQL persistence, creating test data, simulating node failure to see if the data is still intact, and confirming that OpenEBS replication is functioning as expected.</p>
+<p>Now that understand OpenEBS, we will delve into the steps of configuring and deploying OpenEBS on the cluster. The following diagram depicts our Raspberry Pi cluster setup:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer297">
+<img alt="Figure 11.3 – MicroK8s Raspberry Pi cluster " height="397" src="image/Figure_11.03_B18115.jpg" width="604"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.3 – MicroK8s Raspberry Pi cluster</p>
+<p>Now that we know what we want to do, let’s look at the requirements.</p>
+<h2 id="_idParaDest-185"><a id="_idTextAnchor187"/>Requirements </h2>
+<p>Before you begin, you will need<a id="_idIndexMarker1002"/> the following prerequisites to build a Raspberry Pi Kubernetes cluster and configure OpenEBS:</p>
+<ul>
+<li>A microSD card (4 GB minimum, 8 GB recommended)</li>
+<li>A computer with a microSD card drive</li>
+<li>A Raspberry Pi 2, 3, or 4 (1 or more)</li>
+<li>A micro-USB power cable (USB-C for the Pi 4)</li>
+<li>A Wi-Fi network or an ethernet cable with an internet connection</li>
+<li>(Optional) A monitor with an HDMI interface</li>
+<li>(Optional) An HDMI cable for the Pi 2 and 3 and a micro-HDMI cable for the Pi 4</li>
+<li>(Optional) A USB keyboard</li>
+</ul>
+<p>Now that we’ve established what the requirements are for testing a PostgresSQL stateful workload backed by OpenEBS, let’s get started.</p>
+<h2 id="_idParaDest-186"><a id="_idTextAnchor188"/>Step 1 – Creating the MicroK8s Raspberry Pi cluster </h2>
+<p>Please follow<a id="_idIndexMarker1003"/> the steps that we covered in <a href="B18115_05.xhtml#_idTextAnchor070"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Implementing Updates on Multi-Node Raspberry Pi Kubernetes Clusters</em>, to create the MicroK8s<a id="_idIndexMarker1004"/> Raspberry Pi cluster; here’s a quick refresher:</p>
+<ol>
+<li>Install the OS image on the SD card:<ol><li>Configure the Wi-Fi access settings.</li>
+<li>Configure the remote access settings.</li>
+<li>Configure the control group settings.</li>
+<li>Configure the hostname.</li>
+</ol></li>
+<li>Install and configure MicroK8s.</li>
+<li>Add a worker node.</li>
+</ol>
+<p>A fully functional multi-node Kubernetes cluster would look as follows. To summarize, we have installed MicroK8s on the Raspberry Pi boards and joined multiple deployments to form the cluster. We’ve also added nodes to the cluster:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer298">
+<img alt="Figure 11.4 – Fully functional MicroK8s Raspberry Pi cluster " height="315" src="image/Figure_11.04_B18115.jpg" width="771"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.4 – Fully functional MicroK8s Raspberry Pi cluster</p>
+<p>Now, let’s enable the OpenEBS add-on.</p>
+<h2 id="_idParaDest-187"><a id="_idTextAnchor189"/>Step 2 – Enabling the OpenEBS add-on </h2>
+<p>The OpenEBS add-on is available<a id="_idIndexMarker1005"/> with MicroK8s by<a id="_idIndexMarker1006"/> default. Use the following command to enable OpenEBS:</p>
+<p class="source-code">microk8s enable openebs</p>
+<p>The output of the following command indicates that the <strong class="source-inline">iscsid</strong> controller must be enabled<a id="_idIndexMarker1007"/> as a prerequisite. For storage management, OpenEBS uses the <strong class="bold">Internet Small Computer System Interface</strong> (<strong class="bold">iSCSI</strong>) technology. The iSCSI protocol is a TCP/IP-based protocol for creating storage area networks and establishing and managing interconnections between IP storage devices, hosts, and clients (SANs). These SANs allow the SCSI protocol to be used in high-speed data transmission networks with block-level data transfer between different data storage networks:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer299">
+<img alt="Figure 11.5 – Enabling the OpenEBS add-on " height="123" src="image/Figure_11.05_B18115.jpg" width="1051"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.5 – Enabling the OpenEBS add-on</p>
+<p>Use the following command to enable the <strong class="source-inline">iscsid</strong> controller:</p>
+<p class="source-code">sudo systemctl enable iscsid</p>
+<p>The following output<a id="_idIndexMarker1008"/> indicates that <strong class="source-inline">iscsid</strong> has been<a id="_idIndexMarker1009"/> installed successfully. Now, we can enable the OpenEBS add-on:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer300">
+<img alt="Figure 11.6 – Enabling the iSCSI controller " height="102" src="image/Figure_11.06_B18115.jpg" width="930"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.6 – Enabling the iSCSI controller</p>
+<p>The following output indicates that the OpenEBS add-on has been enabled successfully: </p>
+<div>
+<div class="IMG---Figure" id="_idContainer301">
+<img alt="Figure 11.7 – Enabling the OpenEBS add-on " height="584" src="image/Figure_11.07_B18115.jpg" width="763"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.7 – Enabling the OpenEBS add-on</p>
+<p>The Helm3 add-on is also enabled by default. Before we move on, let’s make sure that all of the OpenEBS components are up and running using the following command:</p>
+<p class="source-code">kubectl get pods –n openebs</p>
+<p>The following output indicates that all the components are <strong class="source-inline">Running</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer302">
+<img alt="Figure 11.8 – The OpenEBS components are up and running " height="291" src="image/Figure_11.08_B18115.jpg" width="903"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.8 – The OpenEBS components are up and running</p>
+<p>Now that<a id="_idIndexMarker1010"/> the OpenEBS add-on has been<a id="_idIndexMarker1011"/> enabled, let’s deploy a PostgreSQL stateful workload.</p>
+<h2 id="_idParaDest-188"><a id="_idTextAnchor190"/>Step 3 – Deploying the PostgreSQL stateful workload </h2>
+<p>To recap from <a href="B18115_01.xhtml#_idTextAnchor014"><em class="italic">Chapter 1</em></a>, <em class="italic">Getting Started with Kubernetes</em>, a StatefulSet is a Kubernetes workload<a id="_idIndexMarker1012"/> API object for managing stateful applications. In a typical deployment, the user is not concerned about how the pods are scheduled, so long as it has no negative impact on the deployed application. However, to preserve the state in stateful applications with persistent storage, pods must be identified. This functionality is provided by StatefulSet, which creates pods with a persistent identifier that corresponds to its value across rescheduling. This way, even if a pod is recreated, it will be correctly mapped to the storage volumes, and the application’s state will be preserved. </p>
+<p>With the popularity of deploying database clusters in Kubernetes, managing states in a containerized environment have become even more important.</p>
+<p>We’ll need to set up the following resources to get the PostgreSQL configuration up and running:</p>
+<ul>
+<li>Storage class</li>
+<li>PersistentVolume</li>
+<li>PersistentVolumeClaim</li>
+<li>StatefulSet</li>
+<li>ConfigMap</li>
+<li>Service</li>
+</ul>
+<p>To manage persistent storage, Kubernetes<a id="_idIndexMarker1013"/> provides the <strong class="source-inline">PersistentVolume</strong> and <strong class="source-inline">PersistentVolumeClaim</strong> storage mechanisms, which we briefly discussed in the introduction. Here’s a quick rundown of what they are:</p>
+<ul>
+<li><strong class="bold">PersistentVolume</strong> (<strong class="bold">PV</strong>) is stored in a cluster that has been<a id="_idIndexMarker1014"/> provisioned by a cluster administrator or dynamically provisioned using storage classes.</li>
+<li><strong class="bold">PersistentVolumeClaim</strong> (<strong class="bold">PVC</strong>) is a user’s (developer’s) request<a id="_idIndexMarker1015"/> for storage. It is comparable to a pod. PVCs consume PV resources, while pods consume node resources:</li>
+</ul>
+<div>
+<div class="IMG---Figure" id="_idContainer303">
+<img alt="Figure 11.9 – PV and PVC storage basics " height="917" src="image/Figure_11.09_B18115.jpg" width="1034"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.9 – PV and PVC storage basics</p>
+<p>Before we create a PV and PVC, let’s look at the storage<a id="_idIndexMarker1016"/> class that OpenEBS has created for us.</p>
+<p><strong class="source-inline">StorageClass</strong> allows administrators to describe the <em class="italic">classes</em> of storage that they provide. Different<a id="_idIndexMarker1017"/> classes may correspond to different <strong class="bold">Quality-of-Service</strong> (<strong class="bold">QoS</strong>) levels, backup policies, or arbitrary policies that are determined by the cluster administrators.</p>
+<p>Use the following command to retrieve the storage class that has been created by OpenEBS:</p>
+<p class="source-code">kubectl get sc</p>
+<p>The following output shows that three <strong class="source-inline">StorageClass</strong> are available:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer304">
+<img alt="Figure 11.10 – OpenEBS storage classes " height="131" src="image/Figure_11.10_B18115.jpg" width="1048"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.10 – OpenEBS storage classes</p>
+<p><strong class="source-inline">openebs-hostpath</strong> and <strong class="source-inline">openebs-device</strong> are recommended<a id="_idIndexMarker1018"/> for single-node clusters. For multi-node clusters, <strong class="source-inline">openebs-jiva-csi-default</strong> is recommended.</p>
+<p>Now, we must define <strong class="source-inline">PersistentVolume</strong>, which will use the storage class, as well as <strong class="source-inline">PersistentVolumeClaim</strong>, which will be used to claim this volume:</p>
+<pre class="source-code">kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: postgres-pv
+  labels:
+    app: postgres
+    type: local
+spec:
+  storageClassName: openebs-jiva-csi-default
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/var/data"
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: postgres-pv-claim
+  labels:
+    app: postgres
+spec:
+  storageClassName: openebs-jiva-csi-default
+  capacity:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi</pre>
+<p>Because we’re utilizing an OpenEBS disc <a id="_idIndexMarker1019"/>provisioner, we’ll need to specify where our data will be saved on the host node. We’ll use <strong class="source-inline">/var/data/</strong> in this case. The <strong class="source-inline">accessMode</strong> option is also crucial. We’ll use <strong class="source-inline">ReadWriteOnce</strong> in this case. This ensures that only one pod can write at any given moment. As a result, no two pods end up with the same writing volume. We can also specify the size of this volume, which we chose to be 5 GB.</p>
+<p class="callout-heading">Note on Access Modes</p>
+<p class="callout">Even though a volume supports several access modes, they can only be mounted one at a time:</p>
+<p class="callout"><strong class="bold">ReadOnlyMany</strong> (<strong class="bold">ROX</strong>): Can be mounted by multiple nodes<a id="_idIndexMarker1020"/> in read-only mode</p>
+<p class="callout"><strong class="bold">ReadWriteOnce</strong> (<strong class="bold">RWO</strong>): Can be mounted by a single<a id="_idIndexMarker1021"/> node in read-write mode</p>
+<p class="callout"><strong class="bold">ReadWriteMany</strong> (<strong class="bold">RWX</strong>): Multiple nodes can be mounted<a id="_idIndexMarker1022"/> in read-write mode</p>
+<p>Use the following command to create the PV and PVC:</p>
+<p class="source-code">kubectl apply –f postgres.yaml</p>
+<p>The following output indicates that <strong class="source-inline">PersistentVolume</strong> and <strong class="source-inline">PersistentVolumeClaim</strong> have been created successfully:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer305">
+<img alt="Figure 11.11 – PV and PVC created successfully " height="87" src="image/Figure_11.11_B18115.jpg" width="649"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.11 – PV and PVC created successfully</p>
+<p>Before moving on, let’s check if PV and PVC are <strong class="source-inline">Bound</strong>. A <strong class="source-inline">Bound</strong> state indicates that the application has access to the necessary storage:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer306">
+<img alt="Figure 11.12 – PV and PVC are bound " height="186" src="image/Figure_11.12_B18115.jpg" width="1297"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.12 – PV and PVC are bound</p>
+<p>If a PVC becomes stuck<a id="_idIndexMarker1023"/> waiting, <strong class="source-inline">StatefulSet</strong> will get stuck as well, as it will be unable to access its storage. As a result, double-check that both <strong class="source-inline">StorageClass</strong> and <strong class="source-inline">PersistentVolume</strong> have been set up correctly.</p>
+<p>Now that we’ve set up the PV and PVC, we’ll set up <strong class="source-inline">ConfigMap</strong> with configurations such as the username and password required for our setup. To keep things simple in this example, we’ve hardcoded the values inside <strong class="source-inline">ConfigMap</strong>:</p>
+<pre class="source-code">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-configuration
+  labels:
+    app: postgres
+data:
+  POSTGRES_DB: postgresdb
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgrespassword</pre>
+<p>Use the following command to create <strong class="source-inline">ConfigMap</strong>:</p>
+<p class="source-code">kubectl apply –f postgres-config.yaml</p>
+<p>The following output indicates that the <strong class="source-inline">postgres-configuration.yaml</strong> file’s <strong class="source-inline">ConfigMap</strong> has been created successfully:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer307">
+<img alt="Figure 11.13 – PostgreSQL ConfigMap created " height="60" src="image/Figure_11.13_B18115.jpg" width="659"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.13 – PostgreSQL ConfigMap created</p>
+<p>Let’s use the <strong class="source-inline">describe</strong> command<a id="_idIndexMarker1024"/> to fetch the details of the <strong class="source-inline">ConfigMap</strong> object that we have created. The following output shows that the configuration required for our PostgreSQL setup is ready:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer308">
+<img alt="Figure 11.14 – PostgreSQL ConfigMap " height="480" src="image/Figure_11.14_B18115.jpg" width="792"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.14 – PostgreSQL ConfigMap</p>
+<p>Now that we’ve defined our <strong class="source-inline">ConfigMap</strong> and storage volume, we can define a <strong class="source-inline">StatefulSet</strong> that will make use of them:</p>
+<pre class="source-code">apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-statefulset
+  labels:
+    app: postgres
+spec:
+  serviceName: "postgres"
+  replicas: 2
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:12
+        envFrom:
+        - configMapRef:
+            name: postgres-configuration
+        ports:
+        - containerPort: 5432
+          name: postgresdb
+        volumeMounts:
+        - name: pv-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: pv-data
+        persistentVolumeClaim:
+          claimName: postgres-pv-claim
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  labels:
+    app: postgres
+spec:
+  ports:
+  - port: 5432
+    name: postgres
+  type: NodePort 
+  selector:
+    app: postgres</pre>
+<p>The definition of a <strong class="source-inline">StatefulSet</strong> is similar to that of deployments. We’ve added two more things:</p>
+<ul>
+<li>We’ve loaded the environment variables from <strong class="source-inline">ConfigMap</strong> into the pod. </li>
+<li>We’ve defined our volume, which will map to <strong class="source-inline">/var/lib/PostgreSQL/data</strong> within our pod. This volume is defined using the PVC that we discussed earlier. </li>
+</ul>
+<p>Finally, we have also created a <strong class="source-inline">Service</strong> resource<a id="_idIndexMarker1025"/> that will expose our database.</p>
+<p>Use the following command to create the <strong class="source-inline">StatefulSet</strong> and <strong class="source-inline">Service</strong> resources to expose the database:</p>
+<p class="source-code">kubectl apply –f postgres-deployment.yaml</p>
+<p>The following output indicates that both <strong class="source-inline">StatefulSet</strong> and <strong class="source-inline">Service</strong> have been created successfully:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer309">
+<img alt="Figure 11.15 – Postgres deployment succeeded " height="81" src="image/Figure_11.15_B18115.jpg" width="702"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.15 – Postgres deployment succeeded</p>
+<p>Before moving on, let’s verify that the pods and service have been created. The following output shows that the pods are <strong class="source-inline">Running</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer310">
+<img alt="Figure 11.16 – The Postgres pods are Running  " height="77" src="image/Figure_11.16_B18115.jpg" width="670"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.16 – The Postgres pods are Running </p>
+<p>The following output shows that the service has been exposed on port <strong class="source-inline">5432</strong>:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer311">
+<img alt="Figure 11.17 – The Postgres service has been exposed " height="60" src="image/Figure_11.17_B18115.jpg" width="1022"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.17 – The Postgres service has been exposed</p>
+<p>Let’s also look at where the <strong class="source-inline">StatefulSet</strong> pods are distributed across the cluster using the following command:</p>
+<p class="source-code">kubectl get pods –o wide | grep post</p>
+<p>The following output shows that the PostgreSQL database pods are running on two nodes (<strong class="source-inline">1</strong> in <strong class="source-inline">controlplane</strong> and <strong class="source-inline">1</strong> in <strong class="source-inline">worker1</strong>):</p>
+<div>
+<div class="IMG---Figure" id="_idContainer312">
+<img alt="Figure 11.18 – The database pods are running on two nodes " height="81" src="image/Figure_11.18_B18115.jpg" width="1067"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.18 – The database pods are running on two nodes</p>
+<p>With that, we have successfully configured<a id="_idIndexMarker1026"/> PostgreSQL and it’s up and running.</p>
+<p>Now, let’s create a test database and a table, and add a few records.</p>
+<h2 id="_idParaDest-189"><a id="_idTextAnchor191"/>Step 4 – Creating the test data </h2>
+<p>To create test data, use the <strong class="source-inline">PgSQL</strong> client or log into one<a id="_idIndexMarker1027"/> of the pods so that we can create a test database and table. </p>
+<p>Use the following command to log into the PostgreSQL pod:</p>
+<p class="source-code">kubectl exec –it postgres-statefulset-0 -- psql –U postgres</p>
+<p>The following output shows that we can log into the PostgreSQL pod:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer313">
+<img alt="Figure 11.19 – Logging into one of the PostgreSQL pods " height="102" src="image/Figure_11.19_B18115.jpg" width="901"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.19 – Logging into one of the PostgreSQL pods</p>
+<p>Now that we have logged into the pod, we have access to the <strong class="source-inline">psql</strong> PostgreSQL client. Use the following command to create the test database:</p>
+<p class="source-code">CREATE DATABASE inventory_mgmt;</p>
+<p>The following output shows that our test database, <strong class="source-inline">inventory_mgmt</strong>, has been created:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer314">
+<img alt="Figure 11.20 – Creating the test database " height="60" src="image/Figure_11.20_B18115.jpg" width="459"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.20 – Creating the test database</p>
+<p>Let’s switch our connection<a id="_idIndexMarker1028"/> to the new database we have created using <strong class="source-inline">\c inventory_mgmt</strong>. The following output indicates that we have successfully switched to a new database. Now, we can create a table:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer315">
+<img alt="Figure 11.21 – Switching the connection to the new database " height="60" src="image/Figure_11.21_B18115.jpg" width="767"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.21 – Switching the connection to the new database</p>
+<p>In the new database, use the <strong class="source-inline">CREATE TABLE</strong> command to create a test table. The following output indicates that a new table called <strong class="source-inline">products_master</strong> has been created successfully:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer316">
+<img alt="Figure 11.22 – Creating the test table " height="153" src="image/Figure_11.22_B18115.jpg" width="532"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.22 – Creating the test table</p>
+<p>Now that the test table has been created, use the <strong class="source-inline">INSERT</strong> command to add a few records, as shown here:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer317">
+<img alt="Figure 11.23 – Adding a few records to the test table " height="90" src="image/Figure_11.23_B18115.jpg" width="601"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.23 – Adding a few records to the test table</p>
+<p>Here, we have added records<a id="_idIndexMarker1029"/> to our test table. Before we move on, let’s use the <strong class="source-inline">SELECT</strong> command to list the records, as shown in the following screenshot:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer318">
+<img alt="Figure 11.24 – Records from the test table " height="174" src="image/Figure_11.24_B18115.jpg" width="529"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.24 – Records from the test table</p>
+<p>To recap, in this section, we have created a test database, created a new table, and added a few records to the table. Now, let’s simulate node failure.</p>
+<h2 id="_idParaDest-190"><a id="_idTextAnchor192"/>Step 5 – Simulating node failure</h2>
+<p>To simulate node failure, we will use<a id="_idIndexMarker1030"/> the <strong class="source-inline">cordon</strong> command to mark the node as <strong class="source-inline">unschedulable</strong>. If the node is <strong class="source-inline">unschedulable</strong>, the Kubernetes controller will not schedule new pods on this node.</p>
+<p>Let’s locate the PostgreSQL database pod’s node and cordon it off, preventing new pods from being scheduled on it.</p>
+<p>The following output shows that the database pods are running on <strong class="source-inline">2</strong> nodes (<strong class="source-inline">1</strong> in <strong class="source-inline">controlplane</strong> and <strong class="source-inline">1</strong> in <strong class="source-inline">worker1</strong>):</p>
+<div>
+<div class="IMG---Figure" id="_idContainer319">
+<img alt="Figure 11.25 – PostgreSQL database pods " height="81" src="image/Figure_11.18_B18115.jpg" width="1067"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.25 – PostgreSQL database pods</p>
+<p>Let’s use <strong class="source-inline">cordon</strong> on the <strong class="source-inline">worker1</strong> node so that new pods<a id="_idIndexMarker1031"/> are prevented from being scheduled on it:</p>
+<p class="source-code">kubectl cordon worker1</p>
+<p>The following output shows that <strong class="source-inline">worker1</strong> has been cordoned:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer320">
+<img alt="Figure 11.26 – Cordoned Worker1 node " height="60" src="image/Figure_11.26_B18115.jpg" width="494"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.26 – Cordoned Worker1 node</p>
+<p>Even though the <strong class="source-inline">worker1</strong> node has been cordoned, existing pods will still run, so we can use the <strong class="source-inline">drain</strong> command to delete all the pods:</p>
+<p class="source-code">kubectl drain --force --ignore-daemonsets worker1</p>
+<p>The following output shows that <strong class="source-inline">worker1</strong> can’t be drained due to pods with local storage provisioned:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer321">
+<img alt="Figure 11.27 – Draining the Worker1 node " height="153" src="image/Figure_11.27_B18115.jpg" width="1024"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.27 – Draining the Worker1 node</p>
+<p>Finally, we will use the <strong class="source-inline">kubectl delete</strong> command to delete the pod that is currently running on the cordoned node.</p>
+<p>The following output shows that pods running on <strong class="source-inline">worker1</strong> have been deleted successfully:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer322">
+<img alt="Figure 11.28 – Deleting the pods running on the Worker1 node " height="60" src="image/Figure_11.28_B18115.jpg" width="703"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.28 – Deleting the pods running on the Worker1 node</p>
+<p>The Kubernetes controller<a id="_idIndexMarker1032"/> will now recreate a new pod and schedule it in a different node as soon as the pod is deleted. It cannot be placed on the same node since scheduling has been disabled; this is because we cordoned the <strong class="source-inline">worker1</strong> node.</p>
+<p>Let’s inspect where the pods are running using the <strong class="source-inline">kubectl get pods</strong> command. The following output shows that the new pod has been rescheduled to the <strong class="source-inline">controlplane</strong> node:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer323">
+<img alt="Figure 11.29 – PostgreSQL database pods " height="81" src="image/Figure_11.29_B18115.jpg" width="1243"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.29 – PostgreSQL database pods</p>
+<p>Even though the PVC has a <strong class="source-inline">ReadWriteOnce</strong> access mode and is mounted by a specific node for read-write access, the new pod that has been recreated can use the same PVC that has been abstracted by the underlying <strong class="source-inline">OpenEBS</strong> volumes into a single storage layer.</p>
+<p>To verify if the new pod is using the same PVC, let’s connect to the new pod and see if the data is still intact by using the <strong class="source-inline">kubectl exec</strong> command:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer324">
+<img alt="Figure 11.30 – Logging into the PostgreSQL pod " height="105" src="image/Figure_11.30_B18115.jpg" width="925"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.30 – Logging into the PostgreSQL pod</p>
+<p>The following output shows that the data is intact even after deleting the pod and rescheduling it on a different node. This confirms that the replication <strong class="source-inline">OpenEBS</strong> is working properly:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer325">
+<img alt="Figure 11.31 – The data is intact " height="291" src="image/Figure_11.31_B18115.jpg" width="899"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 11.31 – The data is intact</p>
+<p>To summarize, data engines<a id="_idIndexMarker1033"/> are responsible for maintaining the actual state generated by stateful applications, as well as providing sufficient storage capacity to retain the information and ensure that it remains intact over time. For example, the state can be created once, accessed<a id="_idIndexMarker1034"/> over the next few minutes or<a id="_idIndexMarker1035"/> days, updated, or simply left<a id="_idIndexMarker1036"/> to be retrieved <a id="_idIndexMarker1037"/>months or years later. You can use <strong class="bold">Local PV</strong>, <strong class="bold">Jiva</strong>, <strong class="bold">cStor</strong>, or <strong class="bold">Mayastor</strong>, depending on the type of storage associated with your Kubernetes worker nodes and your application performance needs. </p>
+<p>Choosing an engine is entirely dependent on your platform (resources and storage type), the application workload, and the application’s current and future capacity and/or performance growth. In the next section, we’ll look at some Kubernetes storage best practices, as well as some recommendations for data engines.</p>
+<h1 id="_idParaDest-191"><a id="_idTextAnchor193"/>Kubernetes storage best practices</h1>
+<p>For modern containerized applications<a id="_idIndexMarker1038"/> deployed on Kubernetes, storage is a crucial concern. Kubernetes has progressed from local node filesystems mounted in containers to NFS, and finally to native storage, as described by the CSI specification, which allows for data durability and sharing. In this section, we’ll look at some of the best practices<a id="_idIndexMarker1039"/> to take into consideration when configuring a PV:</p>
+<ul>
+<li>Avoid statically creating and allocating PVs<a id="_idIndexMarker1040"/> to decrease management costs and facilitate scaling. Use dynamic provisioning instead. Define an appropriate reclaim policy in your storage class to reduce storage costs when pods are deleted.</li>
+<li>Each node can only support a certain number of sizes, so different node sizes provide varying amounts of local storage and capacity. To install the optimum node sizes, plan accordingly for your application’s demands.</li>
+<li>The life cycle of a PV<a id="_idIndexMarker1041"/> is independent of any individual container in the cluster. A PVC is a request for a specific type of storage made by a container user or application. Kubernetes documentation suggests the following for building a PV:<ul><li>PVCs should always be included in the container setup.</li>
+<li>PVs should never be used in container configuration since they will bind a container to a specific volume.</li>
+<li>PVCs that don’t specify a specific class will fail if they don’t have a default <strong class="source-inline">Storage Class</strong>.</li>
+<li>Give Storage Classes names that are meaningful.</li>
+</ul></li>
+<li>At the namespace level, resource quotas are also provided, giving you another level of control over cluster resource utilization. The total amount of CPU, memory, and storage resources that all the containers executing in the namespace can utilize is limited by resource limits. It can also set storage resource limits based on service levels or backup requirements.</li>
+<li>Persistent storage hardware comes in a variety of shapes and sizes. SSDs, for example, outperform HDDs in terms of read/write performance, and NVMe SSDs are especially well-suited to high workloads. QoS criteria are added to the description of a PVC by some of the Kubernetes providers. This means that it prioritizes read/write volumes for specific installations, allowing for higher performance if the application requires it.</li>
+</ul>
+<p>Now, let’s look at some of the guidelines for selecting OpenEBS data engines.</p>
+<h1 id="_idParaDest-192"><a id="_idTextAnchor194"/>Guidelines on choosing OpenEBS data engines</h1>
+<p>Each storage engine<a id="_idIndexMarker1042"/> has its advantages, as shown in the following table. Choosing an engine is entirely dependent on your platform (resources and storage type), the application workload, and the application’s current and future capacity and/or performance growth. The following guidelines will assist you in selecting an engine:</p>
+<div>
+<div class="IMG---Figure" id="_idContainer326">
+<img alt="Table 11.1 – Choosing OpenEBS data engines " height="1272" src="image/Table_11.01_B18115.jpg" width="1645"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 11.1 – Choosing OpenEBS data engines</p>
+<p>In conclusion, OpenEBS offers a set<a id="_idIndexMarker1043"/> of data engines, each of which is designed and optimized for executing stateful workloads with varied capabilities on Kubernetes nodes with varying resource levels. In a Kubernetes cluster, platform SREs or administrators often choose one or more data engines. These data engines are chosen based on node capabilities or stateful application capabilities.</p>
+<h1 id="_idParaDest-193"><a id="_idTextAnchor195"/>Summary</h1>
+<p>In this chapter, we learned how Kubernetes persistent storage provides a convenient way for Kubernetes applications to request and consume storage resources. The PVC is declared by the user’s pod, and Kubernetes will find a PV to pair it with. If there is no PV to pair with, then it will go to the corresponding <strong class="source-inline">StorageClass</strong> and assist it in creating a PV before binding it to the PVC. The newly created PV must use the attached master node to create a remote disc for the host and then mount the attached remote disc to the host directory using the <strong class="source-inline">kubelet</strong> component of each node.</p>
+<p>Kubernetes has made significant improvements to facilitate running stateful workloads by giving platform (or cluster administrators) and application developers the necessary abstractions. These abstractions ensure that different types of file and block storage (whether ephemeral or persistent, local or remote) are available wherever a container is scheduled (including provisioning/creating, attaching, mounting, unmounting, detaching, and deleting volumes), storage capacity management (container ephemeral storage usage, volume resizing, and generic operations), and influencing container scheduling based on storage (data gravity, availability, and so on).</p>
+<p>In the next chapter, you will learn how to deploy the Istio and Linkerd service mesh. You will also learn how to deploy and run a sample application, as well as how to configure and access dashboards.</p>
+</div>
+<div>
+<div id="_idContainer328">
+</div>
+</div>
+</div>
+</body></html>
