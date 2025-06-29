@@ -1,0 +1,942 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Working with Networking, Load Balancers, and Ingress</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we will discuss Kubernetes' approach to cluster networking and how it differs from other approaches. We will describe key requirements for Kubernetes networking solutions and explore why these are essential for simplifying cluster operations. We will investigate DNS in the Kubernetes cluster, dig into the <strong>Container Network Interface</strong> (<strong>CNI</strong>) and plugin ecosystems, and will take a deeper dive into services and how the Kubernetes proxy works on each node. Finishing up, we will look at a brief overview of some higher level isolation features for multitenancy.</p>
+<p>In this chapter, we will cover the following topics:</p>
+<ul>
+<li>Kubernetes networking</li>
+<li>Advanced services concepts</li>
+<li>Service discovery</li>
+<li>DNS, CNI, and ingress</li>
+<li>Namespace limits and quotas</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>You'll need a running Kubernetes cluster like the one we created in the previous chapters. You'll also need access to deploy the cluster through the <kbd>kubectl</kbd> command.</p>
+<p><span>The GitHub repository for this chapter can be found at <a href="https://github.com/PacktPublishing/Getting-Started-with-Kubernetes-third-edition/tree/master/Code-files/Chapter03">https://github.com/PacktPublishing/Getting-Started-with-Kubernetes-third-edition/tree/master/Code-files/Chapter03</a></span>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Container networking</h1>
+                </header>
+            
+            <article>
+                
+<p>Networking is a vital concern for production-level operations. At a service level, we need a reliable way for our application components to find and communicate with each other. Introducing containers and clustering into the mix makes things more complex as we now have multiple networking namespaces to bear in mind. Communication and discovery now becomes a feat that must navigate container IP space, host networking, and sometimes even multiple data center network topologies.</p>
+<p>Kubernetes benefits here from getting its ancestry from the clustering tools used by Google for the past decade. Networking is one area where Google has outpaced the competition with one of the largest networks on the planet. Earlier, Google built its own hardware switches and <strong>Software-defined Networking</strong> (<strong>SDN</strong>) to give them more control, redundancy, and efficiency in their day-to-day network operations. Many of the lessons learned from running and networking two billion containers per week have been distilled into Kubernetes, and informed how K8s networking is done.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The Docker approach</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to understand the motivation behind the K8s networking model, let's review Docker's approach to container networking.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Docker default networks</h1>
+                </header>
+            
+            <article>
+                
+<p>The following are some of Docker's default networks:</p>
+<ul>
+<li><strong>Bridge network</strong>: In a nonswarm scenario, Docker will use the bridge network driver (called <kbd>bridge</kbd>) to allow standalone containers to speak to each other. You can think of the bridge as a link layer device that forwards network traffic between segments. If containers are connected to the same bridge network, they can communicate; if they're not connected, they can't. The bridged network is the default choice unless otherwise specified. In this mode, the container has its own networking namespace and is then bridged via virtual interfaces to the host (or node, in the case of K8s) network. In the bridged network, two containers can use the same IP range because they are completely isolated. Therefore, service communication requires some additional port mapping through the host side of network interfaces.</li>
+<li><strong>Host based</strong>: Docker also offers host-based networking for standalone containers, which creates a virtual bridge called <kbd>docker0</kbd> that allocates private IP address space for the containers using that bridge. Each container gets a virtual Ethernet (<kbd>veth</kbd>) device that you can see in the container as <kbd>eth0</kbd>. Performance is greatly benefited since it removes a level of network virtualization; however, you lose the security of having an isolated network namespace. Additionally, port usage must be managed more carefully since all containers share an IP.</li>
+</ul>
+<p>There's also a none network, which creates a container with no external interface. Only a <kbd>loopback</kbd> device is shown if you inspect the network interfaces.</p>
+<p>In all of these scenarios, we are still on a single machine, and outside of  host mode, the container IP space is not available outside that machine. Connecting containers across two machines requires NAT and port mapping for communication.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Docker user-defined networks</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to address the cross-machine communication issue and allow greater flexibility, Docker also supports user-defined networks via network plugins. These networks exist independent of the containers themselves. In this way, containers can join the same existing networks. Through the new plugin architecture, various drivers can be provided for different network use cases such as the following:</p>
+<ul>
+<li><strong>Swarm</strong>: In a clustered situation with Swarm, the default behavior is an overlay network, which allows you to connect multiple Docker daemons running on multiple machines. In order to coordinate across multiple hosts, all containers and daemons must all agree on the available networks and their topologies. Overlay networking introduces a significant amount of complexity with dynamic port mapping that Kubernetes avoids.</li>
+</ul>
+<div style="padding-left: 60px" class="packt_tip">You can read more about overlay networks here: <a href="https://docs.docker.com/network/overlay/">https://docs.docker.com/network/overlay/</a>.</div>
+<ul>
+<li><span><strong>Macvlan</strong>: Docker also provides macvlan addressing, which is most similar to the networking model that Kubernetes provides, as it assigns each Docker container a MAC address that makes it appear as a physical device on your network. Macvlan offers a more efficient network virtualization and isolation as it bypasses the Linux bridge. It is important to note that as of this book's publishing, Macvlan isn't supported in most cloud providers.</span></li>
+</ul>
+<p class="mce-root"/>
+<p>As a result of these options, Docker must manage complex port allocation on a per-machine basis for each host IP, and that information must be maintained and propagated to all other machines in the cluster. Docker users a gossip protocol to manage the forwarding and proxying of ports to other containers.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The Kubernetes approach</h1>
+                </header>
+            
+            <article>
+                
+<p>Kubernetes' approach to networking differs from the Docker's, so let's see how. We can learn about Kubernetes while considering four major topics in cluster scheduling and orchestration:</p>
+<ul>
+<li style="font-weight: 400">Decoupling container-to-container communication by providing pods, not containers, with an IP address space</li>
+<li style="font-weight: 400">Pod-to-pod communication and service as the dominant communication paradigm within the Kubernetes networking model</li>
+<li style="font-weight: 400">Pod-to-service and external-to-service communications, which are provided by the <kbd>services</kbd> object</li>
+</ul>
+<p>These considerations are a meaningful simplification for the Kubernetes networking model, as there's no dynamic port mapping to track. Again, IP addressing is scoped at the pod level, which means that networking in Kubernetes requires that each pod has its own IP address. This means that all containers in a given pod share that IP address, and are considered to be in the same network namespace. We'll explore how to manage this shared IP resource when we discuss internal and external services later in this chapter. Kubernetes facilitates the pod-to-pod communication by not allowing the use of <strong>network address translation</strong> (<strong>NAT</strong>) for container-to-container or container-to-node (minion) traffic. Furthermore, the internal container IP address must match the IP address that is used to communicate with it. This underlines the Kubernetes assumption that all pods are able to communicate with all other pods regardless of the host they've landed on, and that communication then informs routing within pods to a local IP address space that is provided to containers. All containers within a given host can communicate with each other on their reserved ports via localhost. This unNATed, flat IP space simplifies networking changes when you begin scaling to thousands of pods.</p>
+<p>These rules keep much of the complexity out of our networking stack and ease the design of the applications. Furthermore, they eliminate the need to redesign network communication in legacy applications that are migrated from existing infrastructure. In greenfield applications, they allow for a greater scale in handling hundreds, or even thousands of services and application communications.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>Astute readers may have also noticed that this creates a model that's backwards compatible with VMs and physical hosts that have a similar IP architecture as pods, with a single address per VM or physical host. This means you don't have to change your approach to service discovery, loadbalancing, application configuration, and port management, and can port over your application management workflows when working with Kubernetes.</p>
+<p>K8s achieves this pod-wide IP magic using a pod container placeholder. Remember that the pause container that we saw in <a href="https://cdp.packtpub.com/getting_started_with_kubernetes__third_edition/wp-admin/post.php?post=26&amp;action=edit#post_70">Chapter 1</a>, <em>Introduction to Kubernetes</em>, in the <em>Services running on the master</em> section, is often referred to as a pod infrastructure container, and it has the important job of reserving the network resources for our application containers that will be started later on. Essentially, the pause container holds the networking namespace and IP address for the entire pod, and can be used by all the containers running within. The pause container joins first and holds the namespace while the subsequent containers in the pod join it when they start up using Docker's <kbd>--net=container:%ID%</kbd> function.</p>
+<div class="packt_tip">If you'd like to look over the code in the pause container, it's right here: <strong><a href="https://github.com/kubernetes/kubernetes/blob/master/build/pause/pause.c">https://github.com/kubernetes/kubernetes/blob/master/build/pause/pause.c</a></strong>.</div>
+<p>Kubernetes can achieve the preceding feature set using either CNI plugins for production workloads or kubenet networking for simplified cluster communication. Kubernetes can also be used when your cluster is going to rely on logical partioning provided by a cloud service provider's security groups or <strong>network access control lists</strong> (<strong>NACLs</strong>). Let's dig into the specific networking options now.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Networking options</h1>
+                </header>
+            
+            <article>
+                
+<p>There are two approaches to the networking model that we have suggested. First, you can use one of the CNI plugins that exist in the ecosystem. This involves solutions that work with native networking layers of AWS, GCP, and Azure. There are also overlay-friendly plugins, which we'll cover in the next section. CNI is meant to be a common plugin architecture for containers. It's currently supported by several orchestration tools such as Kubernetes, Mesos, and CloudFoundry.</p>
+<div class="packt_tip">Network plugins are considered in alpha and therefore their capabilities, content, and configuration will change rapidly.</div>
+<p class="mce-root"/>
+<p>If you're looking for a simpler alternative for testing and using smaller clusters, you can use the kubenet plugin, which uses <kbd>bridge</kbd> and <kbd>host-local</kbd> CNI plugs with a straightforward implementation of <kbd>cbr0</kbd>. This plugin is only available on Linux, and doesn't provide any advanced features. As it's often used with the supplementation of a cloud provider's networking stance, it does not handle policies or cross-node networking.</p>
+<p>Just as with CPU, memory, and storage, Kubernetes takes advantage of network namespaces, each with their own iptables rules, interfaces, and route tables.  Kubernetes uses iptables and NAT to manage multiple logical addresses that sit behind a single physical address, though you have the option to provide your cluster with multiple physical interfaces (NICs). Most people will find themselves generating multiple logical interfaces and using technologies such as multiplexing, virtual bridges, and hardware switching using SR-IOV in order to create multiple devices.</p>
+<div class="packt_tip">You can find out more information at <strong><a href="https://github.com/containernetworking/cni">https://github.com/containernetworking/cni</a></strong>.</div>
+<p>Always refer to the Kubernetes documentation for the latest and full list of supported networking options.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Networking comparisons</h1>
+                </header>
+            
+            <article>
+                
+<p>To get a better understanding of networking in containers, it can be instructive to look at the popular choices for container networking. The following approaches do not make an exhaustive list, but should give a taste of the options available.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Weave</h1>
+                </header>
+            
+            <article>
+                
+<p><strong>Weave</strong> provides an overlay network for Docker containers. It can be used as a plugin with the new Docker network plugin interface, and it is also compatible with Kubernetes through a CNI plugin. Like many overlay networks, many criticize the performance impact of the encapsulation overhead. Note that they have recently added a preview release with <strong>Virtual Extensible LAN</strong> (<strong>VXLAN</strong>) encapsulation support, which greatly improves performance. For more information, visit <span class="URLPACKT"><a href="http://blog.weave.works/2015/06/12/weave-fast-datapath/">http://blog.weave.works/2015/06/12/weave-fast-datapath/</a></span>.</p>
+<p class="mce-root"><a href="http://blog.weave.works/2015/06/12/weave-fast-datapath/"> </a></p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Flannel</h1>
+                </header>
+            
+            <article>
+                
+<p><strong>Flannel</strong> comes from CoreOS and is an etcd-backed overlay. Flannel gives a full subnet to each host/node, enabling a similar pattern to the Kubernetes practice of a routable IP per pod or group of containers. Flannel includes an in-kernel VXLAN encapsulation mode for better performance and has an experimental multi-network mode similar to the overlay Docker plugin. For more information, visit <span class="URLPACKT"><a href="https://github.com/coreos/flannel">https://github.com/coreos/flannel</a></span>.<a href="https://github.com/coreos/flannel"/></p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Project Calico</h1>
+                </header>
+            
+            <article>
+                
+<p><strong>Project Calico</strong> is a layer 3-based networking model that uses the built-in routing functions of the Linux kernel. Routes are propagated to virtual routers on each host via <strong>Border Gateway Protocol</strong> (<strong>BGP</strong>). Calico can be used for anything from small-scale deploys to large internet-scale installations. Because it works at a lower level on the network stack, there is no need for additional NAT, tunneling, or overlays. It can interact directly with the underlying network infrastructure. Additionally, it has a support for network-level ACLs to provide additional isolation and security. For more information, visit <a href="http://www.projectcalico.org/"><span class="URLPACKT">http://www.projectcalico.org/</span></a>.<a href="http://www.projectcalico.org/"><br/></a></p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Canal</h1>
+                </header>
+            
+            <article>
+                
+<p><strong>Canal</strong> merges both Calico for the network policy and Flannel for the overlay into one solution. It supports both Calico and Flannel type overlays and uses the Calico policy enforcement logic. Users can choose from overlay and non-overlay options with this setup as it combines the features of the preceding two projects. For more information, visit <a href="https://github.com/tigera/canal">https://github.com/tigera/canal</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Kube-router</h1>
+                </header>
+            
+            <article>
+                
+<p>Kube-router option is a purpose-built networking solution that aims to provide high performance that's easy to use. It's based on the Linux LVS/IPVS kernel load balancing technologies as proxy. It also uses kernel-based networking and uses iptables as a network policy enforcer. Since it doesn't use an overlay technology, it's potentially a high-performance option for the future. For more information, visit the following URL: <a href="https://github.com/cloudnativelabs/kube-router">https://github.com/cloudnativelabs/kube-router</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Balanced design</h1>
+                </header>
+            
+            <article>
+                
+<p>It's important to point out the balance that Kubernetes is trying to achieve by placing the IP at the pod level. Using unique IP addresses at the host level is problematic as the number of containers grows. Ports must be used to expose services on specific containers and allow external communication. In addition to this, the complexity of running multiple services that may or may not know about each other (and their custom ports) and managing the port space becomes a big issue.</p>
+<p>However, assigning an IP address to each container can be overkill. In cases of sizable scale, overlay networks and NATs are needed in order to address each container. Overlay networks add latency, and IP addresses would be taken up by backend services as well since they need to communicate with their frontend counterparts.</p>
+<p>Here, we really see an advantage in the abstractions that Kubernetes provides at the application and service level. If I have a web server and a database, we can keep them on the same pod and use a single IP address. The web server and database can use the local interface and standard ports to communicate, and no custom setup is required. Furthermore, services on the backend are not needlessly exposed to other application stacks running elsewhere in the cluster (but possibly on the same host). Since the pod sees the same IP address that the applications running within it see, service discovery does not require any additional translation.</p>
+<p>If you need the flexibility of an overlay network, you can still use an overlay at the pod level. Weave, Flannel, and Project Calico can be used with Kubernetes as well as a plethora of other plugins and overlays that are available.</p>
+<p>This is also very helpful in the context of scheduling the workloads. It is key to have a simple and standard structure for the scheduler to match constraints and understand where space exists on the cluster's network at any given time. This is a dynamic environment with a variety of applications and tasks running, so any additional complexity here will have rippling effects.</p>
+<p>There are also implications for service discovery. New services coming online must determine and register an IP address on which the rest of the world, or at least a cluster, can reach them. If NAT is used, the services will need an additional mechanism to learn their externally facing IP.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Advanced services</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's explore the IP strategy as it relates to services and communication between containers. If you recall, in the <em>Services</em> section of <a href=""><span class="ChapterrefPACKT">Chapter 2</span></a><span>, <em>Pods, Services, Replication Controllers, and Labels</em></span>, you learned that Kubernetes is using <kbd>kube-proxy</kbd> to determine the proper pod IP address and port serving each request. Behind the scenes, <kbd>kube-proxy</kbd> is actually using virtual IPs and iptables to make all this magic work.</p>
+<p><kbd>kube-proxy</kbd> now has two modes—<em>userspace</em> and <em>iptables</em>. As of now, 1.2 iptables is the default mode. In both modes, <kbd>kube-proxy</kbd> is running on every host. Its first duty is to monitor the API from the Kubernetes master. Any updates to services will trigger an update to iptables from <kbd>kube-proxy</kbd>. For example, when a new service is created, a virtual IP address is chosen and a rule in iptables is set, which will direct its traffic to <kbd>kube-proxy</kbd> via a random port. Thus, we now have a way to capture service-destined traffic on this node. Since <kbd>kube-proxy</kbd> is running on all nodes, we have cluster-wide resolution for the service <strong>VIP</strong> (short for <strong>virtual IP</strong>). Additionally, DNS records can point to this VIP as well.</p>
+<p>In the userspace mode,<em> </em>we have a hook created in iptables, but the proxying of traffic is still handled by <kbd>kube-proxy</kbd>. The iptables rule is only sending traffic to the service entry in <kbd>kube-proxy</kbd> at this point. Once <kbd>kube-proxy</kbd> receives the traffic for a particular service, it must then forward it to a pod in the service's pool of candidates. It does this using a random port that was selected during service creation.</p>
+<p>Refer to the following diagram for an overview of the flow:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/7e34dd71-9107-4e88-9d3d-947eced58681.png" style="width:43.75em;height:33.58em;" width="1654" height="1269"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Kube-proxy communication</div>
+<div class="packt_tip"><span>It is also possible to always forward traffic from the same client IP to the same backend pod/container using the</span> <kbd>sessionAffinity</kbd> <span>element in your service definition.</span></div>
+<p>In the iptables mode, the pods are coded directly in the iptable rules. This removes the dependency on <kbd>kube-proxy</kbd> for actually proxying the traffic. The request will go straight to iptables and then on to the pod. This is faster and removes a possible point of failure. Readiness probe, as we discussed <span>in the <em>Health Check </em>section of</span> <a href=""><span class="ChapterrefPACKT">Chapter 2</span></a><span>, <em>Pods, Services, Replication Controllers, and Labels</em>,</span><span> is</span> your friend here as this mode also loses the ability to retry pods.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">External services</h1>
+                </header>
+            
+            <article>
+                
+<p>In the previous chapter, we saw a few service examples. For testing and demonstration purposes, we wanted all the services to be externally accessible. This was configured by the <kbd>type: LoadBalancer</kbd> element in our service definition. The <kbd>LoadBalancer</kbd> type creates an external load balancer on the cloud provider. We should note that support for external load balancers varies by provider, as does the implementation. In our case, we are using GCE, so integration is pretty smooth. The only additional setup needed is to open firewall rules for the external service ports.</p>
+<p>Let's dig a little deeper and do a <kbd>describe</kbd> command on one of the services from the <em>More on labels</em> section in <a href=""><span class="ChapterrefPACKT">Chapter 2</span></a><span>, <em>Pods, Services, Replication Controllers, and Labels</em></span>:</p>
+<pre><strong>$ kubectl describe service/node-js-labels</strong></pre>
+<p>The following screenshot is the result of the preceding command:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/4e9a1c4f-8a04-4ef7-b7cc-41ea5396e833.png" style="width:33.67em;height:10.75em;" width="674" height="215"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Service description</div>
+<p>In the output of the preceding screenshot, you'll note several key elements. Our <kbd>Namespace:</kbd> is set to <kbd>default</kbd>, the <kbd>Type:</kbd> is <kbd>LoadBalancer</kbd>, and we have the external IP listed under <kbd>LoadBalancer Ingress:</kbd>. Furthermore, we can see <kbd>Endpoints:</kbd>, which shows us the IPs of the pods that are available to answer service requests.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Service discovery</h1>
+                </header>
+            
+            <article>
+                
+<p>As we discussed earlier, the Kubernetes master keeps track of all service definitions and updates. Discovery can occur in one of three ways. The first two methods use Linux environment variables. There is support for the Docker link style of environment variables, but Kubernetes also has its own naming convention. Here is an example of what our <kbd>node-js</kbd> service example might look like using K8s environment variables (note that IPs will vary):</p>
+<pre><strong>NODE_JS_PORT_80_TCP=tcp://10.0.103.215:80</strong><br/><strong>NODE_JS_PORT=tcp://10.0.103.215:80</strong><br/><strong>NODE_JS_PORT_80_TCP_PROTO=tcp</strong><br/><strong>NODE_JS_PORT_80_TCP_PORT=80</strong><br/><strong>NODE_JS_SERVICE_HOST=10.0.103.215</strong><br/><strong>NODE_JS_PORT_80_TCP_ADDR=10.0.103.215</strong><br/><strong>NODE_JS_SERVICE_PORT=80</strong></pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p>Another option for discovery is through DNS. While environment variables can be useful when DNS is not available, it has drawbacks. The system only creates variables at creation time, so services that come online later will not be discovered or will require some additional tooling to update all the system environments.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Internal services</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's explore the other types of services that we can deploy. First, by default, services are only internally facing. You can specify a type of <kbd>clusterIP</kbd> to achieve this, but, if no type is defined, <kbd>clusterIP</kbd> is the assumed type. Let's take a look at an example, <kbd><span>nodejs-service-internal.yaml</span></kbd>; note the lack of the <kbd>type</kbd> element:</p>
+<pre>apiVersion: v1 <br/>kind: Service <br/>metadata: <br/>  name: node-js-internal <br/>  labels: <br/>    name: node-js-internal <br/>spec: <br/>  ports: <br/>  - port: 80 <br/>  selector: <br/>    name: node-js </pre>
+<p>Use this listing to create the service definition file. You'll need a healthy version of the <kbd>node-js</kbd> RC (Listing <kbd>nodejs-health-controller-2.yaml</kbd>). As you can see, the selector matches on the pods named <kbd>node-js</kbd> that our RC launched in the previous chapter. We will create the service and then list the currently running services with a filter as follows:</p>
+<pre><strong>$ kubectl create -f nodejs-service-internal.yaml</strong><br/><strong>$ kubectl get services -l name=node-js-internal</strong></pre>
+<p>The following screenshot is the result of the preceding command:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/2ad58904-bda0-4cc4-955b-6d32a05d3ceb.png" style="width:50.42em;height:2.92em;" width="640" height="37"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Internal service listing</div>
+<p>As you can see, we have a new service, but only one IP. Furthermore, the IP address is not externally accessible. We won't be able to test the service from a web browser this time. However, we can use the handy <kbd>kubectl exec</kbd> command and attempt to connect from one of the other pods. You will need <kbd>node-js-pod</kbd> (<kbd>nodejs-pod.yaml</kbd>) running. Then, you can execute the following command:</p>
+<pre><strong>$ kubectl exec node-js-pod -- curl &lt;node-js-internal IP&gt;</strong></pre>
+<p>This allows us to run a <kbd>docker exec</kbd> command as if we had a shell in the <kbd>node-js-pod</kbd> container. It then hits the internal service URL, which forwards to any pods with the <kbd>node-js</kbd> label.</p>
+<p>If all is well, you should get the raw HTML output back. You have successfully created an internal-only service. This can be useful for backend services that you want to make available to other containers running in your cluster, but not open to the world at large.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Custom load balancing</h1>
+                </header>
+            
+            <article>
+                
+<p>A third type of service that K8s allows is the <kbd>NodePort</kbd> type. This type allows us to expose a service through the host or node (minion) on a specific port. In this way, we can use the IP address of any node (minion) and access our service on the assigned node port. Kubernetes will assign a node port by default in the range of <kbd>3000</kbd>-<kbd>32767</kbd>, but you can also specify your own custom port. In the example in the following listing <kbd>nodejs-service-nodeport.yaml</kbd>, we choose port <kbd>30001</kbd>, as follows:</p>
+<pre>apiVersion: v1 <br/>kind: Service <br/>metadata: <br/>  name: node-js-nodeport <br/>  labels: <br/>    name: node-js-nodeport <br/>spec: <br/>  ports: <br/>  - port: 80 <br/>    nodePort: 30001 <br/>  selector: <br/>    name: node-js <br/>  type: NodePort </pre>
+<p>Once again, create this YAML definition file and create your service, as follows:</p>
+<pre><strong>$ kubectl create -f nodejs-service-nodeport.yaml</strong></pre>
+<p>The output should have a message like this:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/eb464d3d-f14e-4e0f-b00f-99768befc422.png" style="width:36.67em;height:10.58em;" width="668" height="193"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">New GCP firewall rule</div>
+<p>Note message about opening firewall ports. Similar to the external load balancer type, <kbd>NodePort</kbd> is exposing your service externally using ports on the nodes. This could be useful if, for example, you want to use your own load balancer in front of the nodes. Let's make sure that we open those ports on GCP before we test our new service.</p>
+<p>From the GCE VM instance console, click on the details for any of your nodes (minions). Then, click on the network, which is usually the default unless otherwise specified during creation. In <span class="packt_screen">Firewall rules</span>, we can add a rule by clicking on <span class="packt_screen">Add firewall rule</span>.</p>
+<p>Create a rule like the one shown in the following screenshot (<kbd>tcp:30001</kbd> on the <kbd>0.0.0.0/0</kbd> IP range):</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/18e6ed21-7667-42db-bf30-180f96d3a256.png" style="width:35.08em;height:43.33em;" width="469" height="579"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Create a new firewall rule page</div>
+<p>We can now test our new service by opening a browser and using an IP address of any node (minion) in your cluster. The format to test the new service is as follows:</p>
+<pre>http://&lt;Minoion IP Address&gt;:&lt;NodePort&gt;/</pre>
+<p>Finally, the latest version has added an <kbd>ExternalName</kbd> type, which maps a <kbd>CNAME</kbd> to the service. </p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Cross-node proxy</h1>
+                </header>
+            
+            <article>
+                
+<p>Remember that <kbd>kube-proxy</kbd> is running on all the nodes, so even if the pod is not running there, the traffic will be given a proxy to the appropriate host. Refer to the <span><em>Cross-node traffic</em> screenshot</span> for a visual on how the traffic flows. A user makes a request to an external IP or URL. The request is serviced by <strong>Node</strong> in this case. However, the pod does not happen to run on this node. This is not a problem because the pod IP addresses are routable. So, <kbd>kube-proxy</kbd> or <strong>iptables</strong> simply passes traffic onto the pod IP for this service. The network routing then completes on <strong>Node 2</strong>, where the requested application lives:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/d6f8a439-78ca-4975-91c2-0ea105849507.png" style="width:38.42em;height:28.42em;" width="1832" height="1357"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Cross-node traffic</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Custom ports</h1>
+                </header>
+            
+            <article>
+                
+<p>Services also allow you to map your traffic to different ports; then, the containers and pods expose themselves. We will create a service that exposes port <kbd>90</kbd> and forwards traffic to port <kbd>80</kbd> on the pods. We will call the <kbd>node-js-90</kbd> pod to reflect the custom port number. Create the following two definition files, <span><kbd>nodejs-customPort-controller.yaml</kbd> and <kbd>nodejs-customPort-service.yaml</kbd></span>:</p>
+<pre>apiVersion: v1 <br/>kind: ReplicationController <br/>metadata: <br/>  name: node-js-90 <br/>  labels: <br/>    name: node-js-90 <br/>spec: <br/>  replicas: 3 <br/>  selector: <br/>    name: node-js-90 <br/>  template: <br/>    metadata: <br/>      labels: <br/>        name: node-js-90 <br/>    spec: <br/>      containers: <br/>      - name: node-js-90 <br/>        image: jonbaier/node-express-info:latest <br/>        ports: <br/>        - containerPort: 80 </pre>
+<pre>apiVersion: v1 <br/>kind: Service <br/>metadata: <br/>  name: node-js-90 <br/>  labels: <br/>    name: node-js-90 <br/>spec: <br/>  type: LoadBalancer <br/>  ports: <br/>  - port: 90 <br/>    targetPort: 80 <br/>  selector: <br/>    name: node-js-90</pre>
+<div class="packt_tip">If you are using the free trial for Google Cloud Platform, you may have issues with the <kbd>LoadBalancer</kbd> type services. This type creates multiple external IP addresses, but trial accounts are limited to only one static address.</div>
+<p>You'll note that in the service definition, we have a <kbd>targetPort</kbd> element. This element tells the service the port to use for pods/containers in the pool. As we saw in previous examples, if you do not specify <kbd>targetPort</kbd>, it assumes that it's the same port as the service. This port is still used as the service port, but, in this case, we are going to expose the service on port <kbd>90</kbd> while the containers serve content on port <kbd>80</kbd>.</p>
+<p>Create this RC and service and open the appropriate firewall rules, as we did in the last example. It may take a moment for the external load balancer IP to propagate to the <kbd>get service</kbd> command. Once it does, you should be able to open and see our familiar web application in a browser using the following format:</p>
+<pre>http://&lt;external service IP&gt;:90/</pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Multiple ports</h1>
+                </header>
+            
+            <article>
+                
+<p>Another custom port use case is that of multiple ports. Many applications expose multiple ports, such as HTTP on port <kbd>80</kbd> and port <kbd>8888</kbd> for web servers. The following example shows our app responding on both ports. Once again, we'll also need to add a firewall rule for this port, as we did for the list <kbd>nodejs-service-nodeport.yaml</kbd> previously. Save the listing as <kbd>nodejs<span>-multi-controller.yaml</span></kbd> and <kbd><span>nodejs-multi-service.yaml</span></kbd>:</p>
+<pre>apiVersion: v1 <br/>kind: ReplicationController <br/>metadata: <br/>  name: node-js-multi <br/>  labels: <br/>    name: node-js-multi <br/>spec: <br/>  replicas: 3 <br/>  selector: <br/>    name: node-js-multi <br/>  template: <br/>    metadata: <br/>      labels: <br/>        name: node-js-multi <br/>    spec:</pre>
+<pre>      containers: <br/>      - name: node-js-multi <br/>        image: jonbaier/node-express-multi:latest <br/>        ports: <br/>        - containerPort: 80 <br/>        - containerPort: 8888</pre>
+<pre>apiVersion: v1 <br/>kind: Service <br/>metadata: <br/>  name: node-js-multi <br/>  labels: <br/>    name: node-js-multi <br/>spec: <br/>  type: LoadBalancer <br/>  ports: <br/>  - name: http <br/>    protocol: TCP <br/>    port: 80 <br/>  - name: fake-admin-http <br/>    protocol: TCP <br/>    port: 8888 <br/>  selector: <br/>    name: node-js-multi </pre>
+<div class="packt_infobox">The application and container itself must be listening on both ports for this to work. In this example, port <kbd>8888</kbd> is used to represent a fake admin interface. If, for example, you want to listen on port <kbd>443</kbd>, you would need a proper SSL socket listening on the server.</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Ingress</h1>
+                </header>
+            
+            <article>
+                
+<p>We previously discussed how Kubernetes uses the service abstract as a means to proxy traffic to a backing pod that's distributed throughout our cluster. While this is helpful in both scaling and pod recovery, there are more advanced routing scenarios that are not addressed by this design.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>To that end, Kubernetes has added an ingress resource, which allows for custom proxying and load balancing to a back service. Think of it as an extra layer or hop in the routing path before traffic hits our service. Just as an application has a service and backing pods, the ingress resource needs both an Ingress entry point and an ingress controller that perform the custom logic. The entry point defines the routes and the controller actually handles the routing. This is helpful for picking up traffic that would normally be dropped by an edge router or forwarded elsewhere outside of the cluster.</p>
+<p>Ingress itself can be configured to offer externally addressable URLs for internal services, to terminate SSL, offer name-based virtual hosting as you'd see in a traditional web server, or load balance traffic. Ingress on its own cannot service requests, but requires an additional ingress controller to fulfill the capabilities outlined in the object. You'll see nginx and other load balancing or proxying technology involved as part of the controller framework.  In the following examples, we'll be using GCE, but you'll need to deploy a controller yourself in order to take advantage of this feature. A popular option at the moment is the nginx-based ingress-nginx controller.</p>
+<div class="packt_tip">You can check it out here: <strong><a href="https://github.com/kubernetes/ingress-gce/blob/master/BETA_LIMITATIONS.md#glbc-beta-limitations">https://github.com/kubernetes/ingress-gce/blob/master/BETA_LIMITATIONS.md#glbc-beta-limitations</a>.</strong></div>
+<p>An ingress controller is deployed as a pod which runs a daemon. This pod watches the Kubernetes apiserver/ingresses endpoint for changes to the ingress resource. For our examples, we will use the default GCE backend.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Types of ingress</h1>
+                </header>
+            
+            <article>
+                
+<p>There are a couple different types of ingress, such as the following:</p>
+<ul>
+<li><strong>Single service ingress</strong>: This strategy exposes a single service via creating an ingress with a default backend that has no rules. You can alternatively use <kbd>Service.Type=LoadBalancer</kbd> or <kbd>Service.Type=NodePort</kbd>, or a port proxy to accomplish something similar.</li>
+<li><strong>Fanout</strong>: Given that od IP addressing is only available internally to the Kubernetes network, you'll need to use a simple fanout strategy in order to accommodate edge traffic and provide ingress to the correct endpoints in your cluster. This will resemble a load balancer in practice.</li>
+<li><strong>Name-based hosting:</strong> This approach is similar to <strong>service name indication</strong> (<strong>SNI</strong>), which allows a web server to present multiple HTTPS websites with different certificates on the same TCP port and IP address.</li>
+</ul>
+<p class="mce-root"/>
+<p>Kubernetes uses host headers to route requests with this approach. The following example snippet <kbd><span>ingress-example.yaml</span></kbd> shows what name-based virtual hosting would look like:</p>
+<pre>apiVersion: extensions/v1beta1<br/>kind: Ingress<br/>metadata:<br/>  name: name-based-hosting<br/>spec:<br/>  rules:<br/>  - host: example01.foo.com<br/>    http:<br/>      paths:<br/>      - backend:<br/>          serviceName: sevice01<br/>          servicePort: 8080<br/>  - host: example02.foo.com<br/>    http:<br/>      paths:<br/>      - backend:<br/>          serviceName: sevice02<br/>          servicePort: 8080</pre>
+<p>As you may recall, in <a href="">Chapter 1</a>, <em>Introduction to Kubernetes</em>, we saw that a GCE cluster comes with a default back which provides Layer 7 load balancing capability. We can see this controller running if we look at the <kbd>kube-system</kbd> namespace:</p>
+<pre><strong>$ kubectl get rc --namespace=kube-system</strong></pre>
+<p>We should see an RC listed with the <kbd>l7-default-backend-v1.0</kbd> name, as shown here:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/87c3ec22-3e4d-4a90-94e6-964c53daab36.png" style="width:34.75em;height:5.08em;" width="643" height="94"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">GCE Layer 7 Ingress controller</div>
+<p>This provides the ingress controller piece that actually routes the traffic defined in our ingress entry points. Let's create some resources for an Ingress.</p>
+<p class="mce-root"/>
+<p>First, we will create a few new replication controllers with the <kbd>httpwhalesay</kbd> image. This is a remix of the original whalesay that was displayed in a browser. The following listing, <span><kbd>whale-rcs.yaml</kbd>,</span> shows the YAML. Note the three dashes that let us combine several resources into one YAML file:</p>
+<pre>apiVersion: v1<br/>kind: ReplicationController<br/>metadata:<br/>  name: whale-ingress-a<br/>spec:<br/>  replicas: 1<br/>  template:<br/>    metadata:<br/>      labels:<br/>        app: whale-ingress-a<br/>    spec:<br/>      containers:<br/>      - name: sayhey<br/>        image: jonbaier/httpwhalesay:0.1<br/>        command: ["node", "index.js", "Whale Type A, Here."]<br/>        ports:<br/>        - containerPort: 80<br/>---<br/>apiVersion: v1<br/>kind: ReplicationController<br/>metadata:<br/>  name: whale-ingress-b<br/>spec:<br/>  replicas: 1<br/>  template:<br/>    metadata:<br/>      labels:<br/>        app: whale-ingress-b<br/>    spec:<br/>      containers:<br/>      - name: sayhey<br/>        image: jonbaier/httpwhalesay:0.1<br/>        command: ["node", "index.js", "Hey man, It's Whale B, Just<br/>        Chillin'."]<br/>        ports:<br/>        - containerPort: 80</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p class="mceNonEditable"/>
+<p>Note that we are creating pods with the same container, but different startup parameters. Take note of these parameters for later. We will also create <kbd>Service</kbd> endpoints for each of these RCs as shown in the <kbd><span>whale-svcs.yaml</span></kbd><span> </span>listing:</p>
+<pre>apiVersion: v1<br/>kind: Service<br/>metadata:<br/>  name: whale-svc-a<br/>  labels:<br/>    app: whale-ingress-a<br/>spec:<br/>  type: NodePort<br/>  ports:<br/>  - port: 80<br/>    nodePort: 30301<br/>    protocol: TCP<br/>    name: http<br/>  selector:<br/>    app: whale-ingress-a<br/>---<br/>apiVersion: v1<br/>kind: Service<br/>metadata:<br/>  name: whale-svc-b<br/>  labels:<br/>    app: whale-ingress-b<br/>spec:<br/>  type: NodePort<br/>  ports:<br/>  - port: 80<br/>    nodePort: 30284<br/>    protocol: TCP<br/>    name: http<br/>  selector:<br/>    app: whale-ingress-b<br/>---<br/>apiVersion: v1<br/>kind: Service<br/>metadata:<br/> name: whale-svc-default<br/> labels:<br/>   app: whale-ingress-a<br/>spec:<br/>  type: NodePort<br/>  ports:<br/>  - port: 80<br/>    nodePort: 30302<br/>    protocol: TCP<br/>    name: http<br/>  selector:<br/>    app: whale-ingress-a</pre>
+<p>Again, create these with the <kbd>kubectl create -f</kbd> command, as follows:</p>
+<pre><strong>$ kubectl create -f whale-rcs.yaml<br/></strong><strong>$ kubectl create -f whale-svcs.yaml</strong></pre>
+<p>We should see messages about the successful creation of the RCs and Services. Next, we need to define the Ingress entry point. We will use <kbd>http://a.whale.hey</kbd> and <kbd>http://b.whale.hey</kbd> as our demo entry points as shown in the following listing <kbd><span>whale-ingress.yaml</span></kbd>:</p>
+<pre>apiVersion: extensions/v1beta1<br/>kind: Ingress<br/>metadata:<br/>  name: whale-ingress<br/>spec:<br/>  rules:<br/>  - host: a.whale.hey<br/>    http:<br/>      paths:<br/>      - path: /<br/>        backend:<br/>          serviceName: whale-svc-a<br/>          servicePort: 80<br/>  - host: b.whale.hey<br/>    http:<br/>      paths:<br/>      - path: /<br/>        backend:<br/>          serviceName: whale-svc-b<br/>          servicePort: 80</pre>
+<p>Again, use <kbd>kubectl create -f</kbd> to create this ingress. Once this is successfully created, we will need to wait a few moments for GCE to give the ingress a static IP address. Use the following command to watch the Ingress resource:</p>
+<pre><strong>$ kubectl get ingress</strong></pre>
+<p class="mce-root"/>
+<p>Once the Ingress has an IP, we should see an entry in <kbd><span>ADDRESS</span></kbd>, like the one shown here:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/60b081cd-ed9c-4c6f-8be9-99915cf54209.png" style="width:40.67em;height:2.17em;" width="657" height="35"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">Ingress description</div>
+<p>Since this is not a registered domain name, we will need to specify the resolution in the <kbd>curl</kbd> command, like this:</p>
+<pre><strong>$ curl --resolve a.whale.hey:80:130.211.24.177 http://a.whale.hey/</strong></pre>
+<p>This should display the following:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/c71c4741-37d4-4913-890d-6443b1617002.png" style="width:31.33em;height:25.58em;" width="541" height="442"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">Whalesay A</div>
+<p>We can also try the second URL. Doing this, we will get our second RC:</p>
+<pre><strong>$ curl --resolve b.whale.hey:80:130.211.24.177 http://b.whale.hey/</strong></pre>
+<div class="CDPAlignCenter CDPAlign"><img style="font-size: 1em;width:32.33em;height:25.67em;" src="Images/dd5c0e9f-50f9-4809-ac95-33ddd5e5ca4a.png" width="549" height="437"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref"><span><span>Whalesay B</span></span></div>
+<p>Note that the images are almost the same, except that the words from each whale reflect the startup parameters from each RC we started earlier. Thus, our two Ingress points are directing traffic to different backends.</p>
+<div class="packt_tip">In this example, we used the default GCE backend for an Ingress controller. Kubernetes allows us to build our own, and nginx actually has a few versions available as well.</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Migrations, multicluster, and more</h1>
+                </header>
+            
+            <article>
+                
+<p>As we've already seen so far, Kubernetes offers a high level of flexibility and customization to create a service abstraction around your containers running in the cluster. However, there may be times where you want to point to something outside your cluster.</p>
+<p class="mce-root"/>
+<p>An example of this would be working with legacy systems or even applications running on another cluster. In the case of the former, this is a perfectly good strategy in order to migrate to Kubernetes and containers in general. We can begin by managing the service endpoints in Kubernetes while stitching the stack together using the K8s orchestration concepts. Additionally, we can even start bringing over pieces of the stack, as the frontend, one at a time as the organization refactors applications for microservices and/or containerization.</p>
+<p>To allow access to non pod-based applications, the services construct allows you to use endpoints that are outside the cluster. Kubernetes is actually creating an endpoint resource every time you create a service that uses selectors. The <kbd>endpoints</kbd> object keeps track of the pod IPs in the load balancing pool. You can see this by running the <kbd>get endpoints</kbd> command, as follows:</p>
+<pre><strong>$ kubectl get endpoints</strong></pre>
+<p>You should see something similar to the following:</p>
+<pre><strong>NAME               ENDPOINTS</strong><br/><strong>http-pd            10.244.2.29:80,10.244.2.30:80,10.244.3.16:80</strong><br/><strong>kubernetes         10.240.0.2:443</strong><br/><strong>node-js            10.244.0.12:80,10.244.2.24:80,10.244.3.13:80</strong></pre>
+<p>You'll note the entry for all the services we currently have running on our cluster. For most services, the endpoints are just the IP of each pod running in an RC. As I mentioned previously, Kubernetes does this automatically based on the selector. As we scale the replicas in a controller with matching labels, Kubernetes will update the endpoints automatically.</p>
+<p>If we want to create a service for something that is not a pod and therefore has no labels to select, we can easily do this with both a service definition <kbd>nodejs<span>-custom-service.yaml</span></kbd> and endpoint definition <kbd><span>nodejs-custom-endpoint.yaml</span></kbd>, as follows:</p>
+<pre>apiVersion: v1 <br/>kind: Service <br/>metadata: <br/>  name: custom-service <br/>spec: <br/>  type: LoadBalancer <br/>  ports: <br/>  - name: http <br/>    protocol: TCP <br/>    port: 80</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p class="mceNonEditable"/>
+<pre>apiVersion: v1 <br/>kind: Endpoints <br/>metadata: <br/>  name: custom-service <br/>subsets: <br/>- addresses: <br/>  - ip: <strong>&lt;X.X.X.X&gt;</strong> <br/>  ports: <br/>    - name: http <br/>      port: 80 <br/>      protocol: TCP </pre>
+<p>In the preceding example, you'll need to replace <kbd>&lt;X.X.X.X&gt;</kbd> with a real IP address, where the new service can point to. In my case, I used the public load balancer IP from the <kbd>node-js-multi</kbd> service we created earlier in listing <kbd>ingress-example.yaml</kbd>. Go ahead and create these resources now.</p>
+<p>If we now run a <kbd>get endpoints</kbd> command, we will see this IP address at port <kbd>80</kbd>, which is associated with the <kbd>custom-service</kbd> endpoint. Furthermore, if we look at the service details, we will see the IP listed in the <kbd>Endpoints</kbd> section:</p>
+<pre><strong>$ kubectl describe service/custom-service</strong></pre>
+<p>We can test out this new service by opening the <kbd>custom-service</kbd> external IP from a browser.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Custom addressing</h1>
+                </header>
+            
+            <article>
+                
+<p>Another option to customize services is with the <kbd>clusterIP</kbd> element. In our examples so far, we've not specified an IP address, which means that it chooses the internal address of the service for us. However, we can add this element and choose the IP address in advance with something like <kbd>clusterip: 10.0.125.105</kbd>.</p>
+<p>There may be times when you don't want to load balance and would rather have DNS with <em>A</em> records for each pod. For example, software that needs to replicate data evenly to all nodes may rely on <em>A</em> records to distribute data. In this case, we can use an example like the following one and set <kbd>clusterip</kbd> to <kbd>None</kbd>.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>Kubernetes will not assign an IP address and instead only assign <em>A</em> records in DNS for each of the pods. If you are using DNS, the service should be available at <kbd>node-js-none</kbd> or <kbd>node-js-none.default.cluster.local</kbd> from within the cluster. For this, we  will use the following listing <kbd><span>nodejs-headless-service.yaml</span></kbd>:</p>
+<pre>apiVersion: v1 <br/>kind: Service <br/>metadata: <br/>  name: node-js-none <br/>  labels: <br/>    name: node-js-none <br/>spec: <br/>  clusterIP: None <br/>  ports: <br/>  - port: 80 <br/>  selector: <br/>    name: node-js </pre>
+<p>Test it out after you create this service with the trusty <kbd>exec</kbd> command:</p>
+<pre><strong>$ kubectl exec node-js-pod -- curl node-js-none</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">DNS</h1>
+                </header>
+            
+            <article>
+                
+<p>DNS solves the issues seen with environment variables by allowing us to reference the services by their name. As services restart, scale out, or appear anew, the DNS entries will be updating and ensuring that the service name always points to the latest infrastructure. DNS is set up by default in most of the supported providers. You can add DNS support for your cluster via a cluster add on (<a href="https://kubernetes.io/docs/concepts/cluster-administration/addons/">https://kubernetes.io/docs/concepts/cluster-administration/addons/</a>).</p>
+<div class="packt_tip">If DNS is supported by your provider, but is not set up, you can configure the following variables in your default provider config when you create your Kubernetes cluster:<br/>
+<kbd>ENABLE_CLUSTER_DNS="${KUBE_ENABLE_CLUSTER_DNS:-true}"<br/></kbd><kbd>DNS_SERVER_IP="10.0.0.10"</kbd><br/>
+<kbd>DNS_DOMAIN="cluster.local"</kbd><br/>
+<kbd>DNS_REPLICAS=1</kbd>.</div>
+<p>With DNS active, services can be accessed in one of two forms—either the service name itself, <kbd>&lt;service-name&gt;</kbd>, or a fully qualified name that includes the namespace, <kbd>&lt;service-name&gt;.&lt;namespace-name&gt;.cluster.local</kbd>. In our examples, it would look similar to <kbd>node-js-90</kbd> or <kbd>node-js-90.default.cluster.local</kbd>. </p>
+<p>The DNS server create DNS records based on new services that are created through the API. Pods in shared DNS namespaces will be able to see each other, and can use DNS SRV records to record ports as well.</p>
+<p>Kubernetes DNS is comprised of a DNS pod and Service on the cluster which communicates directly with kubelets and containers in order to translate DNS names to IP. Services with clusterIPs are given <kbd>my-service.my-namespace.svc.cluster.local</kbd> addresses. If the service does not have a clusterIP (otherwise called headless)  it gets the same address format, but this resolves in a round-robin fashion to a number of IPs that point to the pods of a service. There a number of DNS policies that can also be set.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>One of the Kubernetes incubator projects, <a href="https://github.com/coredns/coredns">CoreDNS</a> can also be used for service discovery. This replaces the native <kbd>kube-dns</kbd> DNS services and requires Kubernetes v1.9 or later. You'll need to leverage <kbd>kubeadm</kbd> during the initialization process in order to try CoreDNS out. You can install this on your cluster with the following command:</p>
+<pre><strong>$ kubeadm init --feature-gates=CoreDNS=true</strong></pre>
+<p>If you'd like more information on an example use case of CoreDNS, check out this blog post: <a href="https://coredns.io/2017/05/08/custom-dns-entries-for-kubernetes/">https://coredns.io/2017/05/08/custom-dns-entries-for-kubernetes/</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Multitenancy</h1>
+                </header>
+            
+            <article>
+                
+<p>Kubernetes also has an additional construct for isolation at the cluster level. In most cases, you can run Kubernetes and never worry about namespaces; everything will run in the default namespace if not specified. However, in cases where you run multitenancy communities or want broad-scale segregation and isolation of the cluster resources, namespaces can be used to this end. True, end-to-end multitenancy is not yet feature complete in Kubernetes, but you can get very close using RBAC, container permissions, ingress rules, and clear network policing. If you're interested in enterprise-strength multitenancy right now, Red Hat's <strong>Openshift Origin</strong> (<strong>OO</strong>) would be a good place to learn.</p>
+<div class="packt_tip">You can check out OO at <a href="https://github.com/openshift/origin">https://github.com/openshift/origin</a>.</div>
+<p>To start, Kubernetes has two namespaces—<kbd>default</kbd> and <kbd>kube-system</kbd>. The <kbd>kube-system</kbd> namespace is used for all the system-level containers we saw in <a href=""><span class="ChapterrefPACKT">Chapter 1</span></a>, <em>Introduction to</em> <em>Kubernetes</em>, in the <em>Services running on the minions</em> section. UI, logging, DNS, and so on are all run in <kbd>kube-system</kbd>. Everything else the user creates runs in the default namespace. However, our resource definition files can optionally specify a custom namespace. For the sake of experimenting, let's take a look at how to build a new namespace.</p>
+<p>First, we'll need to create a namespace definition file <kbd><span>test-ns.yaml</span></kbd> like the one in the following lines of code:</p>
+<pre>apiVersion: v1 <br/>kind: Namespace <br/>metadata: <br/>  name: test</pre>
+<p>We can go ahead and create this file with our handy <kbd>create</kbd> command:</p>
+<pre><strong>$ kubectl create -f test-ns.yaml</strong></pre>
+<p>Now, we can create resources that use the <kbd>test</kbd> namespace. The following listing, <span><kbd>ns-pod.yaml</kbd></span>,<span> </span>is an example of a pod using this new namespace:</p>
+<pre>apiVersion: v1 <br/>kind: Pod <br/>metadata: <br/>  name: utility <br/>  namespace: test <br/>spec: <br/>  containers: <br/>  - image: debian:latest <br/>    command: <br/>      - sleep <br/>      - "3600" <br/>    name: utility </pre>
+<p>While the pod can still access services in other namespaces, it will need to use the long DNS form of <kbd>&lt;service-name&gt;.&lt;namespace-name&gt;.cluster.local</kbd>. For example, if you were to run a command from inside the container in listing <kbd>ns-pod.yaml</kbd>, you could use <kbd>node-js.default.cluster.local</kbd> to access the Node.js example from <a href="">Chapter 2</a>, <em>Pods, Services, Replication Controllers, and Labels</em>.</p>
+<div class="packt_tip">Here is a note about resource utilization. At some point in this book, you may run out of space on your cluster to create new Kubernetes resources. The timing will vary based on cluster size, but it's good to keep this in mind and do some cleanup from time to time. Use the following commands to remove old examples:<br/>
+<kbd> $ kubectl delete pod &lt;pod name&gt;<strong><br/></strong> $ kubectl delete svc &lt;service name&gt;<strong><br/></strong> $ kubectl delete rc &lt;replication controller name&gt;<strong><br/></strong> $ kubectl delete rs &lt;replicaset name&gt;</kbd>.</div>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Limits</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's inspect our new namespace a bit more. Run the <kbd>describe</kbd> command as follows:</p>
+<pre><strong>$ kubectl describe namespace/test</strong></pre>
+<p>The following screenshot is the result of the preceding command:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/4093ce78-8d53-416d-8f83-9d6d37f823d8.png" style="width:13.75em;height:9.25em;" width="242" height="163"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">The describe namespace</div>
+<p>Kubernetes allows you to both limit the resources used by individual pods or containers and the resources used by the overall namespace using quotas. You'll note that there are no resource limits or quotas currently set on the <kbd>test</kbd> namespace.</p>
+<p>Suppose we want to limit the footprint of this new namespace; we can set quotas as shown in the following listing <kbd><span>quota.yaml</span></kbd>:</p>
+<pre>apiVersion: v1 <br/>kind: ResourceQuota <br/>metadata: <br/>  name: test-quotas <br/>  namespace: test <br/>spec: <br/>  hard:  <br/>    pods: 3 <br/>    services: 1 <br/>    replicationcontrollers: 1 </pre>
+<p> </p>
+<div class="packt_infobox"><span>In reality, namespaces would be for larger application communities and would probably never have quotas this low. I am using this for ease of illustration of the capability in this example.</span></div>
+<p>Here, we will create a quota of <kbd>3</kbd> pods, <kbd>1</kbd> RC, and <kbd>1</kbd> service for the test namespace. As you have probably guessed, this is executed once again by our trusty <kbd>create</kbd> command, as follows:</p>
+<pre><strong>$ kubectl create -f quota.yaml</strong></pre>
+<p>Now that we have that in place, let's use <kbd>describe</kbd> on the namespace, as follows:</p>
+<pre><strong>$ kubectl describe namespace/test</strong></pre>
+<p>The following screenshot is the result of the preceding command:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img class="image-border" src="Images/4403fdc8-505c-4214-b705-245a121ad810.png" style="width:20.67em;height:12.08em;" width="377" height="221"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">The describe namespace after the quota is set</div>
+<p>You'll note that we now have some values listed in the quota section, and that the limits section is still blank. We also have a <kbd>Used</kbd> column, which lets us know how close to the limits we are at the moment. Let's try to spin up a few pods using the following definition <kbd>busybox-ns.yaml</kbd>:</p>
+<pre>apiVersion: v1 <br/>kind: ReplicationController <br/>metadata: <br/>  name: busybox-ns <br/>  namespace: test <br/>  labels: <br/>    name: busybox-ns <br/>spec: <br/>  replicas: 4 <br/>  selector: <br/>    name: busybox-ns <br/>  template: <br/>    metadata: <br/>      labels: <br/>        name: busybox-ns <br/>    spec: <br/>      containers: <br/>      - name: busybox-ns <br/>        image: busybox <br/>        command: <br/>          - sleep <br/>          - "3600" </pre>
+<p>You'll note that we are creating four replicas of this basic pod. After using <kbd>create</kbd> to build this RC, run the <kbd>describe</kbd> command on the <kbd>test</kbd> namespace once more. You'll notice that the <kbd>Used</kbd> values for pods and RCs are at their max. However, we asked for four replicas and can only see three pods in use.</p>
+<p>Let's see what's happening with our RC. You might attempt to do that with the following command:</p>
+<pre><strong>kubectl describe rc/busybox-ns</strong></pre>
+<p>However, if you try, you'll be discouraged by being met with a <kbd>not found</kbd> message from the server. This is because we created this RC in a new namespace and <kbd>kubectl</kbd> assumes the default namespace if not specified. This means that we need to specify <kbd>--namepsace=test</kbd> with every command when we wish to access resources in the <kbd>test</kbd> namespace.</p>
+<div class="packt_tip packt_infobox">We can also set the current namespace by working with the context settings. First, we need to find our current context, which is found with the following command:<br/>
+<kbd><strong>$ kubectl config view | grep current-context</strong></kbd><br/>
+Next, we can take that context and set the namespace variable like in the following code:<br/>
+<kbd><strong>$ kubectl config set-context &lt;Current Context&gt; --namespace=test</strong></kbd><br/>
+Now, you can run the <kbd>kubectl</kbd> command without the need to specify the namespace. Just remember to switch back when you want to look at the resources running in your default namespace.</div>
+<p class="mce-root"/>
+<p>Run the command with the namespace specified as shown in the following command. If you've set your current namespace as demonstrated in the tip box, you can leave off the <kbd>--namespace</kbd> argument:</p>
+<pre><strong>$ kubectl describe rc/busybox-ns --namespace=test</strong></pre>
+<p>The following screenshot is the result of the preceding command:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/01840943-81ce-496e-a8ea-a2f068d573fd.png" style="width:41.58em;height:22.50em;" width="655" height="355"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Namespace quotas</div>
+<p>As you can see in the preceding image, the first three pods were successfully created, but our final one fails with a <kbd>Limited to 3 pods</kbd> error.<br/>
+<br/>
+This is an easy way to set limits for resources partitioned out at a community scale. It's worth noting that you can also set quotas for CPU, memory, persistent volumes, and secrets. Additionally, limits work in a similar way to quota, but they set the limit for each pod or container within the namespace.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">A note on resource usage</h1>
+                </header>
+            
+            <article>
+                
+<p>As most of the examples in this book utilize GCP or AWS, it can be costly to keep everything running. It's also easy to run out of resources using the default cluster size, especially if you keep every example running. Therefore, you may want to delete older pods, replication controllers, replica sets, and services periodically. You can also destroy the cluster and recreate it using <a href="">Chapter 1</a>, <em>Introduction to Kubernetes</em>, as a way to lower your cloud provider bill.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we took a deeper look into networking and services in Kubernetes. You should now understand how networking communications are designed in K8s and feel comfortable accessing your services internally and externally. We saw how <kbd>kube-proxy</kbd> balances traffic both locally and across the cluster. Additionally, we explored the new Ingress resources that allow us finer control of incoming traffic. We also looked briefly at how DNS and service discovery is achieved in Kubernetes. We finished off with a quick look at namespaces and isolation for multitenancy.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Questions</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Give two way in which the Docker networking approach is different than the Kubernetes networking approach.</li>
+<li>What does NAT stand for?</li>
+<li>What are the two major classes of Kubernetes networking models?</li>
+<li>Name at least two of the third-party overlay networking options available to Kubernetes.</li>
+<li>At what level (or alternatively, to what object) does Kubernetes assign IP addresses?</li>
+<li>What are the available modes for <kbd>kube-proxy</kbd>?</li>
+<li>What are the three types of services allowed by Kubernetes?</li>
+<li>What elements are used to define container and service ports?</li>
+<li>Name two or more types of ingress available to Kubernetes.</li>
+<li>How can you provide multitenancy for your Kubernetes cluster?</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li>Read more about CoreDNS's entry in the CNCF: <a href="https://coredns.io/2018/03/12/coredns-1.1.0-release/">https://coredns.io/2018/03/12/coredns-1.1.0-release/</a>.</li>
+<li>More details on the current crop of Kubernetes network provider scan be found at <a href="https://kubernetes.io/docs/concepts/cluster-administration/networking/#how-to-achieve-this">https://kubernetes.io/docs/concepts/cluster-administration/networking/#how-to-achieve-this</a>.</li>
+<li>You can compare nginx's implementation of an ingress controller (<a href="https://github.com/nginxinc/kubernetes-ingress">https://github.com/nginxinc/kubernetes-ingress</a>) and the Kubernetes community approach (<a href="https://github.com/kubernetes/ingress-nginx">https://github.com/kubernetes/ingress-nginx</a>) and their differences (<a href="https://github.com/nginxinc/kubernetes-ingress/blob/master/docs/nginx-ingress-controllers.md">https://github.com/nginxinc/kubernetes-ingress/blob/master/docs/nginx-ingress-controllers.md</a>).</li>
+<li>You can read up about Google Compute Engine's layer 7 load balancer, GLBC at <a href="https://github.com/kubernetes/ingress-gce/">https://github.com/kubernetes/ingress-gce/</a>.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  </body></html>

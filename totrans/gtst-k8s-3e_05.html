@@ -1,0 +1,477 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Exploring Kubernetes Storage Concepts</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to power modern microservices and other stateless applications, Kubernetes operators need to have a way to manage stateful data storage on the cluster. While it's advantageous to maintain as much state as possible outside of the cluster in dedicated database clusters as a part of cloud-native service offerings, there's often a need to keep a statement of record or state cluster for stateless and ephemeral services. We'll explore what's considered a more difficult problem in the container orchestration and scheduling world: managing locality-specific, mutable data in a world that relies on declarative state, decoupling physical devices from logical objects, and immutable approaches to system updates. We'll explore strategies for setting up reliable, replicated storage for modern database engines.</p>
+<p>In this chapter, we will discuss how to attach persistent volumes and create storage for stateful applications and data. We will walk through storage concerns and how we can persist data across pods and the container life cycle. We will explore the <kbd>PersistentVolumes</kbd> types, as well as <kbd>PersistentVolumeClaim</kbd>. Finally, we will take a look at StatefulSets and how to use dynamic volume provisioning.</p>
+<p>The following topics will be covered in the chapter:</p>
+<ul>
+<li>Persistent storage</li>
+<li><kbd>PersistentVolumes</kbd></li>
+<li><kbd>PersistentVolumeClaim</kbd></li>
+<li>Storage Classes</li>
+<li>Dynamic volume provisioning</li>
+<li>StatefulSets</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p><span>You'll need to have a running Kubernetes cluster to go through these examples. Please start your cluster up on your cloud provider of choice, or a local Minikube instance.</span></p>
+<p>The code for this repository can be found here: <a href="https://github.com/PacktPublishing/Getting-Started-with-Kubernetes-third-edition/tree/master/Code-files/Chapter05">https://github.com/PacktPublishing/Getting-Started-with-Kubernetes-third-edition/tree/master/Code-files/Chapter05</a><a href="https://github.com/PacktPublishing/Getting-Started-with-Kubernetes-third-edition/tree/master/Code%20files/Chapter%2005">.</a></p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Persistent storage</h1>
+                </header>
+            
+            <article>
+                
+<p>So far, we only worked with workloads that we could start and stop at will, with no issue. However, real-world applications often carry state and record data that we prefer (even insist) not to lose. The transient nature of containers themselves can be a big challenge. If you recall our discussion of layered filesystems in <a href="446f901d-70fa-4ebe-be8a-0de14248f99c.xhtml">Chapter 1</a>, <em>Introduction to Kubernetes</em>, the top layer is writable. (It's also frosting, which is delicious.) However, when the container dies, the data goes with it. The same is true for crashed containers that Kubernetes restarts.</p>
+<p><span>This is where volumes or disks come into play. Volumes exist outside the container and are coupled to the pod, which allows us to save our important data across containers outages. Further more, if we have a volume at the pod level, data can be shared between containers in the same application stack and within the same pod. A volume itself on Kubernetes is a directory, which the Pod provides to the containers running on it. There are a number of different volume types available at <kbd>spec.volumes</kbd>, which we'll explore, and they're mounted into containers with the <kbd>spec.containers.volumeMounts</kbd> parameter.<br/></span></p>
+<div class="packt_tip"><span>To see all the types of volumes available, visit <strong><a href="https://kubernetes.io/docs/concepts/storage/volumes/#types-of-volumes">https://kubernetes.io/docs/concepts/storage/volumes/#types-of-volumes</a></strong>.<br/></span></div>
+<p><span>Docker itself has some support for volumes, but Kubernetes gives us persistent storage that lasts beyond the lifetime of a single container. The volumes are tied to pods and live and die with those pods. Additionally, a pod can have multiple volumes from a variety of sources. Let's take a look at some of these sources.</span></p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Temporary disks</h1>
+                </header>
+            
+            <article>
+                
+<p>One of the easiest ways to achieve improved persistence amid container crashes and data sharing within a pod is to use the <kbd>emptydir</kbd> volume. This volume type can be used with either the storage volumes of the node machine itself or an optional RAM disk for higher performance.</p>
+<p>Again, we improve our persistence beyond a single container, but when a pod is removed, the data will be lost. A machine reboot will also clear any data from RAM-type disks. There may be times when we just need some shared temporary space or have containers that process data and hand it off to another container before they die. Whatever the case, here is a quick example of using this temporary disk with the RAM-backed option.</p>
+<p>Open your favorite editor and create a <kbd>storage-memory.yaml</kbd> file and type the following code:</p>
+<pre>apiVersion: v1 <br/>kind: Pod <br/>metadata: <br/>  name: memory-pd <br/>spec: <br/>  containers: <br/>  - image: nginx:latest <br/>    ports: <br/>    - containerPort: 80 <br/>    name: memory-pd <br/>    volumeMounts: <br/>    - mountPath: /memory-pd <br/>      name: memory-volume <br/>  volumes: <br/>  - name: memory-volume <br/>    emptyDir: <br/>      medium: Memory </pre>
+<p>The preceding example is probably second nature by now, but we will once again issue a <kbd>create</kbd> command followed by an <kbd>exec</kbd> command to see the folders in the container:</p>
+<pre><strong>$ kubectl create -f storage-memory.yaml<br/>$ kubectl exec memory-pd -- ls -lh | grep memory-pd</strong></pre>
+<p>This will give us a Bash shell in the container itself. The <kbd>ls</kbd> command shows us a <kbd>memory-pd</kbd> folder at the top level. We use <kbd>grep</kbd> to filter the output, but you can run the command without <kbd>| grep memory-pd</kbd> to see all folders:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="Images/5778376c-a13b-458b-8332-0456cd86a375.png" style="width:33.67em;height:2.08em;" width="612" height="37"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Temporary storage inside a container</div>
+<p>Again, this folder is temporary as everything is stored in the node's (minion's) RAM. When the node gets restarted, all the files will be erased. We will look at a more permanent example next.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Cloud volumes</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's move on to something more robust. There are two types of PersistentVolumes that we'll touch base with in order to explain how you can use AWS's and GCE's block storage engines to provide stateful storage for your Kubernetes cluster. Given that many companies have already made significant investment in cloud infrastructure, we'll get you up and running with two key examples. You can consider these types of volumes or persistent volumes as storage classes. These are different from the <kbd>emptyDir</kbd> that we created before, as the contents of a GCE persistent disk or AWS EBS volume will persist even if a pod is removed. Looking ahead, this provides operators with the clever feature of being able to pre-populate data in these drives and can also be switched between pods.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">GCE Persistent Disks</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's mount a <kbd>gcePersistentDisk</kbd> first. You can see more information about these drives here: <a href="https://cloud.google.com/compute/docs/disks/">https://cloud.google.com/compute/docs/disks/</a>.</p>
+<div class="packt_infobox">Google Persistent Disk is durable and high performance block storage for the Google Cloud Platform. Persistent Disk provides SSD and HDD storage, which can be attached to instances running in either Google Compute Engine or Google Container Engine. Storage volumes can be transparently resized, quickly backed up, and offer the ability to support simultaneous readers.</div>
+<p class="mce-root"/>
+<p>You'll need to create a Persistent Disk using the GCE GUI, API, or CLI before we're able to use it in our cluster, so let's get started:</p>
+<ol>
+<li>From the console, in <span class="packt_screen">Compute Engine</span>, go to <span class="packt_screen">Disks</span>. On this new screen, click on the <span class="packt_screen">Create Disk</span> button. We'll be presented with a screen similar to the following <span class="packt_screen">GCE new persistent disk</span> screenshot:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="image-border" src="Images/c784df5a-3bc5-4b18-93d2-23b30c0353f4.png" style="width:35.92em;height:42.92em;" width="635" height="758"/></p>
+<div class="packt_figref CDPAlignCenter CDPAlign">GCE new persistent disk</div>
+<ol start="2">
+<li>Choose a name for this volume and give it a brief description. Make sure that <span class="packt_screen">Zone</span> is the same as the nodes in your cluster. GCE Persistent Disks can only be attached to machines in the same zone.</li>
+<li>Enter <kbd>mysite-volume-1</kbd> in the <span class="packt_screen">Name</span> field. Choose a zone matching at least one node in your cluster. Choose <span class="packt_screen">None (blank disk)</span> for <span class="packt_screen">Source type </span>and give <kbd>10</kbd> (10 GB) as the value in <span class="packt_screen">Size (GB)</span>. Finally, click on <span class="packt_screen">Create</span>:</li>
+</ol>
+<p>The nice thing about Persistent Disks on GCE is that they allow for mounting to multiple machines (nodes in our case). However, when mounting to multiple machines, the volume must be in read-only mode. So, let's first mount this to a single pod, so we can create some files. Use the following code to make a <kbd>storage-gce.yaml</kbd> file to create a pod that will mount the disk in read/write mode:</p>
+<pre>apiVersion: v1 <br/>kind: Pod <br/>metadata: <br/>  name: test-gce <br/>spec: <br/>  containers: <br/>  - image: nginx:latest <br/>    ports: <br/>    - containerPort: 80 <br/>    name: test-gce <br/>    volumeMounts: <br/>    - mountPath: /usr/share/nginx/html <br/>      name: gce-pd <br/>  volumes: <br/>  - name: gce-pd <br/>    gcePersistentDisk: <br/>      pdName: mysite-volume-1 <br/>      fsType: ext4 </pre>
+<p>First, let's issue a <kbd>create</kbd> command followed by a <kbd>describe</kbd> command to find out which node it is running on:</p>
+<pre><strong>$ kubectl create -f storage-gce.yaml <br/>$ kubectl describe pod/test-gce</strong></pre>
+<p class="mce-root"/>
+<p>Note the node and save the pod IP address for later. Then, open an SSH session into that node:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="Images/85454969-36e6-41d4-905f-0a0b02c6bcc4.png" style="width:39.08em;height:37.75em;" width="639" height="617"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Pod described with persistent disk</div>
+<p>Type the following command:</p>
+<pre><strong>$ gcloud compute --project "&lt;Your project ID&gt;" ssh --zone "&lt;your gce zone&gt;" "&lt;Node running test-gce pod&gt;"<br/></strong></pre>
+<p>Since we've already looked at the volume from inside the running container, let's access it directly from the node (minion) itself this time. We will run a <kbd>df</kbd> command to see where it is mounted, but we will need to switch to root first:</p>
+<pre><strong>$ sudo su -<br/>$ df -h | grep mysite-volume-1</strong></pre>
+<p>As you can see, the GCE volume is mounted directly to the node itself. We can use the mount path listed in the output of the earlier <kbd>df</kbd> command. Use <kbd>cd</kbd> to change to the folder now. Then, create a new file named <kbd>index.html</kbd> with your favorite editor:</p>
+<pre><strong>$ cd /var/lib/kubelet/plugins/kubernetes.io/gce-pd/mounts/mysite-volume-1<br/>$ vi index.html<br/></strong></pre>
+<p>Enter a quaint message, such as <kbd>Hello from my GCE PD!</kbd>. Now, save the file and exit the editor. If you recall from the <kbd>storage-gce.yaml</kbd> file, the Persistent Disk is mounted directly to the nginx HTML directory. So, let's test this out while we still have the SSH session open on the node. Do a simple <kbd>curl</kbd> command to the pod IP we wrote down earlier:</p>
+<pre><strong>$ curl &lt;Pod IP from Describe&gt;<br/></strong></pre>
+<p>You should see <kbd>Hello from my GCE PD!</kbd> or whatever message you saved in the <kbd>index.html</kbd> file. In a real-world scenario, we can use the volume for an entire website or any other central storage. Let's take a look at running a set of load balanced web servers all pointing to the same volume.</p>
+<p>First, leave the SSH session with two <kbd>exit</kbd> commands. Before we proceed, we will need to remove our <kbd>test-gce</kbd> pod so that the volume can be mounted read-only across a number of nodes:</p>
+<pre><strong>$ kubectl delete pod/test-gce<br/></strong></pre>
+<p>Now, we can create an <kbd>ReplicationController</kbd> that will run three web servers, all mounting the same Persistent Disk, as follows. Save the following code as the <kbd>http-pd-controller.yaml</kbd> file:</p>
+<pre>apiVersion: v1 <br/>kind: ReplicationController <br/>metadata: <br/>  name: http-pd <br/>  labels: <br/>    name: http-pd <br/>spec: <br/>  replicas: 3 <br/>  selector: <br/>    name: http-pd <br/>  template: <br/>    metadata: <br/>      name: http-pd <br/>      labels:<br/>        name: http-pd<br/>    spec: <br/>      containers: <br/>      - image: nginx:latest <br/>        ports: <br/>        - containerPort: 80 <br/>        name: http-pd <br/>        volumeMounts: <br/>        - mountPath: /usr/share/nginx/html <br/>          name: gce-pd <br/>      volumes: <br/>      - name: gce-pd <br/>        gcePersistentDisk: <br/>          pdName: mysite-volume-1 <br/>          fsType: ext4 <br/>          readOnly: true </pre>
+<p>Let's also create an external service and save it as the <kbd>http-pd-service.yaml</kbd> file, so we can see it from outside the cluster:</p>
+<pre>apiVersion: v1 <br/>kind: Service <br/>metadata: <br/>  name: http-pd <br/>  labels: <br/>    name: http-pd <br/>spec: <br/>  type: LoadBalancer <br/>  ports: <br/>  - name: http <br/>    protocol: TCP <br/>    port: 80 <br/>  selector: <br/>    name: http-pd </pre>
+<p>Go ahead and create these two resources now. Wait a few moments for the external IP to get assigned. After this, a <kbd>describe</kbd> command will give us the IP we can use in a browser:</p>
+<pre><strong>$ kubectl describe service/http-pd</strong></pre>
+<p>The following screenshot is the result of the preceding command:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="Images/b7391a3f-56ef-4353-8f16-3cbde71160ba.png" style="width:34.92em;height:12.25em;" width="615" height="216"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">K8s service with GCE PD shared across three pods</div>
+<p>If you don't see the <kbd>LoadBalancer Ingress</kbd><span> field yet, it probably needs more time to get assigned. </span>Type the IP address from <kbd>LoadBalancer Ingress</kbd> into a browser, and you should see your familiar <kbd>index.html</kbd> file show up with the text we entered previously!</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">AWS Elastic Block Store</h1>
+                </header>
+            
+            <article>
+                
+<p>K8s also supports AWS <strong>Elastic Block Store</strong> (<strong>EBS</strong>) volumes. Like the GCE Persistent Disks, EBS volumes are required to be attached to an instance running in the same availability zone. A further limitation is that EBS can only be mounted to a single instance at one time. Similarly to before, you'll need to create an EBS volume using API calls, the CLI, or you'll need to log in to the GUI manually and create the volume referenced by <kbd>volumeID</kbd>. If you're authorized in the AWS CLI, you can use the following command to create a volume:</p>
+<pre><strong>$ aws ec2 create-volume --availability-zone=us-west-1a eu-west-1a --size=20 --volume-type=gp2</strong></pre>
+<p>Make sure that your volume is created in the same region as your Kubernetes cluster!</p>
+<p>For brevity, we will not walk through an AWS example, but a sample YAML file is included to get you started. Again, remember to create the EBS volume before your pod. Save the following code as the <kbd>storage-aws.yaml</kbd> file:</p>
+<pre>apiVersion: v1 <br/>kind: Pod <br/>metadata: <br/>  name: test-aws <br/>spec: <br/>  containers: <br/>  - image: nginx:latest <br/>    ports: <br/>    - containerPort: 80 <br/>    name: test-aws <br/>    volumeMounts: <br/>    - mountPath: /usr/share/nginx/html <br/>      name: aws-pd <br/>  volumes: <br/>  - name: aws-pd <br/>    awsElasticBlockStore: <br/>      volumeID: aws://<strong>&lt;availability-zone&gt;</strong>/<strong>&lt;volume-id&gt;</strong> <br/>      fsType: ext4 </pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Other storage options</h1>
+                </header>
+            
+            <article>
+                
+<p>Kubernetes supports a variety of other types of storage volumes. A full list can be found here: <a href="https://kubernetes.io/docs/concepts/storage/volumes/#types-of-volumes">https://kubernetes.io/docs/concepts/storage/volumes/#types-of-volumes</a>.<a href="http://kubernetes.io/v1.0/docs/user-guide/volumes.html#types-of-volumes"><br/></a></p>
+<p>Here are a few that may be of particular interest:</p>
+<ul>
+<li><kbd>nfs</kbd>: This type allows us to mount a <strong>Network File Share</strong> (<strong>NFS</strong>), which can be very useful for both persisting the data and sharing it across the infrastructure</li>
+<li><kbd>gitrepo</kbd>: As you might have guessed, this option clones a Git repository into a new and empty folder</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">PersistentVolumes and Storage Classes</h1>
+                </header>
+            
+            <article>
+                
+<p><span>Thus far, we've seen examples of directly provisioning the storage within our pod definitions. This works quite well if you have full control over your cluster and infrastructure, but at larger scales, application owners will want to use storage that is managed separately. Typically, a central IT team or the cloud provider will take care of the details behind provisioning storage and leave the application owners to worry about their primary concern, the application itself. This separation of concerns and duties in Kubernetes allows you to structure your engineering focus around a storage subsystem that can be managed by a distinct group of engineers.</span></p>
+<p><span>In order to accommodate this, we need some way for the application to specify and request storage without being concerned with how that storage is provided. This is where</span> <kbd>PersistentVolumes</kbd> <span>and</span> <kbd>PersistentVolumeClaim</kbd> <span>come into play</span>.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p><kbd>PersistentVolumes</kbd> <span>are similar to the volumes we created earlier, but they are provided by the cluster administrator and are not dependent on a particular pod. <kbd>PersistentVolumes</kbd> are a resource that's provided to the cluster just like any other object. The Kubernetes API provides an interface for this object in the form of NFS, EBS Persistent Disks, or any other volume type described before. Once the volume has been created, you can use</span> <kbd>PersistentVolumeClaims</kbd> <span>to request storage for your applications.</span></p>
+<p><span><kbd>PersistentVolumeClaims</kbd> is an abstraction that allows users to specify the details of the storage needed. We can defined the amount of storage, as well as the access type, such as <kbd>ReadWriteOnce</kbd> (read and write by one node), <kbd>ReadOnlyMany</kbd> (read-only by multiple nodes), and <kbd>ReadWriteMany</kbd> (read and write by many nodes). The cluster operators are in charge of providing a wide variety of storage options for application operators in order to meet requirements across a number of different access modes, sizes, speeds, and durability without requiring the end users to know the details of that implementation. The modes supported by cluster operators is dependent on the backing storage provider. For example, we saw in the AWS <kbd>aws-ebs</kbd> example that mounting to multiple nodes was not an option, while with GCP</span> <span>Persistent Disks could be shared among several nodes in read-only mode. </span></p>
+<p>Additionally, Kubernetes provides two other methods for specifying certain groupings or types of storage volumes. The first is the use of selectors, as we have seen previously for pod selection. Here, labels can be applied to storage volumes and then claims can reference these labels to further filter the volume they are provided. Second, Kubernetes has the concept of <kbd>StorageClass,</kbd> which allows us specify a storage provisioner and parameters for the types of volumes it provisions.</p>
+<p><kbd>PersistentVolumes</kbd> and <kbd>PersistentVolumeClaims</kbd> have a life cycle that involves the following phases:</p>
+<ul>
+<li style="font-weight: 400">Provisioning</li>
+<li style="font-weight: 400">Static or dynamic</li>
+<li style="font-weight: 400">Binding</li>
+<li style="font-weight: 400">Using</li>
+<li style="font-weight: 400">Reclaiming</li>
+<li style="font-weight: 400">Delete, retain, or recycle</li>
+</ul>
+<p>We will dive into Storage Classes in the next section, but here is a quick example of a <kbd>PersistentVolumeClaim</kbd> for illustration purposes. You can see in the annotations that we request <kbd>1Gi</kbd> of storage in <kbd>ReadWriteOnce</kbd> mode with a <kbd>StorageClass</kbd> of <kbd>solidstate</kbd> and a label of <span class="packt_screen"><kbd>aws-storage</kbd></span>. Save the following code as the <kbd>pvc-example.yaml</kbd> file:</p>
+<pre>kind: PersistentVolumeClaim<br/>apiVersion: v1<br/>metadata:<br/>  name: demo-claim<br/>spec:<br/>  accessModes:<br/>  - ReadWriteOnce<br/>  volumeMode: Filesystem<br/>  resources:<br/>    requests:<br/>      storage: 1Gi<br/>  storageClassName: ssd<br/>  selector:<br/>    matchLabels:<br/>      release: "aws-storage"<br/>  matchExpressions:<br/>      - {key: environment, operator: In, values: [dev, stag, uat]}</pre>
+<p>As of Kubernetes version 1.8, there's also alpha support for expanding <kbd>PersistentVolumeClaim</kbd> for <kbd>gcePersistentDisk</kbd>, <kbd>awsElasticBlockStore</kbd>, <kbd>Cinder</kbd>, <kbd>glusterfs</kbd>, and <kbd>rbd</kbd> volume claim types. These are similar to the thin provisioning that you may have seen with systems such as VMware, and they allow for resizing of a storage class via the <kbd>allowVolumeExpansion</kbd> field as long as you're running either XFS or Ext3/Ext4 filesystems. Here's a quick example of what that looks like:</p>
+<pre>kind: StorageClass<br/>apiVersion: storage.k8s.io/v1<br/>metadata:<br/> name: Cinder-volume-01<br/>provisioner: kubernetes.io/cinder<br/>parameters:<br/> resturl: "http://192.168.10.10:8080"<br/> restuser: ""<br/> secretNamespace: ""<br/> secretName: ""<br/>allowVolumeExpansion: true</pre>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Dynamic volume provisioning</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that we've explored how to build from volumes, storage classes, persistent volumes, and persistent volume claims, let's take a look at how to make that all dynamic and take advantage of the built-in scaling of the cloud! Dynamic provisioning removes the need for pre-crafted storage; it relies on requests from application users instead. You use the <kbd>StorageClass</kbd> API object to create dynamic resources.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>First, we can create a manifest that will define the type of storage class that we'll use for our dynamic storage. We'll use a vSphere example here to try out another storage class:</p>
+<pre>apiVersion: storage.k8s.io/v1<br/>kind: StorageClass<br/>metadata: <br/>  name: durable-medium<br/>provisioner: kubernetes.io/vsphere-volume<br/>parameters:<br/>  type: thin</pre>
+<p>Once we have the manifest, we can use this storage by including it as a class in a new <kbd>PersistentVolumeClaim</kbd>. You may remember this as <kbd>volume.beta.kubernetes.io/storage-class</kbd> in earlier, pre-1.6 versions of Kubernetes, but now you can simply include this property in the <kbd>PersistentVolumeClaim</kbd> object. Keep in mind that the value of <kbd>storageClassName</kbd> must match the available, dynamic <kbd>StorageClass</kbd> that the cluster operators have provided. Here's an example of that:</p>
+<pre>apiVersion: v1<br/>kind: PersistentVolumeClaim<br/>metadata:<br/> name: webtier-vclaim-01<br/>spec:<br/> accessModes:<br/>   - ReadWriteMany<br/> storageClassName: durable-medium<br/> resources:<br/>   requests:<br/>     storage: 20Gi</pre>
+<p>When this claim is removed, the storage is dynamically deleted. You can make this a cluster default by ensuring that the <kbd>DefaultStorageClass</kbd> admission controller is turned on, and after you ensure that one <kbd>StorageClass</kbd> object is set to default.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">StatefulSets</h1>
+                </header>
+            
+            <article>
+                
+<p>The purpose of StatefulSets is to provide some consistency and predictability to application deployments with stateful data. Thus far, we have deployed applications to the cluster, defining loose requirements around required resources such as compute and storage. The cluster has scheduled our workload on any node that can meet these requirements. While we can use some of these constraints to deploy in a more predictable manner, it will be helpful if we had a construct built to help us provide this consistency.</p>
+<p class="mce-root"/>
+<div class="packt_infobox">StatefulSets were set to GA in 1.6 as we went to press. There were previously beta in version 1.5 and were known as Pet Sets prior to that (alpha in 1.3 and 1.4). </div>
+<p>This is where StatefulSets come in. StatefulSets provide us first with numbered and reliable naming for both network access and storage claims. The pods themselves are named with the following convention, where <kbd>N</kbd> is from 0 to the number of replicas:</p>
+<pre>"Name of Set"-N</pre>
+<p>This means that a StatefulSet called <kbd>db</kbd> with three replicas will create the following pods:</p>
+<pre>db-0<br/>db-1<br/>db-2</pre>
+<p>This gives Kubernetes a way to associate network names and <kbd>PersistentVolumes</kbd> with specific pods. Additionally, it also serves to order the creation and termination of pods. Pod will be started from <kbd>0</kbd> to <kbd>N</kbd> and terminated from <kbd>N</kbd> to <kbd>0</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">A stateful example</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's take a look at an example of a stateful application. First, we will want to create and use a <kbd>StorageClass</kbd>, as we discussed earlier. This will allow us to hook into the Google Cloud Persistent Disk provisioner. The Kubernetes community is building provisioners for a variety of <kbd>StorageClasses</kbd>, including GCP and AWS. Each provisioner has its own set of parameters available. Both GCP and AWS providers let you choose the type of disk (solid-state, standard, and so on) as well as the fault zone that is needed to match the pod attaching to it. AWS additionally allows you to specify encryption parameters as well as IOPs for provisioned IOPs volumes. There are a number of other provisioners in the works, including Azure and a variety of non-cloud options. Save the following code as <kbd>solidstate-sc.yaml</kbd> file:</p>
+<pre>kind: StorageClass<br/>apiVersion: storage.k8s.io/v1<br/>metadata:<br/>  name: solidstate<br/>provisioner: kubernetes.io/gce-pd<br/>parameters:<br/>  type: pd-ssd<br/>  zone: us-central1-b</pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p>Use the following command with the preceding listing to create a <kbd>StorageClass</kbd> kind of SSD drive in <kbd>us-central1-b</kbd>:</p>
+<pre><strong>$ kubectl create -f solidstate.yaml</strong></pre>
+<p>Next, we will create a <kbd>StatefulSet</kbd> kind with our trusty <kbd>httpwhalesay</kbd> demo. While this application does include any real state, we can see the storage claims and explore the communication path as shown in the listing <kbd>sayhey<span>-statefulset.yaml</span></kbd>:</p>
+<pre>apiVersion: apps/v1<br/>kind: StatefulSet<br/>metadata:<br/>  name: whaleset<br/>spec:<br/>  serviceName: sayhey-svc<br/>  replicas: 3<br/>  template:<br/>    metadata:<br/>      labels:<br/>        app: sayhey<br/>    spec:<br/>      terminationGracePeriodSeconds: 10<br/>      containers:<br/>      - name: sayhey<br/>        image: jonbaier/httpwhalesay:0.2<br/>        command: ["node", "index.js", "Whale it up!."]<br/>        ports:<br/>        - containerPort: 80<br/>          name: web<br/>        volumeMounts:<br/>        - name: www<br/>          mountPath: /usr/share/nginx/html<br/>  volumeClaimTemplates:<br/>  - metadata:<br/>      name: www<br/>      annotations:<br/>        volume.beta.kubernetes.io/storage-class: solidstate<br/>    spec:<br/>      accessModes: [ "ReadWriteOnce" ]<br/>      resources:<br/>        requests:<br/>          storage: 1Gi</pre>
+<p>Use the following command to start the creation of this StatefulSet. If you observe pod creation closely, you will see it create <kbd>whaleset-0</kbd>, <kbd>whaleset-1</kbd>, and <kbd>whaleset-2</kbd> in succession:</p>
+<pre><strong>$ kubectl create -f sayhey-statefulset.yaml</strong></pre>
+<p>Immediately after this, we can see our StatefulSet and the corresponding pods using the familiar <kbd>get</kbd> subcommand:</p>
+<pre><strong>$ kubectl get statefulsets<br/>$ kubectl get pods</strong></pre>
+<p>These pods should create an output similar to the following images:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="Images/fde496eb-700b-4031-b640-a23b597685ff.png" style="width:23.83em;height:2.67em;" width="349" height="38"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">StatefulSet listing</div>
+<p class="CDPAlignLeft CDPAlign">The <kbd>get pods</kbd> output will show the following:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="Images/f12ee6eb-82bc-4a6b-b835-79966684183f.png" style="width:32.00em;height:4.58em;" width="530" height="75"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">Pods created by StatefulSet</div>
+<p>Depending on your timing, the pods may still be being created. As you can see in the preceding screenshot, the third container is still being spun up.</p>
+<p>We can also see the volumes the set has created and claimed for each pod. First are the <kbd>PersistentVolumes</kbd> themselves:</p>
+<pre><strong>$ kubectl get pv</strong></pre>
+<p>The preceding command should show the three <kbd>PersistentVolumes</kbd> named <kbd>www-whaleset-N</kbd>. We notice the size is <kbd>1Gi</kbd> and the access mode is set to <strong>ReadWriteOnce</strong> (<strong>RWO</strong>), just as we defined in our <kbd>StorageClass</kbd>:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="Images/3aef7e63-a7c2-4949-b5da-3702291858fb.png" style="width:40.67em;height:7.67em;" width="647" height="122"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">The PersistentVolumes listing</div>
+<p class="CDPAlignLeft CDPAlign">Next, we can look at the <kbd>PersistentVolumeClaim</kbd> that reserves the volumes for each pod:</p>
+<div class="CDPAlignLeft CDPAlign">
+<pre><strong>$ kubectl get pvc</strong></pre>
+<p>The following is the output of the preceding command:</p>
+</div>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="Images/579e0133-31b8-41d7-94cf-9306920b10da.png" style="width:42.00em;height:7.83em;" width="643" height="120"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">The PersistentVolumeClaim listing</div>
+<p>You'll notice many of the same settings here as with the <kbd><span>PersistentVolume</span>s</kbd> themselves. You might also notice the end of the claim name (or <kbd>PersistentVolumeClaim</kbd> name in the previous listing) looks like <kbd>www-whaleset-N</kbd>. <kbd>www</kbd> is the mount name we specified in the preceding YAML definition. This is then appended to the pod name to create the actual <kbd>PersistentVolume</kbd> and <kbd>PersistentVolumeClaim</kbd> name. One more area we can ensure that the proper disk is linked with it's matching pod.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>Another area where this alignment is important is in network communication. StatefulSets also provide consistent naming here. Before we can do this, let's create a service endpoint <kbd>sayhey<span>-svc.</span>yaml</kbd>, so we have a common entry point for incoming requests:</p>
+<pre>apiVersion: v1<br/>kind: Service<br/>metadata:<br/>  name: sayhey-svc<br/>  labels:<br/>    app: sayhey<br/>spec:<br/>  ports:<br/>  - port: 80<br/>    name: web<br/>  clusterIP: None<br/>  selector:<br/>    app: sayhey</pre>
+<pre><strong>$ kubectl create -f sayhey-svc.yaml</strong></pre>
+<p>Now, let's open a shell in one of the pods and see if we can communicate with another in the set:</p>
+<pre><strong>$ kubectl exec whaleset-0 -i -t bash</strong></pre>
+<p>The preceding command gives us a bash shell in the first <kbd>whaleset</kbd> pod. We can now use the service name to make a simple HTTP request. We can use both the short name, <kbd>sayhey-svc</kbd>, and the fully qualified name, <kbd>sayhey-svc.default.svc.cluster.local</kbd>:</p>
+<pre><strong>$ curl sayhey-svc<br/>$ curl sayhey-svc.default.svc.cluster.local</strong></pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p class="mceNonEditable"/>
+<p>You'll see an output similar to the following screenshot. The service endpoint acts as a common communication point for all three pods:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/f34721ea-f07b-4588-9646-d0809e47025b.png" style="width:31.08em;height:26.67em;" width="531" height="455"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">HTTP whalesay curl output (whalesay-0 Pod)</div>
+<p class="CDPAlignLeft CDPAlign">Now, let's see if we can communicate with a specific pod in the StatefulSet. As we noticed earlier, the StatefulSet named the pods in an orderly manner. It also gives them hostnames in a similar fashion so that there is a specific DNS entry for each pod in the set. Again, we will see the convention of <kbd>"Name of Set"-N</kbd><span class="packt_screen"> </span>and then add the fully qualified service URL. The following example shows this for <kbd>whaleset-1</kbd>, which is the second pod in our set:</p>
+<pre><strong>$ curl whaleset-1.sayhey-svc.default.svc.cluster.local</strong></pre>
+<p>Running this command from our existing Bash shell in <kbd>whaleset-0</kbd> will show us the output from <kbd>whaleset-1</kbd>:</p>
+<div class="CDPAlignCenter CDPAlign"><img style="font-size: 1em;width:32.17em;height:28.58em;" src="Images/37cded0d-4ccf-4237-86b5-86c8e893a4b6.png" width="506" height="451"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref"><span>HTTP whalesay curl output (whalesay-1 Pod)</span></div>
+<p>You can exit out of this shell now with <kbd>exit</kbd>. </p>
+<div class="packt_infobox">For learning purposes, it may also be instructive to describe some of the items from this section in more detail. For example, <kbd>kubectl describe svc sayhey-svc</kbd> will show us all three pod IP address in the service endpoints.</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we explored a variety of persistent storage options and how to implement them with our pods. We looked at <kbd>PersistentVolumes</kbd> and also <kbd>PersistentVolumeClaim</kbd>, which allow us to separate storage provisioning and application storage requests. Additionally, we looked at <kbd>StorageClasses</kbd> for provisioning groups of storage according to a specification.</p>
+<p>We also explored the new StatefulSets abstraction and learned how we can deploy stateful applications in a consistent and ordered manner. In the next chapter, we will look at how to integrate Kubernetes with Continuous Integration and Delivery pipelines.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Questions</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Name four kinds of volumes that Kubernetes supports</li>
+<li>What's the parameter that you can use to enable a simple, semi-persistent temporary disk?</li>
+<li>Name two backing technologies that make <kbd>PersistentVolumes</kbd> easy to implement with <strong>Cloud Service Providers</strong> (<strong>CSPs</strong>)</li>
+<li>What's a good reason for creating different types of <kbd>StorageClasses</kbd>?</li>
+<li>Name two phases in the <kbd>PersistentVolume</kbd> and <kbd>PersistentVolumeClaim</kbd> lifecycle</li>
+<li>Which Kubernetes object is used to provide a stateful storage-based application?</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<ul>
+<li>If you'd like to know more about dynamic storage provisioning, please read this blog post: <a href="https://kubernetes.io/blog/2017/03/dynamic-provisioning-and-storage-classes-kubernetes/">https://kubernetes.io/blog/2017/03/dynamic-provisioning-and-storage-classes-kubernetes/</a></li>
+<li>If you'd like to know more about the cutting edge of the <strong>Storage Special Interest Group</strong> (<strong>SIG</strong>), you can read about it here: <a href="https://github.com/kubernetes/community/tree/master/sig-storage">https://github.com/kubernetes/community/tree/master/sig-storage</a></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  </body></html>

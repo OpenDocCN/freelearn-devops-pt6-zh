@@ -1,0 +1,1135 @@
+<html><head></head><body><div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Monitoring and Logging</h1>
+                </header>
+            
+            <article>
+                
+<p>This chapter will cover the use and customization of both built-in and third-party monitoring tools on our Kubernetes cluster. We will cover how to use the tools to monitor the health and performance of our cluster. In addition, we will look at built-in logging, the Google Cloud Logging service, and Sysdig.</p>
+<p>The following topics will be covered in this chapter:</p>
+<ul>
+<li>How Kuberentes uses cAdvisor, Heapster, InfluxDB, and Grafana</li>
+<li>Customizing the default Grafana dashboard</li>
+<li>Using Fluentd and Grafana</li>
+<li>Installing and using logging tools</li>
+<li>Working with popular third-party tools, such as Stackdriver and Sysdig, to extend our monitoring capabilities</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>You'll need to have your Google Cloud Platform account enabled and logged in to it, or you can use a local Minikube instance of Kubernetes. You can also use Play with Kubernetes over the web: <a href="https://labs.play-with-k8s.com/">https://labs.play-with-k8s.com/</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Monitoring operations</h1>
+                </header>
+            
+            <article>
+                
+<p>Real-world monitoring goes far beyond checking whether a system is up and running. Although health checks like those you learned in <a href="f8b73a87-79ed-4db9-b3b2-46ade1342892.xhtml">Chapter 2</a>, <em>Building a Foundation with Core Kubernetes Constructs</em>, in the <em>Health checks</em> section can help us isolate problem applications, operations teams can best serve the business when they can anticipate the issues and mitigate them before a system goes offline.</p>
+<p>The best practices in monitoring are to measure the performance and usage of core resources and watch for trends that stray from the normal baseline. Containers are not different here, and a key component to managing our Kubernetes cluster is having a clear view of the performance and availability of the OS, network, system (CPU and memory), and storage resources across all nodes.</p>
+<p>In this chapter, we will examine several options to monitor and measure the performance and availability of all our cluster resources. In addition, we will look at a few options for alerting and notifications when irregular trends start to emerge.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Built-in monitoring</h1>
+                </header>
+            
+            <article>
+                
+<p>If you recall from <a href="446f901d-70fa-4ebe-be8a-0de14248f99c.xhtml"><span class="ChapterrefPACKT">Chapter 1</span></a>, <em>Introduction to Kubernetes</em>, we noted that our nodes were already running a number of monitoring services. We can see these once again by running the <kbd>get pods</kbd> command with the <kbd>kube-system</kbd> namespace specified as follows:</p>
+<pre><strong>$ kubectl get pods --namespace=kube-system</strong></pre>
+<p>The following screenshot is the result of the preceding command:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/e1c1b51d-e031-4ef2-825f-4ae59c000c90.png" style="width:43.00em;height:25.00em;" width="795" height="462"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">System pod listing</div>
+<p>Again, we see a variety of services, but how does this all fit together? If you recall, the node (formerly minions) section from <a href="f8b73a87-79ed-4db9-b3b2-46ade1342892.xhtml"><span class="ChapterrefPACKT">Chapter 2</span></a>, <em>Building a Foundation with Core Kubernetes Constructs</em>, each node is running a <kbd>kubelet</kbd>. The <kbd>kubelet</kbd> is the main interface for nodes to interact with and update the API server. One such update is the metrics of the node resources. The actual reporting of the resource usage is performed by a program named cAdvisor.</p>
+<p>The cAdvisor program is another open source project from Google, which provides various metrics on container resource use. Metrics include CPU, memory, and network statistics. There is no need to tell cAdvisor about individual containers; it collects the metrics for all containers on a node and reports this back to the <kbd>kubelet</kbd>, which in turn reports to Heapster.</p>
+<div class="packt_infobox"><span class="packt_screen">Google's open source projects</span>: Google has a variety of open source projects related to Kubernetes. Check them out, use them, and even contribute your own code!<br/>
+<br/>
+Both cAdvisor and Heapster are mentioned in the following sections of GitHub:
+<ul>
+<li><strong>cAdvisor</strong>: <a href="https://github.com/google/cadvisor"><span class="URLPACKT">https://github.com/google/cadvisor</span></a></li>
+<li><strong>Heapster</strong>: <span class="URLPACKT"><a href="https://github.com/kubernetes/heapster">https://github.com/kubernetes/heapster</a></span></li>
+</ul>
+<p>Contrib is a catch-all term for a variety of components that are not part of core Kubernetes. It can be found at <a href="https://github.com/kubernetes/contrib"><span class="URLPACKT">https://github.com/kubernetes/contrib</span></a>. LevelDB is a key store library that was used in the creation of InfluxDB. It can be found at <a href="https://github.com/google/leveldb"><span class="URLPACKT">https://github.com/google/leveldb</span></a>.</p>
+</div>
+<p>Heapster is yet another open source project from Google; you may start to see a theme emerging here (see the preceding information box). Heapster runs in a container on one of the minion nodes and aggregates the data from a <kbd>kubelet</kbd>. A simple REST interface is provided to query the data.</p>
+<p>When using the GCE setup, a few additional packages are set up for us, which saves us time and gives us a complete package to monitor our container workloads. As we can see from the preceding <em>System pod listing</em> screenshot, there is another pod with <kbd>influx-grafana</kbd> in the title.</p>
+<p>InfluxDB is described on its official website as follows:</p>
+<div class="packt_quote">An open-source distributed time series database with no external dependencies.</div>
+<p class="mce-root"/>
+<p>InfluxDB is based on a key store package (refer to the previous <em>Google's open source projects</em> information box) and is perfect to store and query event- or time-based statistics such as those provided by Heapster.</p>
+<p>Finally, we have Grafana, which provides a dashboard and graphing interface for the data stored in InfluxDB. Using Grafana, users can create a custom monitoring dashboard and get immediate visibility into the health of their Kubernetes cluster, and therefore their entire container infrastructure.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Exploring Heapster</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's quickly look at the REST interface by running SSH to the node that is running the Heapster pod. First, we can list the pods to find the one that is running Heapster, as follows:</p>
+<pre><strong>$ kubectl get pods --namespace=kube-system</strong></pre>
+<p>The name of the pod should start with <kbd>monitoring-heapster</kbd>. Run a <kbd>describe</kbd> command to see which node it is running on, as follows:</p>
+<pre><strong>$ kubectl describe pods/&lt;Heapster monitoring Pod&gt; --namespace=kube-system</strong></pre>
+<p>From the output in the following screenshot, we can see that the pod is running in <kbd>kubernetes-minion-merd</kbd>. Also note the IP for the pod, a few lines down, as we will need that in a moment:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/c7283a40-8d51-461e-8d11-8a42c2284317.png" style="width:31.83em;height:10.83em;" width="507" height="172"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Heapster pod details</div>
+<p>Next, we can SSH to this box with the familiar <kbd>gcloud ssh</kbd> command, as follows:</p>
+<pre><strong>$ gcloud compute --project "&lt;Your project ID&gt;" ssh --zone "&lt;your gce zone&gt;" "&lt;kubernetes minion from describe&gt;"</strong></pre>
+<p class="mce-root"/>
+<p>From here, we can access the Heapster REST API directly using the pod's IP address. Remember that pod IPs are routable not only in the containers but also on the nodes themselves. The <kbd>Heapster</kbd> API is listening on port <kbd>8082</kbd>, and we can get a full list of metrics at <kbd>/api/v1/metric-export-schema/</kbd>.</p>
+<p>Let's look at the list now by issuing a <kbd>curl</kbd> command to the pod IP address we saved from the <kbd>describe</kbd> command, as follows:</p>
+<pre><strong>$ curl -G &lt;Heapster IP from describe&gt;:8082/api/v1/metric-export-schema/</strong></pre>
+<p>We will see a listing that is quite long. The first section shows all the metrics available. The last two sections list fields by which we can filter and group. For your convenience, I've added the following tables which are a little bit easier to read:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td style="width: 231px">
+<p><strong>Metric</strong></p>
+</td>
+<td style="width: 351px">
+<p><strong>Description</strong></p>
+</td>
+<td style="width: 43px">
+<p><strong>Unit</strong></p>
+</td>
+<td style="width: 89px">
+<p><strong>Type</strong></p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>uptime</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The number of milliseconds since the container was started</p>
+</td>
+<td style="width: 43px">
+<p>ms</p>
+</td>
+<td style="width: 89px">
+<p>Cumulative</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>cpu/usage</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The cumulative CPU usage on all cores</p>
+</td>
+<td style="width: 43px">
+<p>ns</p>
+</td>
+<td style="width: 89px">
+<p>Cumulative</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>cpu/limit</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The CPU limit in millicores</p>
+</td>
+<td style="width: 43px">
+<p>-</p>
+</td>
+<td style="width: 89px">
+<p>Gauge</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>memory/usage</kbd></p>
+</td>
+<td style="width: 351px">
+<p>Total memory usage</p>
+</td>
+<td style="width: 43px">
+<p>Bytes</p>
+</td>
+<td style="width: 89px">
+<p>Gauge</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>memory/working_set</kbd></p>
+</td>
+<td style="width: 351px">
+<p>Total working set usage; the working set is the memory that is being used, and is not easily dropped by the kernel</p>
+</td>
+<td style="width: 43px">
+<p>Bytes</p>
+</td>
+<td style="width: 89px">
+<p>Gauge</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>memory/limit</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The memory limit</p>
+</td>
+<td style="width: 43px">
+<p>Bytes</p>
+</td>
+<td style="width: 89px">
+<p>Gauge</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>memory/page_faults</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The number of page faults</p>
+</td>
+<td style="width: 43px">
+<p>-</p>
+</td>
+<td style="width: 89px">
+<p>Cumulative</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>memory/major_page_faults</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The number of major page faults</p>
+</td>
+<td style="width: 43px">
+<p>-</p>
+</td>
+<td style="width: 89px">
+<p>Cumulative</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>network/rx</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The cumulative number of bytes received over the network</p>
+</td>
+<td style="width: 43px">
+<p>Bytes</p>
+</td>
+<td style="width: 89px">
+<p>Cumulative</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>network/rx_errors</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The cumulative number of errors while receiving over the network</p>
+</td>
+<td style="width: 43px">
+<p>-</p>
+</td>
+<td style="width: 89px">
+<p>Cumulative</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>network/tx</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The cumulative number of bytes sent over the network</p>
+</td>
+<td style="width: 43px">
+<p>Bytes</p>
+</td>
+<td style="width: 89px">
+<p>Cumulative</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>network/tx_errors</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The cumulative number of errors while sending over the network</p>
+</td>
+<td style="width: 43px">
+<p>-</p>
+</td>
+<td style="width: 89px">
+<p>Cumulative</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>filesystem/usage</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The total number of bytes consumed on a filesystem</p>
+</td>
+<td style="width: 43px">
+<p>Bytes</p>
+</td>
+<td style="width: 89px">
+<p>Gauge</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>filesystem/limit</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The total size of filesystem in bytes</p>
+</td>
+<td style="width: 43px">
+<p>Bytes</p>
+</td>
+<td style="width: 89px">
+<p>Gauge</p>
+</td>
+</tr>
+<tr>
+<td style="width: 231px">
+<p><kbd>filesystem/available</kbd></p>
+</td>
+<td style="width: 351px">
+<p>The number of available bytes remaining in a the filesystem</p>
+</td>
+<td style="width: 43px">
+<p>Bytes</p>
+</td>
+<td style="width: 89px">
+<p>Gauge</p>
+</td>
+</tr>
+</tbody>
+</table>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Table 6.1. Available Heapster metrics</div>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td>
+<p><strong>Field</strong></p>
+</td>
+<td>
+<p><strong>Description</strong></p>
+</td>
+<td>
+<p><strong>Label type</strong></p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>nodename</kbd></p>
+</td>
+<td>
+<p>The node name where the container ran</p>
+</td>
+<td>
+<p><span>Common</span></p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>hostname</kbd></p>
+</td>
+<td>
+<p>The host name where the container ran</p>
+</td>
+<td>
+<p>Common</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>host_id</kbd></p>
+</td>
+<td>
+<p>An identifier specific to a host, which is set by the cloud provider or user</p>
+</td>
+<td>
+<p>Common</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>container_base_image</kbd></p>
+</td>
+<td>
+<p>The user-defined image name that is run inside the container</p>
+</td>
+<td>
+<p><span>Common</span></p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>container_name</kbd></p>
+</td>
+<td>
+<p>The user-provided name of the container or full container name for system containers</p>
+</td>
+<td>
+<p>Common</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>pod_name</kbd></p>
+</td>
+<td>
+<p>The name of the pod</p>
+</td>
+<td>
+<p>Pod</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>pod_id</kbd></p>
+</td>
+<td>
+<p>The unique ID of the pod</p>
+</td>
+<td>
+<p>Pod</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>pod_namespace</kbd></p>
+</td>
+<td>
+<p>The namespace of the pod</p>
+</td>
+<td>
+<p>Pod</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>namespace_id</kbd></p>
+</td>
+<td>
+<p>The unique ID of the namespace of the pod</p>
+</td>
+<td>
+<p>Pod</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>labels</kbd></p>
+</td>
+<td>
+<p>A comma-separated list of user-provided labels</p>
+</td>
+<td>
+<p>Pod</p>
+</td>
+</tr>
+</tbody>
+</table>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Table 6.2. Available Heapster fields</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Customizing our dashboards</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that we have the fields, we can have some fun. Recall the Grafana page that we looked at in <a href="446f901d-70fa-4ebe-be8a-0de14248f99c.xhtml"><span class="ChapterrefPACKT">Chapter 1</span></a>, <em>Introduction to Kubernetes</em>. Let's pull that up again by going to our cluster's monitoring URL. Note that you may need to log in with your cluster credentials. Refer to the following format of the link you need to use: <kbd>https://&lt;your master IP&gt;/api/v1/proxy/namespaces/kube-system/services/monitoring-grafana</kbd></p>
+<p>We'll see the default <span class="packt_screen">Home</span> dashboard. Click on the down arrow next to <span class="packt_screen">Home</span> and select <span class="packt_screen">Cluster</span>. This shows the Kubernetes cluster dashboard, and now we can add our own statistics to the board. Scroll all the way to the bottom and click on <span class="packt_screen">Add a Row</span>. This should create a space for a new row and present a green tab on the left-hand side of the screen.</p>
+<p>Let's start by adding a view into the filesystem usage for each node (minion). Click on the green tab to expand, and then select <span class="packt_screen">Add Panel</span> and then <span class="packt_screen">G</span><span class="packt_screen">raph</span>. An empty graph should appear on the screen, along with a query panel for our custom graph.</p>
+<p>The first field in this panel should show a query that starts with <span><span class="packt_screen">SELECT mean("value") FROM. </span></span>Click on the <span class="packt_screen">A</span> character next to this field to expand it. Leave the first field next to <span class="packt_screen">FROM</span> as <span class="packt_screen">default</span> and then click on the next field with the <span class="packt_screen">select measurement</span> value. A drop-down menu will appear with the Heapster metrics we saw in the previous tables. Select <kbd>filesystem/usage_bytes_gauge</kbd>. Now, in the <span class="packt_screen">SELECT</span> row, click on <span class="packt_screen">mean()</span> and then on the <span class="packt_screen">x</span> symbol to remove it. Next, click on the + symbol on the end of the row and add <span class="packt_screen">selectors</span> and <span class="packt_screen">max</span>. Then, you'll see a <span class="packt_screen">GROUP BY</span> row with <span class="packt_screen">time($interval)</span> and <span class="packt_screen">fill(none)</span>. Carefully click on <span class="packt_screen">fill</span> and not on the <span class="packt_screen">(none)</span> portion, and again on <span class="packt_screen">x</span> to remove it.</p>
+<p>Then, click on the <span class="packt_screen">+</span> symbol at the end of the row and select <span class="packt_screen">tag(hostname)</span>.Finally, at the bottom of the screen we should see a <span class="packt_screen">G</span><span class="packt_screen">roup by time</span><span><span class="packt_screen"> interval.</span></span> Enter <kbd>5s</kbd> there and you should have something similar to the following screenshot:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="Images/07fee65f-a7e2-4905-8ae3-8b883ea681d5.png" style="width:35.00em;height:47.50em;" width="632" height="859"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Heapster pod details</div>
+<p>Next, let's click on the <span class="packt_screen">Axes</span> tab, so that we can set the units and legend. Under <span class="packt_screen">Left Y Axis</span>, click on the field next to <span class="packt_screen">Unit</span> and set it to <span class="packt_screen">data</span> | <span class="packt_screen">bytes</span> and <span class="packt_screen">Label</span> to <span class="packt_screen">Disk Space Used</span>. Under <span class="packt_screen">Right Y Axis</span>, set <span class="packt_screen">Uni<span class="packt_screen">t</span></span> to <span class="packt_screen">none</span> | <span class="packt_screen">none</span>. Next, on the <span class="packt_screen">Legend</span> tab, make sure to check <span class="packt_screen">Show</span> in <span class="packt_screen">Options</span> and <span class="packt_screen">Max</span> in <span class="packt_screen">Values</span>.</p>
+<p>Now, let's quickly go to the <span class="packt_screen">General</span> tab and choose a title. In my case, I named mine <kbd>Filesystem Disk Usage by Node (max)</kbd>.</p>
+<p>We don't want to lose this nice new graph we've created, so let's click on the save icon in the top-right corner. It looks like a floppy disk (you can do a Google image search if you don't know what this is).</p>
+<p>After we click on the save icon, we will see a green dialog box that verifies that the dashboard was saved. We can now click the <span class="packt_screen">x</span> symbol above the graph details panel and below the graph itself.</p>
+<p>This will return us to the dashboard page. If we scroll all the way down, we will see our new graph. Let's add another panel to this row. Again, use the <em>green</em> tab and then select <span class="packt_screen">Add Panel</span> | <span class="packt_screen">singlestat</span>. Once again, an empty panel will appear with a setting form below it.</p>
+<p>Let's say we want to watch a particular node and monitor network usage. We can easily do this by first going to the <span class="packt_screen">Metrics</span> tab. Then, expand the query field and set the second value in the <span class="packt_screen">FROM</span> field to <span class="packt_screen">network/rx.</span> Now, we can specify the <span class="packt_screen">WHERE</span> clause by clicking the <span class="packt_screen">+</span> symbol at the end of the row and choosing <span class="packt_screen">hostname</span> from the drop-down. After <span class="packt_screen">hostname =</span>, <span>click on <span class="packt_screen">select tag value</span> and choose one of the minion nodes </span>from the list.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>Finally, leave <span class="packt_screen">mean()</span> for the second <span class="packt_screen">SELECT</span> field shown as follows:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="Images/828b8fbe-c59b-4863-8ab3-eda8f82f0518.png" style="width:39.17em;height:27.42em;" width="628" height="439"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Singlestat options</div>
+<p>In the <span class="packt_screen">Options</span> tab, make sure that <span class="packt_screen">Unit format</span> is set to <span class="packt_screen">data</span> | <span class="packt_screen">bytes</span> and check the <span class="packt_screen">Show</span> box next to <span class="packt_screen">Spark lines</span>. The spark line gives us a quick historical view of the recent variations in the value. We can use <span class="packt_screen">Background mode</span> to take up the entire background; by default, it uses the area below the value.</p>
+<div class="packt_tip">In <span class="packt_screen">Coloring</span>, we can optionally check the <span class="packt_screen">Value</span> or <span class="packt_screen">Background</span> box and choose <span class="packt_screen">Thresholds</span> and <span class="packt_screen">Colors.</span> This will allow us to choose different colors for the value based on the threshold tier we specify. Note that an unformatted version of the number must be used for threshold values.</div>
+<p>Now, let's go back to the <span class="packt_screen">General</span> tab and set the title as <kbd>Network bytes received (Node35ao)</kbd>. Use the identifier for your minion node.</p>
+<p class="mce-root"/>
+<p>Once again, let's save our work and return to the dashboard. We should now have a row that looks like the following screenshot:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="Images/d10e2ae7-5b49-4772-a1a5-b340e7db65dd.png" style="width:39.83em;height:32.25em;" width="638" height="516"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Custom dashboard panels</div>
+<p>Grafana has a number of other panel types that you can play with, such as <span class="packt_screen">Dashboard list</span>, <span class="packt_screen">Plugin list</span>, <span class="packt_screen">Table</span>, and <span class="packt_screen">Text</span>. </p>
+<p>As we can see, it is pretty easy to build a custom dashboard and monitor the health of our cluster at a glance.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">FluentD and Google Cloud Logging</h1>
+                </header>
+            
+            <article>
+                
+<p>Looking back at the <span><em>System pod listing</em> screenshot</span> at the beginning of the chapter, you may have noted a number of pods starting with the words <kbd>fluentd-cloud-logging-kubernetes</kbd>. These pods appear when using the GCE provider for your K8s cluster.</p>
+<p>A pod like this exists on every node in our cluster, and its sole purpose is to handle the processing of Kubernetes logs. If we log in to our Google Cloud Platform account, we can see some of the logs processed there. Simply use the left side, and under <span class="packt_screen">Stackdriver</span>, select <span class="packt_screen">Logging</span>. This will take us to a log listing page with a number of drop-down menus on the top. If this is your first time visiting the page, the first drop-down will likely be set to <span class="packt_screen">Cloud HTTP Load Balancer</span>. </p>
+<p>In this drop-down menu, we'll see a number of GCE types of entries. Select GCE VM instances and then the Kubernetes master or one of the nodes. In the second drop-down, we can choose various log groups, including <span class="packt_screen">kubelet. </span>We can also filter by the event log level and date. Additionally, we can use the play button to watch events stream in live shown as follows:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/2e48780f-e898-4f43-a83a-f8555566e79b.png" style="width:38.17em;height:27.17em;" width="627" height="446"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">The Google Cloud Logging filter</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">FluentD</h1>
+                </header>
+            
+            <article>
+                
+<p>Now we know that the <kbd>fluentd-cloud-logging-kubernetes</kbd> pods are sending the data to the Google Cloud, but why do we need FluentD? Simply put, FluentD is a collector.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>It can be configured to have multiple sources to collect and tag logs, which are then sent to various output points for analysis, alerting, or archiving. We can even transform data using plugins before it is passed on to its destination.</p>
+<p>Not all provider setups have FluentD installed by default, but it is one of the recommended approaches to give us greater flexibility for future monitoring operations. The AWS Kubernetes setup also uses FluentD, but instead forwards events to Elasticsearch.</p>
+<div class="packt_infobox"><strong>Exploring FluentD</strong>: If you are curious about the inner workings of the FluentD setup or just want to customize the log collection, we can explore quite easily using the <kbd>kubectl exec</kbd> command and one of the pod names from the command we ran earlier in the chapter. First, let's see if we can find the FluentD <kbd>config</kbd> file: <kbd><strong>$ kubectl exec fluentd-cloud-logging-kubernetes-minion-group-r4qt --namespace=kube-system -- ls /etc/td-agent</strong></kbd>.<br/>
+ We will look in the <kbd>etc</kbd> folder and then <kbd>td-agent</kbd>, which is the <kbd>fluent</kbd> sub folder. While searching in this directory, we should see a <kbd>td-agent.conf</kbd> file. We can view that file with a simple <kbd>cat</kbd> command, as follows: <kbd><strong>$ kubectl exec fluentd-cloud-logging-kubernetes-minion-group-r4qt --namespace=kube-system -- cat /etc/td-agent/td-agent.conf</strong></kbd>.<br/>
+<br/>
+We should see a number of sources, including the various Kubernetes components, Docker, and some GCP elements. While we can make changes here, remember that it is a running container and our changes won't be saved if the pod dies or is restarted. If we really want to customize, it's best to use this container as a base and build a new container, which we can push to a repository for later use.</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Maturing our monitoring operations</h1>
+                </header>
+            
+            <article>
+                
+<p>While Grafana gives us a great start to monitoring our container operations, it is still a work in progress. In the real world of operations, having a complete dashboard view is great once we know there is a problem. However, in everyday scenarios, we'd prefer to be proactive and actually receive notifications when issues arise. This kind of alerting capability is a must to keep the operations team ahead of the curve and out of reactive mode.</p>
+<p>There are many solutions available in this space, and we will take a look at two in particular: GCE monitoring (Stackdriver) and Sysdig.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">GCE (Stackdriver)</h1>
+                </header>
+            
+            <article>
+                
+<p>Stackdriver is a great place to start for infrastructure in the public cloud. It is actually owned by Google, so it's integrated as the Google Cloud Platform monitoring service. Before your lock-in alarm bells start ringing, Stackdriver also has solid integration with AWS. In addition, Stackdriver has alerting capability with support for notification to a variety of platforms and webhooks for anything else.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Signing up for GCE monitoring</h1>
+                </header>
+            
+            <article>
+                
+<p>In the GCE console, in the <span class="packt_screen">Stackdriver</span> section, click on <span class="packt_screen">Monitoring.</span> This will open a new window, where we can sign up for a free trial of Stackdriver. We can then add our GCP project and optionally an AWS account as well. This requires a few more steps, but instructions are included on the page. Finally, we'll be given instructions on how to install the agents on our cluster nodes. We can skip this for now, but will come back to it in a minute.</p>
+<p>Click on <span class="packt_screen">Continue</span>, set up your daily alerts, and click on <span class="packt_screen">Continue</span> again.</p>
+<p>Click on <span class="packt_screen">Launch Monitoring</span> to proceed. We'll be taken to the main dashboard page, where we will see some basic statistics on our node in the cluster. If we select <span class="packt_screen">Resources</span> from the side menu and then <span class="packt_screen">Instances</span>, we'll be taken to a page with all our nodes listed. By clicking on the individual node, we can again see some basic information even without an agent installed.</p>
+<div class="packt_tip"><span>Stackdriver also offers monitoring and logging agents that can be installed on the nodes. However, it currently does not support the container OS that is used by default in the GCE <kbd>kube-up</kbd> script. You can still see the basic metrics for any nodes in GCE or AWS, but will need to use another OS if you want a detailed agent installation.</span></div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Alerts</h1>
+                </header>
+            
+            <article>
+                
+<p>Next, we can look at the alerting policies available as part of the monitoring service. From the instance details page, click on the <span class="packt_screen">Create Alerting Policy</span> button in the <span class="packt_screen">Incidents</span> section at the top of the page.</p>
+<p>We will click on <span class="packt_screen">Add Condition</span> and select a <span class="packt_screen">M</span><span class="packt_screen">etric Threshold</span>. In the <span class="packt_screen">Target</span> section, set <span class="packt_screen">RESOURCE TYPE</span> to <span class="packt_screen">Instance (GCE)</span>. Then, set <span class="packt_screen">APPLIES TO</span> to <span class="packt_screen">Group</span> and <span class="packt_screen">kubernetes</span>. Leave <span class="packt_screen">CONDITION TRIGGERS IF</span> set to <span class="packt_screen">Any Member Violates</span>.</p>
+<p>In the <span class="packt_screen">Configuration</span> section, leave <span class="packt_screen">IF METRIC</span> as <span class="packt_screen">CPU Usage (GCE Monitoring)</span> and <span class="packt_screen">CONDITION</span> as <span class="packt_screen">above</span>. Now, set <span class="packt_screen">THRESHOLD</span> to <kbd>80</kbd> and set the time in <span class="packt_screen">FOR</span> to <span class="packt_screen">5 minutes</span>.</p>
+<p>Then click on <span class="packt_screen">Save Condition</span>:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/44c131d0-a5f8-4760-9288-36fb3056debb.png" style="width:36.58em;height:33.92em;" width="644" height="597"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Google Cloud Monitoring alert policy</div>
+<p>Next, we will add a notification. In the <span class="packt_screen">Notification</span> section, leave <span class="packt_screen">Method</span> as <span class="packt_screen">Email</span> and enter your email address.</p>
+<p>We can skip the <span class="packt_screen">Documentation</span> section, but this is where we can add text and formatting to alert messages.</p>
+<p>Finally, name the policy <kbd>Excessive CPU Load</kbd> and click on <span class="packt_screen">Save Policy.</span></p>
+<p class="mce-root"/>
+<p>Now, whenever the CPU from one of our instances goes above 80 percent, we will receive an email notification. If we ever need to review our policies, we can find them in the <span class="packt_screen">Alerting</span> drop-down and then in <span class="packt_screen">Policies Overview</span> in the menu on the left-hand side of the screen.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Beyond system monitoring with Sysdig</h1>
+                </header>
+            
+            <article>
+                
+<p>Monitoring our cloud systems is a great start, but what about the visibility of the containers themselves? Although there are a variety of cloud monitoring and visibility tools, Sysdig stands out for its ability to dive deep, not only into system operations, but specifically containers.</p>
+<p>Sysdig is open source and is billed as a universal system visibility tool with native support for containers. It is a command line tool that provides insight into the areas we looked at earlier, such as storage, network, and system processes. What sets it apart is the level of detail and visibility it offers for these process and system activities. Furthermore, it has native support for containers, which gives us a full picture of our container operations. This is a highly recommended tool for your container operations arsenal. The main website of Sysdig is <a href="http://www.sysdig.org/"><span class="URLPACKT">http://www.sysdig.org/</span></a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Sysdig Cloud</h1>
+                </header>
+            
+            <article>
+                
+<p>We will take a look at the Sysdig tool and some of the useful command line-based UIs in a moment. However, the team at Sysdig has also built a commercial product, named <strong>Sysdig Cloud</strong>, which provides the advanced dashboard, alerting, and notification services we discussed earlier in the chapter. Also, the differentiator here has high visibility into containers, including some nice visualizations of our application topology.</p>
+<div class="packt_infobox">If you'd rather skip the <em>Sysdig Cloud</em> section and just try out the command-line tool, simply skip to <em>The</em> S<em>ysdig command line</em> section later in this chapter.</div>
+<p>If you have not done so already, sign up for Sysdig Cloud at <a href="http://www.sysdigcloud.com"><span class="URLPACKT">http://www.sysdigcloud.com</span></a>.</p>
+<p>After activating and logging in for the first time, we'll be taken to a welcome page. Clicking on <span class="packt_screen">Next</span>, we are shown a page with various options to install the Sysdig agents. For our example environment, we will use the Kubernetes setup. Selecting Kubernetes will give you a page with your API key and a link to instructions. The instructions will walk you through how to create a Sysdig agent DaemonSet on your cluster. Don't forget to add the API key from the install page. </p>
+<p>We will not be able to continue on the install page until the agents connect. After creating the DaemonSet and waiting a moment, the page should continue to the AWS integration page. You can fill this out if you like, but for this walk-through, we will click on <span class="packt_screen">Skip</span>. Then, click on <span class="packt_screen">Let's Get Started</span>.</p>
+<div class="packt_infobox">As of this writing, Sysdig and Sysdig Cloud were not fully compatible with the latest container OS deployed by default in the GCE <kbd>kube-up</kbd> script, Container-optimized OS from Google: <a href="https://cloud.google.com/container-optimized-os/docs">https://cloud.google.com/container-optimized-os/docs</a>.</div>
+<p>We'll be taken to the main <span class="packt_screen">Sysdig Cloud</span> dashboard screen. We should see at least two minion nodes appear under the <span class="packt_screen">Explore</span> tab. We should see something similar to the following screenshot with our minion nodes:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/e1e97e90-8387-4488-aab6-cc3d56c93599.png" style="width:41.33em;height:17.92em;" width="636" height="276"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Sysdig Cloud Explore page</div>
+<p>This page shows us a table view, and the links on the left let us explore some key metrics for CPU, memory, networking, and so on. Although this is a great start, the detailed views will give us a much deeper look at each node.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Detailed views</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's take a look at these views. Select one of the minion nodes and then scroll down to the detail section that appears below. By default, we should see the <span class="packt_screen">System: Overview by Process</span> view (if it's not selected, just click on it from the list on the left-hand side). If the chart is hard to read, simply use the maximize icon in the top-left corner of each graph for a larger view.</p>
+<p class="mce-root"/>
+<p>There are a variety of interesting views to explore. Just to call out a few others, <span class="packt_screen">Services</span> | <span class="packt_screen">HTTP Overview</span> and <span class="packt_screen">Hosts &amp; Containers</span> | <span class="packt_screen"><span class="packt_screen">Overview</span> by Container</span> give us some great charts for inspection. In the latter view, we can see stats for CPU, memory, network, and file usage by container.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Topology views</h1>
+                </header>
+            
+            <article>
+                
+<p>In addition, there are three topology views at the bottom. These views are perfect for helping us understand how our application is communicating. Click on <span class="packt_screen">Topology</span> | <span class="packt_screen">Network Traffic</span> and wait a few seconds for the view to fully populate. It should look similar to the following screenshot:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/2c6efa2b-a243-4682-bf29-58f1b88d0859.png" style="width:31.08em;height:37.17em;" width="589" height="705"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Sysdig Cloud network topology view</div>
+<p>Note that the view maps out the flow of communication between the minion nodes and the master in the cluster. You may also note a <span class="packt_screen">+</span> symbol in the top corner of the no<span>de boxes. Click on that in one of the minion nodes and use the</span><span> </span>zoom<span> </span><span>tools at the top of the vie</span><span>w area to zoom into the details, as shown in the following screenshot:</span></p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/1f120057-ed85-45db-b377-2ced1e76790f.png" style="width:44.58em;height:45.00em;" width="574" height="580"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">The Sysdig Cloud network topology detailed view</div>
+<p>Note that we can now see all the components of Kubernetes running inside the master. We can see how the various components work together. We can see <kbd>kube-proxy</kbd> and the <kbd>kubelet</kbd> process running, as well as a number of boxes with the Docker whale, which indicate that they are containers. If we zoom in and use the plus icon, we can see that these are the containers for our pods and core Kubernetes processes, as we saw in the services running on the master section in <a href="446f901d-70fa-4ebe-be8a-0de14248f99c.xhtml"><span class="ChapterrefPACKT">Chapter 1</span></a>, <em>Introduction to</em> <em>Kubernetes</em>.</p>
+<p>Also, if you have the master included in your monitored nodes, you can watch <kbd>kubelet</kbd><span class="packt_screen"> </span>initiate communication from a minion and follow it all the way through the <kbd>kube-apiserver</kbd> container in the master.</p>
+<p>We can even sometimes see the instance communicating with the GCE infrastructure to update metadata. This view is great in order to get a mental picture of how our infrastructure and underlying containers are talking to one another.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Metrics</h1>
+                </header>
+            
+            <article>
+                
+<p>Next, let's switch over to the <span class="packt_screen">Metrics</span> tab in the left-hand menu next to <span class="packt_screen">Views</span>. Here, there are also a variety of helpful views.</p>
+<p>Let's look at <span class="packt_screen">capacity.estimated.request.total.count</span> in <span class="packt_screen">System</span>. This view shows us an estimate of how many requests a node is capable of handling when fully loaded. This can be really useful for infrastructure planning:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="Images/9f48657a-fe91-40d8-aeb9-a40410ef95f6.png" style="width:36.67em;height:29.42em;" width="626" height="503"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Sysdig Cloud capacity estimate view</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Alerting</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that we have all this great information, let's create some notifications. Scroll back up to the top of the page and find the bell icon next to one of your minion entries. This will open a <span class="packt_screen">Create Alert </span>dialog. Here, we can set manual alerts similar to what we did earlier in the chapter. However, there is also the option to use <span class="packt_screen">BASELINE</span> and <span class="packt_screen">HOST COMPARISON</span>.</p>
+<p>Using the <span class="packt_screen"><span>BASELINE</span> </span>option is extremely helpful, as Sysdig will watch the historical patterns of the node and alert us whenever one of the metrics strays outside the expected metric thresholds. No manual settings are required, so this can really save time for the notification setup and help our operations team to be proactive before issues arise. Refer to the following screenshot:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/9c4b11bc-0918-4bfa-adfe-32be7f016b56.png" style="width:37.67em;height:51.75em;" width="636" height="873"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Sysdig Cloud new alert</div>
+<p>The <span class="packt_screen">HOST COMPARISON</span> option is also a great help as it allows us to compare metrics with other hosts and alert whenever one host has a metric that differs significantly from the group. A great use case for this is monitoring resource usage across minion nodes to ensure that our scheduling constraints are not creating a bottleneck somewhere in the cluster.</p>
+<p>You can choose whichever option you like and give it a name and warning level. Enable the notification method. Sysdig supports email, <strong>SNS</strong> (short for <strong>Simple Notification Service</strong>), and <strong>PagerDuty</strong> as notification methods. You can optionally enable <strong>Sysdig Capture</strong> to gain deeper insight into issues. Once you have everything set, just click on <span class="packt_screen">Create</span> and you will start to receive alerts as issues come up.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The Sysdig command line</h1>
+                </header>
+            
+            <article>
+                
+<p>Whether you only use the open source tool or you are trying out the full Sysdig Cloud package, the command line utility is a great companion to have to track down issues or get a deeper understanding of your system.</p>
+<p>In the core tool, there is the main <kbd>sysdig</kbd> utility and also a command line-style UI named <kbd>csysdig</kbd>. Let's take a look at a few useful commands.</p>
+<p>Find the relevant installation instructions for your OS here: <a href="http://www.sysdig.org/install/">http://www.sysdig.org/install/</a>.</p>
+<p>Once installed, let's first look at the process with the most network activity by issuing the following command:</p>
+<pre><strong>$ sudo sysdig -pc -c topprocs_net</strong></pre>
+<p>The following screenshot is the result of the preceding command:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="Images/cc33a877-6d2d-475c-9e22-dc4c87e1b15b.png" width="642" height="147"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">A Sysdig top process by network activity</div>
+<p>This is an interactive view that will show us a top process in terms of network activity. Also, there are a plethora of commands to use with <kbd>sysdig</kbd>. A few other useful commands to try out include the following:</p>
+<pre><strong>$ sudo sysdig -pc -c topprocs_cpu</strong><br/><strong>$ sudo sysdig -pc -c topprocs_file</strong><br/><strong>$ sudo sysdig -pc -c topprocs_cpu container.name=&lt;Container Name NOT ID&gt;</strong></pre>
+<div class="packt_infobox">More examples can be found at <a href="http://www.sysdig.org/wiki/sysdig-examples/"><span class="URLPACKT">http://www.sysdig.org/wiki/sysdig-examples/</span></a>.</div>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">The Csysdig command-line UI</h1>
+                </header>
+            
+            <article>
+                
+<p>Just because we are in a shell on one of our nodes doesn't mean we can't have a UI. Csysdig is a customizable UI for exploring all the metrics and insight that Sysdig provides. Simply type <kbd>csysdig</kbd> in the prompt:</p>
+<pre><strong>$ csysdig</strong></pre>
+<p>After entering <kbd>csysdig</kbd>, we will see a real-time listing of all processes on the machine. At the bottom of the screen, you'll note a menu with various options. Click on <span class="packt_screen">Views</span> or press <em><span class="KeyPACKT">F2</span></em> if you love to use your keyboard. In the left-hand menu, there are a variety of options, but we'll look at threads. Double-click on <span class="packt_screen">Threads</span>.</p>
+<div class="packt_tip">On some operating systems and with some SSH clients, you may have issues with the function keys. Check the settings on your terminal and make sure that the function keys are using the VT100+ sequences.</div>
+<p>We can see all the threads currently running on the system and some information about the resource usage. By default, we see a big list that is updated often. If we click on the <span class="packt_screen">Filter</span>, <em><span class="KeyPACKT">F4</span></em> for the mouse-challenged, we can slim down the list.</p>
+<p class="mce-root"/>
+<p>Type <kbd>kube-apiserver</kbd>, if you are on the master, or <kbd>kube-proxy</kbd>, if you are on a node (minion), in the filter box and press <em>Enter</em>. The view now filters for only the threads in that command:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="Images/1c9f7d33-45a0-4d07-8710-782388d176a3.png" style="width:47.83em;height:23.58em;" width="644" height="318"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Csysdig threads</div>
+<p>If we want to inspect this a little further, we can simply select one of the threads in the list and click on <span class="packt_screen">Dig</span> or press <em><span class="KeyPACKT">F6</span></em>. Now, we see a detailed listing of system calls from the command in real time. This can be a really useful tool to gain deep insight into the containers and processes running on our cluster.</p>
+<p>Click on <span class="packt_screen">Back</span> or press the <em>Backspace</em> key to go back to the previous screen. Then, go to <span class="packt_screen">Views</span> once more. This time, we will look at the <span class="packt_screen">Containers</span> view. Once again, we can filter and also use the <span class="packt_screen">Dig</span> view to get more in-depth visibility into what is happening at the system call level.</p>
+<p>Another menu item you might note here is <span class="packt_screen">Actions</span>, which is available in the newest release. These features allow us to go from process monitoring to action and response. It gives us the ability to perform a variety of actions from the various process views in Csysdig. For example, the container view has actions to drop into a Bash shell, kill containers, inspect logs, and more. It's worth getting to know the various actions and hotkeys, and even add your own custom hotkeys for common operations.</p>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Prometheus</h1>
+                </header>
+            
+            <article>
+                
+<p>A newcomer to the monitoring scene is an open source tool called Prometheus. Prometheus is an open source monitoring tool that was built by a team at SoundCloud. You can find more about the project at <a href="https://prometheus.io">https://prometheus.io</a>.</p>
+<p>Their website offers the following features: </p>
+<ul>
+<li>A multi-dimensional data model (<a href="https://prometheus.io/docs/concepts/data_model/">https://prometheus.io/docs/concepts/data_model/</a>) (the time series are identified by their metric name and key/value pairs)</li>
+<li>A flexible query language (<a href="https://prometheus.io/docs/prometheus/latest/querying/basics/">https://prometheus.io/docs/prometheus/latest/querying/basics/</a>) to leverage this dimensionality</li>
+<li>No reliance on distributed storage; single-server nodes are autonomous</li>
+<li>Time series collection happens via a pull model over HTTP</li>
+<li>Pushing time series (<a href="https://prometheus.io/docs/instrumenting/pushing/">https://prometheus.io/docs/instrumenting/pushing/</a>) is supported via an intermediary gateway</li>
+<li>Targets are discovered via service discovery or static configuration</li>
+<li>Multiple modes of graphing and dashboard support</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Prometheus summary</h1>
+                </header>
+            
+            <article>
+                
+<p>Prometheus offers a lot of value to the operators of a Kubernetes cluster. Let's look at some of the more important dimensions of the software:</p>
+<ul>
+<li><strong>Simple to operate</strong>: It was built to run as individual servers using local storage for reliability</li>
+<li><strong>It's precise</strong>: You can use a query language similar to JQL, DDL, DCL, or SQL queries to define alerts and provide a multi-dimensional view of status</li>
+<li><strong>Lots of libraries</strong>: You can use more than ten languages and numerous client libraries in order to introspect your services and software</li>
+<li><strong>Efficient</strong>: With data stored in an efficient, custom format both in memory and on disk, you can scale out easily with sharding and federation, creating a strong platform from which to issue powerful queries that can construct powerful data models and ad hoc tables, graphs, and alerts</li>
+</ul>
+<p class="mce-root"/>
+<p>Also, Promethus is 100% open source and is (as of July 2018) currently an incubating project in the CNCF. You can install it with Helm as we did with other software, or do a manual installation as we'll detail here. Part of the reason that we're going to look at Prometheus today is due to the overall complexity of the Kubernetes system. With lots of moving parts, many servers, and potentially differing geographic regions, we need a system that can cope with all of that complexity.</p>
+<p>A nice part about Prometheus is the pull nature, which allows you to focus on exposing metrics on your nodes as plain text via HTTP, which Prometheus can then pull back to a central monitoring and logging location. It's also written in Go and inspired by the closed source Borgmon system, which makes it a perfect match for our Kubernetes cluster. Let's get started with an install!</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Prometheus installation choices</h1>
+                </header>
+            
+            <article>
+                
+<p>As with previous examples, we'll need to either use our local Minikube install or the GCP cluster that we've spun up. Log in to your cluster of choice, and then let's get Prometheus set up. There's actually lots of options for installing Prometheus due to the fast moving nature of the software:</p>
+<ul>
+<li>The simplest, manual method; if you'd like to build the software from the getting started documents, you can jump in with <a href="https://prometheus.io/docs/prometheus/latest/getting_started/">https://prometheus.io/docs/prometheus/latest/getting_started/</a> and get Prometheus monitoring itself.</li>
+<li>The middle ground, with Helm; if you'd like to take the middle road, you can install Prometheus on your cluster with Helm (<a href="https://github.com/helm/charts/tree/master/stable/prometheus">https://github.com/helm/charts/tree/master/stable/prometheus</a>).</li>
+<li>The advanced <kbd>Operator</kbd> method; if you want to use the latest and greatest, let's take a look at the Kubernetes <kbd>Operator</kbd> class of software, and use it to install Prometheus. The <kbd>Operator</kbd> was created by CoreOS, who have recently been acquired by Red Hat. That should mean interesting things for Project Atomic and Container Linux. We'll talk more about that later, however! We'll use the Operator model here.</li>
+</ul>
+<div class="packt_tip">The Operator is designed to build upon the Helm-style management of software in order to build additional human operational knowledge into the installation, maintenance, and recovery of applications. You can think of the Operator software just like an SRE Operator: someone who's an expert in running a piece of software.</div>
+<p class="mce-root"/>
+<p>An Operator is an application-specific controller that extends the Kubernetes API in order to manage complex stateful applications such as caches, monitoring systems, and relational or non-relational databases. The Operator uses the API in order to create, configure, and manage these stateful systems on behalf of the user. While Deployments are excellent in dealing with seamless management of stateless web applications, the Deployment object in Kubernetes struggles to orchestrate all of the moving pieces in a stateful application when it comes to scaling, upgrading, recovering from failure, and reconfiguring these systems.</p>
+<div class="packt_tip">You can read more about extending the Kubernetes API here: <a href="https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/">https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/</a>.</div>
+<p>Operators leverage some core Kubernetes concepts that we've discussed in other chapters. Resources (ReplicaSets) and Controllers (for example Deployments, Services, and DaemonSets) are leverage with additional operational knowledge of the manual steps that are encoded in the Operator software. For example, when you scale up an etcd cluster manually, one of the key steps in the process is to create a DNS name for the new etcd member that can be used to route to the new member once it's been added to the cluster. With the Operator pattern being used, that systematized knowledge is built into the <kbd>Operator</kbd> class to provide the cluster administrator with seamless updates to the etcd software.</p>
+<p>The difficulty in creating operators is understanding the underlying functionality of the stateful software in question, and then encoding that into a resource configuration and control loop. Keep in mind that Kubernetes can be thought of as simply being a large distributed messaging queue, with messages that exist in the form of a YAML blob of declarative state that the cluster operator defines, which the Kubernetes system puts into place.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Tips for creating an Operator</h1>
+                </header>
+            
+            <article>
+                
+<p>If you want to create your own <kbd>Operator</kbd> in the future, you can keep the following tips from CoreOS in mind. Given the nature of their application-specific domain, you'll need to keep a few things in mind when managing complex applications. First, you'll have a set of system flow activities that your <kbd>Operator</kbd> should be able to perform. This will be actions such as creating a user, creating a database, modifying user permissions and passwords, and deleting users (such as the default user installed when creating many systems).</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>You'll also need to manage your installation dependencies, which are the items that need to be present and configured for your system to work in the first place. CoreOS also recommends the following principles be followed when creating an <kbd>Operator</kbd>:</p>
+<ul>
+<li style="font-weight: 400"><strong>Single step to deploy</strong>: Make sure your <kbd>Operator</kbd> can be initialized and run with a single command that takes no additional work to get running.</li>
+<li style="font-weight: 400"><strong>New third-party type</strong>: Your <kbd>Operator</kbd> should leverage the third-party API types, which users will take advantage of when creating applications that use your software.</li>
+<li style="font-weight: 400"><strong>Use the basics</strong>: Make sure that your <kbd>Operator</kbd> uses the core Kubernetes objects such as ReplicaSets, Services, and StatefulSets, in order to leverage all of the hard work being poured into the open source Kubernetes project.</li>
+<li style="font-weight: 400"><strong>Compatible and default working</strong>: Make sure you build your <kbd>Operators</kbd> so that they exist in harmony with older versions, and design your system so that it still continues to run unaffected if the <kbd>Operator</kbd> is stopped or accidentally deleted from your cluster.</li>
+<li style="font-weight: 400"><strong>Version</strong>: Make sure to facilitate the ability to version instances of your <kbd>Operator</kbd>, so cluster administrators don't shy away from updating your software.</li>
+<li style="font-weight: 400"><strong>Test</strong>: Also, make sure to test your <kbd>Operator</kbd> against a destructive force such as a Chaos Monkey! Your <kbd>Operator</kbd> should be able to survive the failure of nodes, pods, storage, configuration, and networking outages.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Installing Prometheus</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's run through an install of Prometheus using the new pattern that we've discovered. First, let's use the Prometheus definition file to create the deployment. We'll use Helm here to install the Operator!</p>
+<p>Make sure you have Helm installed, and then make sure you've initialized it:</p>
+<pre><strong>$ helm init</strong><br/><strong><span>master $ helm init<br/></span><span>Creating /root/.helm<br/></span><span>...<br/></span><span>Adding stable repo with URL: https://kubernetes-charts.storage.googleapis.com<br/></span><span>Adding local repo with URL: http://127.0.0.1:8879/charts<br/></span><span>$HELM_HOME has been configured at /root/.helm.<br/></span><span>...<br/></span><span>Happy Helming!<br/></span><span>$</span></strong></pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+<p>Next, we can install the various <kbd>Operator</kbd> packages required for this demo:</p>
+<pre><strong>$ helm repo add coreos https://s3-eu-west-1.amazonaws.com/coreos-charts/stable/</strong><br/><strong><span>"coreos" has been added to your repositories</span></strong></pre>
+<p>Now, install the <kbd>Operator</kbd>:</p>
+<pre><strong>$ helm install coreos/prometheus-operator --name prometheus-operator</strong></pre>
+<p>You can see that it's installed and running by first checking the installation:</p>
+<pre><strong>$ helm ls prometheus-operator</strong><br/><strong><span>NAME                    REVISION UPDATED                        STATUS CHART NAMESPACE<br/></span></strong><span><strong>prometheus-operator     1 Mon Jul 23 02:10:18 2018        DEPLOYED prometheus-operator-0.0.28 default</strong><br/></span></pre>
+<p><span>Then, look at the pods:</span></p>
+<pre><strong>$ kubectl get pods</strong><br/><strong>NAME READY STATUS RESTARTS AGE</strong><br/><strong>prometheus-operator-d75587d6-bmmvx 1/1 Running 0 2m</strong></pre>
+<p>Now, we can install <kbd>kube-prometheus</kbd> to get all of our dependencies up and running:</p>
+<pre><strong>$ helm install coreos/kube-prometheus --name kube-prometheus --set global.rbacEnable=true</strong><br/><strong><span>NAME:   kube-prometheus<br/></span><span>LAST DEPLOYED: Mon Jul 23 02:15:59 2018<br/></span><span>NAMESPACE: default<br/></span><span>STATUS: DEPLOYED<br/><br/></span>RESOURCES:</strong><br/><strong>==&gt; v1/Alertmanager</strong><br/><strong>NAME             AGE</strong><br/><strong>kube-prometheus  1s</strong><br/><br/><strong>==&gt; v1/Pod(related)</strong><br/><strong>NAME                                                  READY STATUS RESTARTS AGE</strong><br/><strong>kube-prometheus-exporter-node-45rwl                   0/1 ContainerCreating 0 1s</strong><br/><strong>kube-prometheus-exporter-node-d84mp                   0/1 ContainerCreating 0 1s</strong><br/><strong>kube-prometheus-exporter-kube-state-844bb6f589-z58b6  0/2 ContainerCreating 0 1s</strong><br/><strong>kube-prometheus-grafana-57d5b4d79f-mgqw5              0/2 ContainerCreating 0 1s</strong><br/><br/><strong>==&gt; v1beta1/ClusterRoleBinding</strong><br/><strong>NAME                                     AGE</strong><br/><strong>psp-kube-prometheus-alertmanager         1s</strong><br/><strong>kube-prometheus-exporter-kube-state      1s</strong><br/><strong>psp-kube-prometheus-exporter-kube-state  1s</strong><br/><strong>psp-kube-prometheus-exporter-node        1s</strong><br/><strong>psp-kube-prometheus-grafana              1s</strong><br/><strong>kube-prometheus                          1s</strong><br/><strong>psp-kube-prometheus                      1s</strong><br/><strong>…</strong></pre>
+<p>We've truncated the output here as there's a lot of information. Let's look at the pods again:</p>
+<pre><strong>$ kubectl get pods</strong><br/><strong><span>NAME                                                   READY STATUS RESTARTS AGE<br/></span><span>alertmanager-kube-prometheus-0                         2/2 Running 0 3m<br/></span><span>kube-prometheus-exporter-kube-state-85975c8577-vfl6t   2/2<br/>Running 0 2m<br/></span><span>kube-prometheus-exporter-node-45rwl                    1/1 Running 0 3m<br/></span><span>kube-prometheus-exporter-node-d84mp                    1/1 Running 0 3m<br/></span><span>kube-prometheus-grafana-57d5b4d79f-mgqw5               2/2 Running 0 3m<br/></span><span>prometheus-kube-prometheus-0                           3/3 Running 1 3m<br/></span><span>prometheus-operator-d75587d6-bmmvx                     1/1 Running 0 8m</span></strong></pre>
+<p>Nicely done!</p>
+<p>If you forward the port for <kbd>prometheus-kube-prometheus-0</kbd> to <kbd>8448</kbd>, you should be able to see the Prometheus dashboard, which we'll revisit in later chapters as we explore high availability and the productionalization of your Kubernetes cluster. You can check this out at <kbd>http://localhost:8449/alerts</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>We took a quick look at monitoring and logging with Kubernetes. You should now be familiar with how Kubernetes uses cAdvisor and Heapster to collect metrics on all the resources in a given cluster. Furthermore, we saw how Kubernetes saves us time by providing InfluxDB and Grafana set up and configured out of the box. Dashboards are easily customizable for our everyday operational needs.</p>
+<p>In addition, we looked at the built-in logging capabilities with FluentD and the Google Cloud Logging service. Also, Kubernetes gives us great time savings by setting up the basics for us.</p>
+<p class="mce-root"/>
+<p>Finally, you learned about the various third-party options available to monitor our containers and clusters. Using these tools will allow us to gain even more insight into the health and status of our applications. All these tools combine to give us a solid toolset to manage day-to-day operations. Lastly, we explored different methods of installing Prometheus, with an eye on building more robust production systems.</p>
+<p>In the next chapter, we will explore the new cluster federation capabilities. Still mostly in beta, this functionality will allow us to run multiple clusters in different data centers and even clouds, but manage and distribute applications from a single control plane.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Questions</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Name two of the built-in monitoring tools for Kubernetes</li>
+<li>What namespace do the built-in monitoring tools run in?</li>
+<li>What graphing software is used by most of the monitoring tools?</li>
+<li>What is FluentD referred to as?</li>
+<li>What's Google's native monitoring system?</li>
+<li>What are two good reasons to use Prometheus?</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  
+<div id="sbo-rt-content"><section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<p>If you'd like to read more about the Kubernetes Operator Framework, check out this blog post: <a href="https://coreos.com/blog/introducing-operator-framework">https://coreos.com/blog/introducing-operator-framework</a>.</p>
+<p>If you'd like to check out a video on Kubernetes monitoring from Packt, see this video: <a href="https://www.packtpub.com/mapt/video/virtualization_and_cloud/9781789130003/65553/65558/monitoring-your-infrastructure">https://www.packtpub.com/mapt/video/virtualization_and_cloud/9781789130003/65553/65558/monitoring-your-infrastructure</a>.</p>
+
+
+            </article>
+
+            
+        </section>
+    </div>
+
+
+
+  </body></html>
