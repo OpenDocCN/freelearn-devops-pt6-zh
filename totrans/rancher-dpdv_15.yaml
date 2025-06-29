@@ -1,58 +1,85 @@
 - en: '*Chapter 11*: Bringing Storage to Kubernetes Using Longhorn'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: '*第十一章*：使用 Longhorn 将存储引入 Kubernetes'
 - en: The previous chapters covered monitoring and logging. This chapter will cover
     Rancher's distributed block storage for Kubernetes called **Longhorn**, including
     the pros and cons, and how to architect a storage solution using Longhorn. We
     will then dive into some standard designs for RKE and RKE2 clusters. Then, we
     will cover the different ways to install Longhorn and upgrade it. Finally, we
     will close with some maintenance tasks and troubleshooting steps for common issues.
+  id: totrans-1
   prefs: []
   type: TYPE_NORMAL
+  zh: 之前的章节已经涵盖了监控和日志记录。本章将介绍 Rancher 的分布式块存储解决方案 **Longhorn**，包括其优缺点，以及如何使用 Longhorn
+    架构存储解决方案。接着，我们将深入探讨 RKE 和 RKE2 集群的标准设计。然后，我们将介绍安装 Longhorn 的不同方法以及如何进行升级。最后，我们将总结一些维护任务和常见问题的故障排除步骤。
 - en: 'We''re going to cover the following main topics in this chapter:'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章将涵盖以下主要内容：
 - en: What is persistent storage and why do we need it in Kubernetes?
+  id: totrans-3
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 什么是持久存储，我们为什么需要它在 Kubernetes 中？
 - en: What is Longhorn?
+  id: totrans-4
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 什么是 Longhorn？
 - en: How does Longhorn work?
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Longhorn 是如何工作的？
 - en: Pros and cons of Longhorn
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Longhorn 的优缺点
 - en: Rules for architecting a Longhorn solution
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 架构 Longhorn 解决方案的规则
 - en: Installing Longhorn
+  id: totrans-8
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 安装 Longhorn
 - en: How do Longhorn upgrades work?
+  id: totrans-9
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Longhorn 升级是如何工作的？
 - en: Critical maintenance tasks for keeping Longhorn at 100%
+  id: totrans-10
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 保持 Longhorn 100% 的关键维护任务
 - en: Troubleshooting common Longhorn issues
+  id: totrans-11
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 常见 Longhorn 问题的故障排除
 - en: What is persistent storage and why do we need it in Kubernetes?
+  id: totrans-12
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 什么是持久存储，我们为什么需要它在 Kubernetes 中？
 - en: After creating a Kubernetes cluster, users will start deploying their applications
     to the cluster, but the questions always come up, *Where is my data?* or *Where
     do I store my data?* The philosophical answer is, *You shouldn't be storing any
@@ -62,8 +89,11 @@
     you deployed a MySQL database as a pod. You'll most likely want that data to be
     persistent so that when the node is rebooted or the deployment is updated, you
     won't lose all your data.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 在创建 Kubernetes 集群后，用户将开始向集群中部署应用程序，但总是会出现这样的问题，*我的数据在哪里？* 或者 *我该把数据存储在哪里？* 哲学性的回答是，*你不应该存储任何数据；所有容器都应该是无状态的，*但这毕竟是现实世界。一些应用程序需要存储持久化的数据；也就是说，当
+    Pod 被终止时，数据将可供替换 Pod 使用。例如，假设你部署了一个 MySQL 数据库作为 Pod。你很可能希望该数据是持久化的，这样当节点重启或者部署更新时，你就不会丢失所有的数据。
 - en: This persistent data problem has been a problem since containers were created.
     Docker's first *fix* to this problem was adding bind mounts from earlier OS-level
     virtualization software, such as jails in FreeBSD back in 2000\. With bind mounts
@@ -74,8 +104,12 @@
     For example, inside a container, you'll see the filesystem looks like normal Linux
     server with files, such as binaries and libraries, but what you'll notice is that
     the root filesystem is not the same directory as the host file's root filesystem.
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 自从容器被创建以来，持久数据的问题就一直存在。Docker 解决这个问题的第一个*方法*是通过添加来自早期操作系统级虚拟化软件的绑定挂载，例如 2000
+    年时 FreeBSD 中的 jail。绑定挂载作为目录树的替代视图，挂载会在根目录树中创建一个存储设备的视图作为目录对象。而绑定挂载则是将现有的目录树复制到另一个位置。对于容器来说，你有一个根文件系统，该文件系统是为了与主机文件系统隔离而创建的。例如，在容器内，你会看到文件系统看起来像正常的
+    Linux 服务器，包含二进制文件和库文件等，但你会注意到根文件系统并不是与主机文件的根文件系统相同的目录。
 - en: But, let's say you have a directory on the host, `/mnt/data` for this example,
     that you want to pass into your container as `/data`. With Docker on Linux, bind
     mounts are built into the kernel as a feature. So, you would run a command such
@@ -85,30 +119,45 @@
     important to note that a bind mount in older *3.x* kernels is indistinguishable.
     This means that tools such as **df** (short for **disk free**) will see the same
     device details as the original.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 假设你在主机上有一个目录 `/mnt/data`（例如），你想将其作为 `/data` 传递到容器中。在 Linux 上，Docker 提供绑定挂载作为内核特性。因此，你可以运行类似
+    `docker run -v /mnt/data:/data Image:Tag` 的命令，关键标志是 `-v`，这在容器创建过程中告诉 Docker 进行等效的系统调用，就像
+    `mount –bind /mnt/data /var/lib/docker/…/data` 命令一样。重要的是要注意，在旧版本的 *3.x* 内核中，绑定挂载是无法区分的。这意味着诸如
+    **df**（磁盘空间使用情况查询）之类的工具将看到与原始设备细节相同的内容。
 - en: For example, if you are bind mounting a `/mnt/nfs` from the `nfs.example.com`
     server then do a bind mount to `/data`; when you run the `df` command inside the
     container, you'll see that an NFS filesystem from the `nfs.example.com` server
     is mounted at `/data`.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 例如，如果你从 `nfs.example.com` 服务器上绑定挂载 `/mnt/nfs` 到 `/data`，当你在容器内运行 `df` 命令时，你会看到
+    `nfs.example.com` 服务器上的 NFS 文件系统被挂载到 `/data`。
 - en: In this section, we have managed to understand what persistent storage is and
     why we need it in Kubernetes. Next, we'll take a look at Longhorn, how it works,
     and how it can fulfill our storage needs.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本节中，我们已经了解了持久化存储是什么，以及在 Kubernetes 中为什么需要它。接下来，我们将深入了解 Longhorn，它的工作原理以及如何满足我们的存储需求。
 - en: What is Longhorn?
+  id: totrans-18
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 什么是 Longhorn？
 - en: Longhorn is a distributed block storage system for Kubernetes clusters. Longhorn
     is just like Rancher because it is free, open source, and even being developed
     as an incubating project with the `ReadWriteOnce`, and `ReadWriteMany` volumes.
     Longhorn offers a backup solution for its volumes and provides cross-cluster disaster
     recovery of volumes.
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: Longhorn 是一个为 Kubernetes 集群提供分布式块存储系统的解决方案。Longhorn 就像 Rancher 一样，因为它是免费的、开源的，甚至作为一个孵化项目开发，支持
+    `ReadWriteOnce` 和 `ReadWriteMany` 卷。Longhorn 为其卷提供了备份解决方案，并提供跨集群卷的灾难恢复功能。
 - en: But, one of the most remarkable things about Longhorn is that it simplifies
     distributed block storage. Longhorn does this by being built as a microservice
     application. Traditional big iron storage subsystems are large blocks of storage
@@ -117,8 +166,12 @@
     that every volume has a dedicated storage controller, which turns into its microservice.
     This is called the **Longhorn Engine**, which will be covered in the *How does
     Longhorn work?* section.
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 但是，关于 Longhorn 最显著的一点是它简化了分布式块存储。Longhorn 通过构建为微服务应用程序来实现这一点。传统的大型存储子系统是大块存储，带有少量控制器，应用数据从共享磁盘池进行配置。Longhorn
+    扭转了这一过程的思路，每个卷都有专用的存储控制器，形成其微服务。这就是所谓的 **Longhorn Engine**，将在 *Longhorn 如何工作？*
+    部分介绍。
 - en: 'One of the other main reasons people love Longhorn is that it brings storage
     into Kubernetes. Most other external storage providers, such as NFS or cloud-provided
     storage, require all this work from storage teams to configure and consume. This
@@ -132,8 +185,14 @@
     it''s Amazon, so you need to provide your backup solution. Longhorn addresses
     all these limitations because it doesn''t care whether you run Longhorn on physical
     servers in a data center or VMs up in a cloud.'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 另一个人们喜欢 Longhorn 的主要原因是它将存储集成到 Kubernetes 中。大多数其他外部存储提供商，如 NFS 或云提供的存储，都需要存储团队进行大量的配置和管理工作。而这也引出了
+    Longhorn 的另一个重要卖点：你不再依赖云提供商的块存储。例如，在 **亚马逊 Web 服务** (**AWS**) 中，你可能会使用亚马逊的 **弹性块存储**
+    (**EBS**) 或 **弹性文件系统** (**EFS**) 存储提供程序，它们通过 AWS 的 API 连接，创建 EBS 卷并将其附加到节点上，这很棒，直到你遇到
+    **小型计算机系统接口** (**SCSI**) 设备限制，或者在将 EBS 卷迁移到不同区域时遇到限制。当然，既然是亚马逊，你还需要提供备份解决方案。Longhorn
+    解决了所有这些限制，因为它不在乎你是否在数据中心的物理服务器上运行 Longhorn，或者在云端的虚拟机上运行。
 - en: Of course, with Longhorn being a distributed block storage solution, one of
     its great strengths is that Longhorn replicates data across disks and hosts. With
     traditional big iron storage subsystems, you would define **Redundant Array of
@@ -143,8 +202,12 @@
     and just let node-based replication protect your data. At the same time, you can
     change your mind, re-layout your storage, and just slide data around without your
     applications knowing or caring.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 当然，由于 Longhorn 是一种分布式块存储解决方案，它的一个重要优势是可以在磁盘和主机之间复制数据。对于传统的大型存储子系统，你需要定义 **独立磁盘冗余阵列**
+    (**RAID**) 组，规划 **逻辑单元号** (**LUN**) 并提前做出这些需要锁定的决策。相比之下，Longhorn 可以在每个磁盘上呈现为单一文件系统，不需要
+    RAID，并且通过基于节点的复制来保护你的数据。同时，你可以随时更改存储布局，轻松地调整数据，而应用程序无需知道或关心这些变化。
 - en: This leads us to what makes Longhorn's **high availability** (**HA**) different.
     With traditional big iron storage subsystems, you would have a pair of storage
     controllers running in active/standby or inactive state, which is great until
@@ -157,21 +220,30 @@
     puts those days behind us because an upgrade is just a new container image that
     slowly gets rolled out to the environment. We'll be covering this in more detail
     in the *How do Longhorn upgrades work?* section.
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将引出 Longhorn 的 **高可用性** (**HA**) 有何不同。对于传统的大型存储子系统，你通常会有一对存储控制器，它们以主动/待机或非活动状态运行，直到发生控制器故障，或者你需要将一个控制器下线进行维护。此时，如果另一个控制器出现问题或无法承载负载，你就没有冗余了。一个简单的软件升级就可能导致整个环境崩溃。作为一名曾经做过企业存储管理员的人，存储升级总是需要提前安排，获得所有批准，然后在周六晚上人少的时段才能进行升级。Longhorn
+    让这些日子成为过去，因为升级只需推出一个新的容器镜像，并缓慢地滚动到环境中。我们将在 *Longhorn 升级是如何工作的？* 章节中详细介绍这一点。
 - en: Now that we know what Longhorn is, in the next section, we'll be diving into
     the nuts and bolts of how Longhorn works, including each of the different components.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经了解了 Longhorn 的概念，在接下来的部分，我们将深入探讨 Longhorn 的工作原理，包括其中的各个组件。
 - en: How does Longhorn work?
+  id: totrans-25
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Longhorn 是如何工作的？
 - en: 'Longhorn can be broken into two layers: the **control plane** and the **data
     plane**, with Longhorn managers being in the control plane and the engines in
     the data plane.'
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: Longhorn 可以分为两个层次：**控制平面**和**数据平面**，其中 Longhorn 管理器位于控制平面，存储引擎位于数据平面。
 - en: The control plane is built on a set of pods called the **Longhorn Manager**.
     This is a DaemonSet that runs on all nodes in the cluster. Its main job is to
     handle the cluster's creation and management of volumes. These pods also take
@@ -182,15 +254,24 @@
     It is important to remember that Kubernetes doesn't reach out to Longhorn's API
     but waits for the Longhorn controllers to detect changes in the spec of the CRD
     objects.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 控制面是由一组称为 **Longhorn Manager** 的 pod 构建的。这是一个 DaemonSet，运行在集群中的所有节点上。它的主要任务是处理集群中卷的创建和管理。这些
+    pod 还会接收来自 Longhorn UI 和卷插件的 API 调用。当然，Longhorn 遵循与 Rancher 相同的操作员模型，使用由 Longhorn
+    Manager 部署的 **CustomResourceDefinitions** (**CRDs**)。然后，Longhorn Manager 连接到 Kubernetes
+    API 服务器并监视卷任务，例如创建新卷。需要记住的是，Kubernetes 并不会主动访问 Longhorn 的 API，而是等待 Longhorn 控制器检测
+    CRD 对象规范的变化。
 - en: In addition to watching the Kubernetes API, the Longhorn Manager handles the
     orchestration on the Longhorn pods. This includes the Longhorn Engine pods, which
     run on every node in the cluster. The engine pods bridge the control and data
     plane with them, handling the creation of replicas and presenting the storage
     to the pod.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 除了监视 Kubernetes API，Longhorn 管理器还负责处理 Longhorn pod 上的调度工作。这包括运行在集群中每个节点上的 Longhorn
+    Engine pod。Engine pod 将控制面与数据面连接在一起，负责创建副本并将存储呈现给 pod。
 - en: If we follow the creation of a volume, first, a user creates a `node01` in the
     cluster. Once the engine has been given a volume, it creates a set of replicas,
     with each replica being assigned to a node and a disk/filesystem on that node.
@@ -203,8 +284,13 @@
     metadata, you don't use any space on the node until you start writing the data,
     at which point you only consume the blocks that you use; that is, if you write
     500 GB to a 1 TB volume, you will only use 500 GB on the node.
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们跟踪一个卷的创建过程，首先，用户在集群中创建了一个 `node01`。当 engine 获取到一个卷后，它会创建一组副本，每个副本会被分配到一个节点及该节点上的一个磁盘/文件系统。默认情况下有三个副本，但你可以选择将副本数量设置为任何你喜欢的数字，甚至只设置一个副本。需要特别注意的是，副本只是文件系统上的一个磁盘映像文件。然而，当
+    Longhorn engine 创建该文件时，它使用了名为 **fallocate** 的 Linux 系统命令，该命令创建了一个与卷大小相同的空文件，但并没有实际分配文件系统中的空间。这意味着你可以在一个节点上创建一个
+    1TB 的副本，但除了少量元数据外，节点上并没有使用任何空间，直到你开始写入数据为止；也就是说，如果你向一个 1TB 的卷写入了 500 GB 数据，你只会在节点上使用
+    500 GB 的空间。
 - en: You must understand that once a block has been allocated, it is consumed for
     the life of the volume. If you write a 500 GB file to your volume, delete it.
     You will still be consuming 500 GB on the filesystem. There is an open feature
@@ -220,8 +306,14 @@
     to learn more about this issue, please see the *OpenZFS* GitHub issue at [https://github.com/openzfs/zfs/pull/10408](https://github.com/openzfs/zfs/pull/10408)
     to learn more about the current status of this feature, as it is still in active
     development.
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 你必须理解，一旦分配了一个块，它将在整个卷的生命周期内被消耗。如果你将一个 500 GB 的文件写入卷并删除它，你仍然会在文件系统中消耗 500 GB。现在有一个开放的功能请求，旨在支持所谓的**修剪**或打孔功能，以便能够回收已删除的空间。在写这本书时，这个功能还没有分配到任何发布版本，并且仍在规划阶段。你可以在
+    [https://github.com/longhorn/longhorn/issues/836](https://github.com/longhorn/longhorn/issues/836)
+    找到这个功能请求。还需要注意的是，Longhorn 需要存储磁盘上的 Fallocate，而目前只有**第四扩展文件系统**（**Ext4**）和**扩展文件系统**（**XFS**）提供此功能。其他文件系统，如**Zettabyte
+    文件系统**（**ZFS**），正在添加 Fallocate 支持，但仍缺少文件映射（filemap），这是 Longhorn 用来检测文件中孔洞的功能。如果你想了解更多有关此问题的信息，请参阅*OpenZFS*
+    GitHub 问题 [https://github.com/openzfs/zfs/pull/10408](https://github.com/openzfs/zfs/pull/10408)，了解该功能的当前状态，因为它仍在积极开发中。
 - en: Of course, the creation of replicas happens on a total of three nodes by default,
     with each replica being a full copy of the data. It is important to note that
     each replica has its own Linux process inside the Longhorn Engine. In addition,
@@ -233,8 +325,12 @@
     which will trigger a rebuild. This is because Longhorn doesn't have a transaction
     log, so there is no way for the Longhorn Engine to know what writes are missing
     for a replica.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 当然，副本的创建默认发生在总共三个节点上，每个副本都是数据的完整副本。需要注意的是，每个副本在 Longhorn 引擎内都有自己的 Linux 进程。此外，没有副本是唯一的，因为所有的读取和写入都可以发送到任何副本。这是因为
+    Longhorn 使用一种过程，所有的写入都会发送到所有副本，且在所有副本确认写入之前，客户端（在此情况下是 pod）不会收到写入确认。如果某个副本在写入过程中超时，Longhorn
+    会假设卷丢失并丢弃该副本，这将触发重建。这是因为 Longhorn 没有事务日志，所以 Longhorn 引擎无法知道哪个副本缺失了写入数据。
 - en: There is a particular case whereby if the pod is located on the same node as
     its replica, that replica will be given preference for all read requests. This
     is done by setting the data locality setting, which will try to keep a local replica
@@ -243,395 +339,576 @@
     on the same node but that is not always possible. This is typically caused by
     the pod being assigned to a node where there is not enough space, incompatible
     disk tags, or the node is not assigned the role of the storage node.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 有一种特殊情况，如果 pod 位于与其副本相同的节点上，那么该副本将优先处理所有读取请求。这是通过设置数据本地化来实现的，它会尽量保持本地副本与 pod
+    位于同一节点上。需要注意的是，Longhorn 调度默认采用最佳努力原则，这意味着如果可能，它会将副本放置在同一节点上，但这并非总是可行。这通常是因为 pod
+    被分配到一个没有足够空间、磁盘标签不兼容，或者该节点没有被分配为存储节点的节点上。
 - en: Now that we have all the replicas created for our volume, we need to expose
     it to the pod to be consumed. This is done by the Longhorn Engine creating an
     `open-iscsi` package to act as the iSCSI initiator, which then attaches the iSCSI
     device as a device under `/dev/longhorn/pvc-###`. Longhorn then uses a CSI plugin
     to take the block device, format it, and mount it on the node at which the kubelet
     will do a bind mount inside the pod.
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们为卷创建了所有副本，需要将其暴露给pod以供使用。这是通过Longhorn引擎创建一个`open-iscsi`包来作为iSCSI发起器来完成的，然后将iSCSI设备作为设备附加到`/dev/longhorn/pvc-###`下。然后，Longhorn使用CSI插件获取块设备，格式化并将其挂载到节点上，kubelet将在pod内执行绑定挂载。
 - en: In addition to block storage, as of Longhorn v1.1.0, which was released in January
     2021, Longhorn supports exporting **ReadWriteMany** (**RWX**) volumes too. These
     volumes are built on top of the block storage, with Longhorn creating a share
     manager pod that mounts the block device and is an NFS server running inside the
     pod. Then, this pod exports the volumes as an NFS to a cluster. Finally, Longhorn
     uses its CSI plugin to mount the NFS share and bind mount it into the pod.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 除块存储外，自Longhorn v1.1.0（于2021年1月发布）起，Longhorn还支持导出**ReadWriteMany**（RWX）卷。这些卷建立在块存储之上，Longhorn创建一个共享管理器pod，挂载块设备并作为pod内运行的NFS服务器。然后，此pod将卷导出为NFS到集群。最后，Longhorn使用其CSI插件将NFS共享挂载并绑定挂载到pod中。
 - en: Now that we understand how Longhorn works, we'll cover its pros and cons in
     the next section, including how it stacks up to other storage providers, which
     we'll cover later in this chapter.
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们了解了Longhorn的工作原理，我们将在下一节中涵盖其优缺点，包括与其他存储提供商的比较，我们将在本章后面讨论。
 - en: Pros and cons of Longhorn
+  id: totrans-36
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Longhorn的优缺点
 - en: Let's look at the pros and cons now.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们看看现在的优缺点。
 - en: 'The **pros** are as follows:'
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: '**优点**如下：'
 - en: Built-in backup solution. Longhorn supports taking snapshots for operational
     backups and external backups to an S3 or NFS target.
+  id: totrans-39
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 内置备份解决方案。Longhorn支持为运行备份和外部备份到S3或NFS目标的快照。
 - en: Support for cross-cluster disaster recovery volumes that can be backed up on
     one cluster and restored into another.
+  id: totrans-40
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 支持跨集群灾难恢复卷，可以在一个集群上备份并在另一个集群上恢复。
 - en: With the release of v1.1.1, Longhorn now supports rebuilding replicas from existing
     data using system snapshots. You can read more about this feature at [https://github.com/longhorn/longhorn/issues/1304](https://github.com/longhorn/longhorn/issues/1304).
+  id: totrans-41
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 随着v1.1.1的发布，Longhorn现在支持使用系统快照从现有数据重建副本。您可以在[https://github.com/longhorn/longhorn/issues/1304](https://github.com/longhorn/longhorn/issues/1304)了解更多信息。
 - en: Scalability. As Longhorn is a microservices application, it can be scaled from
     three nodes to tens of thousands of nodes.
+  id: totrans-42
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 可扩展性。由于Longhorn是一个微服务应用程序，可以从三个节点扩展到数万个节点。
 - en: Support for both RWO and RWX volumes with the same storage class; the only change
     that needs to be made is to set the access mode for the volume.
+  id: totrans-43
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用相同存储类支持RWO和RWX卷；唯一需要更改的是为卷设置访问模式。
 - en: Infrastructure/cloud provider agnostic, which means you can deploy Longhorn
     on physical servers, VMware, AWS, and GCP, all with a standardized storage platform,
     allowing you to move volumes around as you see fit.
+  id: totrans-44
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 基础设施/云提供商无关，这意味着您可以在物理服务器、VMware、AWS和GCP上部署Longhorn，所有这些都使用标准化的存储平台，使您可以根据需要移动卷。
 - en: Thin-provisioned by default. With most cloud providers, such as AWS EBS and
     GCP volumes, you pay for the size of the volume even if you never write a single
     block of data to it. With Longhorn, you can over-provision your cloud storage
     and gain some cost savings.
+  id: totrans-45
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 默认情况下是薄配置的。与大多数云提供商（如AWS EBS和GCP卷）不同，即使从未向其写入数据块，您也需要支付卷的大小。使用Longhorn，您可以超额配置您的云存储并节省一些成本。
 - en: Longhorn scheduling is region/zone aware, meaning you can define fault domains,
     such as spanning your cluster across the AWS Availability Zones (for example,
     us-west-2a, us-west-2b, and us-west-2c) with Longhorn replicas volumes so that
     you could lose a whole Zone in AWS and not lose any data. You can read more about
     this at https://longhorn.io/docs/1.2.3/volumes-and-nodes/scheduling/#scheduling-policy.
+  id: totrans-46
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Longhorn调度具有区域/区域感知性，这意味着您可以定义容错域，例如跨AWS可用性区域（例如，us-west-2a、us-west-2b和us-west-2c），使用Longhorn复制卷，以便在AWS中丢失整个区域而不会丢失任何数据。您可以在https://longhorn.io/docs/1.2.3/volumes-and-nodes/scheduling/#scheduling-policy了解更多信息。
 - en: 'The **cons** are as follows:'
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: '**缺点**如下：'
 - en: Volumes getting stuck in attaching and detaching status when a new pod is being
     created or deleted is a very common issue with Longhorn not being sure if the
     volume is really mounted on the node or not.
+  id: totrans-48
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在创建或删除新 pod 时，卷卡在附加和分离状态的情况是 Longhorn 中非常常见的问题，因为它无法确定卷是否已经正确挂载到节点上。
 - en: Official support for large volumes, as Longhorn has a hardcoded rebuild limit
     of 24 hours. There is no hardcoded size limit, but generally, 1~2 TB is the upper
     limit in volume size.
+  id: totrans-49
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Longhorn 对大容量卷的官方支持，因为 Longhorn 具有硬编码的重建限制，最长为 24 小时。虽然没有硬编码的大小限制，但一般来说，卷的最大大小是
+    1~2 TB。
 - en: Heavy network usage, because all data needs to be written to all replicas. Suppose
     you were writing 50 MBps to a Longhorn volume from a pod. You can create up to
     150 MBps of network traffic between nodes. So, 10 GB network connections between
     nodes are highly recommended.
+  id: totrans-50
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 网络使用量较大，因为所有数据都需要写入所有副本。假设你从一个 pod 向 Longhorn 卷写入 50 MBps 数据，那么你可能会在节点之间产生高达
+    150 MBps 的网络流量。因此，建议节点之间使用 10 GB 的网络连接。
 - en: Disk latency can cause volumes/replicas to timeout as Longhorn uses remote acknowledgment.
     Writes for a volume are only as fast as its slowness replica. So, it's highly
     recommended to use SSD or tier 1 storage for Longhorn.
+  id: totrans-51
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 磁盘延迟可能会导致卷/副本超时，因为 Longhorn 使用远程确认。卷的写入速度仅能达到最慢副本的速度。因此，强烈建议使用 SSD 或一级存储来部署
+    Longhorn。
 - en: Nested storage virtualization can be wasteful if you deploy Longhorn on VMware
     with a shared storage subsystem or vSAN. Longhorn will store three copies of the
     data on your datastores, so 1 TB becomes 3 TB.
+  id: totrans-52
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 如果你在 VMware 上使用共享存储子系统或 vSAN 部署 Longhorn，嵌套存储虚拟化可能会导致浪费。Longhorn 会在你的数据存储上存储三份数据，因此
+    1 TB 的数据将变为 3 TB。
 - en: Note
+  id: totrans-53
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 注意
 - en: It is recommended that if your storage subsystem supports data deduplication,
     you enable it for Longhorn storage nodes to work around this issue.
+  id: totrans-54
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 如果你的存储子系统支持数据去重，建议启用该功能，以便 Longhorn 存储节点能够绕过此问题。
 - en: At this point, you should understand the pros and cons of Longhorn. We'll use
     these in the next section to design our Longhorn solution.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 此时，你应该已经了解了 Longhorn 的优缺点。我们将在下一节中利用这些优缺点来设计我们的 Longhorn 解决方案。
 - en: Rules for architecting a Longhorn solution
+  id: totrans-56
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 架构 Longhorn 解决方案的规则
 - en: In this section, we'll be covering some standard designs and the pros and cons
     of each. It is important to note that each environment is unique and will require
     tuning for the best performance and experience. It's also important to note that
     all CPU, memory, and storage sizes are recommended starting points and may need
     to be increased or decreased by your workload and deployment processes.
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本节中，我们将介绍一些标准设计及其优缺点。需要注意的是，每个环境都是独特的，可能需要根据最佳性能和体验进行调优。同时还需要注意，所有的 CPU、内存和存储大小都是推荐的起始点，具体大小可能需要根据你的工作负载和部署过程进行调整。
 - en: 'Before designing a solution, you should be able to answer the following questions:'
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 在设计解决方案之前，你应该能够回答以下问题：
 - en: What level of availability will this cluster and its applications require?
+  id: totrans-59
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 这个集群及其应用程序将需要什么级别的可用性？
 - en: Will this cluster be spanning multiple data centers in a MetroCluster environment?
+  id: totrans-60
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 这个集群是否会跨多个数据中心部署在 MetroCluster 环境中？
 - en: How much latency will there be between nodes in the cluster?
+  id: totrans-61
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 集群中节点之间的延迟是多少？
 - en: If you need storage, do you need only RWO, or will you need RWX?
+  id: totrans-62
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 如果你需要存储，你只需要 RWO 吗，还是需要 RWX？
 - en: Do you have applications that provide their own application data replication/redundancy?
+  id: totrans-63
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 你是否有应用程序提供自己的应用数据复制/冗余功能？
 - en: Note
+  id: totrans-64
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 注意
 - en: Longhorn has an official performance scalability report published at [https://longhorn.io/blog/performance-scalability-report-aug-2020/](https://longhorn.io/blog/performance-scalability-report-aug-2020/);
     this report is a little out-of-date but still provides hard numbers to different
     sizes of the clusters.
+  id: totrans-65
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: Longhorn 发布了一份官方的性能可扩展性报告，地址是 [https://longhorn.io/blog/performance-scalability-report-aug-2020/](https://longhorn.io/blog/performance-scalability-report-aug-2020/)，该报告稍显过时，但仍然提供了不同规模集群的硬数据。
 - en: Next, we'll be covering the three standard designs (smallest, medium, and large)
     that you can use as a starting point when designing a Kubernetes cluster with
     Longhorn.
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们将介绍三种标准设计（最小、中等和大型设计），你可以将它们作为设计 Kubernetes 集群与 Longhorn 配合使用的起点。
 - en: Smallest
+  id: totrans-67
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 最小
 - en: In this design, we'll be deploying the smallest possible configuration of Longhorn
     but having full **high availability** (**HA**). This cluster is based on the RKE
     small design that we covered in [*Chapter 4*](B18053_04_Epub.xhtml#_idTextAnchor052),
     *Creating an RKE and RKE2 Cluster*, which can be found at [https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/README.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/README.md).
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 在此设计中，我们将部署最小配置的Longhorn，但仍保持完全的**高可用性**（**HA**）。该集群基于我们在[*第4章*](B18053_04_Epub.xhtml#_idTextAnchor052)中介绍的RKE小型设计，*创建RKE和RKE2集群*，可在[https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/README.md](https://github.com/PacktPublishing/Rancher-Deep-Dive/blob/main/ch04/standard_designs/rke/01_small_cluster/README.md)中找到。
 - en: 'The **pros** are as follows:'
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: '**优点**如下：'
 - en: Full HA, so you can lose any node in the cluster and still have full availability
     to all storage
+  id: totrans-70
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 完全高可用，因此你可以失去集群中的任何一个节点，但仍然能保证所有存储的完全可用性。
 - en: Simple to manage as all nodes will be storage nodes and support Longhorn equally
+  id: totrans-71
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 管理简单，因为所有节点都将是存储节点，并同等支持Longhorn。
 - en: 'The **cons** are as follows:'
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: '**缺点**如下：'
 - en: A Longhorn filesystem will be required on all three nodes.
+  id: totrans-73
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 所有三个节点都需要部署Longhorn文件系统。
 - en: Only *N+1* of availability/redundancy (you only have one spare replica), so
     when doing maintenance tasks like OS patching, you cannot suffer a failure of
     a node without loss of service. As you already have taken your spare node offline
     for maintenance.
+  id: totrans-74
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 只有*N+1*的可用性/冗余（你只有一个备用副本），因此在进行操作系统打补丁等维护任务时，如果节点发生故障，无法保证服务不中断。因为你已经将备用节点下线进行维护。
 - en: Any node maintenance, such as OS patching and reboots, will require a rebuild
     of all volumes as each node will store one of the third replicas for each volume.
+  id: totrans-75
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 任何节点维护，如操作系统打补丁和重启，都需要重建所有卷，因为每个节点将存储每个卷的第三个副本。
 - en: 'The **hardware requirements** are as follows:'
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: '**硬件要求**如下：'
 - en: '**Server(s)**: Three physical/virtual servers.'
+  id: totrans-77
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**服务器**：三台物理/虚拟服务器。'
 - en: '**CPU**: Six cores per server (two will be dedicated to Longhorn).'
+  id: totrans-78
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**CPU**：每台服务器六核（其中两个核心将专用于Longhorn）。'
 - en: '**Memory**: 4~8 GB per server.'
+  id: totrans-79
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**内存**：每台服务器4~8 GB。'
 - en: '**Disk**: SSD is recommended.'
+  id: totrans-80
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**磁盘**：推荐使用SSD。'
 - en: '**Network**: 10 GB between nodes is recommended.'
+  id: totrans-81
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**网络**：节点之间推荐使用10 GB网络。'
 - en: For RKE clusters, please see the following design. The basic idea is that this
     is a three-node cluster with all nodes sharing all roles. Anything smaller than
     this design will not be highly available.
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于RKE集群，请参见以下设计。基本思路是这是一个三节点集群，所有节点共享所有角色。任何小于此设计的配置都无法实现高可用性。
 - en: '![Figure 11.1 – RKE three-node cluster with all nodes, all roles'
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: '![图11.1 – RKE三节点集群，所有节点，所有角色'
 - en: '](img/B18053_11_01.jpg)'
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: '](img/B18053_11_01.jpg)'
 - en: Figure 11.1 – RKE three-node cluster with all nodes, all roles
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 图11.1 – RKE三节点集群，所有节点，所有角色
 - en: 'More information about RKE can be found here: https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke/01_small_clusterFor
     RKE2 clusters.'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 更多关于RKE的信息请见： https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke/01_small_clusterFor
+    RKE2集群。
 - en: In RKE2, the basic idea is the same as an RKE cluster but with the master nodes
     having the `Worker` role assigned to them too.
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
+  zh: 在RKE2中，基本思路与RKE集群相同，但主节点也分配了`Worker`角色。
 - en: '![Figure 11.2 – RKE2 three-node cluster, with all nodes being masters or workers'
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: '![图11.2 – RKE2三节点集群，所有节点为主节点或工作节点'
 - en: '](img/B18053_11_02.jpg)'
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: '](img/B18053_11_02.jpg)'
 - en: Figure 11.2 – RKE2 three-node cluster, with all nodes being masters or workers
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 图11.2 – RKE2三节点集群，所有节点为主节点或工作节点
 - en: 'More information about RKE2 can be found here: [https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/01_small_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/01_small_cluster).'
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 更多关于RKE2的信息请见： [https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/01_small_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/01_small_cluster)。
 - en: Medium with shared nodes
+  id: totrans-92
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 共享节点的中型配置
 - en: In this design, we will be deploying an RKE medium cluster with the master services
     moved to their owned dedicated nodes, and because of these, we need to use node
     selectors to force Longhorn to only use worker nodes. We are doing this because
     we don't want Longhorn to impact the core Kubernetes services. We do this by following
     the documentation at [https://longhorn.io/docs/1.2.3/advanced-resources/deploy/node-selector/](https://longhorn.io/docs/1.2.3/advanced-resources/deploy/node-selector/)
     to configure the `nodeSelector` rules for each of the Longhorn components.
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 在此设计中，我们将部署一个RKE中型集群，主服务迁移到其专用节点上，基于此，我们需要使用节点选择器强制Longhorn只使用工作节点。这样做是因为我们不希望Longhorn影响核心Kubernetes服务。我们通过参考[https://longhorn.io/docs/1.2.3/advanced-resources/deploy/node-selector/](https://longhorn.io/docs/1.2.3/advanced-resources/deploy/node-selector/)文档，配置每个Longhorn组件的`nodeSelector`规则来实现这一点。
 - en: 'The **pros** are as follows:'
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: '**优点**如下：'
 - en: Full HA, so you can lose any node in the cluster and still have full availability
     to all storage.
+  id: totrans-95
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 完整的高可用性，因此即使丧失集群中的任何节点，所有存储仍然具有完全可用性。
 - en: The additional load from Longhorn cannot impact the management services for
     RKE.
+  id: totrans-96
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Longhorn的额外负载不能影响RKE的管理服务。
 - en: 'The **cons** are as follows:'
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: '**缺点**如下：'
 - en: Different filesystem configurations between worker and management nodes as only
     worker nodes will need the Longhorn storage filesystem.
+  id: totrans-98
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 工作节点和管理节点之间的文件系统配置不同，因为只有工作节点需要使用Longhorn存储文件系统。
 - en: Only *N+1* of availability, so during maintenance tasks, you cannot suffer a
     failure of a node without loss of service.
+  id: totrans-99
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 只有*N+1*的可用性，因此在维护任务期间，不能承受节点故障而不丧失服务。
 - en: Any node maintenance, such as OS patching and reboots, will require a rebuild
     of all volumes as each node will store one of the third replicas for each volume
     at the worker plane.
+  id: totrans-100
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 任何节点维护任务，如操作系统补丁安装和重启，都需要重建所有卷，因为每个节点将在工作节点层存储每个卷的第三个副本。
 - en: 'The **hardware requirements** are as follows:'
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: '**硬件要求**如下：'
 - en: '**Node role(s)**: Etcd/Control plane'
+  id: totrans-102
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**节点角色**：Etcd/控制平面'
 - en: '**Servers(s)**: Three physical/virtual servers'
+  id: totrans-103
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**服务器**：三台物理/虚拟服务器'
 - en: '**CPU**: Eight cores per server'
+  id: totrans-104
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**CPU**：每台服务器八个核心'
 - en: '**Memory**: 8~16 GB'
+  id: totrans-105
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**内存**：8~16 GB'
 - en: Note
+  id: totrans-106
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 注意
 - en: Worker node sizing should be based on your workload and requirements. You should
     add two cores to each worker node to support Longhorn.
+  id: totrans-107
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 工作节点的规模应基于工作负载和要求。你需要为每个工作节点增加两个核心来支持Longhorn。
 - en: For RKE clusters, please see the following design. The basic idea is that this
     cluster has three management nodes with the `ETCD` and `Control-plane` roles assigned
     to them. For the worker nodes, they will also be Longhorn storage nodes. This
     design is mainly to break out the management services to their nodes to prevent
     applications from affecting the management services of the cluster.
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于RKE集群，请参见以下设计。基本思路是该集群有三个管理节点，并将`ETCD`和`Control-plane`角色分配给它们。对于工作节点，它们也将作为Longhorn存储节点。此设计的主要目的是将管理服务分配到其节点上，以防止应用程序影响集群的管理服务。
 - en: '![Figure 11.3 – RKE three management nodes with worker nodes being Longhorn
     storage nodes'
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: '![图11.3 – RKE三管理节点，工作节点为Longhorn存储节点'
 - en: '](img/B18053_11_03.jpg)'
+  id: totrans-110
   prefs: []
   type: TYPE_NORMAL
+  zh: '](img/B18053_11_03.jpg)'
 - en: Figure 11.3 – RKE three management nodes with worker nodes being Longhorn storage
     nodes
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 图11.3 – RKE三管理节点，工作节点为Longhorn存储节点
 - en: 'More information about RKE can be found here: [https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/standard_designs/rke/02_medium_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/standard_designs/rke/02_medium_cluster).'
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 更多关于RKE的信息，请见此链接：[https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/standard_designs/rke/02_medium_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/standard_designs/rke/02_medium_cluster)。
 - en: For RKE2 clusters, please see the following design. The basic idea is the same
     as an RKE cluster but with the master nodes having their own load balancer for
     backend services.
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于RKE2集群，请参见以下设计。基本思路与RKE集群相同，只不过主节点有自己的负载均衡器来支持后端服务。
 - en: '![Figure 11.4 – RKE three master nodes with worker nodes being Longhorn storage
     nodes'
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: '![图11.4 – RKE三主节点，工作节点为Longhorn存储节点'
 - en: '](img/B18053_11_04.jpg)'
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
+  zh: '](img/B18053_11_04.jpg)'
 - en: Figure 11.4 – RKE three master nodes with worker nodes being Longhorn storage
     nodes
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: 图11.4 – RKE三主节点，工作节点为Longhorn存储节点
 - en: 'More information about RKE2 can be found here: [https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/02_medium_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/02_medium_cluster).'
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: 关于RKE2的更多信息，请访问：[https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/02_medium_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/ch10/ch11/standard_designs/rke2/02_medium_cluster)。
 - en: Large with dedicated nodes
+  id: totrans-118
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 大型集群与专用节点
 - en: In this design, we're expanding on the design for a medium cluster but breaking
     off Longhorn to its own set of dedicated nodes. We're also increasing the number
     of Longhorn nodes from three to five allow for *N+2* for the Longhorn volumes.
@@ -639,174 +916,259 @@
     node without loss of service or redundancy in Longhorn. We'll be using the node
     selector rules from the medium design, but with further node taints and tolerations.
     Details on these steps can be found at [https://longhorn.io/docs/1.2.3/advanced-resources/deploy/taint-toleration/#setting-up-taints-and-tolerations](https://longhorn.io/docs/1.2.3/advanced-resources/deploy/taint-toleration/#setting-up-taints-and-tolerations).
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: 在此设计中，我们扩展了中型集群的设计，但将Longhorn独立出来，分配给专用节点集。我们还将Longhorn节点的数量从三个增加到五个，以允许Longhorn卷的*N+2*配置。您可以在维护时停用任何Longhorn节点，并且依然可以再丢失一个节点，而不会影响Longhorn的服务或冗余。我们将使用中型设计中的节点选择规则，但会添加更多的节点污点和容忍设置。有关这些步骤的详细信息，请参见[https://longhorn.io/docs/1.2.3/advanced-resources/deploy/taint-toleration/#setting-up-taints-and-tolerations](https://longhorn.io/docs/1.2.3/advanced-resources/deploy/taint-toleration/#setting-up-taints-and-tolerations)。
 - en: 'The **pros** are as follows:'
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: '**优点**如下：'
 - en: Full HA, so can lose any two Longhorn nodes in the cluster and still have full
     availability to all storage.
+  id: totrans-121
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 完全高可用，因此可以丢失集群中的任何两个Longhorn节点，依然能保证所有存储的完全可用性。
 - en: With dedicated Longhorn nodes, the user application cannot impact Longhorn.
+  id: totrans-122
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 通过使用专用的Longhorn节点，用户应用程序无法影响Longhorn。
 - en: 'The **cons** are as follows:'
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: '**缺点**如下：'
 - en: By using dedicated nodes, you can configure them to be pretty static. For example,
     you might use auto-scaling groups for your worker plane, but for your Longhorn
     plane, it is recommended that these nodes be added/removed while making sure all
     volumes have been rebuilt before proceeding to the next node.
+  id: totrans-124
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 通过使用专用节点，您可以将它们配置为相对静态。例如，您可能会为工作平面使用自动伸缩组，但对于Longhorn平面，建议这些节点在添加/删除时，确保所有卷在继续到下一个节点之前已重新构建。
 - en: Additional steps are required to force workloads, such as log collectors and
     monitors, to handle the node taints needed for Longhorn on the Longhorn nodes.
+  id: totrans-125
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 需要额外的步骤来强制工作负载（例如日志收集器和监视器）处理Longhorn节点上的节点污点，以适应Longhorn。
 - en: 'For RKE clusters, you can find an example cluster configuration file at the
     link listed following this figure:'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于RKE集群，您可以在下图之后找到一个示例集群配置文件的链接：
 - en: '![Figure 11.5 – RKE five ETCD, four Control-plane with Longhorn having dedicated
     storage nodes'
+  id: totrans-127
   prefs: []
   type: TYPE_NORMAL
+  zh: '![图11.5 – RKE五个ETCD节点，四个控制平面节点，Longhorn拥有专用存储节点'
 - en: '](img/B18053_11_05.jpg)'
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: '](img/B18053_11_05.jpg)'
 - en: Figure 11.5 – RKE five ETCD, four Control-plane with Longhorn having dedicated
     storage nodes
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: 图11.5 – RKE五个ETCD节点，四个控制平面节点，Longhorn拥有专用存储节点
 - en: ([https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke/03_large_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke/03_large_cluster).)
+  id: totrans-130
   prefs: []
   type: TYPE_NORMAL
+  zh: ([https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke/03_large_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke/03_large_cluster).)
 - en: Note
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: This configuration is designed to be generic and should be customized to fit
     your needs and your environment.
+  id: totrans-132
   prefs: []
   type: TYPE_NORMAL
+  zh: 该配置旨在通用，应该根据您的需求和环境进行定制。
 - en: For an RKE2 cluster, you can find a set of example commands at the URL listed
     following the next figure. It is important to note that because RKE2 master servers
     are control-plane and ETCD nodes, the design is different from the RKE design.
+  id: totrans-133
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于RKE2集群，您可以在下一个图形后找到一组示例命令。需要注意的是，由于RKE2主服务器既是控制平面节点又是ETCD节点，因此该设计与RKE设计不同。
 - en: '![Figure 11.6 – RKE2 three master nodes with Longhorn having dedicated storage
     nodes'
+  id: totrans-134
   prefs: []
   type: TYPE_NORMAL
+  zh: '![图11.6 – RKE2三主节点与Longhorn专用存储节点'
 - en: '](img/B18053_11_06.jpg)'
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: '](img/B18053_11_06.jpg)'
 - en: Figure 11.6 – RKE2 three master nodes with Longhorn having dedicated storage
     nodes
+  id: totrans-136
   prefs: []
   type: TYPE_NORMAL
+  zh: 图11.6 – RKE2三主节点与Longhorn专用存储节点
 - en: ([https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke2/03_large_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke2/03_large_cluster).)
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
+  zh: ([https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke2/03_large_cluster](https://github.com/PacktPublishing/Rancher-Deep-Dive/tree/main/ch11/standard_designs/rke2/03_large_cluster).)
 - en: At this point, you should do all that you need to create your Longhorn design.
     We'll use this design to deploy Longhorn in the next section.
+  id: totrans-138
   prefs: []
   type: TYPE_NORMAL
+  zh: 此时，你应该完成所有创建Longhorn设计所需的操作。我们将在下一节中使用此设计来部署Longhorn。
 - en: Installing Longhorn
+  id: totrans-139
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 安装Longhorn
 - en: 'There are three ways of deploying Longhorn on a Kubernetes cluster. First,
     let''s cover some of the basic requirements, with each node in the cluster needing
     to meet the following criteria:'
+  id: totrans-140
   prefs: []
   type: TYPE_NORMAL
+  zh: 在Kubernetes集群上部署Longhorn有三种方式。首先，我们来介绍一些基本要求，每个节点都需要满足以下标准：
 - en: A compatible runtime, that is, Docker v1.13 or greater.
+  id: totrans-141
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一个兼容的运行时，即Docker v1.13或更高版本。
 - en: The cluster must be running at least Kubernetes v1.18 or greater.
+  id: totrans-142
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 集群必须至少运行Kubernetes v1.18或更高版本。
 - en: 'To install Longhorn via the Rancher catalog, follow these steps:'
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 要通过Rancher目录安装Longhorn，请按照以下步骤操作：
 - en: Navigate to the cluster where you will install Longhorn.
+  id: totrans-144
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 导航到你将安装Longhorn的集群。
 - en: Navigate to `Longhorn`, then click the **Install** button.
+  id: totrans-145
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 导航到`Longhorn`，然后点击**安装**按钮。
 - en: At this point, you can use the default settings. If you would like to customize
     the values, please see [https://longhorn.io/docs/1.2.3/deploy/install/install-with-rancher/](https://longhorn.io/docs/1.2.3/deploy/install/install-with-rancher/).
+  id: totrans-146
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 此时，你可以使用默认设置。如果你希望自定义值，请参见[https://longhorn.io/docs/1.2.3/deploy/install/install-with-rancher/](https://longhorn.io/docs/1.2.3/deploy/install/install-with-rancher/)。
 - en: It will take 5–10 minutes for Longhorn to fully start.
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
+  zh: Longhorn完全启动需要5到10分钟。
 - en: You can access the Longhorn UI by clicking on **Longhorn** in the side menu.
+  id: totrans-148
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 你可以通过点击侧边菜单中的**Longhorn**来访问Longhorn UI。
 - en: 'To install Longhorn via kubectl, follow these steps:'
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
+  zh: 要通过kubectl安装Longhorn，请按照以下步骤操作：
 - en: Run the `kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.2.3/deploy/longhorn.yaml`
     command.
+  id: totrans-150
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 运行命令`kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.2.3/deploy/longhorn.yaml`。
 - en: Wait for the pods to start using the `kubectl get pods -n longhorn-system -w`
     command.
+  id: totrans-151
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用命令`kubectl get pods -n longhorn-system -w`等待pod启动。
 - en: You can then access the Longhorn UI following the steps at [https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui](https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui)
     to create a load balancer or port-forward from your local workstation.
+  id: totrans-152
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 然后，你可以按照[https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui](https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui)上的步骤，通过创建负载均衡器或从本地工作站进行端口转发来访问Longhorn
+    UI。
 - en: 'To install Longhorn via Helm, follow these steps:'
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 要通过Helm安装Longhorn，请按照以下步骤操作：
 - en: Add the Helm repository using the `helm repo add longhorn https://charts.longhorn.io`
     command.
+  id: totrans-154
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用命令`helm repo add longhorn https://charts.longhorn.io`添加Helm仓库。
 - en: Update your Helm charts with the `helm repo update` command.
+  id: totrans-155
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用命令`helm repo update`更新你的Helm图表。
 - en: Install Longhorn using the `helm install longhorn longhorn/longhorn --namespace
     longhorn-system --create-namespace` command.
+  id: totrans-156
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用命令`helm install longhorn longhorn/longhorn --namespace longhorn-system --create-namespace`安装Longhorn。
 - en: You can find the full list of Helm values at [https://github.com/longhorn/longhorn/blob/master/chart/values.yaml](https://github.com/longhorn/longhorn/blob/master/chart/values.yaml).
+  id: totrans-157
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以在[https://github.com/longhorn/longhorn/blob/master/chart/values.yaml](https://github.com/longhorn/longhorn/blob/master/chart/values.yaml)找到完整的Helm值列表。
 - en: Once Longhorn has started, you can configure the ingress with authentication
     using the steps located at [https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui/longhorn-ingress](https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui/longhorn-ingress).
+  id: totrans-158
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 一旦Longhorn启动，你可以按照[https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui/longhorn-ingress](https://longhorn.io/docs/1.2.3/deploy/accessing-the-ui/longhorn-ingress)上的步骤，配置带有身份验证的ingress。
 - en: At this point, you should have a cluster with Longhorn up and ready to be consumed
     by applications. In the next section, we'll be covering how to upgrade Longhorn.
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: 此时，你应该已经拥有一个启动的Longhorn集群，准备被应用程序使用。在下一节中，我们将讨论如何升级Longhorn。
 - en: How do Longhorn upgrades work?
+  id: totrans-160
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Longhorn的升级是如何工作的？
 - en: Upgrading Longhorn is similar to upgrading most Kubernetes applications, but
     understand that Longhorn is intentionally designed to not be downgradable. Once
     you start an upgrade, it must be finished. Because of this, you should review
@@ -815,8 +1177,11 @@
     environment. Finally, it's imperative that whatever method you used to install
     Longhorn (the Rancher catalog, kubectl, or Helm) should be used to perform any
     future upgrades.
+  id: totrans-161
   prefs: []
   type: TYPE_NORMAL
+  zh: 升级 Longhorn 类似于升级大多数 Kubernetes 应用程序，但请理解 Longhorn 被故意设计为不可降级。一旦开始升级，必须完成升级。因此，您应查看[https://github.com/longhorn/longhorn/releases](https://github.com/longhorn/longhorn/releases)上的发布说明；在升级生产/关键业务环境之前，您还应在低环境中测试所有升级。最后，必须使用您用于安装
+    Longhorn 的任何方法（如 Rancher 目录、kubectl 或 Helm）来执行任何未来的升级。
 - en: Once you start the upgrade process, Longhorn will upgrade the manager pods but
     not the engines. Upgrading engines are handled by the Longhorn Manager and can
     be done manually by default using the steps located at [https://longhorn.io/docs/1.2.3/deploy/upgrade/upgrade-engine](https://longhorn.io/docs/1.2.3/deploy/upgrade/upgrade-engine),
@@ -828,66 +1193,97 @@
     upgrade. So, you will be required to have additional capacity on your storage
     node, and the upgrade requires rebuilding all of your volumes, which will require
     extra space and I/O.
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦开始升级过程，Longhorn 将升级管理器 Pod，但不会升级引擎。引擎的升级由 Longhorn 管理器处理，默认可以手动执行，具体步骤可以参见[https://longhorn.io/docs/1.2.3/deploy/upgrade/upgrade-engine](https://longhorn.io/docs/1.2.3/deploy/upgrade/upgrade-engine)，或者使用位于[https://longhorn.io/docs/1.2.3/deploy/upgrade/auto-upgrade-engine](https://longhorn.io/docs/1.2.3/deploy/upgrade/auto-upgrade-engine)的自动化过程。对于引擎升级，可以选择离线或在线升级。离线升级时，卷将从工作负载中分离并重新附加，通常是更快的选择，但需要一些停机时间。另一种选择是在线升级，这会将副本数量加倍，例如，在升级过程中，三个副本将变成六个副本。因此，您需要在存储节点上具备额外的容量，并且该升级需要重建所有卷，这将需要额外的空间和
+    I/O。
 - en: Critical maintenance tasks for keeping Longhorn at 100%
+  id: totrans-163
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 保持 Longhorn 100% 健康状态的关键维护任务
 - en: When running Longhorn, you must complete some additional maintenance tasks to
     keep Longhorn running in a healthy state.
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
+  zh: 在运行 Longhorn 时，您必须完成一些额外的维护任务，以保持 Longhorn 运行在健康状态。
 - en: 'First, when upgrading/patching storage nodes, you must take the following steps
     as part of your upgrade. Before starting any OS-level work, the following steps
     should be taken on each node one at a time:'
+  id: totrans-165
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，在升级/修补存储节点时，您必须按照以下步骤执行作为升级的一部分。在开始任何操作系统级别的工作之前，以下步骤应逐个节点执行：
 - en: 'Cordon the node using the following command:'
+  id: totrans-166
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用以下命令将节点设置为禁用状态：
 - en: '[PRE0]'
+  id: totrans-167
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'Drain the node using the following command:'
+  id: totrans-168
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用以下命令排空节点：
 - en: '[PRE1]'
+  id: totrans-169
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: This command will cause Longhorn to rebuild replicas on a new node in the cluster.
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: 此命令将导致 Longhorn 在集群中的新节点上重建副本。
 - en: Note
+  id: totrans-171
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: The draining process will wait for the replicas to be reconstructed.
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
+  zh: 排空过程将等待副本重建。
 - en: By default, if there is one last healthy replica for a volume on the node, Longhorn
     will prevent the node from completing the drain operation, to protect the last
     replica and prevent the disruption of the workload. You can either override the
     behavior in the setting or evict the replica to other nodes before draining.
+  id: totrans-173
   prefs: []
   type: TYPE_NORMAL
+  zh: 默认情况下，如果节点上某个卷有最后一个健康副本，Longhorn 会阻止该节点完成排空操作，以保护最后一个副本并防止工作负载中断。您可以在设置中覆盖此行为，或在排空之前将副本驱逐到其他节点。
 - en: At this point, you can perform any node maintenance, including patching and
     rebooting.
+  id: totrans-174
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 此时，您可以执行任何节点维护操作，包括修补和重启。
 - en: 'Once all node maintenance is done, you''ll need to uncordon the node using
     the following command:'
+  id: totrans-175
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 一旦完成所有节点维护，您需要使用以下命令取消节点的“禁用”状态：
 - en: '[PRE2]'
+  id: totrans-176
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'Second, Longhorn relies upon the underlying filesystem to detect corruption.
     You can detect a corrupted replica using the steps located at [https://longhorn.io/docs/1.2.3/advanced-resources/data-recovery/corrupted-replica/](https://longhorn.io/docs/1.2.3/advanced-resources/data-recovery/corrupted-replica/).
     The process disconnects the volume, takes a checksum of each replica, and compares
@@ -895,103 +1291,150 @@
     UI and rebuild it. If multiple corrupted replicas are found, you restore the volume
     from a backup or use the following steps to mount the replicas and review the
     data manually:'
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 其次，Longhorn 依赖于底层文件系统来检测损坏。您可以使用以下步骤检测损坏的副本，详见 [https://longhorn.io/docs/1.2.3/advanced-resources/data-recovery/corrupted-replica/](https://longhorn.io/docs/1.2.3/advanced-resources/data-recovery/corrupted-replica/)。该过程会断开卷连接，计算每个副本的校验和并进行比较。如果发现单个损坏的副本，您应该通过
+    Longhorn UI 删除它并重建。如果发现多个损坏的副本，您可以从备份恢复该卷，或者使用以下步骤挂载副本并手动查看数据：
 - en: 'First, you''ll need to SSH into the node and become root using the command
     `sudo su -` then run the following commands listed:'
+  id: totrans-178
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 首先，您需要通过 SSH 登录到节点并使用命令 `sudo su -` 以 root 用户身份执行，然后运行以下列出的命令：
 - en: '[PRE3]'
+  id: totrans-179
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'Run the following commands:'
+  id: totrans-180
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 运行以下命令：
 - en: '[PRE4]'
+  id: totrans-181
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: At this point, we have covered the steps for keeping Longhorn healthy, but as
     we all know, no application is perfect, so in the next section, we'll be covering
     some common issues and how to resolve them.
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
+  zh: 到此为止，我们已经涵盖了保持 Longhorn 健康运行的步骤，但正如我们所知，任何应用程序都不可能完美，因此在接下来的章节中，我们将讨论一些常见的问题以及如何解决它们。
 - en: Troubleshooting common Longhorn issues
+  id: totrans-183
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 排查常见的 Longhorn 问题
 - en: With Longhorn, the two most common failures are running a node until the disk
     is full, and recovering stuck volumes.
+  id: totrans-184
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 Longhorn 中，最常见的两个问题是运行节点直到磁盘满了，以及恢复卡住的卷。
 - en: 'First, a node becomes full because Longhorn uses a shared filesystem such as
     `root` or `/var` with other applications or pods filling up the space. Note that
     it''s recommended that Longhorn be on its own filesystem for this reason. To recover
     from this failure, you''ll want to use the following steps:'
+  id: totrans-185
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，节点会变满，因为 Longhorn 使用的是共享文件系统，如 `root` 或 `/var`，而其他应用或 Pod 会填满这些空间。鉴于此，建议将
+    Longhorn 部署在独立的文件系统上。要从这个故障中恢复，您需要使用以下步骤：
 - en: Disable the scheduling for the full disk.
+  id: totrans-186
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 禁用磁盘满时的调度。
 - en: Expand the current filesystem to bring the used capacity below 80%.
+  id: totrans-187
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 扩展当前的文件系统，使已使用的容量低于 80%。
 - en: If additional storage is not an option, you'll need to delete replicas until
     the node is no longer in the error state.
+  id: totrans-188
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果无法增加存储空间，您需要删除副本直到节点不再处于错误状态。
 - en: 'The second most common issue is stuck volumes as a pod cannot start if the
     Longhorn volume is timing out during the `mount` command. To recover from this
     issue, you''ll use the following steps:'
+  id: totrans-189
   prefs: []
   type: TYPE_NORMAL
+  zh: 第二个常见问题是卷卡住，因为如果 Longhorn 卷在 `mount` 命令时超时，Pod 无法启动。要从这个问题中恢复，您将使用以下步骤：
 - en: Start by scaling the workload to zero and deleting the pod.
+  id: totrans-190
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 首先，将工作负载扩展为零并删除 Pod。
 - en: If the volume goes into detached status, retry scaling back up.
+  id: totrans-191
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果卷进入分离状态，请重试扩展操作。
 - en: 'If the volume is still stuck in attaching, you''ll want to try attaching the
     volume manually to the host using the maintenance flag via the Longhorn UI:'
+  id: totrans-192
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果卷仍然卡在附加状态，您可以尝试通过 Longhorn UI 使用维护标志手动将卷附加到主机：
 - en: If the volume attaches successfully, try detaching it again and scaling back
     up.
+  id: totrans-193
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果卷成功附加，尝试再次分离它并重新扩展。
 - en: If the volume won't attach, then there is something broken on the node; usually,
     rebooting the node resolves it, or you can force the pod to be rescheduled on
     another node.
+  id: totrans-194
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果卷无法附加，那么节点上存在故障；通常，重启节点可以解决该问题，或者您可以强制将 Pod 重新调度到另一个节点上。
 - en: At this point, you should be able to resolve most issues with Longhorn and have
     the tools to keep your data protected.
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
+  zh: 此时，您应该能够解决 Longhorn 的大多数问题，并且拥有保护数据所需的工具。
 - en: Summary
+  id: totrans-196
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 总结
 - en: In this chapter, we learned about Longhorn, including how it works. We then
     went over the requirements and limitations in the *Architecting* section. We also
     went over some common cluster designs by size. We then dove into the different
     ways to install, upgrade, and customize Longhorn.
+  id: totrans-197
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们学习了 Longhorn，包括它是如何工作的。接着，我们在 *架构设计* 部分讨论了要求和限制。我们还介绍了一些常见的按规模划分的集群设计。然后，我们深入探讨了安装、升级和自定义
+    Longhorn 的不同方式。
 - en: In the next chapter, we will cover how to bring security and compliance to your
     Rancher clusters using OPA Gatekeeper.
+  id: totrans-198
   prefs: []
   type: TYPE_NORMAL
+  zh: 在下一章中，我们将讨论如何使用 OPA Gatekeeper 将安全性和合规性引入到您的 Rancher 集群中。
