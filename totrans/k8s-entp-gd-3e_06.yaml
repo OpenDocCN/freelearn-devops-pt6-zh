@@ -1,0 +1,4004 @@
+- en: '6'
+  id: totrans-0
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: '6'
+- en: Integrating Authentication into Your Cluster
+  id: totrans-1
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 将身份验证集成到你的集群中
+- en: Once a cluster has been built, users will need to interact with it securely.
+    For most enterprises, this means authenticating individual users and pipelines,
+    making sure they can only access what they need in order to do their jobs. This
+    is known as least privileged access. The principle of least privilege is a security
+    practice that centers on providing users, systems, applications, or processes
+    with only the essential access and permissions required to execute their tasks.
+    With Kubernetes, this can be challenging because a cluster is a collection of
+    APIs, not an application with a frontend that can prompt for authentication, nor
+    does it provide a secure way to manage credentials on its own.
+  id: totrans-2
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦集群建立，用户需要安全地与其交互。对于大多数企业而言，这意味着对个体用户和管道进行身份验证，确保他们只能访问完成工作所需的内容。这被称为最小特权访问。最小特权原则是一种安全实践，旨在为用户、系统、应用程序或进程提供执行任务所需的最低访问权限。对于
+    Kubernetes 来说，这可能会很具挑战性，因为集群是一个 API 集合，而不是具有前端的应用程序，无法提示身份验证，也没有提供管理凭据的安全方式。
+- en: Failing to create an authentication strategy can lead to your cluster being
+    taken over. Once a cluster is potentially compromised, it’s almost impossible
+    to determine if an attacker has been purged, and you’ll need to start over. A
+    breached cluster can also lead to breaches in other systems too, such as a database
+    your applications may be accessing. Authentication is the first step to make sure
+    this doesn’t happen.
+  id: totrans-3
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 未能创建身份验证策略可能导致集群被接管。一旦集群可能被攻击者入侵，几乎无法确定攻击者是否已被清除，你将不得不重新开始。被攻击的集群还可能导致其他系统的漏洞，如应用程序可能访问的数据库。身份验证是确保这一切不发生的第一步。
+- en: In this chapter, you’ll learn how to integrate enterprise authentication into
+    your cluster using the **OpenID Connect** protocol and Kubernetes impersonation.
+    We’ll also cover several anti-patterns and explain why you should avoid using
+    them. To close out the chapter, you’ll also learn how to integrate your pipelines
+    into your clusters securely.
+  id: totrans-4
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在本章中，你将学习如何使用 **OpenID Connect** 协议和 Kubernetes 身份伪造将企业身份验证集成到你的集群中。我们还将介绍几个反模式，并解释为什么你应该避免使用它们。为了结束本章，你还将学习如何安全地将你的管道集成到你的集群中。
+- en: 'In this chapter, we will cover the following topics:'
+  id: totrans-5
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 本章将涵盖以下主题：
+- en: Understanding how Kubernetes knows who you are
+  id: totrans-6
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 了解 Kubernetes 如何识别你的身份
+- en: Understanding OpenID Connect
+  id: totrans-7
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 了解 OpenID Connect
+- en: Configuring KinD for OpenID Connect
+  id: totrans-8
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 配置 KinD 以支持 OpenID Connect
+- en: Introducing impersonation to integrate authentication with cloud-managed clusters
+  id: totrans-9
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 引入身份伪造将身份验证与云托管的集群集成
+- en: Configuring your cluster for impersonation
+  id: totrans-10
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 配置集群进行身份伪造
+- en: Configuring impersonation without OpenUnison
+  id: totrans-11
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 在没有 OpenUnison 的情况下配置身份伪造
+- en: Authenticating from pipelines
+  id: totrans-12
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 从管道进行身份验证
+- en: Let’s get started!
+  id: totrans-13
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 让我们开始吧！
+- en: Technical requirements
+  id: totrans-14
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 技术要求
+- en: 'To complete the exercises in this chapter, you will require the following:'
+  id: totrans-15
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 为了完成本章中的练习，你将需要以下资源：
+- en: An Ubuntu 22.04 server with 8 GB of RAM
+  id: totrans-16
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 一台拥有 8 GB 内存的 Ubuntu 22.04 服务器
+- en: A fresh KinD cluster running with the configuration from *Chapter 2*, *Deploying
+    Kubernetes Using KinD*
+  id: totrans-17
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 使用 *第 2 章* 中配置的配置运行的全新 KinD 集群，*使用 KinD 部署 Kubernetes*
+- en: 'You can access the code for this chapter at the following GitHub repository:
+    [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter6](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter6).'
+  id: totrans-18
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你可以在以下 GitHub 仓库访问本章的代码：[https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter6](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/tree/main/chapter6)。
+- en: Getting Help
+  id: totrans-19
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 获取帮助
+- en: We do our best to test everything, but there are sometimes half a dozen systems
+    or more in our integration labs. Given the fluid nature of technology, sometimes
+    things that work in our environment don’t work in yours. Don’t worry – we’re here
+    to help! Open an issue on our GitHub repo at [https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues),
+    and we’ll be happy to help you out!
+  id: totrans-20
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们尽力测试所有内容，但在我们的集成实验室中，有时会有六个或更多的系统。鉴于技术的流动性，有时在我们的环境中有效的东西在你的环境中可能不起作用。别担心——我们在这里帮助你！在我们的
+    GitHub 仓库中提交问题：[https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues](https://github.com/PacktPublishing/Kubernetes-An-Enterprise-Guide-Third-Edition/issues)，我们将很乐意帮助你！
+- en: Understanding how Kubernetes knows who you are
+  id: totrans-21
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 了解 Kubernetes 如何识别你的身份
+- en: In the 1999 sci-fi film *The Matrix*, Neo talks to a child about the Matrix
+    as he waits to see the Oracle. The child explains to him that the trick to manipulating
+    the Matrix is to realize that “*There is no spoon*.”
+  id: totrans-22
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在 1999 年的科幻电影 *黑客帝国* 中，Neo 在等待见 Oracle 时与一个孩子交谈。孩子向他解释说，操控矩阵的诀窍在于意识到“*没有勺子*”。
+- en: This is a great way to look at users in Kubernetes because they don’t exist.
+    With the exception of service accounts, which we’ll talk about later, there are
+    no objects in Kubernetes called “User” or “Group.” Every API interaction must
+    include enough information to tell the API server who the user is and what groups
+    the user is a member of. This assertion can take different forms, depending on
+    how you plan to integrate authentication into your cluster.
+  id: totrans-23
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这是在 Kubernetes 中查看用户的一种很好的方式，因为它们并不存在。除了稍后讨论的服务帐户外，Kubernetes 中没有名为“用户”或“组”的对象。每次
+    API 交互都必须包含足够的信息，告知 API 服务器用户是谁，以及该用户属于哪些组。此声明可以根据你计划如何将身份验证集成到集群中，采取不同的形式。
+- en: In this section, we will get into the details of the different ways Kubernetes
+    can associate a user with a cluster.
+  id: totrans-24
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在本节中，我们将深入探讨 Kubernetes 可以通过不同方式将用户与集群关联的详细信息。
+- en: External users
+  id: totrans-25
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 外部用户
+- en: 'Users who access the Kubernetes API from outside the cluster will usually do
+    so using one of two authentication methods:'
+  id: totrans-26
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 从集群外部访问 Kubernetes API 的用户通常会使用两种身份验证方法之一：
+- en: '**Certificate**: You can assert who you are by using a client certificate that
+    has information about you, such as your username and groups. The certificate is
+    used as part of the TLS negotiation process.'
+  id: totrans-27
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**证书**：你可以通过使用包含有关你信息的客户端证书来声明你是谁，例如你的用户名和组。该证书在 TLS 协商过程中作为一部分使用。'
+- en: '**Bearer token**: Embedded in each request, a bearer token can either be a
+    self-contained token that contains all the information needed to verify itself,
+    or a token that can be exchanged by a webhook in the API server for that information.'
+  id: totrans-28
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**持有者令牌**：嵌入在每个请求中，持有者令牌可以是一个自包含的令牌，包含验证自身所需的所有信息，或者是一个可以通过 API 服务器中的 Webhook
+    交换获取这些信息的令牌。'
+- en: There is a third method that can be used for authentication, using a **service
+    account**. However, using service accounts to access the API server outside the
+    cluster is strongly discouraged. We’ll cover the risks and concerns around using
+    service accounts in the *Other authentication options* section.
+  id: totrans-29
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 还有一种第三种身份验证方法，即使用 **服务帐户**。然而，强烈不推荐使用服务帐户从集群外部访问 API 服务器。我们将在 *其他身份验证选项* 部分讨论使用服务帐户的风险和问题。
+- en: Groups in Kubernetes
+  id: totrans-30
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: Kubernetes 中的组
+- en: 'Different users can be assigned the same permissions without creating `RoleBinding`
+    objects for each user individually via groups. Kubernetes includes two types of
+    groups:'
+  id: totrans-31
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 不同的用户可以通过组分配相同的权限，而无需为每个用户单独创建 `RoleBinding` 对象。Kubernetes 包含两种类型的组：
+- en: '**System assigned**: These groups start with the `system:` prefix and are assigned
+    by the API server. An example group is `system:authenticated`, which is assigned
+    to all authenticated users. Another example of system-assigned groups is the `system:serviceaccounts:namespace`
+    group, where `Namespace` is the name of the namespace that contains all the service
+    accounts for the namespace named in the group.'
+  id: totrans-32
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**系统分配的**：这些组以 `system:` 前缀开始，由 API 服务器分配。例如，`system:authenticated` 组会分配给所有经过身份验证的用户。另一个系统分配的组示例是
+    `system:serviceaccounts:namespace` 组，其中 `Namespace` 是包含该组中命名的命名空间内所有服务帐户的命名空间的名称。'
+- en: '**User-asserted groups**: These groups are asserted by the authentication system,
+    either in the token provided to the API server or via the authentication webhook.
+    There are no standards or requirements for how these groups are named. Just as
+    with users, groups don’t exist as objects in the API server. Groups are asserted
+    at authentication time by external users and tracked locally for system-generated
+    groups. When asserting a user’s groups, the primary difference between a user’s
+    unique ID and groups is that the unique ID is expected to be unique, whereas groups
+    are not.'
+  id: totrans-33
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**用户声明组**：这些组由身份验证系统声明，可能包含在提供给 API 服务器的令牌中，或通过身份验证 Webhook 提供。对于这些组的命名没有标准或要求。与用户一样，组并不是
+    API 服务器中的对象。组是在身份验证时由外部用户声明的，并且系统生成的组在本地进行跟踪。在声明用户的组时，唯一标识符和组之间的主要区别是唯一标识符应该是唯一的，而组则不需要。'
+- en: While you may be authorized for access by groups, all access is still tracked
+    and audited based on your user’s unique ID.
+  id: totrans-34
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 尽管你可能通过组获得访问权限，但所有访问仍然是根据用户的唯一标识符进行跟踪和审计的。
+- en: Service accounts
+  id: totrans-35
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 服务帐户
+- en: 'Service accounts are objects that exist in the API server to track which pods
+    can access the various APIs. Service account tokens are called **JSON Web Tokens**,
+    or **JWTs**, and depending on how the token was generated, there are two ways
+    to obtain a service account:'
+  id: totrans-36
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 服务账户是 API 服务器中的对象，用于追踪哪些 Pods 可以访问各种 API。服务账户令牌被称为 **JSON Web Tokens**，或 **JWTs**，根据令牌的生成方式，有两种方法可以获取服务账户：
+- en: The first is from a secret that can be generated by Kubernetes when a ServiceAccount
+    is created.
+  id: totrans-37
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 第一个方法是通过 Kubernetes 在创建 ServiceAccount 时生成的秘密。
+- en: The second is via the `TokenRequest` API, which is used to inject a secret into
+    pods via a mount point or externally from the cluster. All service accounts are
+    used by injecting the token as a header in the request into the API server. The
+    API server recognizes it as a service account and validates it internally.
+  id: totrans-38
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 第二种方法是通过 `TokenRequest` API，它用于通过挂载点或从集群外部将密钥注入 Pods。所有服务账户都通过将令牌作为请求头注入 API
+    服务器来使用。API 服务器将其识别为服务账户并进行内部验证。
+- en: We will cover how to create these tokens in a specific context later in the
+    chapter.
+  id: totrans-39
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们将在本章稍后部分讨论如何在特定上下文中创建这些令牌。
+- en: Unlike users, service accounts **CANNOT** be assigned to arbitrary groups. Service
+    accounts are members of pre-built groups only; you can’t create a group of specific
+    service accounts to assign roles.
+  id: totrans-40
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 与用户不同，服务账户 **不能** 被分配到任意的组。服务账户只能是预定义组的成员；你不能创建特定的服务账户组来分配角色。
+- en: Now that we have explored the fundamentals of how Kubernetes identifies users,
+    we’ll explore how this framework fits into the **OpenID Connect** (**OIDC**) protocol.
+    OIDC provides the security most enterprises require and is standards-based, but
+    Kubernetes doesn’t use it in a way that is typical of many web applications. Understanding
+    these differences and why Kubernetes needs them is an important step in integrating
+    a cluster into an enterprise security environment.
+  id: totrans-41
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 现在我们已经探讨了 Kubernetes 如何识别用户的基本原理，接下来我们将探讨这一框架如何融入 **OpenID Connect**（**OIDC**）协议中。OIDC
+    提供了大多数企业所需的安全性，并且是基于标准的，但 Kubernetes 并未像许多 Web 应用程序那样使用它。理解这些差异以及 Kubernetes 为什么需要这些差异，是将集群集成到企业安全环境中的一个重要步骤。
+- en: Understanding OpenID Connect
+  id: totrans-42
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 理解 OpenID Connect
+- en: '**OpenID Connect** is a standard identity federation protocol. It’s built on
+    the **OAuth2** specification and has some very powerful features that make it
+    the preferred choice to interact with Kubernetes clusters.'
+  id: totrans-43
+  prefs: []
+  type: TYPE_NORMAL
+  zh: '**OpenID Connect** 是一种标准的身份联合协议。它基于 **OAuth2** 规范，并具有一些非常强大的功能，使其成为与 Kubernetes
+    集群交互的首选方案。'
+- en: 'The main benefits of OpenID Connect are as follows:'
+  id: totrans-44
+  prefs: []
+  type: TYPE_NORMAL
+  zh: OpenID Connect 的主要好处如下：
+- en: '**Short-lived tokens**: If a token is leaked, such as via a log message or
+    breach, you want the token to expire as quickly as possible. With OIDC, you’re
+    able to specify tokens that can live for 1–2 minutes, which means the token will
+    likely have expired by the time an attacker attempts to use it.'
+  id: totrans-45
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**短期令牌**：如果令牌被泄露，例如通过日志消息或安全漏洞，你希望令牌尽快过期。在 OIDC 中，你可以指定令牌的有效期为 1 到 2 分钟，这意味着攻击者在尝试使用令牌时，令牌很可能已经过期。'
+- en: '**User and group memberships**: When we start discussing authorization in *Chapter
+    7*, *RBAC Policies and Auditing*, we’ll see immediately that it’s important to
+    manage access by group instead of managing access by referencing users directly.
+    OIDC tokens can embed both the user’s identifier and their groups, leading to
+    easier access management.'
+  id: totrans-46
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**用户和组成员资格**：当我们开始讨论 *第七章：RBAC 策略和审计* 中的授权时，我们会立即看到，通过组管理访问权限比直接引用用户更为重要。OIDC
+    令牌可以嵌入用户的标识符及其所属组，从而简化访问管理。'
+- en: '**Refresh tokens scoped to timeout policies**: With short-lived tokens, you
+    need to be able to refresh them as needed. The time that a refresh token remains
+    valid can be scoped to your enterprise’s web application idle timeout policy,
+    keeping your cluster in compliance with other web-based applications.'
+  id: totrans-47
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**与超时策略相关的刷新令牌**：使用短期令牌时，你需要能够在需要时刷新它们。刷新令牌的有效期可以限定在企业的 Web 应用程序空闲超时策略内，从而保持集群与其他基于
+    Web 的应用程序的合规性。'
+- en: '**No plugins required for kubectl**: The `kubectl` binary supports OpenID Connect
+    natively, so there’s no need for any additional plugins. This is especially useful
+    if you need to access your cluster from a jump box or VM because you’re unable
+    to install the **Command-Line Interface** (**CLI**) tools directly onto your workstation.
+    There are convenient plugins though, which we will discuss later in the chapter.'
+  id: totrans-48
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**kubectl 无需插件**：`kubectl` 二进制文件本身原生支持 OpenID Connect，因此无需任何额外的插件。如果你需要从跳板机或虚拟机访问集群，而无法将
+    **命令行界面** (**CLI**) 工具直接安装到工作站，这尤其有用。不过，也有一些方便的插件，我们将在本章稍后讨论。'
+- en: '**More multi-factor authentication options**: Many of the strongest multi-factor
+    authentication options require a web browser. Examples include FIDO and WebAuthn,
+    which use hardware tokens.'
+  id: totrans-49
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**更多的多因素认证选项**：许多最强的多因素认证选项需要使用网页浏览器。例如，FIDO 和 WebAuthn，它们使用硬件令牌。'
+- en: OIDC is a peer-reviewed standard that has been in use for several years and
+    is quickly becoming the preferred standard for identity federation. Using an existing
+    standard, over something custom-developed, means that Kubernetes leverages the
+    existing expertise of those peer reviews, instead of creating a new authentication
+    protocol where that experience hasn’t been tested.
+  id: totrans-50
+  prefs: []
+  type: TYPE_NORMAL
+  zh: OIDC 是一个经过同行评审的标准，已经使用了几年，并且正在迅速成为身份联合的首选标准。使用现有的标准而不是定制开发的标准，意味着 Kubernetes
+    利用了这些同行评审的现有专业知识，而不是创建一个新的身份验证协议，这些经验尚未经过验证。
+- en: Identity federation is the term used to describe the assertion of identity data
+    and authentication without sharing a user’s confidential secret or password. A
+    classic example of identity federation is logging into your employee website and
+    being able to access your benefits provider without having to log in again. Your
+    employee website doesn’t share your password with your benefits provider. Instead,
+    your employee website asserts that you logged in at a certain date and time and
+    provides some information about you. This way, your account is federated across
+    two silos (your employee website and benefits portal), without your benefits portal
+    knowing your employee website password.
+  id: totrans-51
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 身份联合是用于描述在不共享用户机密信息或密码的情况下进行身份数据和认证的术语。身份联合的经典例子是登录到你的员工网站，并能够访问你的福利提供商，而无需再次登录。你的员工网站不会将你的密码与福利提供商共享。相反，员工网站会声明你在某个时间和日期登录，并提供一些关于你的信息。通过这种方式，你的账户在两个孤岛（你的员工网站和福利门户）之间实现了联合，而福利门户并不知道你员工网站的密码。
+- en: As you can see, there are multiple components to OIDC. To fully understand how
+    OIDC works, let’s begin by understanding the OpenID Connect protocol.
+  id: totrans-52
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如你所见，OIDC 有多个组件。为了充分理解 OIDC 的工作原理，我们首先来了解一下 OpenID Connect 协议。
+- en: The OpenID Connect protocol
+  id: totrans-53
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: OpenID Connect 协议
+- en: 'The two aspects of the OIDC protocol we will focus on are:'
+  id: totrans-54
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们将关注 OIDC 协议的两个方面：
+- en: Using tokens with `kubectl` and the API server
+  id: totrans-55
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 使用令牌与 `kubectl` 和 API 服务器进行交互
+- en: Refreshing tokens to keep your tokens up to date
+  id: totrans-56
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 刷新令牌以保持令牌的最新状态
+- en: We won’t focus too much on obtaining tokens. While the protocol to get a token
+    does follow a standard, the login process does not. How you obtain tokens from
+    an identity provider will vary, and it’s based on how you choose to implement
+    your OIDC **Identity Provider** (**IdP**).
+  id: totrans-57
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们不会过多关注获取令牌的过程。虽然获取令牌的协议遵循标准，但登录过程并不遵循标准。从身份提供者那里获取令牌的方式会有所不同，这取决于你选择实现你的 OIDC
+    **身份提供者** (**IdP**) 的方式。
+- en: 'Three tokens are generated from the OIDC login process:'
+  id: totrans-58
+  prefs: []
+  type: TYPE_NORMAL
+  zh: OIDC 登录过程生成三个令牌：
+- en: '`access_token`: This token is used to make authenticated requests to web services
+    your identity provider may provide, such as obtaining user information. It is
+    NOT used by Kubernetes and can be discarded. This token does not have a standard
+    form. It may be a JWT, or it may not.'
+  id: totrans-59
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`access_token`：此令牌用于向身份提供者可能提供的 Web 服务发起认证请求，例如获取用户信息。Kubernetes 不使用此令牌，并且可以丢弃。此令牌没有标准格式，可能是
+    JWT，也可能不是。'
+- en: '`id_token`: This token is a JWT that encapsulates your identity, including
+    your unique identifier, groups, and expiration information about you that the
+    API server can use to authorize your access. The JWT is signed by your identity
+    provider’s certificate and can be verified by Kubernetes, simply by checking the
+    JWT’s signature. This is the token you pass to Kubernetes for each request to
+    authenticate yourself.'
+  id: totrans-60
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`id_token`：这是一个 JWT 令牌，封装了你的身份信息，包括你的唯一标识符、组信息以及 API 服务器可以用来授权访问的过期信息。JWT 由你的身份提供者的证书签名，并且
+    Kubernetes 只需要通过检查 JWT 的签名来验证它。这就是你在每次请求时传递给 Kubernetes 用于身份验证的令牌。'
+- en: '`refresh_token`: `kubectl` knows how to refresh your `id_token` for you automatically
+    once it expires. To do this, it makes a call to your IdP’s `token` endpoint using
+    a `refresh_token` to obtain a new `id_token`. A `refresh_token` should only be
+    used once and is opaque, meaning that you, as the holder of the token, have no
+    visibility into its format, and it really doesn’t matter to you. It either works,
+    or it doesn’t. The `refresh_token` never goes to Kubernetes (or any other application).
+    It is only used in communications with the IdP.'
+  id: totrans-61
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`refresh_token`：`kubectl` 知道如何在 `id_token` 过期后自动为你刷新令牌。为此，它会调用你的 IdP 的 `token`
+    端点，使用 `refresh_token` 获取一个新的 `id_token`。`refresh_token` 只能使用一次，并且是不可见的，意味着作为令牌持有者的你无法查看它的格式，实际上你也不需要关心。它要么有效，要么无效。`refresh_token`
+    永远不会传递给 Kubernetes（或任何其他应用）。它仅用于与 IdP 的通信。'
+- en: The `refresh_token`'s ability to be used multiple times can be allowed in specific
+    circumstances. There are well-known issues with the Kubernetes **Go SDK** when
+    multiple processes attempt to refresh a token from the same `kubectl` configuration
+    file at nearly the same time, causing the user’s session to be lost and forcing
+    the user to log in again to obtain a new set of tokens. Many identity providers
+    handle this process differently. Some allow `refresh_tokens` to be reused for
+    varying amounts of time. When reviewing your choice for an identity provider,
+    it’s important to review this part of the functionality because it’s often left
+    more “open” by default to give a better user experience. Allowing the long-lived
+    reuse of a `refresh_token` invalidates much of the security provided by a `refresh_token`
+    and should be used very carefully.
+  id: totrans-62
+  prefs: []
+  type: TYPE_NORMAL
+  zh: '`refresh_token` 在特定情况下可以允许多次使用。Kubernetes **Go SDK** 在多个进程几乎同时尝试从相同的 `kubectl`
+    配置文件刷新令牌时，通常会出现一些已知的问题，这会导致用户的会话丢失，迫使用户重新登录以获取一组新的令牌。许多身份提供者以不同的方式处理这个过程。有些允许
+    `refresh_token` 在不同的时间内重新使用。审查身份提供者时，检查这个功能部分非常重要，因为它通常默认设置得更“开放”，以提供更好的用户体验。允许
+    `refresh_token` 长期复用会使 `refresh_token` 提供的安全性大部分失效，因此应该非常小心地使用。'
+- en: 'Once you have your tokens, you can use them to authenticate with the API server.
+    The easiest way to use your tokens is to add them to the `kubectl` configuration,
+    using command-line parameters:'
+  id: totrans-63
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦获得了你的令牌，你就可以使用它们与 API 服务器进行身份验证。使用令牌的最简单方法是将它们添加到`kubectl`配置中，通过命令行参数进行配置：
+- en: '[PRE0]'
+  id: totrans-64
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE0]'
+- en: '`config set-credentials` has a few options that need to be provided. We have
+    already explained `id-token` and `refresh-token`, but there are two additional
+    options:'
+  id: totrans-65
+  prefs: []
+  type: TYPE_NORMAL
+  zh: '`config set-credentials` 有一些需要提供的选项。我们已经解释了 `id-token` 和 `refresh-token`，但还有两个额外的选项：'
+- en: '`idp-issuer-url`: This is the same URL we will use to configure the API server
+    and points to the base URL used for the IdP’s discovery URL.'
+  id: totrans-66
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`idp-issuer-url`：这是我们用于配置 API 服务器的相同 URL，指向用于 IdP 发现 URL 的基础 URL。'
+- en: '`client-id`: This is used by your IdP to identify your configuration. This
+    is unique to a Kubernetes deployment and is not considered secret information.'
+  id: totrans-67
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`client-id`：这是你的 IdP 用来标识你配置的字段。它对于 Kubernetes 部署是唯一的，并且不被认为是秘密信息。'
+- en: The OpenID Connect protocol has an optional element, known as a `client_secret`,
+    that is shared between an OIDC client and the IdP. It is used to “authenticate”
+    the client before making any requests, such as refreshing a token. While it’s
+    supported by Kubernetes as an option, it’s recommended to not use it and instead
+    configure your IdP to use a public endpoint (which doesn’t use a secret at all).
+  id: totrans-68
+  prefs: []
+  type: TYPE_NORMAL
+  zh: OpenID Connect 协议有一个可选元素，称为 `client_secret`，它在 OIDC 客户端和 IdP 之间共享。它用于在发起请求之前“验证”客户端，例如刷新令牌。虽然
+    Kubernetes 将其作为一个选项支持，但建议不要使用它，而是配置你的 IdP 使用公共端点（该端点根本不使用秘密）。
+- en: The client secret has no practical value, since you’d need to share it with
+    every potential user, and since it’s a password, your enterprise’s compliance
+    framework will likely require that it is rotated regularly, causing support headaches.
+    Overall, it’s just not worth any potential downsides in terms of security.
+  id: totrans-69
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 客户端密钥没有实际价值，因为您需要与每个潜在用户共享它，而且由于它是密码，您的企业合规框架可能要求定期更换，从而带来支持上的困难。总体而言，就安全性而言，它的潜在缺点并不值得。
+- en: Instead of using a client secret, you should make sure your endpoint leverages
+    the **Proof Key for Code Exchange** (**PKCE**) protocol. This protocol was originally
+    created to add a layer of randomness to OIDC requests that don’t have client secrets.
+    While this is not something that would be leveraged by the `kubectl` command during
+    the refresh process, you’re likely to integrate multiple applications from your
+    cluster into your identity provider (such as dashboards) that may have CLI components
+    and won’t be able to use a client secret either. **ArgoCD**, which we will integrate
+    in the last two chapters, is a great example. Its CLI utility works with SSO,
+    but unlike `kubectl`, it will initiate SSO for you. When it does, it includes
+    PKCE because you won’t have a `client_secret` on each user’s workstation.
+  id: totrans-70
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 不要使用客户端密钥，您应该确保您的端点使用 **代码交换证明密钥** (**PKCE**) 协议。这个协议最初是为了在没有客户端密钥的 OIDC 请求中增加一层随机性而创建的。虽然在刷新过程中
+    `kubectl` 命令不会利用这个协议，但您可能会将集群中的多个应用程序集成到身份提供者中（例如仪表板），这些应用程序可能具有 CLI 组件，并且无法使用客户端密钥。**ArgoCD**，我们将在最后两章中进行集成，就是一个很好的例子。它的
+    CLI 工具支持单点登录（SSO），但不同于 `kubectl`，它会为您启动 SSO。启动时，它会包含 PKCE，因为在每个用户的工作站上您都不会有 `client_secret`。
+- en: Kubernetes requires that your identity provider supports the discovery URL endpoint,
+    which is a URL that provides some JSON to tell you where you can get keys to verify
+    JWTs and the various endpoints available. To access the discovery endpoint, take
+    any issuer URL and add `/.well-known/openid-configuration`, which will provide
+    the OIDC endpoint information.
+  id: totrans-71
+  prefs: []
+  type: TYPE_NORMAL
+  zh: Kubernetes 要求您的身份提供者支持发现 URL 端点，这是一个提供 JSON 的 URL，告知您可以在哪里获取用于验证 JWT 的密钥以及可用的各种端点。要访问发现端点，请将任何发布者
+    URL 后加`/.well-known/openid-configuration`，该 URL 将提供 OIDC 端点信息。
+- en: Having worked through how the OpenID Connect protocol and tokens work with Kubernetes,
+    let’s next walk through how the various components in Kubernetes and `kubectl`
+    interact with each other.
+  id: totrans-72
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 经过对 OpenID Connect 协议和令牌如何与 Kubernetes 配合工作进行探讨后，接下来我们将逐步了解 Kubernetes 和 `kubectl`
+    中的各个组件如何相互作用。
+- en: Following OIDC and the API’s interaction
+  id: totrans-73
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 遵循 OIDC 和 API 的交互
+- en: 'Once `kubectl` has been configured, all of your API interactions will follow
+    the following sequence:'
+  id: totrans-74
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦`kubectl`配置完成，所有 API 交互将按照以下顺序进行：
+- en: '![Figure 7.1 – Kubernetes/kubectl OpenID Connect sequence diagram ](img/B21165_06_01.png)'
+  id: totrans-75
+  prefs: []
+  type: TYPE_IMG
+  zh: '![图 7.1 – Kubernetes/kubectl OpenID Connect 顺序图](img/B21165_06_01.png)'
+- en: 'Figure 6.1: Kubernetes/kubectl OpenID Connect sequence diagram'
+  id: totrans-76
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.1：Kubernetes/kubectl OpenID Connect 顺序图
+- en: 'The preceding diagram is from Kubernetes’ authentication page at [https://kubernetes.io/docs/reference/access-authn-authz/authentication/#openid-connect-tokens](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#openid-connect-tokens).
+    Authenticating a request involves the following:'
+  id: totrans-77
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 上述图表来自 Kubernetes 的认证页面：[https://kubernetes.io/docs/reference/access-authn-authz/authentication/#openid-connect-tokens](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#openid-connect-tokens)。认证请求涉及以下步骤：
+- en: '**Log into your IdP**: This will be different for each IdP. This could involve
+    providing a username and password to a form in a web browser, a multi-factor token,
+    or a certificate. This will be specific to every implementation.'
+  id: totrans-78
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '**登录到您的身份提供者（IdP）**：这对于每个 IdP 都不同。可能需要在 Web 浏览器中的表单中提供用户名和密码、一个多因素令牌，或者一个证书。具体内容将取决于每个实现。'
+- en: '**Provide tokens to the user**: Once authenticated, the user needs a way to
+    generate the tokens needed by `kubectl` to access the Kubernetes APIs. This can
+    take the form of an application that makes it easy for the user to copy and paste
+    them into the configuration file, or it can be a new file to download.'
+  id: totrans-79
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '**向用户提供令牌**：一旦认证通过，用户需要一种方式来生成 `kubectl` 访问 Kubernetes API 所需的令牌。这可以是一个应用程序，使用户可以轻松地将令牌复制并粘贴到配置文件中，或者可以是一个需要下载的新文件。'
+- en: This step is where `id_token` and `refresh_token` are added to the `kubectl`
+    configuration. If the tokens were presented to the user in the browser, they can
+    be manually added to the configuration. Alternatively, some solutions provide
+    a new `kubectl` configuration to download at this step. There are also `kubectl`
+    plugins that will launch a web browser to start the authentication process and,
+    once completed, generate your configuration for you.
+  id: totrans-80
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 这个步骤是将 `id_token` 和 `refresh_token` 添加到 `kubectl` 配置中的步骤。如果令牌是在浏览器中展示给用户的，它们可以手动添加到配置中。或者，一些解决方案在此步骤提供了一个新的
+    `kubectl` 配置供下载。还有一些 `kubectl` 插件，会启动一个 Web 浏览器来开始身份验证过程，一旦完成，便会为你生成配置。
+- en: '**Inject id_token**: Once the `kubectl` command has been called, each API call
+    includes an additional header, called the **Authorization** header, that includes
+    `id_token`.'
+  id: totrans-81
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '**注入 id_token**：一旦调用了 `kubectl` 命令，每个 API 调用都会包括一个额外的头部，称为 **Authorization**
+    头部，里面包含 `id_token`。'
+- en: '**JWT signature validation**: Once the API server receives `id_token` from
+    the API call, it validates the signature against the public key provided by the
+    identity provider. The API server will also validate whether the issuer matches
+    the issuer for the API server configuration, and also that the recipient matches
+    the client ID from the API server configuration.'
+  id: totrans-82
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '**JWT 签名验证**：一旦 API 服务器从 API 调用中接收到 `id_token`，它会使用身份提供者提供的公钥对签名进行验证。API 服务器还会验证签发者是否与
+    API 服务器配置中的签发者匹配，并且接收者是否与 API 服务器配置中的客户端 ID 匹配。'
+- en: '**Check the JWT’s expiration**: Tokens are only good for a limited amount of
+    time. The API server ensures that the token hasn’t expired. If it has expired,
+    the API server will return with a 401 error code.'
+  id: totrans-83
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '**检查 JWT 的过期时间**：令牌只有在有限的时间内有效。API 服务器会确保令牌没有过期。如果令牌已经过期，API 服务器将返回 401 错误代码。'
+- en: '**Authorization check**: Now that the user has been authenticated, the API
+    server will determine whether the user identified by the provided `id_token` is
+    able to perform the requested action by matching the user’s identifier and asserted
+    groups to internal policies.'
+  id: totrans-84
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '**授权检查**：现在用户已经通过身份验证，API 服务器将通过将提供的 `id_token` 中的用户标识符和声明的组与内部政策匹配，来确定该用户是否能够执行请求的操作。'
+- en: '**Execute the API**: All checks are complete, and the API server executes the
+    request, generating a response that will be sent back to `kubectl`.'
+  id: totrans-85
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '**执行 API**：所有检查完成后，API 服务器会执行请求，生成一个响应并将其发送回 `kubectl`。'
+- en: '**Format the response for the user**: Once the API call (or a series of API
+    calls) is complete, the response in JSON is formatted and presented to the user
+    by `kubectl`.'
+  id: totrans-86
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '**格式化响应以供用户使用**：一旦 API 调用（或一系列 API 调用）完成，响应将以 JSON 格式被 `kubectl` 格式化并呈现给用户。'
+- en: In general terms, authentication is the process of validating that you are you.
+    Most of us encounter this when we put our username and password into a website;
+    we’re proving who we are. In the enterprise world, authorization then becomes
+    the decision of whether we’re allowed to do something. First, we authenticate,
+    and then we authorize.
+  id: totrans-87
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 从一般意义上讲，身份验证是验证你是否是你自己的过程。我们大多数人遇到这个过程时，是在将用户名和密码输入到网站时；我们是在证明我们是谁。在企业环境中，授权则是决定我们是否被允许做某件事的过程。首先，我们进行身份验证，然后进行授权。
+- en: The standards built around API security don’t assume authentication and go straight
+    to authorization, based on some sort of token. It’s not assumed that the caller
+    has to be identified. For instance, when you use a physical key to open a door,
+    the door doesn’t know who you are, only that you have the right key. This terminology
+    can become very confusing, so don’t feel bad if you get a bit lost. You’re in
+    good company!
+  id: totrans-88
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 构建在 API 安全性基础上的标准并不假设进行身份验证，而是直接进行授权，基于某种令牌。并不假设调用者必须被识别。例如，当你使用物理钥匙开门时，门并不知道你是谁，只知道你拥有正确的钥匙。这个术语可能会让人感到困惑，所以如果你有些迷茫也不必感到不好意思，你并不孤单！
+- en: The `id_token` is self-contained; everything the API server needs to know about
+    you is in that token. The API server verifies the `id_token` using the certificate
+    provided by the identity provider and verifies that the token hasn’t expired.
+    As long as that all lines up, the API server will move on to authorizing your
+    request based on its own RBAC configuration. We’ll cover the details of that process
+    later. Finally, assuming you’re authorized, the API server provides a response.
+  id: totrans-89
+  prefs: []
+  type: TYPE_NORMAL
+  zh: '`id_token` 是自包含的；API 服务器所需了解的所有关于你的信息都包含在该令牌中。API 服务器通过使用身份提供者提供的证书来验证 `id_token`，并验证该令牌是否过期。只要这些信息匹配，API
+    服务器就会根据自己的 RBAC 配置继续授权你的请求。我们稍后会详细介绍这个过程。最后，假设你已获得授权，API 服务器将提供响应。'
+- en: 'Note that Kubernetes never sees your password or any other secret information
+    that you, and only you, know. The only thing that’s shared is the `id_token`,
+    and that’s ephemeral. This leads to several important points:'
+  id: totrans-90
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 请注意，Kubernetes 从未接触过你的密码或任何其他你所知道的秘密信息。唯一共享的是 `id_token`，而且它是临时的。这导致几个重要的要点：
+- en: Since Kubernetes never sees your password or other credentials, it can’t compromise
+    them. This can save you a tremendous amount of time working with your security
+    team, as all the tasks and controls related to securing passwords can be skipped!
+  id: totrans-91
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 由于 Kubernetes 从不接触你的密码或其他凭证，它无法泄露这些信息。这可以为你节省大量与安全团队合作的时间，因为所有与保护密码相关的任务和控制都可以跳过！
+- en: The `id_token` is self-contained, which means that if it’s compromised, there
+    is nothing you can do, short of rekeying your identity provider, to stop it from
+    being abused. This is why it’s so important for your `id_token` to have a short
+    lifespan. At 1–2 minutes, the likelihood that an attacker will be able to obtain
+    an `id_token`, realize what it is, and abuse it is very low.
+  id: totrans-92
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`id_token` 是自包含的，这意味着如果它被泄露，除了重新设置身份提供者（identity provider）的密钥外，你无法采取任何措施来防止它被滥用。这就是为什么你的
+    `id_token` 必须具有短生命周期的原因。在 1 到 2 分钟内，攻击者获取 `id_token`、识别它并加以滥用的可能性非常低。'
+- en: If, while performing its calls, `kubectl` finds that `id_token` has expired,
+    it will attempt to refresh it by calling the IdP’s token endpoint using `refresh_token`.
+    If the user’s session is still valid, the IdP will generate a new `id_token` and
+    `refresh_token`, which `kubectl` will store for you in the `kubectl` configuration.
+    This happens automatically with no user intervention. Additionally, a `refresh_token`
+    has a one-time use, so if someone tries to use a previously used `refresh_token`,
+    your IdP will fail the refresh process.
+  id: totrans-93
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如果在执行调用时，`kubectl` 发现 `id_token` 已过期，它将尝试通过使用 `refresh_token` 调用 IdP 的令牌端点来刷新它。如果用户的会话仍然有效，IdP
+    会生成新的 `id_token` 和 `refresh_token`，并将其存储在 `kubectl` 配置中。这个过程是自动进行的，无需用户干预。此外，`refresh_token`
+    只能使用一次，因此如果有人试图使用已使用过的 `refresh_token`，你的 IdP 将会失败，无法完成刷新过程。
+- en: A sudden security event is bound to happen. Someone may need to be locked out
+    immediately; it may be that they’re being walked out or that their session has
+    been compromised. Revocation of tokens is dependent on your IdP, so when choosing
+    an IdP, make sure it supports some form of session revocation.
+  id: totrans-94
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦发生突发的安全事件，某人可能需要立即被锁定；可能是他们被带走了，或者他们的会话已被泄露。令牌的撤销取决于你的 IdP，因此在选择 IdP 时，确保它支持某种形式的会话撤销。
+- en: Finally, if the `refresh_token` has expired or the session has been revoked,
+    the API server will return a `401 Unauthorized` message to indicate that it will
+    no longer support the token.
+  id: totrans-95
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 最后，如果 `refresh_token` 已过期或会话已被撤销，API 服务器将返回一个 `401 Unauthorized` 消息，表示它将不再支持该令牌。
+- en: We’ve spent a considerable amount of time examining the OIDC protocol. Now,
+    let’s take an in-depth look at the `id_token`.
+  id: totrans-96
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们花费了相当多的时间来研究 OIDC 协议。现在，让我们深入了解一下 `id_token`。
+- en: id_token
+  id: totrans-97
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: id_token
+- en: 'An `id_token` is a JSON web token that is base64-encoded and digitally signed.
+    The JSON contains a series of attributes, known as claims, in OIDC. There are
+    some standard claims in the `id_token`, but for the most part, the claims you
+    will be most concerned with are as follows:'
+  id: totrans-98
+  prefs: []
+  type: TYPE_NORMAL
+  zh: '`id_token` 是一个 JSON Web 令牌，它是经过 base64 编码并数字签名的。该 JSON 包含一系列属性，称为声明（claims），在
+    OIDC 中有一些标准的声明，但大多数情况下，你最关心的声明如下：'
+- en: '`iss`: The issuer, which MUST line up with the issuer in your `kubectl` configuration'
+  id: totrans-99
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`iss`：发行者，必须与 `kubectl` 配置中的发行者匹配'
+- en: '`aud`: Your client ID'
+  id: totrans-100
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`aud`：你的客户端 ID'
+- en: '`sub`: Your unique identifier'
+  id: totrans-101
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`sub`：你的唯一标识符'
+- en: '`groups`: Not a standard claim, but it should be populated with groups specifically
+    related to your Kubernetes deployment'
+  id: totrans-102
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`groups`：这不是一个标准声明，但它应该填充与 Kubernetes 部署特别相关的组。'
+- en: Many deployments attempt to identify you by your email address. This is an anti-pattern,
+    as your email address is generally based on your name, and names can change. The
+    `sub` claim is supposed to be a unique identifier that is immutable and will never
+    change. This way, it doesn’t matter if your email changes because your name changes.
+    While this can make it harder to debug “who is cd25d24d-74b8-4cc4-8b8c-116bf4abbd26?”,
+    it will provide a cleaner and easier-to-maintain cluster.
+  id: totrans-103
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 许多部署尝试通过你的电子邮件地址来识别你。这是一种反模式，因为你的电子邮件地址通常是基于你的名字，而名字是会变化的。`sub` 声明应该是一个唯一的标识符，它是不可变的，永远不会改变。这样，如果你的电子邮件因名字的变化而改变，也不会有问题。虽然这可能会使得调试“谁是
+    cd25d24d-74b8-4cc4-8b8c-116bf4abbd26?”变得更加困难，但它会提供一个更简洁、更易于维护的集群。
+- en: 'There are several other claims that indicate when an `id_token` should no longer
+    be accepted. These claims are all measured in seconds from epoch (January 1, 1970)
+    UTC time:'
+  id: totrans-104
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 还有其他几个声明，表示何时不再接受 `id_token`。这些声明的单位都是从纪元（1970年1月1日）UTC时间起的秒数：
+- en: '`exp`: When the `id_token` expires'
+  id: totrans-105
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`exp`：`id_token` 过期的时间。'
+- en: '`iat`: When the `id_token` was created'
+  id: totrans-106
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`iat`：`id_token` 创建的时间。'
+- en: '`nbf`: The absolute earliest an `id_token` should be allowed'
+  id: totrans-107
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`nbf`：`id_token` 应该允许的最早时间。'
+- en: Why doesn’t a token just have a single expiration time?
+  id: totrans-108
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 为什么令牌不能只有一个过期时间？
+- en: It’s unlikely that the clock on the system that created the `id_token` has the
+    exact same time as the system that evaluates it. There’s often a skew and, depending
+    on how the clock is set, it may be a few minutes. Having a not-before in addition
+    to an expiration gives some room for standard time deviation.
+  id: totrans-109
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 系统生成 `id_token` 的时钟与评估它的系统的时钟可能不会完全一致。通常会有一些偏差，取决于时钟设置的方式，这个偏差可能是几分钟。除了过期时间外，再加上一个不早于时间（not-before）可以为标准时间偏差提供一些余地。
+- en: There are other claims in an `id_token` that don’t really matter but are there
+    for additional context. Examples include your name, contact information, organization,
+    and so on.
+  id: totrans-110
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在 `id_token` 中还有其他一些声明，这些声明实际上并不重要，但它们为附加上下文提供了信息。示例包括你的名字、联系信息、组织等。
+- en: While the primary use for tokens is to interact with the Kubernetes API server,
+    they are not limited to only API interaction. In addition to going to the API
+    server, webhook calls may also receive your `id_token`.
+  id: totrans-111
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 虽然令牌的主要用途是与 Kubernetes API 服务器交互，但它们并不仅限于 API 交互。除了访问 API 服务器外，webhook 调用也可能接收到你的
+    `id_token`。
+- en: You may have deployed OPA as a validating webhook on a cluster. When someone
+    submits a pod creation request, the webhook will receive the user’s `id_token`,
+    which can be used to make decisions. **Open Policy Agent** (**OPA**), is a tool
+    to validate and authorize requests. It’s often deployed in Kubernetes as an admission
+    controller webhook. If you haven’t worked with OPA or admission controllers, we
+    cover both in depth, starting in *Chapter 11*, *Extending Security Using Open
+    Policy Agent*.
+  id: totrans-112
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你可能已经将 OPA 部署为集群上的验证 webhook。当有人提交 pod 创建请求时，webhook 会接收到用户的 `id_token`，这个令牌可以用于做出决策。**开放策略代理**（**OPA**）是一个用于验证和授权请求的工具。它通常在
+    Kubernetes 中作为一个准入控制器 webhook 部署。如果你还没有接触过 OPA 或准入控制器，我们将在*第 11 章*，*使用开放策略代理扩展安全性*中深入介绍这两者。
+- en: One example of when an admission controller would inspect the user’s `id_token`
+    is that you want to ensure that the PVCs are mapped to specific PVs based on the
+    submitter’s organization. The organization is included in the `id_token`, which
+    is passed to Kubernetes, and then onto the OPA webhook. Since the token has been
+    passed to the webhook, the information can then be used in your OPA policies.
+  id: totrans-113
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一个示例是在准入控制器检查用户的 `id_token` 时，你希望确保 PVC 根据提交者的组织映射到特定的 PV。组织信息包含在 `id_token`
+    中，并被传递到 Kubernetes，然后传递到 OPA webhook。由于令牌已被传递给 webhook，信息就可以在你的 OPA 策略中使用。
+- en: We’ve spent an extensive amount of time on OpenID Connect and how it’s used
+    to authenticate API calls to your Kubernetes cluster. While it may be the best
+    overall option, it’s not the only one. In the next section, we’ll look at other
+    options and when they would be appropriate.
+  id: totrans-114
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们已经花了大量时间讲解 OpenID Connect 及其如何用于身份验证 API 调用到 Kubernetes 集群。虽然它可能是最好的整体选项，但它并不是唯一的选项。在接下来的部分中，我们将查看其他选项以及何时适合使用它们。
+- en: Other authentication options
+  id: totrans-115
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 其他身份验证选项
+- en: In this section, we focused on OIDC and presented reasons why it’s the best
+    mechanism for authentication. It is certainly not the only option, and we will
+    cover the other options in this section and when they’re appropriate.
+  id: totrans-116
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在本节中，我们重点介绍了 OIDC，并阐述了它为何是最佳的认证机制。它当然不是唯一的选项，我们将在本节中介绍其他选项，并讲解它们何时适用。
+- en: Certificates
+  id: totrans-117
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 证书
+- en: This is generally everyone’s first experience authenticating to a Kubernetes
+    cluster.
+  id: totrans-118
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这通常是每个人第一次认证到 Kubernetes 集群。
+- en: Once a Kubernetes installation is complete, a pre-built `kubectl config` file
+    that contains a certificate and private key is created and ready to be used. Where
+    this file is created is dependent on the distribution. This file should only be
+    used in “break glass in case of emergency” scenarios, where all other forms of
+    authentication are not available. It should be controlled by your organization’s
+    standards for privileged access. When this configuration file is used, it doesn’t
+    identify the user and can easily be abused, since it doesn’t allow for an easy
+    audit trail.
+  id: totrans-119
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦 Kubernetes 安装完成，一个包含证书和私钥的预构建 `kubectl config` 文件就会被创建并准备好使用。这个文件的创建位置取决于发行版。这个文件应该仅在“紧急情况下打破玻璃”时使用，当其他所有身份验证方式都不可用时。它应该受到贵组织的特权访问标准的控制。当使用此配置文件时，它无法识别用户，并且很容易被滥用，因为它无法提供简单的审计跟踪。
+- en: While this is a standard use case for certificate authentication, it’s not the
+    only use case for certificate authentication. Certificate authentication, when
+    done correctly, is one of the strongest recognized credentials in the industry.
+  id: totrans-120
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 虽然这是证书认证的标准用例，但并不是唯一的用例。正确实施的证书认证是行业内最强的认证凭证之一。
+- en: Certificate authentication is used by the US Federal Government for its most
+    important tasks. At a high level, certificate authentication involves using a
+    client key and certificate to negotiate your HTTPS connection to the API server.
+    The API server can get the certificate you used to establish the connection and
+    validate it against a **Certificate Authority** (**CA**) certificate. Once verified,
+    it maps attributes from the certificate to a user and groups the API server can
+    recognize.
+  id: totrans-121
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 美国联邦政府在其最重要的任务中使用证书认证。高层次上，证书认证涉及使用客户端密钥和证书来协商与 API 服务器的 HTTPS 连接。API 服务器可以获取用于建立连接的证书，并将其与**证书颁发机构**（**CA**）证书进行验证。一旦验证通过，系统将从证书中提取属性并映射到用户和
+    API 服务器可识别的组。
+- en: To get the security benefits of certificate authentication, the private key
+    needs to be generated on isolated hardware, usually in the form of a smartcard,
+    and never leave that hardware. A certificate signing request is generated and
+    submitted to a CA that signs the public key, thus creating a certificate that
+    is then installed on the dedicated hardware. At no point does the CA get the private
+    key, so even if the CA were compromised, you couldn’t gain the user’s private
+    key. If a certificate needs to be revoked, it’s added to a revocation list that
+    can either be pulled from an **LDAP** directory or a file, or it can be checked
+    using the **OCSP** protocol.
+  id: totrans-122
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 为了获得证书认证的安全性好处，私钥需要在隔离的硬件上生成，通常是以智能卡的形式，并且永远不能离开该硬件。生成证书签名请求并提交给证书颁发机构（CA），CA
+    会签名公钥，从而创建证书，之后将其安装在专用硬件上。CA 在任何时候都不会获取私钥，因此即使 CA 被攻破，也无法获得用户的私钥。如果需要撤销证书，它会被添加到撤销列表中，该列表可以从**LDAP**目录或文件中提取，也可以通过**OCSP**协议进行检查。
+- en: This may look like an attractive option, so why shouldn’t you use certificates
+    with Kubernetes?
+  id: totrans-123
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这可能看起来是一个吸引人的选项，那为什么不在 Kubernetes 中使用证书呢？
+- en: Smartcard integration uses a standard called **PKCS11**, which is not supported
+    by either `kubectl` or the API server.
+  id: totrans-124
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 智能卡集成使用的标准是**PKCS11**，但是`kubectl`或 API 服务器都不支持该标准。
+- en: The API server has no way of checking certificate revocation lists or using
+    **OCSP**, so once a certificate has been minted, there’s no way to revoke it.
+    Since the API server can’t revoke it, anyone who has it can continue to use it
+    until it expires.
+  id: totrans-125
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: API 服务器无法检查证书撤销列表或使用**OCSP**，因此一旦证书被签发，就无法撤销它。由于 API 服务器无法撤销证书，任何拥有证书的人都可以继续使用它，直到它过期。
+- en: Additionally, the process to correctly generate a key pair is rarely used. It
+    requires a complex interface to be built that is difficult for users to use, combined
+    with command-line tools that need to be run. To get around this, the certificate
+    and key pair are generated for you, and you download them or they’re emailed to
+    you, negating the security of the process.
+  id: totrans-126
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 此外，正确生成密钥对的过程很少被使用。它需要构建一个复杂的界面，这对用户来说很难操作，并且需要运行命令行工具。为了解决这个问题，证书和密钥对通常是为你生成的，你只需下载它们或通过邮件接收，这就削弱了整个过程的安全性。
+- en: The other reason you shouldn’t use certificate authentication for users is that
+    it’s difficult to leverage groups. While you can embed groups into the subject
+    of the certificate, you can’t revoke a certificate. So if a user’s role changes,
+    you can give them a new certificate, but you can’t keep them from using the old
+    one. While you could reference users directly in your `RoleBindings` and `ClusterRoleBindings`,
+    this is an anti-pattern that will make it difficult to keep track of access across
+    even small clusters.
+  id: totrans-127
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你不应使用证书认证的另一个原因是，它很难利用群组。尽管你可以将群组嵌入证书的主题中，但你无法撤销证书。因此，如果用户的角色发生变化，你可以为他们颁发新的证书，但无法阻止他们使用旧的证书。虽然你可以在
+    `RoleBindings` 和 `ClusterRoleBindings` 中直接引用用户，但这是一种反模式，会使得在即使是小型集群中也难以跟踪访问权限。
+- en: As stated in the introduction to this section, using a certificate to authenticate
+    in “break glass in case of emergency” situations is a good use of certificate
+    authentication. It may be the only way to get into a cluster if all other authentication
+    methods experience issues.
+  id: totrans-128
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 正如本节介绍中所述，使用证书进行身份验证在“紧急情况时打破玻璃”是一种良好的证书身份验证方式。如果所有其他身份验证方法出现问题，证书认证可能是进入集群的唯一途径。
+- en: After certificates, the next most common alternative is to use `ServiceAccount`
+    tokens. We’ll walk through that next and why you shouldn’t use them from outside
+    of your cluster.
+  id: totrans-129
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在证书之后，最常见的替代方案是使用 `ServiceAccount` 令牌。接下来我们将讨论这个问题，并解释为什么不应该从集群外部使用它们。
+- en: Service accounts
+  id: totrans-130
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 服务账户
+- en: 'A `ServiceAccount` is designed to provide an identity to containers running
+    in a cluster so that when those containers call the API server, they can be authenticated
+    and have RBAC rules applied. Unfortunately, users began using the tokens associated
+    with `ServiceAccount` objects to access the API server from outside of the cluster,
+    which is problematic for multiple reasons:'
+  id: totrans-131
+  prefs: []
+  type: TYPE_NORMAL
+  zh: '`ServiceAccount` 旨在为在集群中运行的容器提供身份，以便当这些容器调用 API 服务器时，它们可以进行身份验证并应用 RBAC 规则。不幸的是，用户开始使用与
+    `ServiceAccount` 对象关联的令牌从集群外部访问 API 服务器，这带来了多个问题：'
+- en: '**Secure transmission of the token**: Service accounts are self-contained and
+    need nothing to unlock them or verify ownership, so if a token is taken in transit,
+    you have no way of stopping its use. You could set up a system where a user logs
+    in to download a file with the token in it, but you now have a much less secure
+    version of OIDC.'
+  id: totrans-132
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**令牌的安全传输**：服务账户是自包含的，不需要任何解锁或验证所有权的机制，因此如果令牌在传输过程中被盗取，你无法阻止其使用。你可以建立一个系统，让用户登录并下载包含令牌的文件，但你现在拥有的是一个安全性大大降低的
+    OIDC 版本。'
+- en: '**No expiration**: When you decode a legacy service account token, there is
+    nothing that tells you when the token expires. That’s because the token never
+    expires. You can revoke a token by deleting the service account and recreating
+    it, but that means you need a system in place to do that. Again, you’ve built
+    a less capable version of OIDC.'
+  id: totrans-133
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**没有过期时间**：当你解码一个传统的服务账户令牌时，并没有任何信息告诉你令牌何时过期。这是因为令牌永不过期。你可以通过删除服务账户并重新创建它来撤销令牌，但这意味着你需要建立一个系统来执行这个操作。再次说明，你已经构建了一个能力较弱的
+    OIDC 版本。'
+- en: '**Auditing**: The service account can easily be handed out by the owner once
+    the key has been retrieved. If multiple users use a single key, it becomes very
+    difficult to audit the use of the account.'
+  id: totrans-134
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**审计**：服务账户一旦密钥被获取，所有者可以轻松地将其发放出去。如果多个用户共享一个密钥，那么审计账户使用情况就变得非常困难。'
+- en: Beginning in Kubernetes 1.24, static `ServiceAccount` tokens were disabled by
+    default and replaced with short-lived tokens that are “projected” into your containers,
+    using the `TokenRequest` API. We’ll cover these tokens in more detail in the next
+    section. We’re including instructions here for how to generate static tokens as
+    an example of an anti-pattern. While there are some narrow use cases where static
+    tokens are useful, they should be avoided for use from outside of your cluster.
+    They’re most often used by pipelines, and later in this chapter, we will explore
+    alternative approaches.
+  id: totrans-135
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 从 Kubernetes 1.24 开始，静态的 `ServiceAccount` 令牌默认被禁用，并用短期有效的令牌替代，这些令牌通过 `TokenRequest`
+    API 被“投影”到你的容器中。我们将在下一节详细讲解这些令牌。这里提供生成静态令牌的说明，作为反模式的示例。虽然在某些狭窄的使用场景中，静态令牌是有用的，但它们应避免在集群外部使用。它们通常由管道使用，接下来我们将在本章中探讨替代方法。
+- en: 'Service accounts appear to provide an easy access method. Creating them is
+    easy. The following commands create a service account object and a secret to go
+    with it that stores the service account’s token:'
+  id: totrans-136
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 服务账户看似提供了一种简便的访问方法。创建它们很简单。以下命令创建一个服务账户对象，并创建一个与之关联的密钥，用来存储该服务账户的令牌：
+- en: '[PRE1]'
+  id: totrans-137
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE1]'
+- en: 'The above steps:'
+  id: totrans-138
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 上述步骤：
+- en: Create a `ServiceAccount` object
+  id: totrans-139
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 创建一个 `ServiceAccount` 对象
+- en: Create a `Secret` with a token that is bound to the `ServiceAccount`
+  id: totrans-140
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 创建一个与 `ServiceAccount` 绑定的令牌的 `Secret`
+- en: 'Next, the following command will retrieve the service account’s token in the
+    JSON format and return only the value of the token. This token can then be used
+    to access the API server:'
+  id: totrans-141
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 接下来，以下命令将以 JSON 格式检索服务账户的令牌，并只返回令牌的值。然后可以使用此令牌访问 API 服务器：
+- en: '[PRE2]'
+  id: totrans-142
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE2]'
+- en: 'To show an example of this, let’s call the API endpoint directly, without providing
+    any credentials (make sure you use the port for your own local control plane):'
+  id: totrans-143
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 为了演示这一点，让我们直接调用 API 端点，不提供任何凭证（确保你使用的是自己本地控制平面的端口）：
+- en: '[PRE3]'
+  id: totrans-144
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE3]'
+- en: 'You will receive the following:'
+  id: totrans-145
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你将收到以下信息：
+- en: '[PRE4]'
+  id: totrans-146
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE4]'
+- en: By default, most Kubernetes distributions do not allow anonymous access to the
+    API server, so we received a `403` error because we didn’t specify a user.
+  id: totrans-147
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 默认情况下，大多数 Kubernetes 发行版不允许匿名访问 API 服务器，因此我们收到了 `403` 错误，因为我们没有指定用户。
+- en: 'Now, let’s add our service account to an API request:'
+  id: totrans-148
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 现在，让我们将我们的服务账户添加到 API 请求中：
+- en: '[PRE5]'
+  id: totrans-149
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE5]'
+- en: 'Success! We were able to use a static `ServiceAccount` token to authenticate
+    to our API server. As we said earlier, this is an anti-pattern. In addition to
+    the issues with the token itself that we covered, you can’t put a service account
+    into arbitrary groups. This means that RBAC bindings have to either be direct
+    to the service account or use one of the pre-built groups that service accounts
+    are a member of. We’ll explore why this is an issue when we discuss authorization,
+    but here’s an example of why this is an issue: directly binding means that in
+    order to know if a user should have access, you need to process each binding,
+    looking for the user instead of simply looking in an external database that has
+    users organized into groups, which increases compliance burdens.'
+  id: totrans-150
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 成功了！我们成功使用了一个静态的 `ServiceAccount` 令牌来验证 API 服务器。正如我们之前所说，这是一个反模式。除了令牌本身的问题外，我们还会发现无法将服务账户放入任意组中。这意味着
+    RBAC 绑定要么直接绑定到服务账户，要么使用服务账户所在的预构建组。我们将在讨论授权时探讨为何这是个问题，但这里是为什么这是个问题的一个示例：直接绑定意味着，为了知道一个用户是否应该访问，你需要处理每一个绑定，逐一查找用户，而不是简单地查看一个已经将用户按组组织好的外部数据库，这增加了合规负担。
+- en: Finally, service accounts were never designed to be used outside of the cluster.
+    It’s like using a hammer to drive in a screw. With enough muscle and aggravation,
+    you will drive it in, but it won’t be pretty and no one will be happy with the
+    result.
+  id: totrans-151
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 最后，服务账户从未设计为在集群外部使用。这就像用锤子拧螺丝一样。用足够的力气和耐心，你可能能把它拧进去，但这不美观，最终结果也不会让任何人满意。
+- en: Now that we have covered how `ServiceAccount` tokens work, and that you shouldn’t
+    use them for users, we’ll explore next why you should leverage the `TokenRequest`
+    API to generate short-lived tokens for your `ServiceAccounts`.
+  id: totrans-152
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 现在我们已经讨论了 `ServiceAccount` 令牌的工作原理，并且了解到不应将它们用于用户，接下来我们将探讨为何应利用 `TokenRequest`
+    API 为你的 `ServiceAccounts` 生成短期有效的令牌。
+- en: TokenRequest API
+  id: totrans-153
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: TokenRequest API
+- en: The `TokenRequest` API is how `ServiceAccount` tokens are generated in Kubernetes
+    1.24+. This API eliminates the use of static legacy service accounts and instead
+    projects accounts into your pods. These projected tokens are short-lived and unique
+    for each individual pod. Finally, these tokens become invalid once the pods they’re
+    associated with are destroyed. This makes service account tokens embedded into
+    a pod much more secure.
+  id: totrans-154
+  prefs: []
+  type: TYPE_NORMAL
+  zh: '`TokenRequest` API 是 Kubernetes 1.24+ 中生成 `ServiceAccount` 令牌的方式。该 API 消除了使用静态传统服务账户，取而代之的是将账户投影到你的
+    Pod 中。这些投影的令牌是短生命周期的，并且对每个独立的 Pod 都是唯一的。最后，这些令牌一旦与其关联的 Pod 被销毁就会失效。这使得嵌入 Pod 中的服务账户令牌更加安全。'
+- en: 'This API provides another great feature: you can use it with third-party services.
+    One example is using HashiCorp’s Vault secret management system to authenticate
+    pods without having to do a token review API call against the API server to validate
+    it. We’ll explore this approach when we get to *Chapter 8*, *Managing Secrets*.'
+  id: totrans-155
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 该 API 提供了另一个很棒的功能：你可以与第三方服务一起使用它。一个例子是使用 HashiCorp 的 Vault 秘密管理系统来验证 Pod，而无需对
+    API 服务器进行令牌审核 API 调用来验证它。我们将在 *第八章*，*管理机密* 中探索这种方法。
+- en: This feature makes it much easier, and more secure, for your pods to call external
+    APIs.
+  id: totrans-156
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这个功能使得你的 Pod 更容易且更安全地调用外部 API。
+- en: The `TokenRequest` API lets you request a short-lived service account for a
+    specific scope. While it provides slightly better security, since it will expire
+    and has a limited scope, it’s still bound to a service account, which means no
+    groups, and there’s still the issue of securely getting the token to the user
+    and auditing its use.
+  id: totrans-157
+  prefs: []
+  type: TYPE_NORMAL
+  zh: '`TokenRequest` API 允许你为特定作用域请求一个短生命周期的服务账户。尽管它提供了稍微更好的安全性，因为它会过期并且具有有限的作用域，但它仍然绑定于一个服务账户，这意味着没有组，并且仍然存在安全地将令牌传递给用户和审计其使用的问题。'
+- en: Starting in 1.24, all service account tokens are projected into pods via the
+    `TokenRequest` API by default. The new tokens are good for a year though, so not
+    very short-lived! That said, even if a token is set up to expire quickly, the
+    API server won’t reject it. It will log that someone is using an expired token.
+    This is intended to make the transition from unlimited-life tokens to short-lived
+    tokens easier.
+  id: totrans-158
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 从 1.24 开始，所有服务账户令牌默认通过 `TokenRequest` API 投影到 Pod 中。尽管新令牌有效期为一年，因此并不算非常短生命周期！不过，即使令牌设置为快速过期，API
+    服务器也不会拒绝它。它会记录有人在使用过期令牌。这是为了让从无限期令牌到短生命周期令牌的过渡更加平滑。
+- en: 'Some people may be tempted to use tokens for user authentication. However,
+    tokens generated by the `TokenRequest` API are still built for pods to talk to
+    your cluster or to talk to third-party APIs; they are not meant to be used by
+    users. In order to use them, you need to create them and securely transfer them.
+    Since they’re still bearer tokens, this could lead to a loss of the token and
+    an eventual breach. If you’re in a situation where you need to use them because
+    there’s no other technical option:'
+  id: totrans-159
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 有些人可能会被诱惑用令牌进行用户身份验证。然而，由 `TokenRequest` API 生成的令牌仍然是为 Pod 与集群通信或与第三方 API 通信而设计的；它们并不适用于用户使用。为了使用它们，你需要创建并安全地传输它们。由于它们仍然是持有者令牌，这可能导致令牌丢失并最终发生泄露。如果你处于需要使用它们的情况，因为没有其他技术选择：
+- en: Make the tokens as short-lived as possible
+  id: totrans-160
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 尽可能使令牌的生命周期尽量短
+- en: Create an automated rotation process
+  id: totrans-161
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 创建自动化的轮换过程
+- en: Make sure your SIEM monitors these accounts usages outside of expected scenarios
+  id: totrans-162
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 确保你的 SIEM 监控这些账户在预期场景之外的使用情况
+- en: 'Similar to static `ServiceAccount` tokens, there are use cases where you may
+    need a token that can be used from outside the cluster, such as bootstrapping
+    integrations or simple testing. The `kubectl` command now includes the `token`
+    sub-command that can generate a short-lived token for a `ServiceAccount` without
+    having to create a static `Secret`:'
+  id: totrans-163
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 类似于静态 `ServiceAccount` 令牌，在某些情况下，你可能需要一个可以从集群外部使用的令牌，例如引导集成或简单的测试。现在，`kubectl`
+    命令包含 `token` 子命令，可以为 `ServiceAccount` 生成一个短生命周期的令牌，而无需创建静态 `Secret`：
+- en: '[PRE6]'
+  id: totrans-164
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE6]'
+- en: Our token from `kubectl` is good for an hour. This can be adjusted, but this
+    is a much better approach for the few use cases where an external token is needed
+    than creating a static token.
+  id: totrans-165
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们从 `kubectl` 获取的令牌有效期为一个小时。这是可以调整的，但对于需要外部令牌的少数使用场景，这比创建静态令牌要好得多。
+- en: Custom authentication webhooks
+  id: totrans-166
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 自定义身份验证 Webhook
+- en: If you already have an identity platform that doesn’t use an existing standard,
+    a custom authentication webhook will let you integrate it without having to customize
+    the API server. This feature is commonly used by cloud providers who host managed
+    Kubernetes instances.
+  id: totrans-167
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如果你已经拥有一个不使用现有标准的身份平台，可以通过自定义身份验证 Webhook 来集成它，而不必自定义 API 服务器。这一功能通常由托管 Kubernetes
+    实例的云提供商使用。
+- en: You can define an authentication webhook that the API server will call with
+    a token to validate it and get information about the user. Unless you manage a
+    public cloud with a custom IAM token system that you are building a Kubernetes
+    distribution for, don’t do this. Writing your own authentication is like writing
+    your own encryption – just don’t do it. Every custom authentication system we’ve
+    seen for Kubernetes boils down to either a pale imitation of OIDC or “pass the
+    password.” Much like the analogy of driving a screw in with a hammer, you could
+    do it, but it will be very painful. This is mostly because instead of driving
+    the screw through a board, you’re more likely to drive it into your own foot.
+  id: totrans-168
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你可以定义一个身份验证 Webhook，API 服务器将调用它并使用一个令牌来验证该令牌并获取用户信息。除非你管理的是一个公共云并且在为其构建 Kubernetes
+    发行版，否则不要这么做。编写自己的身份验证系统就像是编写自己的加密算法 —— 还是别做了。我们见过的每一个 Kubernetes 自定义身份验证系统最终都变成了
+    OIDC 的模仿版本，或者是“传递密码”。就像用锤子拧螺丝一样，你能做到，但会非常痛苦。主要原因是，你更有可能把螺丝钉打进自己的脚，而不是把它拧进木板。
+- en: So far, we’ve focused on the fundamentals of Kubernetes authentication, looking
+    at both the recommended patterns and antipatterns. Next, let’s put that theory
+    into practice by configuring authentication in a Kubernetes cluster.
+  id: totrans-169
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 到目前为止，我们专注于 Kubernetes 身份验证的基本原理，探讨了推荐的模式和反模式。接下来，让我们通过配置 Kubernetes 集群中的身份验证，将这些理论付诸实践。
+- en: Configuring KinD for OpenID Connect
+  id: totrans-170
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 配置 KinD 以支持 OpenID Connect
+- en: 'For our example deployment, we will use a scenario from our customer, FooWidgets.
+    FooWidgets has a Kubernetes cluster that they would like integrated using OIDC.
+    The proposed solution needs to address the following requirements:'
+  id: totrans-171
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 对于我们的示例部署，我们将使用来自客户 FooWidgets 的场景。FooWidgets 拥有一个 Kubernetes 集群，他们希望通过 OIDC
+    集成。拟议的解决方案需要满足以下要求：
+- en: Kubernetes must use our central authentication system, Active Directory
+  id: totrans-172
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: Kubernetes 必须使用我们的中央身份验证系统 —— Active Directory
+- en: We need to be able to map Active Directory groups into our RBAC `RoleBinding`
+    objects
+  id: totrans-173
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 我们需要能够将 Active Directory 组映射到我们的 RBAC `RoleBinding` 对象中
+- en: Users need access to the Kubernetes Dashboard
+  id: totrans-174
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 用户需要访问 Kubernetes Dashboard
+- en: Users need to be able to use the CLI
+  id: totrans-175
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 用户需要能够使用 CLI
+- en: All enterprise compliance requirements must be met
+  id: totrans-176
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 必须满足所有企业合规性要求
+- en: Additional cluster management applications need to be managed centrally as well
+  id: totrans-177
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 其他集群管理应用程序也需要集中管理
+- en: Let’s explore each of these in detail and explain how we can address the customer’s
+    requirements.
+  id: totrans-178
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 让我们详细探讨每一个要求，并解释我们如何满足客户的需求。
+- en: Addressing the requirements
+  id: totrans-179
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 满足要求
+- en: Our enterprise’s requirements require multiple moving parts, both inside and
+    outside our cluster. We’ll examine each of these components and how they relate
+    to building an authenticated cluster.
+  id: totrans-180
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们企业的需求涉及多个移动部件，既包括集群内部，也包括集群外部。我们将逐一检查这些组件及其与构建身份验证集群的关系。
+- en: Using LDAP and Active Directory with Kubernetes
+  id: totrans-181
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 使用 LDAP 和 Active Directory 与 Kubernetes 配合
+- en: Most enterprises today use **Active Directory** from Microsoft™ to store information
+    about users and their credentials. Depending on the size of your enterprise, it’s
+    not unusual to have multiple domains or forests where users’ data is stored.
+  id: totrans-182
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 目前大多数企业使用 **Active Directory** 来存储用户及其凭据的信息，且通常使用 Microsoft™ 的解决方案。根据企业的规模，通常会有多个域或森林存储用户数据。
+- en: We’ll need a solution that knows how to talk to each domain. Your enterprise
+    may have one of many tools and products for OpenID Connect integration, or you
+    may just want to connect via LDAP. **LDAP**, the **Lightweight Directory Access
+    Protocol**, is a standard protocol that has been used for over 30 years and is
+    still the standard way to talk directly to Active Directory. Using LDAP, you can
+    look up users and validate their passwords. It’s also the simplest way to start
+    because it doesn’t require integration with an identity provider. All you need
+    is a service account and credentials!
+  id: totrans-183
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们需要一个能够与每个域通信的解决方案。您的企业可能拥有用于OpenID Connect集成的多种工具和产品，或者您可能只想通过LDAP进行连接。**LDAP**，即**轻量级目录访问协议**，是一种标准协议，已经使用了30多年，至今仍是与Active
+    Directory直接通信的标准方式。通过使用LDAP，您可以查找用户并验证他们的密码。这也是最简单的启动方式，因为它不需要与身份提供者集成。您只需要一个服务账户和凭据！
+- en: For FooWidgets, we’re going to connect directly to our Active Directory for
+    all authentication.
+  id: totrans-184
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 对于FooWidgets，我们将直接连接到Active Directory进行所有身份验证。
+- en: Don’t worry – you don’t need Active Directory ready to go to run this exercise.
+    We’ll walk through deploying a demo directory into our KinD cluster.
+  id: totrans-185
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 别担心——您无需提前准备好Active Directory就可以进行这个练习。我们将一步步通过将演示目录部署到我们的KinD集群中来进行操作。
+- en: Mapping Active Directory groups to RBAC RoleBindings
+  id: totrans-186
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 将Active Directory组映射到RBAC角色绑定
+- en: This will become important when we start talking about authorization. Active
+    Directory lists all the groups a user is a member of in the `memberOf` attribute.
+    We can read this attribute directly from our logged-in user’s account to get their
+    groups. These groups will be embedded into our `id_token` in the `groups` claim
+    and can be referenced directly in RBAC bindings. This allows us to centralize
+    the management of authorizations instead of having to manually manipulate RBAC
+    bindings, simplifying management and decreasing the number of objects we need
+    to manage and maintain in our cluster.
+  id: totrans-187
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 当我们开始讨论授权时，这一点将变得非常重要。Active Directory会列出用户所在的所有组，并将其列在`memberOf`属性中。我们可以直接从已登录用户的帐户中读取此属性，以获取他们的组。这些组将嵌入到我们的`id_token`中的`groups`声明中，并可以直接在RBAC绑定中引用。这样，我们就可以集中管理授权，而不必手动操作RBAC绑定，从而简化管理并减少我们在集群中需要管理和维护的对象数量。
+- en: Kubernetes Dashboard access
+  id: totrans-188
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: Kubernetes仪表盘访问
+- en: The Dashboard is a powerful way to quickly access information about your cluster
+    and make quick updates. Unlike what is commonly thought about the dashboard’s
+    security, when deployed correctly, it does not create any security issues. The
+    proper way to deploy the dashboard is with no privileges, instead relying on the
+    user’s own credentials. We’ll do this with a reverse proxy that injects the user’s
+    OIDC token on each request, which the dashboard will then use when it makes calls
+    to the API server. Using this method, we’ll be able to constrain access to our
+    dashboard the same way we would with any other web application.
+  id: totrans-189
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 仪表盘是快速访问集群信息并进行快速更新的强大工具。与人们普遍认为仪表盘存在安全问题不同，当正确部署时，它不会产生任何安全隐患。正确的部署方式是不授予任何权限，而是依赖用户自己的凭据。我们将通过反向代理实现这一点，反向代理会在每次请求时注入用户的OIDC令牌，然后仪表盘在调用API服务器时将使用该令牌。通过这种方法，我们将能够像管理任何其他Web应用程序一样限制对仪表盘的访问。
+- en: There are a few reasons why using the `kubectl` built-in proxy and port-forward
+    isn’t a great strategy for accessing the dashboard. Many enterprises will not
+    install CLI utilities locally, forcing you to use a jump box to access privileged
+    systems such as Kubernetes, meaning port forwarding won’t work. Even if you can
+    run `kubectl` locally, opening a port on loopback (`127.0.0.1`) means anything
+    on your system can use it, not just you from your browser. While browsers have
+    controls in place to keep you from accessing ports on loopback using a malicious
+    script, that won’t stop anything else on your workstation. Finally, it’s just
+    not a great user experience.
+  id: totrans-190
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 使用`kubectl`内置的代理和端口转发并不是访问仪表盘的最佳策略，原因有几个。许多企业不会在本地安装CLI工具，这迫使您必须通过跳板机访问像Kubernetes这样的特权系统，这意味着端口转发将无法使用。即使您可以在本地运行`kubectl`，在回环地址（`127.0.0.1`）上打开端口意味着您的系统上的任何程序都可以使用它，而不仅仅是您在浏览器中使用。尽管浏览器有控制措施来阻止恶意脚本访问回环地址上的端口，但这并不能阻止您工作站上的其他程序。最后，这也不是一个理想的用户体验。
+- en: We’ll dig into the details of how and why this works in *Chapter 10*, *Deploying
+    a Secured Kubernetes Dashboard*.
+  id: totrans-191
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们将在*第10章*中深入探讨这一机制的细节及其为何有效，*部署安全的Kubernetes仪表盘*。
+- en: Kubernetes CLI access
+  id: totrans-192
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: Kubernetes CLI访问
+- en: Most developers want to be able to access `kubectl` and other tools that rely
+    on the `kubectl` configuration. For instance, the Visual Studio Code Kubernetes
+    plugin doesn’t require any special configuration. It just uses the `kubectl` built-in
+    configuration. Most enterprises tightly constrain what binaries you’re able to
+    install, so we want to minimize any additional tools and plugins we want to install.
+  id: totrans-193
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 大多数开发人员希望能够访问`kubectl`以及其他依赖`kubectl`配置的工具。例如，Visual Studio Code的Kubernetes插件不需要任何特别的配置。它只是使用`kubectl`内建的配置。大多数企业会严格限制你能够安装的二进制文件，因此我们希望最小化任何额外的工具和插件。
+- en: Enterprise compliance requirements
+  id: totrans-194
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 企业合规要求
+- en: Being cloud-native doesn’t mean you can ignore your enterprise’s compliance
+    requirements. Most enterprises have requirements such as having 20-minute idle
+    timeouts, multi-factor authentication for privileged access, and so on. Any solution
+    we put in place has to make it through the control spreadsheets needed to go live.
+    Also, and this goes without saying, everything needs to be encrypted (and I do
+    mean everything).
+  id: totrans-195
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 云原生并不意味着你可以忽视企业的合规要求。大多数企业有一些要求，例如要求20分钟的空闲超时、特权访问的多因素认证等。我们实施的任何解决方案都必须通过控制电子表格的审批才能上线。而且，毫无疑问，所有内容都必须加密（我指的是所有内容）。
+- en: Pulling it all together
+  id: totrans-196
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 整合所有内容
+- en: To fulfill these requirements, we’re going to use **OpenUnison**. This has prebuilt
+    configurations to work with Kubernetes, the Dashboard, the CLI, and Active Directory.
+  id: totrans-197
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 为了满足这些需求，我们将使用**OpenUnison**。它提供了预构建的配置，可与Kubernetes、仪表板、CLI和Active Directory配合使用。
+- en: 'It’s also pretty quick to deploy, so we don’t need to concentrate on provider-specific
+    implementation details and instead can focus on Kubernetes’ configuration options.
+    Our architecture will look like this:'
+  id: totrans-198
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 它的部署速度也非常快，因此我们不需要专注于特定提供商的实现细节，而是可以专注于Kubernetes的配置选项。我们的架构将是这样的：
+- en: '![Diagram  Description automatically generated](img/B21165_06_02.png)'
+  id: totrans-199
+  prefs: []
+  type: TYPE_IMG
+  zh: '![图表 描述自动生成](img/B21165_06_02.png)'
+- en: 'Figure 6.2: Authentication architecture'
+  id: totrans-200
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.2：身份验证架构
+- en: Although we’re using an “Active Directory” in this instance, your enterprise
+    might have an existing identity provider in place, such as **Okta**, **Entra**
+    (formerly Azure Active Directory), **KeyCloak**, etc. In these instances, it’s
+    still a good idea to have an identity provider in-cluster to support not only
+    SSO in your cluster but also your cluster management applications. As we continue
+    through this book, we’re going to be integrating monitoring systems, logging,
+    GitOps systems, etc. It can be difficult from a management perspective to set
+    up SSO with all of these applications, so having your own identity provider that
+    you, as the cluster owner, control can give you greater flexibility over your
+    clusters, making it easier to provide better security by integrating management
+    applications with enterprise authentication, rather than relying on unauthenticated
+    approaches like port-forwarding.
+  id: totrans-201
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 尽管我们在此实例中使用的是“Active Directory”，但你的企业可能已经有现成的身份提供者，如**Okta**、**Entra**（前身为Azure
+    Active Directory）、**KeyCloak**等。在这些情况下，仍然建议在集群中使用身份提供者，不仅支持集群内的SSO，还支持集群管理应用程序。随着我们继续进行本书的内容，我们将集成监控系统、日志记录、GitOps系统等。从管理角度来看，配置SSO与所有这些应用程序可能会很困难，因此拥有一个由你作为集群所有者控制的身份提供者，可以为你提供更大的灵活性，使得通过将管理应用程序与企业认证集成来提供更好的安全性，而不是依赖像端口转发这样的未经认证的方法。
+- en: 'For our implementation, we’re going to use two hostnames:'
+  id: totrans-202
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在我们的实现中，我们将使用两个主机名：
+- en: '`k8s.apps.X-X-X-X.nip.io`: Access to the OpenUnison portal, where we’ll initiate
+    our login and get our tokens'
+  id: totrans-203
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`k8s.apps.X-X-X-X.nip.io`：访问OpenUnison门户，我们将在这里启动登录并获取令牌'
+- en: '`k8sdb.apps.X-X-X-X.nip.io`: Access to the Kubernetes dashboard'
+  id: totrans-204
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '`k8sdb.apps.X-X-X-X.nip.io`：访问Kubernetes仪表板'
+- en: As a quick refresher, `nip.io` is a public DNS service that will return an IP
+    address from the one embedded in your hostname. This is really useful in a lab
+    environment where setting up DNS can be painful. In our examples, `X-X-X-X` is
+    the IP of your Docker host.
+  id: totrans-205
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 简单回顾一下，`nip.io`是一个公共DNS服务，它会返回你主机名中嵌入的IP地址。在实验环境中，这非常有用，因为设置DNS可能会非常麻烦。在我们的示例中，`X-X-X-X`是你Docker主机的IP。
+- en: When a user attempts to access `https://k8s.apps.X-X-X-X.nip.io/`, they’ll be
+    asked for their username and password. After the user hits submit, OpenUnison
+    will look up the user against Active Directory, retrieving the user’s profile
+    information. At that point, OpenUnison will create user objects in the OpenUnison
+    namespace to store the user’s information and create OIDC sessions.
+  id: totrans-206
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 当用户尝试访问 `https://k8s.apps.X-X-X-X.nip.io/` 时，系统将要求他们输入用户名和密码。用户提交后，OpenUnison
+    会通过 Active Directory 查找用户，检索用户的个人资料信息。此时，OpenUnison 会在 OpenUnison 命名空间中创建用户对象，用于存储用户信息并创建
+    OIDC 会话。
+- en: Earlier, we described how Kubernetes doesn’t have user objects. Kubernetes lets
+    you extend the base API with **Custom Resource Definitions** (**CRDs**). OpenUnison
+    defines a User CRD to help with high availability and to avoid needing a database
+    to store state in. These user objects can’t be used for RBAC.
+  id: totrans-207
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 之前我们描述了 Kubernetes 没有用户对象的情况。Kubernetes 允许你通过 **自定义资源定义**（**CRDs**）扩展基础 API。OpenUnison
+    定义了一个用户 CRD 来帮助实现高可用性，并避免需要一个数据库来存储状态。这些用户对象不能用于 RBAC。
+- en: Once the user is logged into OpenUnison, they can get their `kubectl` configuration
+    to use the CLI or the Kubernetes Dashboard ([https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/](https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/))
+    to access the cluster from their browser. Once the user is ready, they can log
+    out of OpenUnison, which will end their session and invalidate their `refresh_token`,
+    making it impossible for them to use `kubectl` or the dashboard until after they
+    log in again. If they walk away from their desk for lunch without logging out,
+    when they return, their `refresh_token` will have expired, so they’ll no longer
+    be able to interact with Kubernetes without logging back in.
+  id: totrans-208
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦用户登录 OpenUnison，他们可以获取 `kubectl` 配置来使用 CLI 或 Kubernetes Dashboard ([https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/](https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/))
+    从浏览器访问集群。当用户准备好时，他们可以退出 OpenUnison，这将结束他们的会话并使他们的 `refresh_token` 失效，这样他们就无法在重新登录之前使用
+    `kubectl` 或仪表板。如果他们在午餐时未退出，回到办公桌时，`refresh_token` 将会过期，因此他们需要重新登录才能与 Kubernetes
+    交互。
+- en: Now that we have walked through how users will log in and interact with Kubernetes,
+    we’ll deploy OpenUnison and integrate it into the cluster for authentication.
+  id: totrans-209
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 现在我们已经走过了用户如何登录并与 Kubernetes 交互的过程，接下来我们将部署 OpenUnison 并将其集成到集群中进行身份验证。
+- en: Deploying OpenUnison
+  id: totrans-210
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 部署 OpenUnison
+- en: 'We’ve automated the deployment for OpenUnison, so there aren’t any manual steps.
+    Since we want to start with a new cluster, we will delete the current cluster
+    and execute the `create-cluster.sh` script in the `chapter2` folder to create
+    a fresh KinD cluster. We have also added a script to the `chapter6` directory
+    called `deploy_openunison_imp_noimpersonation.sh`. You can create the new cluster
+    and integrate OIDC using the steps below:'
+  id: totrans-211
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们已经自动化了 OpenUnison 的部署，因此没有任何手动步骤。由于我们想从一个新的集群开始，我们将删除当前的集群，并执行 `chapter2`
+    文件夹中的 `create-cluster.sh` 脚本来创建一个全新的 KinD 集群。我们还在 `chapter6` 目录中添加了一个名为 `deploy_openunison_imp_noimpersonation.sh`
+    的脚本。你可以按照以下步骤创建新集群并集成 OIDC：
+- en: '[PRE7]'
+  id: totrans-212
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE7]'
+- en: 'This will take a few minutes, depending on your hardware. This script does
+    several things:'
+  id: totrans-213
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这可能需要几分钟，具体取决于你的硬件。这个脚本做了几件事情：
+- en: Creates a stand-in “Active Directory” using a project called **ApacheDS**. You
+    don’t need to know anything about ApacheDS other than it’s acting as our “Active
+    Directory.”
+  id: totrans-214
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 使用一个名为 **ApacheDS** 的项目创建一个替代的“Active Directory”。你不需要了解 ApacheDS 的任何内容，除了它充当我们“Active
+    Directory”的角色。
+- en: Deploys the Kubernetes Dashboard version 2.7.
+  id: totrans-215
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 部署 Kubernetes Dashboard 版本 2.7。
+- en: Downloads the `ouctl` utility and the OpenUnison helm charts.
+  id: totrans-216
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 下载 `ouctl` 工具和 OpenUnison helm charts。
+- en: Updates the `values.yaml` file for use with your Ubuntu VM’s IP.
+  id: totrans-217
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 更新 `values.yaml` 文件，以便与您的 Ubuntu 虚拟机的 IP 配合使用。
+- en: Deploys OpenUnison.
+  id: totrans-218
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 部署 OpenUnison。
+- en: You can log into the OIDC provider with any machine on your network by using
+    the assigned nip.io address. Since we will test access using the dashboard, you
+    can use any machine with a browser.
+  id: totrans-219
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你可以通过使用分配的 nip.io 地址，从网络中的任何机器登录到 OIDC 提供程序。由于我们将使用仪表板测试访问，你可以使用任何带浏览器的机器。
+- en: Navigate your browser to `network.openunison_host` in your `/tmp/openunison-values.yaml`
+    file, which was created for you by running the above scripts. When prompted, use
+    the username `mmosley` and the password `start123`, and then click on **Sign in**.
+  id: totrans-220
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在浏览器中打开 `network.openunison_host`，它位于你运行上述脚本时创建的 `/tmp/openunison-values.yaml`
+    文件中。系统会提示输入用户名 `mmosley` 和密码 `start123`，然后点击 **Sign in**。
+- en: There are instructions on how to add your own user accounts in the repository’s
+    `README` file, located in the `chapter6` directory.
+  id: totrans-221
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 有关如何在存储库的 `README` 文件中添加自己的用户帐户的说明，请查看 `chapter6` 目录。
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_06_03.png)'
+  id: totrans-222
+  prefs: []
+  type: TYPE_IMG
+  zh: '![图形用户界面，应用程序 自动生成描述](img/B21165_06_03.png)'
+- en: 'Figure 6.3: OpenUnison login screen'
+  id: totrans-223
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.3：OpenUnison 登录界面
+- en: 'When you do, you’ll see this screen:'
+  id: totrans-224
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 当你这样做时，你会看到这个屏幕：
+- en: '![Graphical user interface, application, Teams  Description automatically generated](img/B21165_06_04.png)'
+  id: totrans-225
+  prefs: []
+  type: TYPE_IMG
+  zh: '![图形用户界面，应用程序，团队 自动生成描述](img/B21165_06_04.png)'
+- en: 'Figure 6.4: OpenUnison home screen'
+  id: totrans-226
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.4：OpenUnison 主屏幕
+- en: 'Let’s test the OIDC provider by clicking on the **Kubernetes Dashboard** link.
+    Don’t panic when you see the initial dashboard screen – something like the following:'
+  id: totrans-227
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 点击**Kubernetes 仪表盘**链接来测试 OIDC 提供者。当你看到初始仪表盘屏幕时不要惊慌，会看到类似以下的内容：
+- en: '![Graphical user interface, application  Description automatically generated](img/B21165_06_05.png)'
+  id: totrans-228
+  prefs: []
+  type: TYPE_IMG
+  zh: '![图形用户界面，应用程序 自动生成描述](img/B21165_06_05.png)'
+- en: 'Figure 6.5: Kubernetes Dashboard before SSO integration has been completed
+    with the API server'
+  id: totrans-229
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.5：在完成与 API 服务器的 SSO 集成之前的 Kubernetes 仪表盘
+- en: That looks like a lot of errors! We’re in the dashboard, but nothing seems to
+    be authorized. That’s because the API server doesn’t trust the tokens that have
+    been generated by OpenUnison, yet. To resolve this, the next step is to tell Kubernetes
+    to trust OpenUnison as its OpenID Connect Identity Provider.
+  id: totrans-230
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 看起来像是很多错误！我们在仪表板上，但似乎没有任何权限。这是因为 API 服务器不信任 OpenUnison 生成的令牌。为了解决这个问题，下一步是告诉
+    Kubernetes 信任 OpenUnison 作为其 OpenID Connect 身份提供者。
+- en: Configuring the Kubernetes API to use OIDC
+  id: totrans-231
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 配置 Kubernetes API 使用 OIDC
+- en: At this point, you have deployed OpenUnison as an OIDC provider and it’s working,
+    but your Kubernetes cluster has not been configured to use it as a provider yet.
+  id: totrans-232
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 到此为止，你已将 OpenUnison 部署为 OIDC 提供者，并且它已经在运行，但是你的 Kubernetes 集群尚未配置为使用它作为提供者。
+- en: To configure the API server to use an OIDC provider, you need to add the OIDC
+    options to the API server and provide the OIDC certificate so that the API will
+    trust the OIDC provider.
+  id: totrans-233
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 要配置 API 服务器使用 OIDC 提供程序，您需要向 API 服务器添加 OIDC 选项，并提供 OIDC 证书，以便 API 将信任 OIDC 提供程序。
+- en: Since we are using KinD, we can add the required options using a few `kubectl`
+    and `docker` commands.
+  id: totrans-234
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 因为我们使用的是 KinD，所以可以使用几个 `kubectl` 和 `docker` 命令来添加所需的选项。
+- en: 'To provide the OIDC certificate to the API server, we need to retrieve the
+    certificate and copy it over to the KinD master server. We can do this using two
+    commands on the Docker host:'
+  id: totrans-235
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 要向 API 服务器提供 OIDC 证书，我们需要提取证书并将其复制到 KinD 主服务器上。我们可以在 Docker 主机上使用两个命令来完成这个操作：
+- en: 'The first command extracts OpenUnison’s TLS certificate from its secret. This
+    is the same secret referenced by OpenUnison’s Ingress object. We use the `jq`
+    utility to extract the data from the secret and then Base64-decode it:'
+  id: totrans-236
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 第一个命令从其密钥中提取 OpenUnison 的 TLS 证书。这与 OpenUnison 的 Ingress 对象引用的相同密钥。我们使用 `jq`
+    实用程序从密钥中提取数据，然后对其进行 Base64 解码：
+- en: '[PRE8]'
+  id: totrans-237
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE8]'
+- en: 'The second command will copy the certificate to the master server into the
+    `/etc/kubernetes/pki` directory:'
+  id: totrans-238
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 第二个命令将证书复制到主服务器的 `/etc/kubernetes/pki` 目录中：
+- en: '[PRE9]'
+  id: totrans-239
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE9]'
+- en: 'As we mentioned earlier, to integrate the API server with OIDC, we need to
+    have the OIDC values for the API options. To list the options we will use, describe
+    the `api-server-config` ConfigMap in the `openunison` namespace:'
+  id: totrans-240
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 正如我们之前提到的，要将 API 服务器与 OIDC 集成，我们需要具有 API 选项的 OIDC 值。要列出我们将使用的选项，请在 `openunison`
+    命名空间中描述 `api-server-config` ConfigMap：
+- en: '[PRE10]'
+  id: totrans-241
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE10]'
+- en: 'Next, edit the API server configuration. OpenID Connect is configured by changing
+    flags on the API server. This is why managed Kubernetes generally doesn’t offer
+    OpenID Connect as an option, but we’ll cover that later in this chapter. Every
+    distribution handles these changes differently, so check with your vendor’s documentation.
+    For KinD, shell into the control plane and update the manifest file:'
+  id: totrans-242
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 接下来，编辑 API 服务器配置。通过在 API 服务器上更改标志来配置 OpenID Connect。这就是为什么托管的 Kubernetes 通常不提供
+    OpenID Connect 作为选项的原因，但我们将在本章后面详细介绍。每个发行版处理这些更改的方式都不同，因此请参考您供应商的文档。对于 KinD，请进入控制平面并更新清单文件：
+- en: '[PRE11]'
+  id: totrans-243
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE11]'
+- en: 'Add the flags from the output of the ConfigMap under `command`. Make sure to
+    add spacing and a dash (`-`) in front. Make sure to update the URLs to match yours.
+    It should look something like this when you’re done:'
+  id: totrans-244
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 在`command`下添加 ConfigMap 输出的标志。确保在前面加上空格和破折号（`-`）。确保更新网址以匹配你的网址。完成后应如下所示：
+- en: '[PRE12]'
+  id: totrans-245
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE12]'
+- en: 'Exit vim and the Docker environment (*Ctrl* + *D*), and then take a look at
+    the `api-server` pod:'
+  id: totrans-246
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 退出 vim 和 Docker 环境（*Ctrl* + *D*），然后查看 `api-server` pod：
+- en: '[PRE13]'
+  id: totrans-247
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE13]'
+- en: Note that it’s only `73s` old. That’s because KinD saw that there was a change
+    in the manifest and restarted the API server.
+  id: totrans-248
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 请注意，它只有 `73s` 的历史。这是因为 KinD 检测到清单发生了变化，并重新启动了 API 服务器。
+- en: The API server pod is known as a static pod. This pod can’t be changed directly;
+    its configuration has to be changed from the manifest on disk. This gives you
+    a process that’s managed by the API server as a container, but without giving
+    you a situation where you need to edit pod manifests in etcd directly if something
+    goes wrong.
+  id: totrans-249
+  prefs: []
+  type: TYPE_NORMAL
+  zh: API 服务器 pod 被称为静态 pod。这个 pod 不能直接修改；它的配置必须从磁盘上的清单文件进行修改。这使得你能够管理由 API 服务器作为容器管理的进程，但如果出现问题，你不需要直接编辑
+    etcd 中的 pod 清单。
+- en: Once you have updated your API server flags, the next step is to verify that
+    you can now log in to your cluster. Let’s walk through those steps next.
+  id: totrans-250
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦你更新了 API 服务器标志，下一步是验证你是否可以登录到你的集群。接下来让我们逐步走过这些步骤。
+- en: Verifying OIDC integration
+  id: totrans-251
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 验证 OIDC 集成
+- en: 'Once OpenUnison and the API server have been integrated, we need to test that
+    the connection is working:'
+  id: totrans-252
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦 OpenUnison 和 API 服务器已集成，我们需要测试连接是否正常：
+- en: To test the integration, log back into OpenUnison and click on the **Kubernetes
+    Dashboard** link again.
+  id: totrans-253
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 为了测试集成，重新登录 OpenUnison，然后再次点击 **Kubernetes Dashboard** 链接。
+- en: 'Click on the bell in the upper right and you’ll see a different error:'
+  id: totrans-254
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 点击右上角的铃铛，你会看到一个不同的错误：
+- en: '![A screenshot of a computer  Description automatically generated](img/B21165_06_06.png)'
+  id: totrans-255
+  prefs: []
+  type: TYPE_IMG
+  zh: '![计算机截图，描述自动生成](img/B21165_06_06.png)'
+- en: 'Figure 6.6: SSO enabled but the user is not authorized to access any resources'
+  id: totrans-256
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.6：SSO 已启用，但用户未授权访问任何资源
+- en: 'SSO between OpenUnison and Kubernetes is working! However, the new error, `service
+    is forbidden: User https://...`, is an authorization error, **not** an authentication
+    error. At this point, the API server knows who we are but isn’t letting us access
+    the APIs.'
+  id: totrans-257
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 'OpenUnison 和 Kubernetes 之间的 SSO 已经工作！然而，新的错误 `service is forbidden: User https://...`
+    是一个授权错误，**而非**认证错误。此时，API 服务器已经知道我们是谁，但未允许我们访问 API。'
+- en: 'We’ll dive into the details of RBAC and authorizations in the next chapter,
+    but for now, create this RBAC binding:'
+  id: totrans-258
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 我们将在下一章深入探讨 RBAC 和授权的细节，但现在，创建这个 RBAC 绑定：
+- en: '[PRE14]'
+  id: totrans-259
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE14]'
+- en: Finally, go back to the Dashboard, and you’ll see that you have full access
+    to your cluster and all the error messages are gone.
+  id: totrans-260
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 最后，返回仪表盘，你会看到你对集群有了完全访问权限，并且所有错误消息都消失了。
+- en: The API server and OpenUnison are now connected. Additionally, an RBAC policy
+    has been created to enable our test user to manage the cluster as an administrator.
+    Access was verified by logging into the Kubernetes Dashboard, but most interactions
+    will take place using the `kubectl` command. The next step is to verify that we’re
+    able to access the cluster using `kubectl`.
+  id: totrans-261
+  prefs: []
+  type: TYPE_NORMAL
+  zh: API 服务器和 OpenUnison 已经连接。此外，已经创建了一个 RBAC 策略，使我们的测试用户能够以管理员身份管理集群。通过登录 Kubernetes
+    Dashboard 验证了访问权限，但大多数交互将通过 `kubectl` 命令进行。下一步是验证我们是否能够使用 `kubectl` 访问集群。
+- en: Using your tokens with kubectl
+  id: totrans-262
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+  zh: 使用你的令牌与 kubectl 配合使用
+- en: This section assumes you have a machine on your network that has a browser and
+    `kubectl` running.
+  id: totrans-263
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 本节假设你有一台网络上的机器，已安装浏览器并运行 `kubectl`。
+- en: 'Using the Dashboard has its use cases, but you will likely interact with the
+    API server using `kubectl`, rather than the Dashboard, for the majority of your
+    day. In this section, we will explain how to retrieve your JWT and how to add
+    it to your Kubernetes config file so that you can use `kubectl`:'
+  id: totrans-264
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 使用仪表盘有其使用场景，但在大多数情况下，你可能会使用 `kubectl` 与 API 服务器进行交互，而不是使用仪表盘。在本节中，我们将解释如何获取你的
+    JWT 以及如何将其添加到 Kubernetes 配置文件中，以便你可以使用 `kubectl`：
+- en: 'You can retrieve your token from the OpenUnison dashboard. Navigate to the
+    OpenUnison home page and click on the key that says **Kubernetes Tokens**. You’ll
+    see a screen that looks as follows:'
+  id: totrans-265
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 你可以从 OpenUnison 仪表盘中获取你的令牌。导航到 OpenUnison 首页，点击标有 **Kubernetes Tokens** 的密钥。你将看到如下的界面：
+- en: '![Graphical user interface, text, application, email  Description automatically
+    generated](img/B21165_06_07.png)'
+  id: totrans-266
+  prefs: []
+  type: TYPE_IMG
+  zh: '![图形用户界面，文本，应用程序，电子邮件，描述自动生成](img/B21165_06_07.png)'
+- en: 'Figure 6.7: OpenUnison kubectl configuration tool'
+  id: totrans-267
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.7：OpenUnison kubectl 配置工具
+- en: OpenUnison provides a command line that you can copy and paste into your host
+    session that adds all the required information to your config.
+  id: totrans-268
+  prefs: []
+  type: TYPE_NORMAL
+  zh: OpenUnison 提供了一个命令行，你可以将其复制并粘贴到主机会话中，以便将所有所需的信息添加到你的配置中。
+- en: First, click on the double documents button next to the **kubectl Command**
+    (or **kubectl Windows Command** if you’re on Windows) to copy your `kubectl` command
+    into your buffer. Leave the web browser open in the background.
+  id: totrans-269
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 首先，点击 **kubectl Command**（如果你是 Windows 用户，则点击 **kubectl Windows Command**）旁边的双文档按钮，将你的
+    `kubectl` 命令复制到剪贴板。保持网页浏览器在后台打开。
+- en: 'You may want to back up your original config file before pasting the `kubectl`
+    command from OpenUnison:'
+  id: totrans-270
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 在粘贴 OpenUnison 中的 `kubectl` 命令之前，你可能想备份原始配置文件：
+- en: '[PRE15]'
+  id: totrans-271
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE15]'
+- en: 'Then, go to your host console and paste the command into the console (the following
+    output has been shortened, but your paste will start with the same output):'
+  id: totrans-272
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 然后，转到你的主机控制台，将命令粘贴到控制台中（以下输出已被简化，但你的粘贴操作将以相同的输出开始）：
+- en: '[PRE16]'
+  id: totrans-273
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE16]'
+- en: 'Now, verify that you can view the cluster nodes using `kubectl get nodes`:'
+  id: totrans-274
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 现在，验证你是否可以使用 `kubectl get nodes` 查看集群节点：
+- en: '[PRE17]'
+  id: totrans-275
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE17]'
+- en: 'You’re now using your login credentials instead of the master certificate!
+    As you work, the session will refresh. You can verify your identity using the
+    `kubectl auth whoami` command:'
+  id: totrans-276
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 你现在使用的是登录凭据，而不是主证书！在工作过程中， session 会自动刷新。你可以使用 `kubectl auth whoami` 命令验证你的身份：
+- en: '[PRE18]'
+  id: totrans-277
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE18]'
+- en: This command will tell you who the API server thinks you are, including your
+    groups. This can be very handy when debugging authorizations.
+  id: totrans-278
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 此命令将告诉你 API 服务器认为你是谁，包括你的用户组。这在调试授权时非常有用。
+- en: When I first began working with Kubernetes in 2015, the first issue I opened
+    was for this feature while I was debugging the integration of OpenUnison and Kubernetes.
+    I was thrilled to see it implemented initially in 1.0.26 and for it to go GA in
+    1.0.28\. It’s a beta feature in 1.27, and we have pre-configured our KinD cluster
+    to support it. If you want to use this feature with other clusters, you may need
+    to work with your vendor, since it requires a command-line argument for the API
+    server.
+  id: totrans-279
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 当我在 2015 年首次开始使用 Kubernetes 时，我打开的第一个问题就是为这个特性而开。我在调试 OpenUnison 与 Kubernetes
+    集成时，看到它在 1.0.26 版本中初步实现，并在 1.0.28 版本中正式发布，我感到非常激动。它在 1.27 中是一个 beta 特性，我们已经预配置了
+    KinD 集群来支持它。如果你想在其他集群中使用这个特性，可能需要与供应商合作，因为它需要 API 服务器的命令行参数。
+- en: 'Log out of OpenUnison and watch the list of nodes. Within a minute or two,
+    your token will expire and no longer work:'
+  id: totrans-280
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 注销 OpenUnison 并观察节点列表。在一两分钟内，你的令牌将过期并停止工作：
+- en: '[PRE19]'
+  id: totrans-281
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE19]'
+- en: 'Congratulations! You’ve now set up your cluster so that it does the following:'
+  id: totrans-282
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 恭喜！你现在已经设置好了集群，使其完成以下操作：
+- en: Authenticates using LDAP, using your enterprise’s existing authentication system
+  id: totrans-283
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 使用 LDAP 进行身份验证，利用企业现有的身份验证系统
+- en: Uses groups from your centralized authentication system to authorize access
+    to Kubernetes (we’ll get into the details of how in the next chapter)
+  id: totrans-284
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 使用来自集中式身份验证系统的用户组来授权访问 Kubernetes（我们将在下一章详细讲解如何操作）
+- en: Gives user access to both the CLI and the dashboard using the centralized credentials
+  id: totrans-285
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 使用集中式凭据，授予用户对 CLI 和 Dashboard 的访问权限
+- en: Maintains your enterprise’s compliance requirements by having short-lived tokens
+    that provide a way to time out
+  id: totrans-286
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 通过使用短期有效的令牌，维护企业的合规要求，并提供过期机制
+- en: Ensures everything uses TLS, from the user’s browser to the Ingress Controller,
+    to OpenUnison, the Dashboard, and finally, the API server
+  id: totrans-287
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 确保所有内容都使用 TLS，从用户的浏览器到 Ingress 控制器，再到 OpenUnison、Dashboard，最终到 API 服务器
+- en: You’ve integrated most of the advice from this chapter into your cluster. You’ve
+    also made it easier to access because you don’t need to have a pre-configured
+    configuration file anymore.
+  id: totrans-288
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你已经将本章中的大部分建议集成到你的集群中。你还使得访问变得更容易，因为你不再需要预配置配置文件了。
+- en: Next, you’ll learn how to integrate centralized authentication into your managed
+    clusters.
+  id: totrans-289
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 接下来，你将学习如何将集中式身份验证集成到你的托管集群中。
+- en: Introducing impersonation to integrate authentication with cloud-managed clusters
+  id: totrans-290
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 引入模拟身份功能，以将身份验证与云托管集群集成
+- en: It’s very popular to use managed Kubernetes services from cloud vendors such
+    as Google, Amazon, Microsoft, and DigitalOcean (among many others).
+  id: totrans-291
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 使用来自 Google、Amazon、Microsoft 和 DigitalOcean（以及其他许多云服务商）的托管 Kubernetes 服务非常流行。
+- en: 'When it comes to these services, they are generally very quick to get up and
+    running, and they all share a common thread: they mostly don’t support OpenID
+    Connect (Amazon’s EKS does support OpenID Connect now, but the cluster must be
+    running on a public network and have a commercially signed TLS certificate).'
+  id: totrans-292
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这些服务通常非常快速地启动并运行，它们有一个共同点：它们大多不支持 OpenID Connect（Amazon 的 EKS 现在支持 OpenID Connect，但集群必须运行在公共网络上并拥有商业签名的
+    TLS 证书）。
+- en: 'Earlier in this chapter, we talked about how Kubernetes supports custom authentication
+    solutions through webhooks and that you should never, ever, use this approach
+    unless you are a public cloud provider or some other host of Kubernetes systems.
+    It turns out that pretty much every cloud vendor has its own approach to using
+    these webhooks that uses its own identity and access management implementations.
+    In that case, why not just use what the vendor provides? There are several reasons
+    why you may not want to use a cloud vendor’s IAM system:'
+  id: totrans-293
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在本章前面，我们讨论了 Kubernetes 如何通过 webhooks 支持自定义身份验证解决方案，并且你永远不应该使用这种方法，除非你是一个公共云服务提供商或其他托管
+    Kubernetes 系统的主机。事实上，几乎每个云服务商都有自己使用 webhooks 的方式，这些方式使用了各自的身份和访问管理实现。那么，为什么不直接使用供应商提供的呢？有几个原因可能使你不想使用云服务商的
+    IAM 系统：
+- en: '**Technical**: You may want to support features not offered by the cloud vendor,
+    such as the dashboard, in a secure fashion.'
+  id: totrans-294
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**技术性**：你可能希望以安全的方式支持云服务商未提供的功能，比如仪表盘。'
+- en: '**Organizational**: Tightly coupling access to managed Kubernetes with that
+    cloud’s IAM puts an additional burden on the cloud team, which means that they
+    may not want to manage access to your clusters.'
+  id: totrans-295
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**组织性**：将管理 Kubernetes 的访问与云服务的 IAM 紧密结合，会给云团队带来额外的负担，这意味着他们可能不愿意管理对你的集群的访问。'
+- en: '**User experience**: Your developers and admins may have to work across multiple
+    clouds. Providing a consistent login experience makes it easier for them and requires
+    learning fewer tools.'
+  id: totrans-296
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**用户体验**：你的开发人员和管理员可能需要跨多个云平台工作。提供一致的登录体验使他们更轻松，并且需要学习的工具更少。'
+- en: '**Security and compliance**: The cloud implementation may not offer choices
+    that line up with your enterprise’s security requirements, such as short-lived
+    tokens and idle timeouts.'
+  id: totrans-297
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**安全性与合规性**：云实现可能不提供符合企业安全要求的选项，如短期令牌和空闲超时。'
+- en: All that being said, there may be reasons to use the cloud vendor’s implementation.
+    However, you’ll need to balance out the requirements. If you want to continue
+    to use centralized authentication and authorization with hosted Kubernetes, you’ll
+    need to learn how to work with Impersonation.
+  id: totrans-298
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 话虽如此，使用云服务商的实现可能也有其理由。然而，你需要平衡这些需求。如果你希望继续使用集中式的身份验证和授权来管理托管的 Kubernetes，你将需要学习如何使用冒充。
+- en: What is Impersonation?
+  id: totrans-299
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 什么是 impersonation（冒充）？
+- en: Kubernetes **Impersonation** is a way of telling the API server who you are
+    without knowing your credentials or forcing the API server to trust an OpenID
+    Connect IdP. This is useful when you can’t configure OpenID Connect, as is generally
+    the case with managed Kubernetes offerings, or you want to support multiple access
+    from multiple identity providers.
+  id: totrans-300
+  prefs: []
+  type: TYPE_NORMAL
+  zh: Kubernetes **冒充**是一种告诉 API 服务器你是谁的方法，而无需知道你的凭证或强制 API 服务器信任 OpenID Connect 身份提供者。这在你无法配置
+    OpenID Connect（如托管 Kubernetes 服务通常是这种情况），或者你希望支持多个身份提供者的访问时非常有用。
+- en: 'When you use `kubectl`, instead of the API server receiving your `id_token`
+    directly, it will receive a service account or identifying certificate that will
+    be authorized to impersonate users, as well as a set of headers that tell the
+    API server who the proxy acts on behalf of:'
+  id: totrans-301
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 当你使用`kubectl`时，API 服务器不会直接接收你的`id_token`，而是会接收一个服务账户或身份认证证书，这些证书将被授权冒充用户，并且包含一组头信息，告诉
+    API 服务器代理代表谁行事：
+- en: '![Figure 7.11 – Diagram of how a user interacts with the API server when using
+    Impersonation ](img/B21165_06_08.png)'
+  id: totrans-302
+  prefs: []
+  type: TYPE_IMG
+  zh: '![图 7.11 – 用户使用冒充时与 API 服务器交互的示意图](img/B21165_06_08.png)'
+- en: 'Figure 6.8: Diagram of how a user interacts with the API server when using
+    Impersonation'
+  id: totrans-303
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.8：用户使用冒充时与 API 服务器交互的示意图
+- en: The reverse proxy is responsible for determining how to map from the `id_token`,
+    which the user provides (or any other token, for that matter) to the `Impersonate-User`
+    and `Impersonate-Group` HTTP headers. The dashboard should never be deployed with
+    a privileged identity, which the ability to impersonate falls under.
+  id: totrans-304
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 反向代理负责确定如何从用户提供的`id_token`（或任何其他令牌）映射到`Impersonate-User`和`Impersonate-Group`
+    HTTP 头。仪表盘不应以具有特权身份的方式部署，因为冒充功能属于这种身份的范围。
+- en: 'To allow Impersonation with the 2.x dashboard, use a similar model, but instead
+    of going to the API server, you go to the dashboard:'
+  id: totrans-305
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 要允许 2.x 仪表盘使用冒充功能，使用类似的模型，但不是访问 API 服务器，而是访问仪表盘：
+- en: '![Figure 7.12 – Kubernetes Dashboard with Impersonation ](img/B21165_06_09.png)'
+  id: totrans-306
+  prefs: []
+  type: TYPE_IMG
+  zh: '![图 7.12 – 带有冒充功能的 Kubernetes 仪表盘](img/B21165_06_09.png)'
+- en: 'Figure 6.9: Kubernetes Dashboard with Impersonation'
+  id: totrans-307
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图 6.9：带有冒充功能的 Kubernetes 仪表盘
+- en: The user interacts with the reverse proxy just like any web application. The
+    reverse proxy uses its own service account and adds the impersonation headers.
+    The dashboard passes this information through to the API server on all requests.
+    The dashboard never has its own identity.
+  id: totrans-308
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 用户与反向代理的交互方式与任何 Web 应用程序相似。反向代理使用自己的服务账户并添加模拟头信息。仪表板通过所有请求将此信息传递给 API 服务器。仪表板从不拥有自己的身份。
+- en: Now that we see what impersonation is, and how it can help us secure access
+    to the Kubernetes Dashboard and Kubernetes APIs, we’ll walk through what you need
+    to think about from a security perspective when implementing it.
+  id: totrans-309
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 现在我们了解了模拟是什么，以及它如何帮助我们安全访问 Kubernetes 仪表板和 Kubernetes API，我们将详细介绍在实施时从安全角度考虑的事项。
+- en: Security considerations
+  id: totrans-310
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 安全考虑
+- en: 'The service account has a certain superpower: it can be used to impersonate
+    **anyone** (depending on your RBAC definitions). If you’re running your reverse
+    proxy from inside the cluster, a service account is OK, especially if combined
+    with the `TokenRequest` API to keep the token short-lived.'
+  id: totrans-311
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 服务账户有一定的超级权限：它可以被用来模拟**任何人**（取决于您的 RBAC 定义）。如果您从集群内部运行您的反向代理，则服务账户是可以接受的，特别是如果结合
+    `TokenRequest` API 以保持令牌的短寿命。
+- en: Earlier in the chapter, we talked about the legacy tokens for `ServiceAccount`
+    objects having no expiration. That’s important here because if you’re hosting
+    your reverse proxy off-cluster, then if it were compromised, someone could use
+    that service account to access the API service as anyone. Make sure you’re rotating
+    that service account often. If you’re running the proxy off-cluster, it’s probably
+    best to use a shorter-lived certificate instead of a service account.
+  id: totrans-312
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在本章的早些时候，我们谈到了用于 `ServiceAccount` 对象的遗留令牌没有过期。这在这里很重要，因为如果您将您的反向代理托管在集群外，那么如果它被
+    compromise，某人可以使用该服务账户作为任何人访问 API 服务。确保您经常轮换该服务账户。如果您在集群外运行代理，最好使用短寿命证书而不是服务账户。
+- en: When running the proxy on a cluster, you want to make sure it’s locked down.
+    It should run in its own namespace at a minimum, not `kube-system` either. You
+    want to minimize the number of people who have access. Using multi-factor authentication
+    to get to that namespace is always a good idea, as is using network policies that
+    control what pods can reach out to the reverse proxy.
+  id: totrans-313
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在集群上运行代理时，您希望确保它被锁定。至少它应该在自己的命名空间中运行，也不要在 `kube-system` 中。您希望尽量减少可以访问的人数。始终使用多因素身份验证来进入该命名空间是一个好主意，同样使用控制哪些
+    Pod 可以访问反向代理的网络策略也是如此。
+- en: Based on the concepts we’ve just learned about regarding impersonation, the
+    next step is to update our cluster’s configuration to use impersonation instead
+    of using OpenID Connect directly. You don’t need a cloud-managed cluster to work
+    with impersonation.
+  id: totrans-314
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 基于我们刚学到的有关模拟的概念，下一步是更新我们集群的配置，以使用模拟而不是直接使用 OpenID Connect。您不需要云管理的集群来处理模拟。
+- en: Configuring your cluster for impersonation
+  id: totrans-315
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 配置您的集群进行模拟
+- en: 'Let’s deploy an impersonating proxy for our cluster. Just like integrating
+    our cluster directly into OpenUnison using OpenID Connect, we’ve automated the
+    deployment so that you don’t need to manually configure OpenUnison. We’ll clear
+    out our old cluster and start afresh:'
+  id: totrans-316
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 让我们为我们的集群部署一个模拟代理。就像直接将我们的集群集成到 OpenUnison 中使用 OpenID Connect 一样，我们已经自动化部署，因此您不需要手动配置
+    OpenUnison。我们将清理旧的集群并重新开始：
+- en: '[PRE20]'
+  id: totrans-317
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE20]'
+- en: 'The differences between this script and our original script are:'
+  id: totrans-318
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 此脚本与我们原始的脚本的区别在于：
+- en: Configuring OpenUnison to generate `NetworkPolicy` objects to limit access to
+    just requests from our NGINX `Ingress` controller and the API server
+  id: totrans-319
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 配置 OpenUnison 生成 `NetworkPolicy` 对象以限制仅允许来自我们的 NGINX `Ingress` 控制器和 API 服务器的请求
+- en: Configuring OpenUnison’s `ServiceAccount` token to only be valid for 10 minutes
+    instead of the typical hour or day
+  id: totrans-320
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 配置 OpenUnison 的 `ServiceAccount` 令牌，使其仅有效 10 分钟，而不是典型的一小时或一天
+- en: Configuring the OpenUnison `values.yaml` to deploy the kube-oidc-proxy to handle
+    incoming API server requests
+  id: totrans-321
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 配置 OpenUnison 的 `values.yaml` 以部署 kube-oidc-proxy 处理传入的 API 服务器请求。
+- en: Creating the cluster-admin `ClusterRoleBinding` so that your user can work with
+    your cluster
+  id: totrans-322
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 创建 cluster-admin 的 `ClusterRoleBinding`，以便您的用户可以与您的集群一起工作
+- en: Once the script is finished running, you can log in with the same account, `mmosley`,
+    as before.
+  id: totrans-323
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦脚本运行完成，您可以像之前一样使用相同的账户 `mmosley` 登录。
+- en: The OpenUnison helm charts create `NetworkPolicies` and constraints the lifetime
+    of its `ServiceAccount` token to line up with the security best practices we discussed
+    above. It’s important that we keep any system that shouldn’t interact with our
+    impersonation proxy from doing so to cut down on the potential attack surface,
+    ensuring that any tokens that are minted with the ability to impersonate other
+    users expire quickly.
+  id: totrans-324
+  prefs: []
+  type: TYPE_NORMAL
+  zh: OpenUnison 的 helm charts 会创建 `NetworkPolicies`，并将其 `ServiceAccount` token 的生命周期约束为与我们上面讨论的安全最佳实践一致。我们必须确保任何不应与我们假扮代理交互的系统不会与其交互，从而减少潜在的攻击面，确保任何能够假扮其他用户的
+    token 会迅速过期。
+- en: Next, we’ll walk through testing our impersonation-based integration.
+  id: totrans-325
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 接下来，我们将通过测试基于假扮的集成来进行演示。
+- en: Testing Impersonation
+  id: totrans-326
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 测试假扮
+- en: 'Now, let’s test our Impersonation setup. Follow these steps:'
+  id: totrans-327
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 现在，让我们测试一下我们的假扮设置。按照以下步骤操作：
+- en: In a browser, enter the URL for your OpenUnison deployment. This is the same
+    URL you used for your initial OIDC deployment.
+  id: totrans-328
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 在浏览器中输入你的 OpenUnison 部署的 URL。这与最初用于 OIDC 部署的 URL 相同。
+- en: Log into OpenUnison, and then click on the dashboard.
+  id: totrans-329
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 登录到 OpenUnison，然后点击仪表板。
+- en: Click on the little circular icon in the upper right-hand corner to see who
+    you’re logged in as.
+  id: totrans-330
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 点击右上角的小圆形图标，查看你当前以谁的身份登录。
+- en: Next, go back to the main OpenUnison dashboard and click on the **Kubernetes
+    Tokens** badge.
+  id: totrans-331
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 接下来，返回到 OpenUnison 主面板，点击 **Kubernetes Tokens** 标签。
+- en: Note that the `--server` flag being passed to `kubectl` no longer has an IP.
+    Instead, it has the hostname from `network.api_server_host` in the `/tmp/openunison-values.yaml`
+    file. This is Impersonation. Instead of interacting directly with the API server,
+    you’re now interacting with `kube-oidc-proxy's` reverse proxy.
+  id: totrans-332
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 注意，传递给 `kubectl` 的 `--server` 标志不再是 IP 地址，而是来自 `/tmp/openunison-values.yaml`
+    文件中的 `network.api_server_host` 的主机名。这就是假扮。你不再直接与 API 服务器交互，而是通过 `kube-oidc-proxy`
+    的反向代理进行交互。
+- en: 'Finally, let’s copy and paste our `kubectl` command from the OpenUnison tokens
+    screen into a shell:'
+  id: totrans-333
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 最后，让我们将 OpenUnison tokens 页面上的 `kubectl` 命令复制并粘贴到 shell 中：
+- en: '[PRE21]'
+  id: totrans-334
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE21]'
+- en: 'To verify you have access, list the cluster nodes:'
+  id: totrans-335
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 要验证你是否有访问权限，请列出集群节点：
+- en: '[PRE22]'
+  id: totrans-336
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE22]'
+- en: 'Just as with OIDC integration, you can use `kubectl auth whoami` to verify
+    your identity:'
+  id: totrans-337
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 就像在 OIDC 集成中一样，你可以使用 `kubectl auth whoami` 来验证你的身份：
+- en: '[PRE23]'
+  id: totrans-338
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE23]'
+- en: The main difference between your identity when using impersonation instead of
+    OIDC integration is that your username doesn’t have the identity provider’s URL
+    in the front.
+  id: totrans-339
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 使用假扮而不是 OIDC 集成时，你的身份的主要区别在于你的用户名前面没有身份提供者的 URL。
+- en: 'Just like when you integrated the original deployment of OpenID Connect, once
+    you’ve logged out of the OpenUnison page, within a minute or two, the tokens will
+    expire and you won’t be able to refresh them:'
+  id: totrans-340
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 就像你在集成 OpenID Connect 的初始部署时一样，一旦你退出 OpenUnison 页面，几分钟内 token 将会过期，你将无法刷新它们：
+- en: '[PRE24]'
+  id: totrans-341
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE24]'
+- en: You’ve now validated that your cluster works correctly with Impersonation. Instead
+    of authenticating directly to the API server, the impersonating reverse proxy
+    (OpenUnison) forwards all requests to the API server with the correct impersonation
+    headers. You’re still meeting your enterprise’s needs by providing both a login
+    and logout process and integrating your Active Directory groups.
+  id: totrans-342
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你现在已经验证了集群在假扮模式下能正常工作。你不再直接向 API 服务器进行身份验证，而是通过假扮反向代理（OpenUnison）将所有请求转发到 API
+    服务器，并附带正确的假扮头部。你仍然满足企业需求，提供了登录和登出过程，并集成了你的 Active Directory 群组。
+- en: You’ll also notice that you can now access your cluster from any system on your
+    network! This might make doing the rest of the examples throughout the book easier.
+  id: totrans-343
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你还会注意到，你现在可以从网络上的任何系统访问你的集群！这可能会使得本书中接下来的示例更加容易执行。
+- en: Impersonation is farmore than accessing your cluster. Next, we’ll look at how
+    to use impersonation from `kubectl get debug` authorization policies.
+  id: totrans-344
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 假扮不仅仅是访问你的集群。接下来，我们将看看如何从 `kubectl get debug` 授权策略中使用假扮。
+- en: Using Impersonation for Debugging
+  id: totrans-345
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 使用假扮进行调试
+- en: 'Impersonation can be used to debug authentication and authorization configurations.
+    This will become more useful when you begin writing RBAC policies. As an administrator,
+    you can use impersonation from the `kubectl` command by adding the `--as` and
+    `--as-groups` parameters to run a command as someone else. For instance, if you
+    ran `kubectl get nodes` as a random user from your command line, it would fail:'
+  id: totrans-346
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 模拟操作可用于调试身份验证和授权配置。当你开始编写 RBAC 策略时，它将变得更加有用。作为管理员，你可以通过在 `kubectl` 命令中添加 `--as`
+    和 `--as-groups` 参数来作为其他人运行命令。例如，如果你以一个随机用户的身份运行 `kubectl get nodes`，它将失败：
+- en: '[PRE25]'
+  id: totrans-347
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE25]'
+- en: 'However, if we add our administrative group:'
+  id: totrans-348
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 然而，如果我们添加我们的管理员组：
+- en: '[PRE26]'
+  id: totrans-349
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE26]'
+- en: 'You can see that it worked. That’s because the API server interpreted our user
+    as being a member of the group `cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com`,
+    which we created an RBAC binding for. In fact, if we run `kubectl auth whoami`
+    with these parameters, we’ll just see how the API server sees us:'
+  id: totrans-350
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你可以看到它工作了。这是因为 API 服务器将我们的用户视为属于我们为其创建 RBAC 绑定的组 `cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com`。实际上，如果我们运行
+    `kubectl auth whoami` 并带上这些参数，我们将看到 API 服务器是如何看待我们的：
+- en: '[PRE27]'
+  id: totrans-351
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE27]'
+- en: In the above example, the API server sees the request as being from *someuser*,
+    with the appropriate group based on the impersonation headers sent by `kubectl`.
+  id: totrans-352
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在上述示例中，API 服务器看到请求来自 *someuser*，并根据 `kubectl` 发送的模拟头部，将其与适当的组进行匹配。
+- en: The additional `Extra` attributes are there because while we are performing
+    an impersonation request from `kubectl -> the kube-oidc-proxy`, `kube-oidc-proxy`
+    does a separate impersonation with new headers, adding the `extra-info` headers
+    to be included, so the audit logs show who the original user who made the request
+    was. Before forwarding the request to the API server, the kube-oidc-proxy first
+    performs a `SubjectAccessReview` to make sure that the user `mmosley` with their
+    groups is allowed to impersonate `someuser` and the group.
+  id: totrans-353
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 额外的 `Extra` 属性存在是因为在我们从 `kubectl -> kube-oidc-proxy` 执行模拟请求时，`kube-oidc-proxy`
+    会进行一次独立的模拟操作，并使用新的头部，添加 `extra-info` 头部以包含在内，从而让审计日志显示出发起请求的原始用户是谁。在将请求转发到 API
+    服务器之前，kube-oidc-proxy 会先执行 `SubjectAccessReview`，确保用户 `mmosley` 和其组有权模拟 `someuser`
+    及该组。
+- en: We were able to quickly configure impersonation using OpenUnison, where most
+    of the details of the implementation were hidden from you. What if you want to
+    configure an impersonating proxy without OpenUnison?
+  id: totrans-354
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们能够快速配置使用 OpenUnison 的模拟操作，其中大部分实现细节对你是隐藏的。如果你想在没有 OpenUnison 的情况下配置一个模拟代理怎么办？
+- en: Configuring Impersonation without OpenUnison
+  id: totrans-355
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 在没有 OpenUnison 的情况下配置模拟
+- en: 'OpenUnison automated a couple of key steps to get impersonation working. You
+    can use any reverse proxy that can generate the correct headers. There are three
+    critical items to understand when doing this on your own: RBAC, default groups,
+    and inbound impersonation.'
+  id: totrans-356
+  prefs: []
+  type: TYPE_NORMAL
+  zh: OpenUnison 自动化了几个关键步骤来使模拟操作生效。你可以使用任何能生成正确头信息的反向代理。自己进行配置时，有三个关键项目需要理解：RBAC、默认组和入站模拟。
+- en: Impersonation RBAC policies
+  id: totrans-357
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 模拟 RBAC 策略
+- en: 'RBAC will be covered in the next chapter, but for now, the correct policy to
+    authorize a service account for Impersonation is as follows:'
+  id: totrans-358
+  prefs: []
+  type: TYPE_NORMAL
+  zh: RBAC 将在下一章中讲解，但现在，授权服务账户进行模拟的正确策略如下：
+- en: '[PRE28]'
+  id: totrans-359
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE28]'
+- en: 'To constrain what accounts can be impersonated, add `resourceNames` to your
+    rule. For instance, if you only want to allow the impersonation of the user `mmosley`:'
+  id: totrans-360
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 为了限制可以被模拟的账户，可以在规则中添加 `resourceNames`。例如，如果你只想允许模拟用户 `mmosley`：
+- en: '[PRE29]'
+  id: totrans-361
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE29]'
+- en: The first `ClusterRole` above is what tells Kubernetes that a member can impersonate
+    all users and groups (or specific users or groups if `resourceNames` is specified).
+    Be very careful as to which accounts are granted this `ClusterRole`, as it makes
+    you essentially a `cluster`-`admin` because you could impersonate the `system`:`masters`
+    group, for example, bypassing RBAC and allowing anyone who is authorized by this
+    role to become a global administrator and compromise your cluster however they
+    wish.
+  id: totrans-362
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 上述第一个 `ClusterRole` 告诉 Kubernetes，成员可以模拟所有用户和组（如果指定了 `resourceNames`，也可以是特定用户或组）。一定要小心哪些账户被授予此
+    `ClusterRole`，因为它使你基本上成为了一个 `cluster`-`admin`，因为你可以模拟 `system`:`masters` 组，绕过
+    RBAC，允许任何获得此角色授权的人成为全球管理员，进而以任何方式破坏你的集群。
+- en: When configuring the impersonation of specific users and groups, break the `ClusterRole`
+    into one `ClusterRole` for each. This way, you won’t have someone impersonating
+    a group with the name of the user creating unintended consequences.
+  id: totrans-363
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在配置特定用户和组的模拟时，将 `ClusterRole` 拆分为多个单独的 `ClusterRole`，每个用户或组对应一个 `ClusterRole`。这样，你就不会有人以创建该用户的组名来模拟一个组，从而避免不必要的后果。
+- en: With RBAC having been configured, the next requirement is adding default groups
+    to impersonation requests.
+  id: totrans-364
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在配置了 RBAC 之后，下一步的要求是将默认组添加到模拟请求中。
+- en: Default groups
+  id: totrans-365
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 默认组
+- en: When impersonating a user, Kubernetes does not add the default group, `system:authenticated`,
+    to the list of impersonated groups. When using a reverse proxy that doesn’t specifically
+    know to add the header for this group, configure the proxy to add it manually.
+    Otherwise, simple acts such as calling the `/api` endpoint will fail, as this
+    will be unauthorized for anyone except cluster administrators.
+  id: totrans-366
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 当模拟用户时，Kubernetes 不会将默认组 `system:authenticated` 添加到模拟组的列表中。当使用一个反向代理，并且该代理不知道特别需要为这个组添加头部时，需要手动配置代理来添加该头部。否则，像调用
+    `/api` 端点这样的简单操作会失败，因为除了集群管理员外，其他任何人都没有授权。
+- en: We’ve focused the bulk of this chapter on authenticating users who will interact
+    with the API server. A major advantage of Kubernetes and the APIs it provides
+    is to automate your systems. Next, we’ll look at how you apply what we’ve learned
+    so far to authenticating those automated systems.
+  id: totrans-367
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 本章的大部分内容集中在对将与 API 服务器交互的用户进行身份验证。Kubernetes 及其提供的 API 的一个主要优势是能够自动化你的系统。接下来，我们将探讨如何将我们迄今为止学到的知识应用于自动化系统的身份验证。
+- en: Inbound Impersonation
+  id: totrans-368
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 入站模拟
+- en: We’ve shown how to use `kubectl` with the `--as` and `--as-group` parameters
+    to impersonate users for debugging. If you’re using impersonation to manage access
+    to your clusters, how does your impersonating proxy know that the user attempting
+    to impersonate another user is, in fact, authorized to do so? In Kubernetes, you
+    need to build a `ClusterRole` and a `ClusterRoleBinding` to enable impersonation
+    for a specific user to a specific user, but how does your proxy know that you
+    can impersonate someone?
+  id: totrans-369
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们已经展示了如何使用带有 `--as` 和 `--as-group` 参数的 `kubectl` 命令来模拟用户以进行调试。如果你使用模拟来管理对集群的访问，模拟代理如何知道试图模拟其他用户的用户是否确实有权这么做？在
+    Kubernetes 中，你需要构建一个 `ClusterRole` 和 `ClusterRoleBinding` 来使特定用户可以模拟其他特定用户，但你的代理如何知道你有权限模拟某人呢？
+- en: 'In our previous example:'
+  id: totrans-370
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在我们之前的示例中：
+- en: '[PRE30]'
+  id: totrans-371
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE30]'
+- en: We see `mmosley` impersonated `someuser`. Kubernetes allowed this impersonation
+    because `mmosley` is a member of the group `cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com`
+    , which has a `ClusterRoleBinding` to the `cluster-admin ClusterRole`. However,
+    this request went through `kube-oidc-proxy`, so how did kube-oidc-proxy know that
+    the cluster would authorize the request? On each request to kube-oidc-proxy that
+    includes impersonation headers, a `SubjectAccessReview` is created to check if
+    `mmosley` is allowed to impersonate `someuser`. If this check fails, the kube-oidc-proxy
+    denies the request.
+  id: totrans-372
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们看到 `mmosley` 模拟了 `someuser`。Kubernetes 允许这种模拟，因为 `mmosley` 是 `cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com`
+    组的成员，而该组有一个绑定到 `cluster-admin ClusterRole` 的 `ClusterRoleBinding`。然而，这个请求是通过 `kube-oidc-proxy`
+    传递的，那么 kube-oidc-proxy 是如何知道集群会授权这个请求的呢？在每次包含模拟头部的请求发送到 kube-oidc-proxy 时，都会创建一个
+    `SubjectAccessReview` 来检查 `mmosley` 是否被允许模拟 `someuser`。如果检查失败，kube-oidc-proxy
+    会拒绝该请求。
+- en: 'Your impersonating proxy will need to make the same choice. There are three
+    approaches:'
+  id: totrans-373
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 你的模拟代理也需要做出相同的选择。这里有三种方法：
+- en: '**Delete and ignore all inbound impersonation headers**: Your proxy will ignore
+    and remove all inbound headers for impersonation, making the `--as` and `--as-group`
+    flags useless. This locks down access but limits functionality.'
+  id: totrans-374
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**删除并忽略所有入站的模拟头部**：你的代理将忽略并移除所有入站的模拟头部，使得 `--as` 和 `--as-group` 标志失效。这可以限制访问，但也会限制功能。'
+- en: '**Maintain a custom authorization scheme**: Before generating impersonation
+    headers, a proxy can have its own authorization system to determine which users
+    are allowed to impersonate other users. This means maintaining an additional authorization
+    system, which can lead to issues with misconfiguration and, eventually, breaches.'
+  id: totrans-375
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**保持自定义授权方案**：在生成模拟头部之前，代理可以拥有自己的授权系统来确定哪些用户被允许模拟其他用户。这意味着需要维护一个额外的授权系统，这可能会导致配置错误，最终引发安全漏洞。'
+- en: '**Query Kubernetes for Authorization Decisions**: This is what kube-oidc-proxy
+    and Pinniped (a tool from VMware that serves a similar role to OpenUnison) use
+    to make sure that the inbound impersonation is authorized. This is best, as it
+    uses the same rules as your cluster to manage access, simplifying management and
+    making it less likely a misconfiguration will lead to a breach.'
+  id: totrans-376
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**查询 Kubernetes 授权决策**：这是 kube-oidc-proxy 和 Pinniped（VMware 的一个工具，扮演类似于 OpenUnison
+    的角色）用来确保入站模拟已被授权的方法。这是最好的方法，因为它使用与集群相同的规则来管理访问，简化了管理并降低了配置错误导致安全漏洞的可能性。'
+- en: 'Even once you’ve authorized an inbound impersonation, it’s important to log
+    that the impersonation has occurred. The kube-oidc-proxy project does this in
+    two places:'
+  id: totrans-377
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 即使你已经授权了入站模拟，也很重要记录模拟已发生。kube-oidc-proxy 项目在两个地方执行此操作：
+- en: '**Proxy logs**: Each inbound impersonation gets logged to the console (which
+    should be captured by a log aggregator)'
+  id: totrans-378
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**代理日志**：每次入站模拟都会被记录到控制台（这些日志应该由日志聚合器捕获）'
+- en: '**API Server Audit Logs**: The extra-info headers tell the API server who the
+    original user was which is included in the audit logs. We’ll see how to set up
+    and inspect the audit logs in the next section.'
+  id: totrans-379
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: '**API 服务器审计日志**：额外的信息头部会告诉 API 服务器原始用户是谁，这些信息会被包含在审计日志中。我们将在下一节看到如何设置和检查审计日志。'
+- en: Inbound impersonation is a very difficult process to manage. If it’s something
+    you want to allow, you should stick with a purpose-built impersonating proxy.
+    Otherwise, it’s best to just strip all inbound impersonation headers to avoid
+    an account takeover.
+  id: totrans-380
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 入站模拟是一个非常难以管理的过程。如果你希望允许这种操作，应该使用专门的模拟代理。否则，最好的做法是删除所有入站模拟头部，以避免账户被接管。
+- en: So far, we’ve only discussed users as a whole, without adding any context. Many
+    enterprises require that users who interact with a cluster to perform administrative
+    work have privileges beyond their typical account. Next, we’ll look at how to
+    implement privileged access management in Kubernetes.
+  id: totrans-381
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 到目前为止，我们只讨论了整体的用户，没有加入任何上下文。许多企业要求与集群交互进行管理工作的用户拥有超出其常规账户的权限。接下来，我们将看看如何在 Kubernetes
+    中实施特权访问管理。
+- en: Privileged Access to Clusters
+  id: totrans-382
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 对集群的特权访问
+- en: In addition to managing authentication, most enterprises require a concept of
+    “privileged access management,” where not only is access limited by the user but
+    also by time. Most enterprises require a change control process of some kind to
+    ensure that changes to production systems are tracked and approved. This requirement
+    generally comes from any of the various compliance and regulatory frameworks needed
+    in large enterprises.
+  id: totrans-383
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 除了管理身份验证外，大多数企业还要求有“特权访问管理”概念，不仅限制用户的访问，还限制时间。大多数企业要求某种变更控制过程，以确保对生产系统的变更受到跟踪和批准。这项要求通常来自大型企业中所需的各种合规性和监管框架。
+- en: There are generally three ways to manage privileged access in Kubernetes, and
+    we’ll cover all three with their benefits and drawbacks.
+  id: totrans-384
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在 Kubernetes 中，一般有三种方法来管理特权访问，我们将介绍这三种方法及其优缺点。
+- en: Using a Privileged User Account
+  id: totrans-385
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 使用特权用户账户
+- en: It is common for enterprises to require that administrators have two accounts,
+    one for day-to-day tasks and one to make administrative changes. This approach
+    is generally implemented using a **Privilege Access Manager** (**PAM**) that generates
+    a new password for the user when they’re authorized to do their work. This approach
+    enables compliance with most frameworks because there’s a process by which someone
+    has to approve the administrative account’s unlocking inside of the PAM. Once
+    the admin is has completed their work, they check the account back into the PAM,
+    which locks it. Alternatively, a time limit is usually set for how long the account
+    can be checked out for, and when that time expires, the account is automatically
+    locked by the PAM.
+  id: totrans-386
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 企业通常要求管理员拥有两个账户，一个用于日常任务，另一个用于进行管理变更。这种做法通常通过**特权访问管理器**（**PAM**）来实现，当管理员被授权执行工作时，PAM
+    会为用户生成一个新密码。这种方法符合大多数框架的要求，因为需要通过某人批准来解锁管理员账户。一旦管理员完成工作，他们将账户归还到 PAM 中，从而将其锁定。或者，通常会设置账户可以被借用的时间限制，一旦时间到期，账户将由
+    PAM 自动锁定。
+- en: The major benefit of this approach is that the management of the privileged
+    accounts is done outside of Kubernetes. It’s someone else’s responsibility and
+    eliminates something that cluster owners need to manage, either via the previously
+    mentioned PAM or some other engine. It’s important to note that as the cluster
+    manager, you’re still responsible for authorizing access, so the same recommendations
+    from this chapter apply.
+  id: totrans-387
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这种方法的主要好处是特权账户的管理是在Kubernetes之外进行的。这是其他人的责任，消除了集群所有者需要管理的部分，无论是通过之前提到的PAM还是其他引擎。值得注意的是，作为集群管理员，你仍然负责授权访问，因此本章中的相同建议仍然适用。
+- en: Another reason for this approach is to protect against phishing attacks against
+    administrators. For instance, if your cluster is integrated with your Active Directory
+    in a way that allows desktop SSO, a bad actor could send your admins an email
+    that runs a command as that user, without having to even know the admin’s credentials!
+    If you are at least forcing a password, there’s an additional step an attacker
+    needs to take.
+  id: totrans-388
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 采用这种方法的另一个原因是防止针对管理员的钓鱼攻击。例如，如果你的集群与Active Directory集成，并允许桌面SSO，恶意行为者可能会向你的管理员发送一封电子邮件，执行一个以管理员身份运行的命令，而不需要知道管理员的凭证！如果你至少要求密码，攻击者需要采取额外的步骤。
+- en: There are arguments to be made that this isn’t the most efficient or secure
+    approach, but it’s often what’s already in place. You will find it much easier
+    to work within existing frameworks than trying to reinvent them.
+  id: totrans-389
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 有人认为这种方法不是最有效或最安全的，但它通常是现有的做法。你会发现，沿用现有框架比重新发明它们要容易得多。
+- en: Impersonating a Privileged User
+  id: totrans-390
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 模拟特权用户
+- en: Instead of using an external PAM to unlock users via passwords, another approach
+    is to impersonate a privileged user using the `--as` command line parameter for
+    `kubectl`. The idea is to simulate the Unix `sudo` command to escalate your privileges,
+    to protect against accidental administrative actions.
+  id: totrans-391
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 除了使用外部PAM通过密码解锁用户外，另一种方法是通过`kubectl`的`--as`命令行参数模拟特权用户。其思路是模拟Unix中的`sudo`命令，提升你的权限，以防止意外的管理操作。
+- en: This approach is more likely to do more harm than good. To make it work, you
+    need at least one RBAC `ClusterRole` and `ClusterRoleBinding` for each user to
+    maintain individual privileged accounts. If you have 100 admins, that’s 200 additional
+    objects to create even before you authorize access to resources. In addition to
+    creating those objects, you need to delete them when the time comes. While automation
+    can help, the proliferation of objects makes it easier to hide misconfigurations.
+    The fewer objects, the better.
+  id: totrans-392
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这种方法更可能带来弊大于利。为了使其生效，你至少需要为每个用户创建一个RBAC `ClusterRole`和`ClusterRoleBinding`，以维护单独的特权账户。如果你有100个管理员，那么在授权访问资源之前，你就需要创建200个额外的对象。除了创建这些对象外，当时机成熟时，你还需要删除它们。虽然自动化可以提供帮助，但对象的激增使得隐藏配置错误变得更容易。对象越少越好。
+- en: 'Any security that is too complicated to be easily tracked is more likely to
+    create security holes. In this case, you may decide you’re going to cut down on
+    the objects created by only creating one `ClusterRole` for impersonation and a
+    single `ClusterRoleBinding` with multiple `Subjects`. This doesn’t really cut
+    down on the complexity of managing this solution because:'
+  id: totrans-393
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 任何太复杂以至于难以追踪的安全性，更有可能会产生安全漏洞。在这种情况下，你可能会决定通过只创建一个用于模拟的`ClusterRole`和一个包含多个`Subjects`的`ClusterRoleBinding`，来减少创建的对象数量。这实际上并没有减少管理这种解决方案的复杂性，因为：
+- en: You still have to manage a Subjects list that can grow very quickly
+  id: totrans-394
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 你仍然需要管理一个可能快速增长的Subjects列表。
+- en: Your privileged users all now look to have the same identity as the API server,
+    losing a considerable amount of granularity and value
+  id: totrans-395
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 你的特权用户现在看起来与API服务器具有相同的身份，从而失去了大量的粒度和价值。
+- en: It’s important to note that the API server does track and log who the original
+    requestor was, but that’s now in a different field which your systems need to
+    look for.
+  id: totrans-396
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 值得注意的是，API服务器确实跟踪并记录了最初请求者的信息，但现在它位于一个不同的字段中，你的系统需要查找该字段。
+- en: This additional work provides little, if any, benefit. You can’t effectively
+    time-box access without some kind of additional automation, and just requiring
+    the addition of a command-line parameter to `kubectl` isn’t likely to stop someone
+    from hitting the up arrow to find the previous command they ran that has the `--as`
+    parameter, even if they didn’t mean to.
+  id: totrans-397
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这种额外的工作几乎没有任何好处。如果没有某种额外的自动化工具，你无法有效地限制访问时间，仅仅要求在`kubectl`中添加命令行参数不太可能阻止某人通过按上箭头查找先前运行的命令（其中包含`--as`参数），即使他们并非故意这么做。
+- en: This approach is more trouble than it’s worth. It won’t provide any meaningful
+    security but will complicate your cluster’s management in ways that are more likely
+    to create security holes than plug them.
+  id: totrans-398
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这种方法弊大于利。它不会提供任何有意义的安全性，反而会以更复杂的方式管理集群，可能会比修补漏洞更容易造成安全隐患。
+- en: Temporarily Authorizing Privilege
+  id: totrans-399
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 临时授权特权
+- en: Assuming you write your RBAC policies based on groups, the only thing you really
+    need to do to escalate privileges is temporarily assign a user to a privileged
+    group. The workflow would look similar to using a privileged account, but instead
+    of having an entirely separate account, you use your standard account. As an example,
+    in our current cluster, let’s assume that `mmosley` was NOT a member of the AD
+    group `cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com`. An external workflow
+    engine would add them after the approval of whatever work needs to be done. Once
+    provisioned, `mmosley` performs their tasks, and when completed, their membership
+    to `cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com` is revoked.
+  id: totrans-400
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 假设你根据组编写了RBAC策略，那么你真正需要做的就是临时将用户分配到特权组中，从而提升其权限。工作流程与使用特权账户类似，但你使用的是标准账户，而不是一个完全独立的账户。例如，在我们当前的集群中，假设`mmosley`不是AD组`cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com`的成员。外部工作流引擎将在需要批准的工作完成后将他们加入该组。完成后，`mmosley`执行其任务，并且在任务完成后，其在`cn=k8s-cluster-admins,ou=Groups,DC=domain,DC=com`中的成员资格将被撤销。
+- en: 'This gives us the same benefits of having a privileged account, without having
+    to have an additional account to manage. There are multiple risks associated with
+    this approach:'
+  id: totrans-401
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这样我们可以获得与特权账户相同的好处，而无需管理额外的账户。这种方法存在多个风险：
+- en: 'Phishing: If you’re using your standard account that’s used for everyday tasks
+    like email, then there’s a higher risk that your credentials will be stolen.'
+  id: totrans-402
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 钓鱼攻击：如果你使用的是用于日常任务（如电子邮件）的标准账户，那么你的凭据被盗的风险会更高。
+- en: 'Overstaying your welcome: A long-lived credential, such as a token or a certificate,
+    may grant access beyond when policy dictates that access has expired.'
+  id: totrans-403
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 逗留过久：长期有效的凭证，如令牌或证书，可能会在政策要求访问已过期时仍授予访问权限。
+- en: 'To combat these risks, it’s important that privileged users are:'
+  id: totrans-404
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 为了应对这些风险，特权用户必须：
+- en: 'Required to re-authenticate: Making sure that the administrator has to re-enter
+    credentials helps protect against malicious scripts and executables.'
+  id: totrans-405
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 需要重新认证：确保管理员必须重新输入凭据有助于防范恶意脚本和可执行文件。
+- en: 'Use multi-factor authentication: Requiring an admin to provide a second factor,
+    preferably one that can’t be phished, will protect against most attacks.'
+  id: totrans-406
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 使用多因素认证：要求管理员提供第二个身份验证因素，最好是一个无法被钓鱼攻击的因素，将有助于防范大多数攻击。
+- en: 'Use short-lived tokens: What’s the point of a four-hour change window if your
+    token is good for eight hours?'
+  id: totrans-407
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 使用短期令牌：如果你的令牌有效期为八小时，那么四小时的变更窗口还有什么意义？
+- en: With these additional mitigations in place, privileged authorization puts the
+    least amount of work on cluster owners because everything is externalized. Just
+    authorize by group!
+  id: totrans-408
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 通过这些额外的缓解措施，特权授权将为集群所有者减少最少的工作量，因为所有的工作都被外部化。只需按组授权即可！
+- en: While this provides the best user experience, most large enterprises are likely
+    to have a privileged access manager already, making that the most likely approach.
+  id: totrans-409
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 尽管这样做提供了最佳的用户体验，但大多数大型企业可能已经拥有特权访问管理器，因此这种方法最有可能被采纳。
+- en: Having walked through multiple ways of authenticating users who interact with
+    our clusters, the next step is to look at how pipelines and automation need to
+    authenticate.
+  id: totrans-410
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在了解了多种与我们集群交互的用户身份验证方法后，下一步是看看流水线和自动化如何进行身份验证。
+- en: Authenticating from pipelines
+  id: totrans-411
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 从流水线进行身份验证
+- en: This chapter so far has focused exclusively on authentication to Kubernetes
+    by users. Whether an operator or a developer, a user will often interact with
+    a cluster to update objects, debug issues, view logs, and so on. However, this
+    doesn’t quite handle all use cases. Most Kubernetes deployments are partnered
+    with pipelines, a process by which code is moved from source to binaries to containers
+    and, ultimately, into a running cluster. We’ll cover pipelines in more detail
+    in *Chapter 18, Provisioning a Multitenant Platform*. For now, the main question
+    is, “*How will your pipeline talk to Kubernetes securely?*”
+  id: totrans-412
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 到目前为止，本章专注于用户如何进行 Kubernetes 认证。无论是运维人员还是开发人员，用户通常会与集群交互，更新对象、调试问题、查看日志等等。然而，这并没有涵盖所有的使用场景。大多数
+    Kubernetes 部署与管道配合使用，管道是将代码从源代码传递到二进制文件，再到容器，最终运行在集群中的过程。我们将在*第18章，提供多租户平台*中详细讨论管道。现在，主要的问题是，“*你的管道如何安全地与
+    Kubernetes 进行通信？*”
+- en: If your pipeline runs in the same cluster that is being updated, this is a simple
+    question to answer. You would grant access to the pipeline’s service account via
+    RBAC to do what it needs to do. This is why service accounts exist – to provide
+    identities to processes inside the cluster.
+  id: totrans-413
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如果你的管道运行在正在更新的同一个集群中，这个问题很容易回答。你可以通过 RBAC 授予管道的服务账户相应的权限来完成它需要做的事情。这就是服务账户存在的原因——为集群内的进程提供身份。
+- en: What if your pipeline runs outside of the cluster? Kubernetes is an API, and
+    all the options presented in this chapter apply to a pipeline as they would to
+    a user. Legacy service account tokens don’t provide an expiration and can easily
+    be abused. The `TokenRequest` API could give you a short-lived token, but you
+    still need to be authenticated to get it. If your cluster runs on the same cloud
+    provider as your pipeline, you may be able to use its integrated IAM system. For
+    instance, you can generate an IAM role in **Amazon CodeBuild** that can talk to
+    an EKS cluster without having a static service account. The same is true for Azure
+    DevOps and AKS.
+  id: totrans-414
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如果你的管道运行在集群外呢？Kubernetes 是一个 API，本章中呈现的所有选项都适用于管道，正如它们适用于用户一样。传统的服务账户令牌没有过期时间，容易被滥用。`TokenRequest`
+    API 可以为你提供短期令牌，但你仍然需要身份验证才能获取它。如果你的集群和管道运行在同一云提供商上，你可能可以使用其集成的 IAM 系统。例如，你可以在
+    **Amazon CodeBuild** 中生成一个 IAM 角色，该角色可以与 EKS 集群进行通信，而无需静态的服务账户。对于 Azure DevOps
+    和 AKS 同样适用。
+- en: If a cloud’s IAM capabilities won’t cover your needs, there are three options.
+    The first is to dynamically generate a token for a pipeline the same way you would
+    for a user, by authenticating to an identity provider and then using the returned
+    `id_token` with your API calls. The second is to generate a certificate that can
+    be used with your API server. Finally, you can leverage impersonation to authenticate
+    your pipeline’s token. Let’s look at all three options and see how our pipelines
+    can use them.
+  id: totrans-415
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如果云提供商的 IAM 功能无法满足你的需求，有三种选择。第一种是动态生成一个令牌给管道，和为用户生成令牌的方式相同，通过身份提供者进行身份验证，然后使用返回的
+    `id_token` 来进行 API 调用。第二种是生成可以与 API 服务器一起使用的证书。最后，你可以利用模拟来认证管道的令牌。让我们来看看这三种选择，并了解我们的管道如何使用它们。
+- en: Using tokens
+  id: totrans-416
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 使用令牌
+- en: Kubernetes doesn’t distinguish between an API call from a human or a pipeline.
+    A short-lived token is a great way to interact with your API server as a pipeline,
+    given the risks we have provided throughout this chapter of potentially losing
+    a token. Most of the client SDKs for Kubernetes know how to refresh these tokens.
+    The biggest issue is, how do you get a token your pipeline can use?
+  id: totrans-417
+  prefs: []
+  type: TYPE_NORMAL
+  zh: Kubernetes 不区分来自人类用户还是管道的 API 调用。鉴于本章中提到的可能丢失令牌的风险，短期令牌是与 API 服务器交互的一个不错的方式。大多数
+    Kubernetes 的客户端 SDK 知道如何刷新这些令牌。最大的问题是，如何获取一个管道可以使用的令牌？
+- en: Most enterprises already have some kind of service account management system.
+    Here, the term “service account” is generic and means an account used by a service
+    of some kind, instead of being the `ServiceAccount` object in Kubernetes. These
+    service account management systems often have their own way of handling tasks,
+    such as credential rotation and authorization management. They also have their
+    own compliance tools, making it easier to get through your security review processes!
+  id: totrans-418
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 大多数企业已经有某种类型的服务账户管理系统。在这里，“服务账户”是一个通用术语，指的是由某种服务使用的账户，而不是 Kubernetes 中的 `ServiceAccount`
+    对象。这些服务账户管理系统通常有自己的方式来处理任务，如凭证轮换和授权管理。它们还拥有自己的合规工具，使得通过安全审查流程变得更加容易！
+- en: Assuming that you have an enterprise service account for your pipeline, how
+    do you translate that credential into a token? We generate tokens based on credentials
+    in our OIDC integrated identity provider; it would be great to use that from our
+    pipelines too! With OpenUnison, this is pretty easy because the page that gave
+    us our token is just a frontend for an API. The next question to answer is how
+    to authenticate to OpenUnison. We could write some code to simulate a browser
+    and reverse-engineer the login process, but that’s just ugly. And if the form
+    changes, our code will break. It would be better to configure the API to authenticate
+    with something that is more API-friendly, such as HTTP Basic authentication.
+  id: totrans-419
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 假设你有一个企业服务帐户用于你的管道，如何将该凭据转换为令牌？我们基于我们在OIDC集成身份提供者中的凭据生成令牌；如果能在我们的管道中使用这个，那就太好了！通过OpenUnison，这非常简单，因为为我们提供令牌的页面实际上只是API的前端。下一个问题是如何向OpenUnison进行身份验证。我们可以编写一些代码来模拟浏览器并逆向工程登录过程，但这看起来很丑陋。如果表单更改，我们的代码也会失效。最好是配置API，使用更适合API的身份验证方式，比如HTTP基本身份验证。
+- en: 'OpenUnison can be extended by creating configuration custom resources. In fact,
+    most of OpenUnison is configured using these custom resources. The current token
+    service assumes you are authenticating using the default OpenUnison form login
+    mechanism, instead of a basic authentication that would be helpful from a pipeline.
+    In order to tell OpenUnison to support API authentication, we need to tell it
+    to:'
+  id: totrans-420
+  prefs: []
+  type: TYPE_NORMAL
+  zh: OpenUnison可以通过创建配置自定义资源来扩展。实际上，OpenUnison的大部分配置都是通过这些自定义资源完成的。目前的令牌服务假设你正在使用默认的OpenUnison表单登录机制进行身份验证，而不是适合管道的基本身份验证。为了让OpenUnison支持API身份验证，我们需要告诉它：
+- en: Enable authentication via HTTP Basic authentication by defining an authentication
+    mechanism
+  id: totrans-421
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 通过定义认证机制，启用通过HTTP基本身份验证进行身份验证
+- en: Create an authentication chain that uses the basic authentication mechanism
+    to complete the authentication process
+  id: totrans-422
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 创建一个认证链，使用基本身份验证机制完成认证过程
+- en: Define an application that can provide the token API, authenticating using the
+    newly created chain
+  id: totrans-423
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+  zh: 定义一个可以提供令牌API的应用程序，使用新创建的认证链进行身份验证
+- en: 'We won’t go through the details of how to make this work in OpenUnison, instead
+    focusing on the end results. The `chapter6` folder contains a Helm chart that
+    was created for you to configure this API. Run it using the same `openunison-values.yaml`
+    file you used to deploy OpenUnison:'
+  id: totrans-424
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们不会深入讲解如何在OpenUnison中实现这一点，而是专注于最终结果。`chapter6`文件夹包含了一个Helm图表，你可以使用它来配置这个API。使用你部署OpenUnison时使用的相同`openunison-values.yaml`文件运行它：
+- en: '[PRE31]'
+  id: totrans-425
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE31]'
+- en: 'Once deployed, we can test it using `curl`:'
+  id: totrans-426
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 部署完成后，我们可以使用`curl`进行测试：
+- en: '[PRE32]'
+  id: totrans-427
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE32]'
+- en: If you’re using direct integration with OpenID Connect, replace `k8sapi.apps.192-168-2-114.nip.io`
+    with `0.0.0.0:6443` to run the `curl` command directly against the API server.
+  id: totrans-428
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如果你使用直接集成OpenID Connect，请将`k8sapi.apps.192-168-2-114.nip.io`替换为`0.0.0.0:6443`，直接对API服务器运行`curl`命令。
+- en: 'Now, wait a minute or two and try the `curl` command again, and you’ll see
+    that you’re not authenticated anymore. This example is great if you’re running
+    a single command, but most pipelines run multiple steps, and a single token’s
+    lifetime isn’t enough. We could write code to make use of the `refresh_token`,
+    but most of the SDKs will do that for us. Instead of getting just the `id_token`,
+    let’s generate an entire `kubectl` configuration:'
+  id: totrans-429
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 现在，等待一两分钟，再次尝试`curl`命令，你会看到你不再被认证。这种示例对于运行单个命令很有用，但大多数管道会运行多个步骤，而且单个令牌的生命周期不足以支撑。我们可以编写代码来利用`refresh_token`，但大多数SDK会为我们处理这个问题。与其仅获取`id_token`，不如生成一个完整的`kubectl`配置：
+- en: '[PRE33]'
+  id: totrans-430
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE33]'
+- en: We’re getting a short-lived token securely, while also interacting with the
+    API server using our standard tools! This solution only works if your service
+    accounts are stored and accessed via an LDAP directory. If that’s not the case,
+    you can extend OpenUnison’s configuration to support any number of configuration
+    options. To learn more, visit OpenUnison’s documentation at [https://openunison.github.io/](https://openunison.github.io/).
+  id: totrans-431
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们正在安全地获取一个短期令牌，同时使用我们的标准工具与API服务器进行交互！这个解决方案仅在你的服务帐户存储并通过LDAP目录访问时有效。如果不是这种情况，你可以扩展OpenUnison的配置来支持任意数量的配置选项。欲了解更多信息，请访问OpenUnison的文档：[https://openunison.github.io/](https://openunison.github.io/)。
+- en: This solution is specific to OpenUnison because there is no standard to convert
+    a user’s credentials into an `id_token`. That is a detail left to each identity
+    provider. Your identity provider may have an API to generate an `id_token` easily,
+    but it’s more likely you’ll need something to act as a broker, since an identity
+    provider won’t know how to generate a full `kubectl` configuration.
+  id: totrans-432
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这个解决方案是针对 OpenUnison 的，因为目前没有标准将用户凭证转换为 `id_token`。这是由每个身份提供者处理的细节。你的身份提供者可能有一个
+    API，可以轻松生成 `id_token`，但更可能的是你需要一些工具来充当代理，因为身份提供者不知道如何生成完整的 `kubectl` 配置。
+- en: Using certificates
+  id: totrans-433
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 使用证书
+- en: The preceding process works well but requires OpenUnison or something similar.
+    If you wanted to take a vendor-neutral approach, you could use certificates as
+    your credential instead of trying to generate a token. Earlier in the chapter,
+    I said that certificate authentication should be avoided for users because of
+    Kubernetes’ lack of revocation support and the fact that most certificates aren’t
+    deployed correctly. Both of these issues are generally easier to mitigate with
+    pipelines because the deployment can be automated.
+  id: totrans-434
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 前述过程工作良好，但需要 OpenUnison 或类似工具。如果你希望采用中立供应商的方式，可以使用证书作为凭据，而不是尝试生成令牌。在本章早些时候，我提到过，证书认证不应被用户使用，因为
+    Kubernetes 缺乏撤销支持，并且大多数证书的部署并不正确。这两个问题通常通过管道容易缓解，因为部署可以自动化。
+- en: If your enterprise requires you to use a central store for service accounts,
+    this approach may not be possible. Another potential issue with this approach
+    is that you may want to use an enterprise CA to generate the certificates for
+    service accounts, but Kubernetes doesn’t know how to trust third-party CAs. There
+    are active discussions about enabling the feature, but it’s not there yet.
+  id: totrans-435
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如果你的企业要求你使用一个中央存储库来管理服务账户，这种方法可能行不通。这个方法的另一个潜在问题是，你可能希望使用企业 CA 来为服务账户生成证书，但
+    Kubernetes 不知道如何信任第三方 CA。目前关于启用该功能的讨论还在进行中，但尚未实现。
+- en: Finally, you can’t generate certificates for many managed clusters. Most managed
+    Kubernetes distributions, such as EKS, do not make the private keys needed to
+    sign requests via the built-in API available to clusters directly. In that case,
+    you’ll be unable to mint certificates that will be accepted by your cluster.
+  id: totrans-436
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 最后，你不能为许多托管集群生成证书。大多数托管的 Kubernetes 发行版，如 EKS，不会将用于通过内置 API 签名请求的私钥提供给集群直接使用。在这种情况下，你将无法生成集群接受的证书。
+- en: 'With all that said, let’s walk through the process:'
+  id: totrans-437
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 话虽如此，让我们一起走过这个过程：
+- en: 'First, we’ll generate a keypair and **certificate signing request** (**CSR**):'
+  id: totrans-438
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 首先，我们将生成一个密钥对和 **证书签名请求** (**CSR**)：
+- en: '[PRE34]'
+  id: totrans-439
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE34]'
+- en: 'Next, we’ll submit the CSR to Kubernetes:'
+  id: totrans-440
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 接下来，我们将把 CSR 提交给 Kubernetes：
+- en: '[PRE35]'
+  id: totrans-441
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE35]'
+- en: 'Once the CSR is submitted to Kubernetes, we need to approve the submission:'
+  id: totrans-442
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 一旦 CSR 提交给 Kubernetes，我们需要批准该提交：
+- en: '[PRE36]'
+  id: totrans-443
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE36]'
+- en: 'After being approved, we download the minted certificate into a `pem` file:'
+  id: totrans-444
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 审核通过后，我们将下载生成的证书并保存为 `pem` 文件：
+- en: '[PRE37]'
+  id: totrans-445
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE37]'
+- en: 'Next, we’ll configure `kubectl` to use our newly approved certificate:'
+  id: totrans-446
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 接下来，我们将配置 `kubectl` 来使用我们新批准的证书：
+- en: '[PRE38]'
+  id: totrans-447
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+  zh: '[PRE38]'
+- en: 'The API server has accepted our certificate but has not authorized it. Our
+    CSR had an `o` in the subject called `sa-cluster-admins`, which Kubernetes translates
+    to “the user `sa-cert` is in the group `sa-cluster-admins`.” We need to authorize
+    that group to be a cluster admin next:'
+  id: totrans-448
+  prefs: []
+  type: TYPE_NORMAL
+  zh: API 服务器已接受我们的证书，但尚未授权它。我们的 CSR 中的 `o` 是名为 `sa-cluster-admins` 的主题，Kubernetes
+    将其翻译为“用户 `sa-cert` 属于 `sa-cluster-admins` 组”。我们接下来需要授权该组为集群管理员：
+- en: '[PRE39]'
+  id: totrans-449
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE39]'
+- en: You now have a key pair that can be used from your pipelines with your cluster!
+    Beware while automating this process. The CSR submitted to the API server can
+    set any groups it wants, including `system:masters`. If a certificate is minted
+    with `system:masters` as an `o` in the subject, it will not only be able to do
+    anything on your cluster; it will also bypass all RBAC authorization. In fact,
+    it will bypass all authorization!
+  id: totrans-450
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 现在你有了一对密钥，可以在你的管道中使用与集群进行交互！在自动化这个过程中要小心。提交给 API 服务器的 CSR 可以设置任何它想要的组，包括 `system:masters`。如果生成的证书在主题中包含
+    `system:masters` 作为 `o`，它不仅可以在你的集群中执行任何操作，还会绕过所有的 RBAC 授权。事实上，它将绕过所有授权！
+- en: If you’re going to go down the certificate route, think about potential alternatives,
+    such as using certificates with your identity provider instead of going directly
+    to the API server. This is similar to our token-based authentication, but instead
+    of using a username and password in HTTP Basic authentication, you use a certificate.
+    This gives you a strong credential that can be issued by your enterprise certificate
+    authority while avoiding having to use passwords.
+  id: totrans-451
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 如果你打算走证书的路线，可以考虑一些替代方案，例如使用身份提供者的证书，而不是直接连接到 API 服务器。这与我们基于令牌的身份验证类似，但不同的是，它不使用
+    HTTP 基本身份验证中的用户名和密码，而是使用证书。这为你提供了一个强大的凭证，可以由企业证书颁发机构颁发，同时避免了使用密码。
+- en: Next, we’ll explore how to authenticate a pipeline using its own identity.
+  id: totrans-452
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 接下来，我们将探索如何使用管道自身的身份进行身份验证。
+- en: Using a pipeline’s identity
+  id: totrans-453
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 使用管道的身份
+- en: Over the last year or two, discussions about increased supply chain security
+    have become a front-and-center topic for Kubernetes and security professionals.
+    Part of that discussion has led to more pipeline systems providing unique identities
+    to workflows that can be used to interact with remote systems, such as a Kubernetes
+    cluster. This offers the best approach because each workflow is unique, and it
+    can have a short-lived token that doesn’t require a shared secret between the
+    Kubernetes cluster and the workflow.
+  id: totrans-454
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在过去的一两年里，关于提高供应链安全性的讨论已经成为 Kubernetes 和安全专业人员的核心话题。这一讨论的一部分促使更多的管道系统为工作流提供唯一的身份，这些身份可以用于与远程系统（如
+    Kubernetes 集群）进行交互。这提供了最佳的解决方案，因为每个工作流都是独特的，并且它可以拥有一个短期的令牌，不需要 Kubernetes 集群与工作流之间共享密钥。
+- en: The challenge with using a workflow’s identity with a Kubernetes cluster is
+    that a cluster can only accept a single OpenID Connect issuer, and managed clusters
+    aren’t even capable of that. Earlier, we explored how your clusters can use impersonation
+    to authenticate API requests to your cluster without enabling OpenID Connect directly
+    in the API server flags. It turns out that this approach works well with CI/CD
+    pipelines too. Instead of configuring your impersonating proxy to trust the identity
+    provider that issues tokens for your users, you can configure it to trust the
+    identity provider that issues tokens for your workflows.
+  id: totrans-455
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 使用工作流身份与 Kubernetes 集群的挑战在于，一个集群只能接受一个 OpenID Connect 发行者，而且托管集群甚至无法做到这一点。前面我们探讨了如何通过模拟身份验证
+    API 请求来访问集群，而无需直接在 API 服务器标志中启用 OpenID Connect。事实证明，这种方法在 CI/CD 管道中也同样适用。你可以将模拟代理配置为信任为你的工作流颁发令牌的身份提供者，而不是信任为用户颁发令牌的身份提供者。
+- en: We’ll demonstrate this using the CI/CD Proxy ([https://cicd-proxy.github.io](https://cicd-proxy.github.io)).
+    This is a collection of Helm charts that Tremolo Security built around the `kube-oidc-proxy`
+    project to simplify integration with pipelines. The `kube-oidc-proxy` was created
+    by **JetStack**, but development ended in early 2021\. Tremolo Security forked
+    the project, adding several features, and has since kept it up to date with dependencies
+    and bug fixes as needed. If you ran the lab to deploy authentication with impersonation
+    earlier in this chapter, you’ve already run Tremolo’s kube-oidc-proxy. The OpenUnison
+    Helm charts automate its integration for you.
+  id: totrans-456
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们将通过 CI/CD Proxy 来演示这个过程（[https://cicd-proxy.github.io](https://cicd-proxy.github.io)）。这是
+    Tremolo Security 围绕 `kube-oidc-proxy` 项目构建的一组 Helm 图表，旨在简化与管道的集成。`kube-oidc-proxy`
+    是由 **JetStack** 创建的，但该项目的开发在 2021 年初结束。Tremolo Security 对该项目进行了分叉，添加了几个功能，并根据需要更新其依赖关系和修复了
+    bug。如果你之前在本章中进行过模拟身份验证的实验，你已经运行了 Tremolo 的 kube-oidc-proxy。OpenUnison Helm 图表会为你自动集成它。
+- en: We’re going to simulate a workflow deleting some pods in our cluster using the
+    CI/CD Proxy. While we’ll be working with GitLab later in the book, that’s a very
+    heavy deployment just to show how pipelines can securely authenticate. To simulate
+    our workflow, we’re going to run a simple `Job` that will have a token mounted
+    via the `TokenRequest` API, with our CI/CD proxy as the audience, instead of the
+    API server. Our CI/CD proxy will then impersonate the ServiceAccount in the projected
+    token’s sub-claim, which will be allowed to delete pods in our namespace. The
+    CI/CD proxy will be configured to trust our cluster’s OIDC discovery URL, completing
+    the circle of trust. Let’s walk through how these trusts come together.
+  id: totrans-457
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们将模拟一个工作流，使用CI/CD代理删除集群中的一些pods。虽然我们将在本书的后面部分使用GitLab，但为了展示管道如何安全地进行身份验证，这个部署非常复杂。为了模拟我们的工作流，我们将运行一个简单的`Job`，通过`TokenRequest`
+    API挂载一个令牌，且令牌的受众是我们的CI/CD代理，而不是API服务器。然后，我们的CI/CD代理会模拟投影令牌中的`sub`声明中的ServiceAccount，该账户被允许删除我们命名空间中的pods。CI/CD代理将被配置为信任我们集群的OIDC发现URL，从而完成信任的循环。让我们来看看这些信任是如何汇聚的。
+- en: '![](img/B21165_06_10.png)'
+  id: totrans-458
+  prefs: []
+  type: TYPE_IMG
+  zh: '![](img/B21165_06_10.png)'
+- en: 'Figure 6.10: Workflow authentication sequence'
+  id: totrans-459
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 图6.10：工作流认证顺序
+- en: 'The above diagram shows the following sequence of events:'
+  id: totrans-460
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 上面的图示展示了以下事件顺序：
+- en: When the CI/CD proxy starts, it reaches out to the cluster’s OIDC discovery
+    document to pull in the correct keys to validate inbound tokens. Since we’re trusting
+    our own cluster’s tokens, we’re using [https://kubernetes.default.svc.cluster.local/](https://kubernetes.default.svc.cluster.local/)
+    as our issuer, so we’ll pull in [https://kubernetes.default.svc.cluster.local/.well-known/openid-configuration](https://kubernetes.default.svc.cluster.local/.well-known/openid-configuration).
+  id: totrans-461
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 当CI/CD代理启动时，它会访问集群的OIDC发现文档，以拉取正确的密钥来验证传入的令牌。由于我们信任自己集群的令牌，我们使用[https://kubernetes.default.svc.cluster.local/](https://kubernetes.default.svc.cluster.local/)作为发行者，因此我们将拉取[https://kubernetes.default.svc.cluster.local/.well-known/openid-configuration](https://kubernetes.default.svc.cluster.local/.well-known/openid-configuration)。
+- en: When our workflow `Job` starts, it will have a token projected into it that
+    will have our CI/CD proxy as an audience. This is in addition to the `ServiceAccount`
+    token that every `pod` is provided by default. If we inspect this token, we’ll
+    see how it differs from the standard token.
+  id: totrans-462
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 当我们的工作流`Job`启动时，它会被投影一个令牌，该令牌的受众是我们的CI/CD代理。这是与每个`pod`默认提供的`ServiceAccount`令牌一起使用的。如果我们检查这个令牌，我们会看到它与标准令牌的不同之处。
+- en: '![](img/B21165_06_11.png)'
+  id: totrans-463
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+  zh: '![](img/B21165_06_11.png)'
+- en: 'Figure 6.11: Comparing tokens'
+  id: totrans-464
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+  zh: 图6.11：令牌比较
+- en: The above image is a side-by-side comparison of the typical `ServiceAccount`
+    token on the left and a token meant for the CI/CD proxy on the right. Both are
+    bound to the specific `pod`, but the left-hand side is meant for the API server
+    where whereas the right-hand token is meant for our proxy. They can’t be used
+    interchangeably, even though they’re signed by the same set of keys and have the
+    same issuer. If you try to use the token on the right with the API server, it
+    will be rejected for having an invalid audience. The same would be true if you
+    tried to use the token on the left with our proxy. The other major difference
+    between the two tokens is that the expiration of the token on the right is only
+    10 minutes after creation. This means that if an attacker were to get access to
+    this token, they’d only have 10 minutes to use it, increasing the security of
+    the token.
+  id: totrans-465
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 上图是一个典型的`ServiceAccount`令牌（左侧）与一个用于CI/CD代理的令牌（右侧）的并排对比。两者都绑定到特定的`pod`，但左侧的令牌用于API服务器，而右侧的令牌则用于我们的代理。即使它们由同一组密钥签名，并且具有相同的发行者，它们也不能互换使用。如果你尝试使用右侧的令牌访问API服务器，它会因为受众无效而被拒绝。如果你尝试使用左侧的令牌访问我们的代理，也是如此。这两个令牌的另一个主要区别是，右侧的令牌在创建后的10分钟内过期。这意味着如果攻击者获得了此令牌，他们只能使用它10分钟，从而增加了令牌的安全性。
+- en: Once our `Job` makes a call using `kubectl` to our proxy, not directly to an
+    API server, the proxy checks the token to make sure it was signed correctly and
+    built correctly. The proxy then forwards the request to the API server but with
+    its own token and the addition of the impersonation headers.
+  id: totrans-466
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 一旦我们的`Job`使用`kubectl`调用我们的代理，而不是直接调用API服务器，代理会检查令牌以确保它被正确签名并构建。然后，代理将请求转发到API服务器，但使用的是它自己的令牌，并且添加了模拟头信息。
+- en: Finally, the API server acts on the request as if it were made by our `Job`.
+  id: totrans-467
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 最后，API服务器会像处理由我们的`Job`发出的请求一样，处理该请求。
+- en: Throughout this transaction, there are no shared secrets that need to be distributed
+    or rotated. There’s very little that can be compromised. Since the OIDC discovery
+    document is controlled by our identity provider, if the keys need to be rotated,
+    our proxy will pick it up. Having walked through the theory, let’s deploy our
+    example.
+  id: totrans-468
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在整个操作过程中，不需要分发或轮换共享密钥。几乎没有任何可以被泄露的内容。由于 OIDC 发现文档由我们的身份提供商控制，如果密钥需要轮换，我们的代理会自动获取更新。理论讲解完毕，接下来让我们部署示例。
+- en: 'First, start with a fresh cluster:'
+  id: totrans-469
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 首先，从一个全新的集群开始：
+- en: '[PRE40]'
+  id: totrans-470
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE40]'
+- en: 'Once the cluster is created, let’s deploy the CI/CD proxy. We didn’t want to
+    get bogged down with specific steps, so we automated the deployment:'
+  id: totrans-471
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦集群创建完成，接下来部署 CI/CD 代理。我们不想陷入具体的步骤，因此我们自动化了部署过程：
+- en: '[PRE41]'
+  id: totrans-472
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE41]'
+- en: 'This script will take a minute or two to run. It does a few things:'
+  id: totrans-473
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这个脚本运行大约需要一两分钟。它做了几件事：
+- en: Deploys the cert-manager project from JetStack and creates an internal CA that
+    we’ll use to sign certificates
+  id: totrans-474
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 从 JetStack 部署 cert-manager 项目并创建一个内部 CA，用于签发证书
+- en: Enables anonymous access to the API server’s OIDC discovery document
+  id: totrans-475
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 启用匿名访问 API 服务器的 OIDC 发现文档
+- en: Deploys the CI/CD proxy using Tremolo Security’s Helm charts
+  id: totrans-476
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 使用 Tremolo Security 的 Helm 图表部署 CI/CD 代理
+- en: Creates a target namespace and `Deployment` we can use to test deleting pods
+    in
+  id: totrans-477
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 创建一个目标命名空间和 `Deployment`，我们可以用来测试删除 Pods 的操作
+- en: Creates an RBAC binding for our impersonated user to be able to list and delete
+    pods in our target namespace
+  id: totrans-478
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 为我们模拟的用户创建一个 RBAC 绑定，使其能够列出并删除目标命名空间中的 Pods
+- en: 'Once everything is deployed, the next step is to create our `Job` and check
+    the logs:'
+  id: totrans-479
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 一旦一切部署完成，下一步是创建我们的 `Job` 并检查日志：
+- en: '[PRE42]'
+  id: totrans-480
+  prefs: []
+  type: TYPE_PRE
+  zh: '[PRE42]'
+- en: We can see that we were able to delete our pods, using the projected token!
+  id: totrans-481
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 我们可以看到，我们成功地使用投影令牌删除了我们的 Pods！
+- en: This seems like quite a bit of work just to delete a `Pod`. It might have been
+    easier to just create a `ServiceAccount` token and store it somewhere our workflow
+    could access it. However, that would be a security and Kubernetes anti-pattern.
+    It means that so long as the pod exists in the cluster’s etcd database, it could
+    be used without restriction. You could create a rotation system, but just like
+    with custom authentication, you’re now creating a pale imitation of OpenID Connect’s
+    existing security. You’re also building out additional automation that also needs
+    to be secured. So what looks like quite a bit of additional work will actually
+    save you time and make your security team happy!
+  id: totrans-482
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 这看起来似乎需要做很多工作来删除一个 `Pod`。或许直接创建一个 `ServiceAccount` 令牌并将其存储在我们的工作流能够访问的地方会更简单。但那样会是一种安全和
+    Kubernetes 反模式。意味着只要 Pod 存在于集群的 etcd 数据库中，就可以不受限制地使用它。你可以创建一个轮换系统，但就像自定义认证一样，你现在是在模仿
+    OpenID Connect 已有的安全性。同时，你也在构建额外的自动化，这些自动化也需要被保护。因此，看起来需要额外工作，但实际上会为你节省时间，并让你的安全团队更加满意！
+- en: Having discussed how to properly authenticate to your cluster from your pipeline,
+    let’s examine some anti-patterns with pipeline authentication.
+  id: totrans-483
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在讨论如何从管道正确地认证到集群之后，接下来我们来探讨管道认证中的一些反模式。
+- en: Avoiding anti-patterns
+  id: totrans-484
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+  zh: 避免反模式
+- en: It turns out most of the anti-patterns that apply to user authentication also
+    apply to pipeline authentication. Given the nature of code which authenticates,
+    there are some specific things to look out for.
+  id: totrans-485
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 事实证明，适用于用户认证的大部分反模式同样适用于管道认证。鉴于认证代码的性质，有一些特定的事项需要留意。
+- en: First, don’t use a person’s account for a pipeline. It will likely violate your
+    enterprise’s policies and can expose your account, and maybe your employer, to
+    issues. Your enterprise account (which is assigned to everyone else in the enterprise)
+    generally has several rules attached to it. Simply using it in code can breach
+    these rules. The other anti-patterns we’ll discuss add to the risk.
+  id: totrans-486
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 首先，不要使用个人账户进行管道操作。这很可能违反你所在企业的政策，并且可能会暴露你的账户，甚至可能对你的雇主造成问题。你的企业账户（分配给企业中其他所有人）通常附带一些规则。仅仅在代码中使用它可能会违反这些规则。我们接下来讨论的其他反模式也会增加风险。
+- en: Next, never put your service account’s credentials into Git, even when encrypted.
+    It’s popular to include credentials directly in objects stored in Git because
+    you now have change control, but it’s just so easy to accidentally push a Git
+    repository out to a public space. Much of security is about protecting users from
+    accidents that can leak sensitive information. Even encrypted credentials in Git
+    can be abused if the encryption keys are also stored in Git. Every cloud provider
+    has a secret management system that will synchronize your credentials into Kubernetes
+    Secret objects. You can do this with Vault as well, which we’ll do later in this
+    book. This is a much better approach, as these tools are specifically designed
+    to manage sensitive data. Git is meant to make it easy to share and collaborate,
+    which makes for poor secret management.
+  id: totrans-487
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 接下来，绝不要将你的服务账户凭证放入 Git 中，即使是加密过的。将凭证直接包含在存储在 Git 中的对象中是很常见的做法，因为你现在有了变更控制，但这样做很容易不小心将
+    Git 仓库推送到公共空间。安全性在很大程度上是关于保护用户免受可能泄露敏感信息的意外情况。即使 Git 中的凭证经过加密，如果加密密钥也存储在 Git 中，也可能被滥用。每个云服务提供商都有一个秘密管理系统，将你的凭证同步到
+    Kubernetes Secret 对象中。你也可以使用 Vault，稍后在本书中我们将介绍。这个方法要好得多，因为这些工具专门设计用于管理敏感数据。Git
+    的目的是方便共享和协作，这使得它不适合用于秘密管理。
+- en: Finally, don’t use legacy service account tokens from outside of your cluster.
+    I know that I’ve said this a dozen times in this chapter, but it’s incredibly
+    important. When using a bearer token, anything that carries that token is a potential
+    attack vector. There have been network providers that leak tokens, for example.
+    It’s a common anti-pattern. If a vendor tells you to generate a service account
+    token, push back – you’re putting your enterprise’s data at risk.
+  id: totrans-488
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 最后，不要使用集群外的旧版服务账户令牌。我知道我在这一章中说了十几次，但这非常重要。当使用持票令牌时，任何携带该令牌的东西都是潜在的攻击面。例如，有些网络提供商会泄漏令牌。这是一种常见的反模式。如果供应商告诉你生成服务账户令牌，请反对——你正在将企业的数据置于风险之中。
+- en: Summary
+  id: totrans-489
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 摘要
+- en: This chapter detailed how Kubernetes identifies users and what groups their
+    members are in. We detailed how the API server interacts with identities and explored
+    several options for authentication. Finally, we detailed the OpenID Connect protocol
+    and how it’s applied to Kubernetes.
+  id: totrans-490
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 本章详细介绍了 Kubernetes 如何识别用户及其所属的群组。我们详细说明了 API 服务器如何与身份交互，并探讨了几种认证选项。最后，我们详细介绍了
+    OpenID Connect 协议以及它如何应用于 Kubernetes。
+- en: Learning how Kubernetes authenticates users and the details of the OpenID Connect
+    protocol is an important part of building security in a cluster. Understanding
+    the details and how they apply to common enterprise requirements will help you
+    decide the best way to authenticate to clusters, and also provide justification
+    regarding why the anti-patterns we explored should be avoided.
+  id: totrans-491
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 学习 Kubernetes 如何认证用户以及 OpenID Connect 协议的细节是构建集群安全的重要部分。理解这些细节及其如何应用于常见企业需求，将帮助你决定最适合的认证方式，同时也为我们探讨的反模式提供了避免的正当理由。
+- en: In the next chapter, we’ll apply our authentication process to authorizing access
+    to Kubernetes resources. Knowing who somebody is isn’t enough to secure your clusters.
+    You also need to control what they have access to.
+  id: totrans-492
+  prefs: []
+  type: TYPE_NORMAL
+  zh: 在下一章中，我们将应用认证过程来授权访问 Kubernetes 资源。仅仅知道某人是谁不足以保护你的集群。你还需要控制他们可以访问的内容。
+- en: Questions
+  id: totrans-493
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 问题
+- en: OpenID Connect is a standard protocol with extensive peer review and usage.
+  id: totrans-494
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: OpenID Connect 是一个经过广泛同行评审和使用的标准协议。
+- en: 'True'
+  id: totrans-495
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 真实的
+- en: 'False'
+  id: totrans-496
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 错误的
+- en: Which token does Kubernetes use to authorize your access to an API?
+  id: totrans-497
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: Kubernetes 使用哪个令牌来授权你访问 API？
+- en: '`access_token`'
+  id: totrans-498
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '`access_token`'
+- en: '`id_token`'
+  id: totrans-499
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '`id_token`'
+- en: '`refresh_token`'
+  id: totrans-500
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '`refresh_token`'
+- en: '`certificate_token`'
+  id: totrans-501
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: '`certificate_token`'
+- en: In which situation is certificate authentication a good idea?
+  id: totrans-502
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 在什么情况下，证书认证是一个好主意？
+- en: Day-to-day usage by administrators and developers
+  id: totrans-503
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 管理员和开发人员的日常使用
+- en: Access from external CI/CD pipelines and other services
+  id: totrans-504
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 来自外部 CI/CD 流水线和其他服务的访问
+- en: Break glass in case of emergency, when all other authentication solutions are
+    unavailable
+  id: totrans-505
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 在紧急情况下使用“破玻璃”机制，当所有其他认证解决方案不可用时
+- en: How should you identify users accessing your cluster?
+  id: totrans-506
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 你应该如何识别访问集群的用户？
+- en: Email address
+  id: totrans-507
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 电子邮件地址
+- en: Unix login ID
+  id: totrans-508
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: Unix 登录 ID
+- en: Windows login ID
+  id: totrans-509
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: Windows 登录 ID
+- en: An immutable ID not based on a user’s name
+  id: totrans-510
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 一个不基于用户姓名的不可变 ID
+- en: Where are OpenID Connect configuration options set in Kubernetes?
+  id: totrans-511
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 在 Kubernetes 中，OpenID Connect 配置选项设置在哪里？
+- en: Depends on the distribution
+  id: totrans-512
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 取决于发行版
+- en: In a ConfigMap object
+  id: totrans-513
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 在 ConfigMap 对象中
+- en: In a secret
+  id: totrans-514
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 在一个秘密中
+- en: Set as flags on the Kubernetes API server executable
+  id: totrans-515
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 设置为 Kubernetes API 服务器可执行文件的标志
+- en: When using Impersonation with your cluster, the groups your user brings are
+    the only ones needed.
+  id: totrans-516
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 使用集群时，用户带入的群组是唯一需要的群组。
+- en: 'True'
+  id: totrans-517
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 正确
+- en: 'False'
+  id: totrans-518
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 错误
+- en: The dashboard should have its own privileged identity to work properly.
+  id: totrans-519
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 仪表盘应具有自己的特权身份以正常工作。
+- en: 'True'
+  id: totrans-520
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 正确
+- en: 'False'
+  id: totrans-521
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 错误
+- en: Answers
+  id: totrans-522
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+  zh: 答案
+- en: 'a: True'
+  id: totrans-523
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 'a: 正确'
+- en: 'b: `id_token`'
+  id: totrans-524
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 'b: `id_token`'
+- en: 'c: Break glass in case of emergency, when all other authentication solutions
+    are unavailable'
+  id: totrans-525
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 'c: 在紧急情况下打破玻璃，当其他所有身份验证解决方案不可用时'
+- en: 'd: An immutable ID not based on a user’s name'
+  id: totrans-526
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 'd: 一个不基于用户姓名的不可变 ID'
+- en: 'd: Set as flags on the Kubernetes API server executable'
+  id: totrans-527
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 'd: 设置为 Kubernetes API 服务器可执行文件的标志'
+- en: 'b: False'
+  id: totrans-528
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 'b: 错误'
+- en: 'b: False'
+  id: totrans-529
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+  zh: 'b: 错误'
