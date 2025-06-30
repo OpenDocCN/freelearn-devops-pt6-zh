@@ -1,4 +1,4 @@
-# AWS 上的 Kubernetes
+# 第十章：AWS 上的 Kubernetes
 
 在公共云上使用 Kubernetes 对你的应用来说是灵活且可扩展的。AWS 是公共云行业中最受欢迎的服务之一。在本章中，你将学习什么是 AWS 以及如何在 AWS 上设置 Kubernetes，内容包括以下主题：
 

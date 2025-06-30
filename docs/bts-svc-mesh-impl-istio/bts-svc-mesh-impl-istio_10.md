@@ -1,6 +1,6 @@
-# 10
 
-# 为非 Kubernetes 工作负载部署 Istio 服务网格
+
+# 第十章：为非 Kubernetes 工作负载部署 Istio 服务网格
 
 Istio 和 Kubernetes 是互补的技术。Kubernetes 解决了将分布式应用程序以容器形式打包、相互隔离并在具有专用资源的统一环境中部署的问题。尽管 Kubernetes 解决了容器的部署、调度和管理问题，但它并没有解决容器之间的流量管理问题。Istio 通过提供流量管理能力、增加可观察性并执行零信任安全模型，补充了 Kubernetes。
 

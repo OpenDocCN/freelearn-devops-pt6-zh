@@ -1,6 +1,6 @@
-# 4
 
-# 调试和故障排除 Kubernetes Secrets
+
+# 第四章：调试和故障排除 Kubernetes Secrets
 
 到目前为止，我们已经确定了 Kubernetes Secrets 的攻击面。其中两个是静态加密和传输加密。之前，在 *第三章*，*Kubernetes 本地方式加密 Secrets* 中，静态加密帮助我们增强了静态和传输中的安全性。在本章中，我们将重点讨论可能与 Secrets 相关的调试问题。Secrets 在存储和提供 Kubernetes 环境中运行的应用程序和服务所需的敏感信息方面起着至关重要的作用。它们对我们的应用程序至关重要，了解如何有效地调试与 Secrets 相关的问题可以节省大量的时间和精力。
 

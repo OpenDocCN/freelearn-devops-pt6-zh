@@ -1,6 +1,6 @@
-# 7
 
-# 使用 Kubernetes、AWS、GCP 和 Azure 查询基础设施
+
+# 第七章：使用 Kubernetes、AWS、GCP 和 Azure 查询基础设施
 
 本章将介绍捕获来自各大常见云基础设施提供商的**遥测**所需的设置和配置。你将了解 Kubernetes 的不同选项。此外，你将探讨使 Grafana 能够查询来自云服务商（如**Amazon Web Services**（**AWS**）、**Google Cloud Platform**（**GCP**）和 Azure）的数据的主要插件。你还将研究如何处理大量遥测数据的解决方案，尤其是在直接连接不可扩展的情况下。本章还将介绍在遥测数据到达 Grafana 之前进行过滤和选择的选项，以实现**安全性**和**成本优化**。
 

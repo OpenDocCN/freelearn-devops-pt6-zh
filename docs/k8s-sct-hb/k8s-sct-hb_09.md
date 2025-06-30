@@ -1,6 +1,6 @@
-# 9
 
-# 探索 Azure 上的云秘密存储
+
+# 第九章：探索 Azure 上的云秘密存储
 
 之前，我们深入探讨了 AWS 上的 Secrets Manager。本章中，我们将关注另一个受欢迎的云服务提供商——微软 Azure。我们将学习 Azure 提供的解决方案 Azure Key Vault，该方案用于存储 Secrets 并执行加密和解密操作。我们将利用 Azure Key Vault 来存储 Secrets，并在我们的 Kubernetes 工作负载中使用它们，还将使用 Key Vault 来加密存储在 etcd 上的 Secrets。
 

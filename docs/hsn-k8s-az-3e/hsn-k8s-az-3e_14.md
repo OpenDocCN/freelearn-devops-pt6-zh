@@ -1,4 +1,4 @@
-# 9\. AKS 中的 Azure Active Directory Pod 托管身份
+# 第十章：9\. AKS 中的 Azure Active Directory Pod 托管身份
 
 在上一章中，*第八章，AKS 中的基于角色的访问控制*，您将 AKS 集群与**Azure Active Directory**（**Azure AD**）进行了集成。然后，您将 Kubernetes 角色分配给 Azure AD 中的用户和组。在本章中，您将探讨如何将运行在 AKS 上的应用程序与 Azure AD 集成，并学习如何为您的 Pod 在 Azure 中分配一个身份，使其能够与其他 Azure 资源交互。
 

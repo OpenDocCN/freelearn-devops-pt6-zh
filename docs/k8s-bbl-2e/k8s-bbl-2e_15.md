@@ -1,6 +1,6 @@
-# 15
 
-# Google Kubernetes Engine 上的 Kubernetes 集群
+
+# 第十五章：Google Kubernetes Engine 上的 Kubernetes 集群
 
 在本章中，我们将在**Google Cloud Platform**（**GCP**）上启动一个 Kubernetes 集群，这是我们在接下来几章中要介绍的三大公有云提供商中的第一个。
 

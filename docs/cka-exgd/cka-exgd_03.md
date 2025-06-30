@@ -1,6 +1,6 @@
-# 3
 
-# 维护 Kubernetes 集群
+
+# 第三章：维护 Kubernetes 集群
 
 在过去几年里，Kubernetes 一直是社区中最具活力的平台，并保持了良好的发布节奏，这使得 Kubernetes 的维护变得尤为重要，以便与 Kubernetes 合作的组织能够利用其最新功能。本章介绍了维护 Kubernetes 集群的不同方法，同时提供了进行 Kubernetes 集群升级、etcd 备份和 etcd 恢复的实用教程。它涵盖了 CKA 考试内容的 25%。
 

@@ -1,6 +1,6 @@
-# 15
 
-# 扩展 Kubernetes
+
+# 第十五章：扩展 Kubernetes
 
 在本章中，我们将深入探索 Kubernetes 的内部。我们将从 Kubernetes API 开始，学习如何通过直接访问 API、使用 controller-runtime Go 库以及自动化 kubectl 来以编程方式操作 Kubernetes。然后，我们将研究如何使用自定义资源扩展 Kubernetes API。最后一部分将介绍 Kubernetes 支持的各种插件。Kubernetes 操作的许多方面都是模块化的，并且设计为可扩展的。我们将研究 API 聚合层以及几种类型的插件，如自定义调度器、授权、准入控制、自定义度量和存储卷。最后，我们将探讨如何扩展 kubectl 并添加自己的命令。
 

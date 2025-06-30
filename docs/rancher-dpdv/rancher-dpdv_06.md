@@ -1,4 +1,4 @@
-# *第四章*：创建 RKE 和 RKE2 集群
+# 第四章：*第四章*：创建 RKE 和 RKE2 集群
 
 部署 Rancher 的标准方式是创建一个**Rancher Kubernetes Engine (RKE)**集群，然后使用 Helm 在集群上安装 Rancher。使用 RKE2 部署 Kubernetes 集群的新方式建立在 K3s 和新的内部集群管理模型之上。通过这种方式，Rancher 可以直接管理其所在的集群，而无需像 RKE 这样的外部工具。本章将讨论何时使用 RKE2 而非 RKE 是合理的，以及如何引导第一个节点并将其他节点加入集群。此时，我们将使用**Helm**工具在集群上安装 Rancher，这将把 Rancher 服务器工作负载安装到集群中。最后，我们将介绍如何配置负载均衡器以支持 Rancher URL。
 

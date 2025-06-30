@@ -1,6 +1,6 @@
-# 10
 
-# 探索 GCP 上的 Cloud Secret Store
+
+# 第十章：探索 GCP 上的 Cloud Secret Store
 
 之前，我们深入研究了 Azure Key Vault。我们成功地将 Secrets 安全地存储在 Key Vault 中，并将其作为 Secrets 在 etcd 中存储的密钥管理服务。在本章中，我们将专注于 Google Cloud 平台，并将使用 Google Cloud 的 Secret Manager。
 

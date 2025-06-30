@@ -1,6 +1,6 @@
-# 11
 
-# 使用 Kubernetes 部署无状态工作负载
+
+# 第十一章：使用 Kubernetes 部署无状态工作负载
 
 前一章介绍了两个重要的 Kubernetes 对象：**ReplicationController** 和 **ReplicaSet**。到此为止，你已经知道它们在保持 Pod 的相同健康副本（拷贝）方面起着类似的作用。实际上，ReplicaSet 是 ReplicationController 的继任者，在 Kubernetes 的最新版本中，应该使用 ReplicaSet 来代替 ReplicationController。
 

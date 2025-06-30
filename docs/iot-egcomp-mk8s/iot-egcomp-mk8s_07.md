@@ -1,6 +1,6 @@
-# 7
 
-# 设置 MetalLB 和 Ingress 进行负载均衡
+
+# 第七章：设置 MetalLB 和 Ingress 进行负载均衡
 
 在上一章中，我们已经了解了 Kubernetes 网络模型是如何工作的，并学会了如何使用 Calico、Cilium 和 Flannel CNI 插件来对集群进行网络配置。我们还讨论了选择 CNI 提供商时需要考虑的一些最重要的因素。
 

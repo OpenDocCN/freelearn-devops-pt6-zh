@@ -1,4 +1,4 @@
-# 1\. 容器和 Kubernetes 简介
+# 第二章：1\. 容器和 Kubernetes 简介
 
 Kubernetes 已经成为容器编排的领先标准。自 2014 年推出以来，Kubernetes 已经获得了极大的流行。它被初创企业和主要企业广泛采用，所有主要的公共云供应商都提供了托管的 Kubernetes 服务。
 

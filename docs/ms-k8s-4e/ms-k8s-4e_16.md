@@ -1,6 +1,6 @@
-# 16
 
-# Kubernetes 治理
+
+# 第十六章：Kubernetes 治理
 
 在上一章中，我们详细讨论了扩展 Kubernetes 的不同方式，包括在接纳控制阶段验证和变更请求。
 

@@ -1,6 +1,6 @@
-# 2
 
-# Kubernetes – 简介及与 GenAI 的集成
+
+# 第二章：Kubernetes – 简介及与 GenAI 的集成
 
 在大规模部署和管理 GenAI 工作负载时，会面临诸多挑战，包括构建模型、打包模型进行分发，以及确保有效的部署和扩展。在本章中，我们将讨论容器和**Kubernetes**（**K8s**）的概念，以及它们为什么成为应对这些复杂性强大解决方案的趋势。它们正成为 OpenAI（[`openai.com/index/scaling-kubernetes-to-7500-nodes/`](https://openai.com/index/scaling-kubernetes-to-7500-nodes/)）和 Anthropic（[`youtu.be/c9NJ6GSeNDM?si=xjei4T9VfZvejD5o&t=2412`](https://youtu.be/c9NJ6GSeNDM?si=xjei4T9VfZvejD5o&t=2412)）等公司的事实标准，用于部署 GenAI 工作负载。我们将涵盖以下主要内容：
 

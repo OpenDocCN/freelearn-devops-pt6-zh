@@ -1,6 +1,6 @@
-# 8
 
-# 使用 OpenShift 进行 GitOps
+
+# 第七章：使用 OpenShift 进行 GitOps
 
 本章将深入探讨**GitOps**在**Red Hat OpenShift**中的应用，这是一种彻底改变我们部署、管理和运营容器化应用程序的方式。
 

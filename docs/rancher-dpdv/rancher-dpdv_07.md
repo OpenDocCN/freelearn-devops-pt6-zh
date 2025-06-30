@@ -1,4 +1,4 @@
-# *第五章*：在托管 Kubernetes 集群上部署 Rancher
+# 第五章：*第五章*：在托管 Kubernetes 集群上部署 Rancher
 
 Rancher 的一个优点是可以部署在任何认证的 Kubernetes 集群上。这意味着 Rancher 可以安装在托管的 Kubernetes 集群上，比如**Google Kubernetes Engine**（**GKE**）、亚马逊的**Elastic Container Service**（**EKS**） for Kubernetes、**Azure Kubernetes Service**（**AKS**）或**Digital Ocean's Kubernetes Service**（**DOKS**）。这可以简化 Rancher 的管理，但托管的 Kubernetes 解决方案存在一些限制。接下来，我们将介绍托管 Kubernetes 集群的设计规则以及一些标准设计。到那时，我们将使用**Helm**工具在集群上安装 Rancher，从而在集群上安装 Rancher 服务器工作负载。最后，我们将介绍如何在托管的 Kubernetes 集群上备份 Rancher。
 

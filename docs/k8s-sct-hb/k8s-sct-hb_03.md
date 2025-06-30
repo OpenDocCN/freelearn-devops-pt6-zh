@@ -1,6 +1,6 @@
-# 3
 
-# 使用 Kubernetes 原生方式加密 Secrets
+
+# 第三章：使用 Kubernetes 原生方式加密 Secrets
 
 在前两章中，我们一起回顾了关于 Kubernetes 架构和设计中`Secret`对象的基础知识，包括其架构、实现和使用方式。我们还明确了，`Secret`对象由于其未加密的特性，无论是键值对还是 etcd 数据文件，都在 Kubernetes 平台中不安全，这给您的业务带来了严重的安全隐患。
 

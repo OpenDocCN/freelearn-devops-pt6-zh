@@ -1,6 +1,6 @@
-# 10
 
-# 在 Kubernetes 中优化 GPU 资源以适应 GenAI 应用
+
+# 第九章：在 Kubernetes 中优化 GPU 资源以适应 GenAI 应用
 
 本章将讨论在 K8s 中部署 GenAI 应用时最大化**图形处理单元**（**GPU**）（[`aws.amazon.com/what-is/gpu/`](https://aws.amazon.com/what-is/gpu/)）效率的策略，因为 GPU 实例非常昂贵，且经常被低效使用。我们还将讨论 GPU 资源管理、调度最佳实践，以及分区选项，如**多实例 GPU**（**MIG**）（[`www.nvidia.com/en-us/technologies/multi-instance-gpu/`](https://www.nvidia.com/en-us/technologies/multi-instance-gpu/)）、**多进程服务**（**MPS**）（[`docs.nvidia.com/deploy/mps/index.html`](https://docs.nvidia.com/deploy/mps/index.html)）和**GPU 时间切片**（[`docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html`](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html)）。最后，我们将讨论如何监控 GPU 性能、跨节点平衡工作负载以及自动扩展 GPU 资源以有效应对动态 GenAI 工作负载。
 

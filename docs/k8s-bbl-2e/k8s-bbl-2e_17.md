@@ -1,6 +1,6 @@
-# 17
 
-# 在 Microsoft Azure 上使用 Azure Kubernetes 服务的 Kubernetes 集群
+
+# 第十七章：在 Microsoft Azure 上使用 Azure Kubernetes 服务的 Kubernetes 集群
 
 我们将要研究的最后一个公有云 Kubernetes 服务是 **Azure Kubernetes 服务** (**AKS**)，它托管在 Microsoft Azure 中，是“三大”公有云提供商之一 —— 另外两个我们已经在*第十五章*《Google Kubernetes Engine 上的 Kubernetes 集群》和*第十六章*《在 Amazon Web Services 上使用 Amazon Elastic Kubernetes 服务启动 Kubernetes 集群》中介绍过了。
 

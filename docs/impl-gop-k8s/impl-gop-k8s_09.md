@@ -1,6 +1,6 @@
-# 9
 
-# Azure 和 AWS 部署的 GitOps
+
+# 第八章：Azure 和 AWS 部署的 GitOps
 
 在不断发展的云计算环境中，GitOps 实践的采用作为一种变革性方法，突显了简化应用程序和基础设施部署与管理的优势。本章将详细探讨如何在 Azure 和 **亚马逊 Web 服务** (**AWS**) 这两大领先的云平台中应用 GitOps 原则。本章旨在解开利用云原生能力的复杂性，向读者全面展示如何在 GitOps 工作流中充分发挥 **Azure Kubernetes 服务** (**AKS**)、**Azure DevOps**、**弹性 Kubernetes 服务** (**EKS**) 和 **AWS CodePipeline** 的潜力。
 

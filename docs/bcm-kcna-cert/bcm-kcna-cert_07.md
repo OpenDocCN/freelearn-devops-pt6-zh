@@ -1,6 +1,6 @@
-# 7
 
-# 使用 Kubernetes 进行应用程序部署和调试
+
+# 第七章：使用 Kubernetes 进行应用程序部署和调试
 
 在本章中，我们将了解如何控制工作负载在 Kubernetes 上的部署，Kubernetes 调度器是如何工作的，以及当应用程序在 K8s 上运行时出现问题时，如何进行调试。本章同时涵盖了**Kubernetes 和 Cloud Native Associate**（**KCNA**）认证考试的 *Kubernetes 基础* 和 *Cloud Native Observability* 域的内容。
 

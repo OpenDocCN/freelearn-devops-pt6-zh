@@ -1,4 +1,4 @@
-# 使用核心 Kubernetes 构建块构建基础
+# 第二章：使用核心 Kubernetes 构建块构建基础
 
 本章将介绍核心的 Kubernetes 构建块，主要包括 pods、services、replication controllers、replica sets 和 labels。我们将描述 Kubernetes 组件、API 的维度以及 Kubernetes 对象。我们还将深入探讨主要的 Kubernetes 集群组件。章节中将包括一些简单的应用示例，以演示每个构建块的使用。本章还将介绍集群的基本操作。最后，我们将通过一些示例介绍健康检查和调度。
 

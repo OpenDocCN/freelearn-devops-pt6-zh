@@ -1,4 +1,4 @@
-# GCP 上的 Kubernetes
+# 第十一章：GCP 上的 Kubernetes
 
 **Google Cloud Platform**（**GCP**）是由 Google 提供的公共云服务，越来越受欢迎。GCP 具有与 AWS 类似的概念，如 VPC、计算引擎、持久磁盘、负载均衡和多个托管服务。在本章中，你将了解 GCP，并通过以下主题学习如何在 GCP 上设置 Kubernetes：
 

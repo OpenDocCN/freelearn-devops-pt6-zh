@@ -1,4 +1,4 @@
-# *第二章*：Rancher 和 Kubernetes 高级架构
+# 第二章：*第二章*：Rancher 和 Kubernetes 高级架构
 
 本章将介绍**Rancher**、**Rancher Kubernetes Engine**（**RKE**）、**RKE2**（也称为**RKE 政府版**）、**K3s**和**RancherD**的高级过程。我们将讨论这些产品的核心设计理念，并探讨它们的不同之处。我们将深入了解 Rancher 的高级架构，并查看 Rancher 服务器的 Pod 如何使用 Cattle 代理（包括 Cattle-cluster-agent 和 Cattle-node-agent）与下游集群进行通信。我们还将探讨 Rancher 服务器如何使用 RKE，以及 Rancher-machine 如何为下游节点和 Kubernetes（**K8s**）集群提供资源。接下来，我们将介绍 K8s 的高级架构，包括**kube-api-server**、**kube-controller-manager**和**kube-scheduler**。我们还将讨论这些组件如何保持集群的状态。最后，我们将检查最终用户如何更改期望状态，以及控制器如何更新当前状态。
 

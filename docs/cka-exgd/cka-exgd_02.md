@@ -1,6 +1,6 @@
-# 2
 
-# 安装和配置 Kubernetes 集群
+
+# 第二章：安装和配置 Kubernetes 集群
 
 本章介绍了 Kubernetes 的不同配置，这是使用 Kubernetes 的第一步。我们将通过设置一个包含单个工作节点的 Kubernetes 集群，然后再扩展为多个工作节点，来进行实践。本章将帮助你熟悉 Kubernetes 安装，这是作为 Kubernetes 管理员日常工作中的一项关键技能。
 

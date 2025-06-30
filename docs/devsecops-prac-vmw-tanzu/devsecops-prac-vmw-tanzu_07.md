@@ -1,6 +1,6 @@
-# 7
 
-# 使用 Tanzu Kubernetes Grid 在云之间编排容器
+
+# 第七章：使用 Tanzu Kubernetes Grid 在云之间编排容器
 
 在上一章中，我们了解了作为 Tanzu 产品包一部分的容器注册中心 Harbor。通过了解如何使用 Harbor 托管容器镜像，接下来我们将在本章学习如何使用 Tanzu Kubernetes Grid（Tanzu 的多云且企业级的 Kubernetes 分发版）将它们部署到 Kubernetes 上。近年来，Kubernetes 已经广泛被接受，成为行业运行容器的默认规范。根据**Cloud Native Computing Foundation**（**CNCF**）的最新调查，96%的受访组织要么正在评估，要么已经在使用 Kubernetes（来源：[`www.cncf.io/wp-content/uploads/2022/02/CNCF-Annual-Survey-2021.pdf`](https://www.cncf.io/wp-content/uploads/2022/02/CNCF-Annual-Survey-2021.pdf)）！此外，许多受访者在不同的云平台上使用 Kubernetes，原因包括风险缓解、避免厂商锁定以及提高运营支出效率。但在一个或多个云上运营大型 Kubernetes 平台是一个复杂的任务，原因多种多样。每个云平台都有各自的 API 和管理 Kubernetes 服务的独特方式。当组织还需要在本地运行 Kubernetes 服务时，复杂性会进一步增加。对于这种本地 Kubernetes 部署，许多企业会使用自定义自动化构建自己的平台。虽然使用开源工具构建这样的自定义平台可以带来初期的成本节省，但当最初构建平台的人离开组织后，长期维护这些平台将变得非常困难。相比之下，组织可以更好地利用其人才，使用**Tanzu Kubernetes Grid**（**TKG**）这样的企业级产品，专注于构建更多具有收入创造潜力的定制应用程序，而不是为这些低价值的工作分心。
 

@@ -1,6 +1,6 @@
-# 4
 
-# 搭建一个新的 Helm Chart
+
+# 第四章：搭建一个新的 Helm Chart
 
 在上一章中，你从最终用户的角度学习了如何使用 Helm，利用它作为包管理器将应用程序安装到 Kubernetes 中。以这种方式使用 Helm 需要你理解如何使用 Helm 生命周期命令（`install`、`upgrade`、`rollback` 和 `uninstall`），但并不需要你理解 Helm chart 本身是如何构建的。虽然理解 Helm CLI 命令对于安装和管理由 Helm 安装的应用程序是必要的，但仅凭这些知识并不足以让你将自己的应用程序打包成 Helm charts。
 

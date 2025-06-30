@@ -1,4 +1,4 @@
-# *第三章*: 探索 Kubernetes
+# 第二章：*第三章*: 探索 Kubernetes
 
 现在你已经看到，Kubernetes 将成为你在本地计算机或云端的 `minikube` 实例的基础。这个是一个单节点的 Kubernetes 集群，你将使用它作为构建和运行 ML 平台的基础设施。
 

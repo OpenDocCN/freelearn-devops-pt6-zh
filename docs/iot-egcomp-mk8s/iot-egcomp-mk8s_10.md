@@ -1,6 +1,6 @@
-# 10
 
-# 使用 Knative 和 OpenFaaS 框架实现无服务器
+
+# 第十章：使用 Knative 和 OpenFaaS 框架实现无服务器
 
 在上一章中，我们讨论了 Kubeflow，它为数据科学家提供了一个易于部署、简便使用的工具链，使他们能够集成运行模型所需的各种资源，如 Jupyter 笔记本、Kubernetes 部署文件以及像 PyTorch 和 TensorFlow 这样的机器学习库。
 

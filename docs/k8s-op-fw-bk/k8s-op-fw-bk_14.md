@@ -1,4 +1,4 @@
-# *第十一章*：核心 Operator 案例研究 – Etcd Operator
+# 第十一章：*第十一章*：核心 Operator 案例研究 – Etcd Operator
 
 在上一章（以及本书的大部分内容）中，我们讨论了 Operator 作为管理部署在 Kubernetes 上的应用程序的工具。对于大多数用例来说，这是 Operator 的主要功能。换句话说，Operator 的作用是自动化由组织开发的应用程序。这些应用程序是提供给用户的产品，自动化它们有助于顺利交付并保持用户的满意。除此之外，Kubernetes 本身只是基础架构的一部分。作为这一部分，通常假设 Kubernetes 无需像 Operator 所提供的额外自动化功能。毕竟，本书前几章的一个关键点就是，Operator 在功能上与构成 Kubernetes 控制平面的本地控制器套件并没有太大区别。
 

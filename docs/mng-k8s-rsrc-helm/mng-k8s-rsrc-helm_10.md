@@ -1,6 +1,6 @@
-# 10
 
-# 使用 CD 和 GitOps 自动化 Helm
+
+# 第十章：使用 CD 和 GitOps 自动化 Helm
 
 在本书中，我们展示了如何使用不同的 Helm 命令来管理 Kubernetes 资源和应用。虽然这些命令（即 `install`、`upgrade`、`rollback` 和 `uninstall`）在执行各自的任务时非常有效，但我们一直是在命令行中手动调用它们。手动调用在管理多个不同的应用时可能成为痛点，也会使企业难以扩展。因此，我们应该探索自动化 Helm 部署的机会。
 

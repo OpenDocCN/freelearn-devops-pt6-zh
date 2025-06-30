@@ -1,6 +1,6 @@
-# 1
 
-# Kubernetes 基础
+
+# 第一章：Kubernetes 基础
 
 欢迎来到 *Kubernetes 圣经*，我们很高兴陪伴你一起走上 Kubernetes 的学习之旅。如果你从事软件开发行业，你可能听说过 Kubernetes。这是很正常的，因为 Kubernetes 的受欢迎程度在近几年大幅上升。
 

@@ -1,6 +1,6 @@
-# 2
 
-# 准备 Kubernetes 和 Helm 环境
+
+# 第二章：准备 Kubernetes 和 Helm 环境
 
 **Helm** 是一个工具，提供了多种帮助用户更轻松部署和管理 **Kubernetes** 应用程序的好处。在用户开始体验这些好处之前，必须满足几个前提条件。首先，用户必须能够访问 Kubernetes 集群。接下来，用户应该拥有 Kubernetes 和 Helm 的命令行工具。最后，用户应了解 Helm 的基本配置选项，以便尽可能减少摩擦，提高生产力。
 

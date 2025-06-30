@@ -1,4 +1,4 @@
-# *第十章*：可选 Operator 案例研究——Prometheus Operator
+# 第十章：*第十章*：可选 Operator 案例研究——Prometheus Operator
 
 本书的重点是介绍、讨论和展示使用 Operator Framework 开发 Kubernetes Operator 的主要流程。为此，构建了一个具有管理 nginx 部署基本功能的示例 Operator。这个示例旨在作为 Operator 开发的教程，避免用过多的功能或复杂的背景知识使读者感到困扰，从而理解用例。希望它能很好地实现这一目的。
 

@@ -1,6 +1,6 @@
-# 5
 
-# 使用 Grafana Mimir 和 Prometheus 进行指标监控
+
+# 第五章：使用 Grafana Mimir 和 Prometheus 进行指标监控
 
 本章将介绍 **Prometheus 查询语言**（**PromQL**）。与 LogQL 类似，PromQL 可以用来选择和筛选指标流，并使用运算符和函数处理数值数据，使您能够构建快速高效的查询，从而支持建立可观察系统。我们还将探索并比较用于输出系统指标的各种协议。最后，我们将探索 **Prometheus** 和 **Mimir** 的架构，以了解 Mimir 如何满足高可扩展系统的需求。
 

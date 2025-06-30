@@ -1,6 +1,6 @@
-# 7
 
-# 解密 Kubernetes 网络
+
+# 第七章：解密 Kubernetes 网络
 
 本章将使用 Kubernetes 网络模型描述一些核心概念，以及如何在集群节点上配置 Kubernetes 网络和网络策略。我们还将学习如何配置 Ingress 控制器和 Ingress 资源，如何配置和利用 CoreDNS，以及如何选择合适的容器网络接口插件。本章内容占 CKA 考试的约 20%。
 

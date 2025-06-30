@@ -1,6 +1,6 @@
-# 2
 
-# Kubernetes 架构
+
+# 第二章：Kubernetes 架构
 
 理解 Kubernetes 架构对于正确利用其能力至关重要。在本章中，我们将介绍构成 Kubernetes 集群的主要组件和概念。熟悉这些构建块将帮助你了解 Kubernetes 如何在幕后工作。
 

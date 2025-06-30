@@ -1,6 +1,6 @@
-# 8
 
-# 在 Kubernetes 上部署大数据堆栈
+
+# 第八章：在 Kubernetes 上部署大数据堆栈
 
 在本章中，我们将涵盖在 Kubernetes 上部署关键的大数据技术 —— Spark、Airflow 和 Kafka。随着容器编排和管理变得对于高效运行数据工作负载至关重要，Kubernetes 已成为事实上的标准。在本章结束时，你将能够成功在 Kubernetes 上部署和管理大数据堆栈，构建强大的数据管道和应用程序。
 

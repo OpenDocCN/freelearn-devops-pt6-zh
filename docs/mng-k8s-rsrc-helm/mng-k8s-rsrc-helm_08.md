@@ -1,6 +1,6 @@
-# 8
 
-# 发布到 Helm 图表存储库
+
+# 第八章：发布到 Helm 图表存储库
 
 **Helm**如果没有**Helm chart repository**的概念，不能被视为**Kubernetes**的包管理工具。存储库用于将 Helm 图表发布到社区。在本章中，我们将了解创建 Helm 图表存储库的不同方法。随后，我们将通过将我们的 Guestbook Helm 图表发布到基于 HTTP 的存储库和 OCI 注册表，进行不同存储库实现的实践操作。
 

@@ -1,6 +1,6 @@
-# 8
 
-# 在 K8s 上部署 GenAI 的网络最佳实践
+
+# 第七章：在 K8s 上部署 GenAI 的网络最佳实践
 
 在本章中，我们将探讨在**Kubernetes**（**K8s**）上部署 GenAI 应用时云网络的最佳实践。有效的网络连接对于确保 Pod 之间的无缝通信、优化性能和增强安全性至关重要。本章将首先介绍 K8s 网络的基础知识，例如**容器网络接口**（**CNI**）（[`kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/`](https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/)）以设置 Pod 网络和网络策略，从而在 K8s 集群内实施安全和访问控制，此外，我们还将深入探讨使用优化的云网络接口，如**弹性网络适配器**（**EFA**）（[`aws.amazon.com/hpc/efa/`](https://aws.amazon.com/hpc/efa/)），以提升网络性能。通过为 Pod 和服务之间的通信定义细粒度的规则，组织可以减少潜在的安全威胁，从而保护其知识产权和 GenAI 模型。
 

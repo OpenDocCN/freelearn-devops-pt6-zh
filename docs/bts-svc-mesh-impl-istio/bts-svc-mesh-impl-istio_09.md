@@ -1,6 +1,6 @@
-# 9
 
-# 扩展 Istio 数据平面
+
+# 第九章：扩展 Istio 数据平面
 
 Istio 提供了多种 API 来管理数据平面流量。有一个名为`EnvoyFilter`的 API 我们尚未使用。`EnvoyFilter` API 提供了一种定制 Istio 控制平面生成的 istio-proxy 配置的方式。使用`EnvoyFilter` API，您可以直接使用 Envoy 过滤器，即使它们没有被 Istio API 直接支持。
 

@@ -1,4 +1,4 @@
-# *第七章*：使用 Rancher 部署托管集群
+# 第七章：*第七章*：使用 Rancher 部署托管集群
 
 对于不想管理任何服务器的团队，Rancher 提供了部署和管理托管 Kubernetes 服务的能力，如 **Google Kubernetes Engine**（**GKE**）、**Amazon Elastic Container Service for Kubernetes**（**Amazon EKS**）或 **Azure Kubernetes Service**（**AKS**）。本章将讨论使用托管集群与 RKE 集群的优缺点。然后，我们将介绍此类集群的要求和限制。接下来，我们将讲解如何准备云服务提供商。然后，我们将介绍如何使用 Rancher 设置 EKS、GKE 和 AKS 集群。最后，我们将讨论集群管理所需的维护任务。
 

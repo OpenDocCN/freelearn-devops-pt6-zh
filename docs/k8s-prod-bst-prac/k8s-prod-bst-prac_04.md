@@ -1,4 +1,4 @@
-# *第四章*：使用 Ansible 管理集群配置
+# 第四章：*第四章*：使用 Ansible 管理集群配置
 
 在*第三章*，*使用 AWS 和 Terraform 部署 Kubernetes 集群*中，你学习了如何使用 Terraform 和 AWS 创建 Kubernetes 基础设施，并且学会了如何开发基础设施即代码，并为你的第一个生产类集群进行了部署。
 

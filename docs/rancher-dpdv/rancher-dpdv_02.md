@@ -1,4 +1,4 @@
-# *第一章*：Rancher 和 Kubernetes 简介
+# 第一章：*第一章*：Rancher 和 Kubernetes 简介
 
 本章将重点介绍 Rancher 和 Kubernetes 的历史。我们将讲解 Rancher 和 Kubernetes 之前出现过哪些产品和解决方案，以及它们是如何演变成今天的样子的。在本章结束时，你应该能够清楚了解 Rancher 和 Kubernetes 的起源及其核心概念。这个知识对你理解 Rancher 和 Kubernetes 为什么会发展成现在的样子至关重要。
 

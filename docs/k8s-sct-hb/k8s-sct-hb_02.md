@@ -1,6 +1,6 @@
-# 2
 
-# 逐步了解 Kubernetes Secrets 管理概念
+
+# 第二章：逐步了解 Kubernetes Secrets 管理概念
 
 在上一章中，我们对 Kubernetes 及其组成组件进行了全面概述，并了解了配置是如何应用和存储的。此外，我们构建了一个 Golang 应用，并成功地在 Kubernetes 上运行了该应用。正如预期的那样，Secrets 需要被添加到我们的应用配置中。Secrets 管理涉及多种问题。从创建、修改到删除，我们需要解决安全性、可扩展性和弹性等方面的挑战。
 

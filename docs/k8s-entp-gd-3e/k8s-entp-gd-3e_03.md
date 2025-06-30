@@ -1,6 +1,6 @@
-# 3
 
-# Kubernetes 训练营
+
+# 第三章：Kubernetes 训练营
 
 上一章介绍了如何使用 KinD（Kubernetes in Docker）部署 Kubernetes 集群，这对于在单台机器上使用容器而非虚拟机创建开发集群非常有用。此方法减少了系统资源的需求，并简化了整个设置过程。我们介绍了 KinD 的安装和配置，如何创建集群，包括 Ingress 控制器、Calico 作为 CNI 以及如何使用持久存储。
 

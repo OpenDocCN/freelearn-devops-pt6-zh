@@ -1,6 +1,6 @@
-# 3
 
-# 亲自实践 Kubernetes
+
+# 第三章：亲自实践 Kubernetes
 
 在本章中，我们将通过部署本地和云端 Kubernetes 集群来实践 Kubernetes，并将示例应用程序部署到这些集群中。首先，你将使用 **Kubernetes in Docker**（**Kind**）部署一个本地集群。接着，你将部署在 AWS、GCP 和 Azure 上的托管 Kubernetes 集群。对于云选项，我们将提供部署集群所需的最基本账户设置。你可以自由选择你最熟悉的云服务提供商；核心的 Kubernetes 功能是相同的。
 

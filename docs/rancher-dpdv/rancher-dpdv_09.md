@@ -1,4 +1,4 @@
-# *第六章*：使用 Rancher 创建 RKE 集群
+# 第六章：*第六章*：使用 Rancher 创建 RKE 集群
 
 安装 Rancher 后，你首先要做的事情之一就是开始构建下游集群。Rancher 中有三种主要类型的集群：Rancher 管理的 **Rancher Kubernetes Engine** (**RKE**) 集群、Rancher 管理的托管集群和导入的集群。
 

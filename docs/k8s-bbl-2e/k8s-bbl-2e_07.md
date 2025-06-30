@@ -1,6 +1,6 @@
-# 7
 
-# 使用 ConfigMaps 和 Secrets 配置你的 Pods
+
+# 第七章：使用 ConfigMaps 和 Secrets 配置你的 Pods
 
 前几章介绍了如何使用 Kubernetes 启动应用容器。现在你知道，每当你需要在 Kubernetes 上启动容器时，必须通过 Pods 来实现。这是你需要理解和掌握的关键概念。Kubernetes 是一个通过 RESTful API 管理的复杂系统。处理这一过程的核心组件是 Kubernetes API 服务器，它提供了与集群交互的主要接口。当用户通过这个 API 创建 Kubernetes 对象，如 Pods 时，系统会在集群节点上分配必要的资源。在这些资源中，Pod 非常重要，因为它在 Kubernetes 节点上创建时会启动应用容器。
 

@@ -1,6 +1,6 @@
-# 13
 
-# DaemonSet – 在节点上维护 Pod 单例
+
+# 第十三章：DaemonSet – 在节点上维护 Pod 单例
 
 前几章已经解释并演示了如何使用最常见的 Kubernetes 控制器来管理 Pods，如 ReplicaSet、Deployment 和 StatefulSet。通常，当运行包含实际*业务逻辑*的云应用组件时，你将需要使用 Deployments 或 StatefulSets 来控制你的 Pods。在某些情况下，当你需要将批处理工作负载作为应用程序的一部分运行时，你将使用 Jobs 和 CronJobs。
 

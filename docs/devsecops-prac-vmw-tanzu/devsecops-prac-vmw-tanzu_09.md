@@ -1,6 +1,6 @@
-# 9
 
-# 使用 Tanzu Mission Control 管理和控制 Kubernetes 集群
+
+# 第九章：使用 Tanzu Mission Control 管理和控制 Kubernetes 集群
 
 在本书的上一节中，我们介绍了 Tanzu 产品组合中的工具，这些工具帮助我们运行云原生应用。我们介绍了 Harbor 如何为您的容器镜像提供安全的存储环境，并展示了如何使用 Tanzu Kubernetes Grid 运行这些镜像，Tanzu Kubernetes Grid 在公共和私有云基础设施中提供一致的用户体验。最后，我们深入探讨了开发人员生产力领域，旨在自动化并保障软件供应链，从构思到生产环境中的应用程序运行。
 

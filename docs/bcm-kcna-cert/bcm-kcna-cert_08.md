@@ -1,6 +1,6 @@
-# 8
 
-# 遵循 Kubernetes 最佳实践
+
+# 第八章：遵循 Kubernetes 最佳实践
 
 我们终于到达了 Kubernetes 部分的最后一章！恭喜你来到这里——你现在已经完成了成为**Kubernetes 和云原生助理**（**KCNA**）认证的一半以上！
 

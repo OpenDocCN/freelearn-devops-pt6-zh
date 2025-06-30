@@ -1,6 +1,6 @@
-# 21
 
-# 高级 Kubernetes：流量管理、多集群策略及更多
+
+# 第二十一章：高级 Kubernetes：流量管理、多集群策略及更多
 
 本章将讨论 Kubernetes 中的高级主题，这些主题超出了本书前几部分的内容。我们将从深入探讨如何利用 Ingress 实现一些复杂的路由到你的 Pods 开始，接着介绍有效的 Kubernetes 故障排除方法和加固 Kubernetes 安全性的技巧，并提供优化 Kubernetes 设置的最佳实践。
 

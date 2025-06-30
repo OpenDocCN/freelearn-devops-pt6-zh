@@ -1,4 +1,4 @@
-# *第三章*：使用 AWS 和 Terraform 配置 Kubernetes 集群
+# 第三章：*第三章*：使用 AWS 和 Terraform 配置 Kubernetes 集群
 
 在上一章中，我们了解了 Kubernetes 集群和基础设施设计，以及如何创建一个部署架构来实现最佳实践和标准。在设计和构建 Kubernetes 平台时有多种选择。选择一个适合你用例并满足生产就绪目标的解决方案并不是一件容易的事。Kubernetes、其底层技术以及周围的生态系统仍然面临着挑战和局限性。
 

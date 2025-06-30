@@ -1,6 +1,6 @@
-# 3
 
-# 在云中使用 Kubernetes 入门
+
+# 第三章：在云中使用 Kubernetes 入门
 
 云计算彻底改变了组织访问可扩展 IT 资源的方式，使得计算、存储和网络服务的快速部署成为可能。对于采用容器化应用程序的团队，**Kubernetes**（**K8s**）已经成为事实上的平台。云服务提供商提供托管的 K8s 服务，如**Amazon** **Elastic Kubernetes Service**（**EKS**）、**Google Kubernetes Engine**（**GKE**）和**Azure Kubernetes Service**（**AKS**），使得在云中运行和部署 GenAI 模型变得更加容易。
 

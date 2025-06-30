@@ -1,6 +1,6 @@
-# 6
 
-# 使用 ingress 控制器和证书暴露您的应用程序
+
+# 第六章：使用 ingress 控制器和证书暴露您的应用程序
 
 Ingress 控制器执行由 ingress 对象定义的流量规则，并且需要将流量暴露给系统所使用的 API 或微服务。Ingress 控制器是在 Kubernetes 集群中实现的。作为将部署暴露到集群外部的一种方式，Ingress 控制器为您的部署共享一个负载均衡器，而不是为每个部署使用专用的负载均衡器。默认情况下，Kubernetes 使用 ClusterIP 服务来访问内部集群网络中的部署。为边缘计算创建应用程序涉及到根据轻量化解决方案来配置 ingress 控制器：K3s 及其默认的 ingress 控制器 **Traefik** v1，使用其他 ingress 控制器，如 **NGINX** 或 **Contour**，以及服务通信的安全加密。
 

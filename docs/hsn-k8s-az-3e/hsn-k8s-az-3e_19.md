@@ -1,4 +1,4 @@
-# 13. Kubernetes 的 Azure 安全中心
+# 第十四章：13. Kubernetes 的 Azure 安全中心
 
 Kubernetes 是一个非常强大的平台，拥有大量配置选项。正确配置你的工作负载并确保遵循最佳实践可能是困难的。你可以遵循行业基准，以获得如何安全部署工作负载的指南，例如 **互联网安全中心**（**CIS**）为 Kubernetes 提供的基准：https://www.cisecurity.org/benchmark/kubernetes/。
 

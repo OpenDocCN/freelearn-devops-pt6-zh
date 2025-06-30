@@ -1,6 +1,6 @@
-# 13
 
-# 案例研究与实际应用示例
+
+# 第十三章：案例研究与实际应用示例
 
 在本章中，我们将展示 Kubernetes Secrets 在生产环境中的实际应用案例。本章将涵盖 Kubernetes 生产环境中 Secrets 管理的案例研究，并分享从实际部署中获得的经验教训。此外，您还将学习如何在 CI/CD 流水线中管理 Secrets，并将 Secrets 管理集成到 CI/CD 过程中。本章还将讲解如何使用 Kubernetes 工具管理流水线中的 Secrets，并介绍确保 CI/CD Secrets 管理安全的最佳实践。我们将扩展以下主题：
 

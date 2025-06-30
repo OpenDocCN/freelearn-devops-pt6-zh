@@ -1,6 +1,6 @@
-# 1
 
-# 开始使用 Kubernetes
+
+# 第一章：开始使用 Kubernetes
 
 **Kubernetes**是一个开源容器编排引擎，自动化了容器应用程序的部署、扩展和管理。自 7 年前首次发布以来，它在短短的时间内取得了巨大的进展。它曾经需要与像 Cloud Foundry Diego、CoreOS 的 Fleet、Docker Swarm、Kontena、HashiCorp 的 Nomad、Apache Mesos、Rancher 的 Cattle、Amazon ECS 等容器编排引擎竞争并超越它们。如今，Kubernetes 正在一个完全不同的环境中运行。这表明，开发人员只需要掌握一个容器编排引擎，就能够应对 90%的容器相关工作。
 

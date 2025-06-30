@@ -1,6 +1,6 @@
-# 14
 
-# 结论及 Kubernetes Secrets 管理的未来
+
+# 第十四章：结论及 Kubernetes Secrets 管理的未来
 
 本手册为您提供了确保容器编排平台安全的基本组成部分，作为持续改进安全态势的参考，同时关注外部解决方案的需求，以增强或改进当前 Kubernetes 设计，尤其是在管理 Secrets 方面。
 

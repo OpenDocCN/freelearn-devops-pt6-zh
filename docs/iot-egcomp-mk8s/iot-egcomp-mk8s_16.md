@@ -1,6 +1,6 @@
-# 16
 
-# 展望未来
+
+# 第十六章：展望未来
 
 根据最近的 CNCF 调查报告（[`www.cncf.io/reports/cncf-annual-survey-2021/`](https://www.cncf.io/reports/cncf-annual-survey-2021/)），96% 的企业正在使用或考虑使用 Kubernetes。一般来说，容器技术，尤其是 Kubernetes，似乎随着技术的成熟而使用频率降低。组织似乎比以往更 intensively 使用无服务器和托管服务，且用户不再需要了解或理解底层的容器技术。
 

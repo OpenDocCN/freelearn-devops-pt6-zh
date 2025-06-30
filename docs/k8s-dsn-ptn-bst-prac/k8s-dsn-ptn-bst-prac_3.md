@@ -1,4 +1,4 @@
-# Kubernetes 扩展
+# 第三章：Kubernetes 扩展
 
 Kubernetes 是高度可定制和可扩展的，因此系统的任何部分都可以进行全面配置并扩展新功能。Kubernetes 的扩展点并不专注于内建资源的低级配置，如 Pods 或 StatefulSets。然而，扩展 Kubernetes 意味着扩展 Kubernetes 本身的操作。这些扩展点使得许多实践成为可能，包括创建新的 Kubernetes 资源、自动化 Kubernetes 和人类交互，以及干预资源的创建或编辑及其调度机制。
 

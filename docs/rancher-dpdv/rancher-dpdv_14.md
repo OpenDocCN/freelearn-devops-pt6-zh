@@ -1,4 +1,4 @@
-# *第十章*：监控与日志
+# 第十章：*第十章*：监控与日志
 
 前面的章节介绍了集群配置、备份和恢复。本章将介绍 Rancher 监控，以及 Rancher 如何使用 Prometheus 和 Grafana 来收集集群的指标并进行展示。接下来，我们将讨论 Rancher 日志，以及 Rancher 如何使用 Banzai Cloud Logging 操作符和 Fluent Bit 来收集 Kubernetes 组件的日志和应用日志，包括日志过滤。
 

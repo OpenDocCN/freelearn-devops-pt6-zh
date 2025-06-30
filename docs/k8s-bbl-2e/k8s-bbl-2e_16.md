@@ -1,6 +1,6 @@
-# 16
 
-# 在 Amazon Web Services 上使用 Amazon Elastic Kubernetes Service 启动 Kubernetes 集群
+
+# 第十六章：在 Amazon Web Services 上使用 Amazon Elastic Kubernetes Service 启动 Kubernetes 集群
 
 让我们在前一章所学的基础上继续前进。我们在公共云中启动了一个 Kubernetes 集群，迈出了在“前三大”公共云服务提供商中运行 Kubernetes 的第一步。
 

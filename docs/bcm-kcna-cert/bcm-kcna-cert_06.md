@@ -1,6 +1,6 @@
-# 6
 
-# 使用 Kubernetes 部署和扩展应用程序
+
+# 第六章：使用 Kubernetes 部署和扩展应用程序
 
 在这一章中，我们将继续探索 Kubernetes 丰富的功能和生态系统。我们将了解 Kubernetes 中还存在哪些资源及其目的，如何实现应用程序的自我修复和扩展，如何使用 Kubernetes 的服务发现，如何在 Kubernetes 中运行有状态的工作负载。我们还将使用上一章中安装的 minikube Kubernetes 进行若干练习（如果你跳过了这一部分，请查看第*5 章*的最后部分）。
 

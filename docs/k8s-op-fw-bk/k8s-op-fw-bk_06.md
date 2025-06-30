@@ -1,4 +1,4 @@
-# *第四章*：使用 Operator SDK 开发 Operator
+# 第四章：*第四章*：使用 Operator SDK 开发 Operator
 
 在完成了**Operator**的设计大纲之后，现在可以开始实际的开发工作了。这意味着编写并编译代码，将其部署到实际运行的**Kubernetes 集群**上。本章将使用**Operator SDK**来初始化一个模板化的 Operator 项目框架。从这里开始，将通过教程演示开发其余基本 Operator 的技术步骤。本指南将遵循在*第三章*中已规划的 Operator 设计，*设计一个 Operator – CRD、API 和目标调和*，该章聚焦于开发一个*二级* Operator 来部署和升级一个简单的**Nginx Pod**。
 

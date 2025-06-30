@@ -1,6 +1,6 @@
-# 6
 
-# 保护 Kubernetes 安全
+
+# 第六章：保护 Kubernetes 安全
 
 本章将介绍 Kubernetes 认证和授权模式的工作原理，并深入探讨 Kubernetes 的**基于角色的访问控制**（**RBAC**）。我们还将了解如何管理在 Kubernetes 上部署的应用的安全性。
 
