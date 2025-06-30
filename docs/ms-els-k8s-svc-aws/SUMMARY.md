@@ -1,4 +1,4 @@
-+   [精通 AWS 上的弹性 Kubernates 服务](README.md)
++   [精通 AWS 上的弹性 Kubernetes 服务](README.md)
 +   [前言](ms-els-k8s-svc-aws_00.md)
 +   [第一章：Kubernetes 和容器的基础知识](ms-els-k8s-svc-aws_01.md)
 +   [第二章：介绍 Amazon EKS](ms-els-k8s-svc-aws_02.md)

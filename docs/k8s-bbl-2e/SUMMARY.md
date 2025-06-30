@@ -1,4 +1,4 @@
-+   [Kubernates 圣经第二版](README.md)
++   [Kubernetes 圣经第二版](README.md)
 +   [前言](k8s-bbl-2e_00.md)
 +   [第一章：Kubernetes 基础](k8s-bbl-2e_01.md)
 +   [第二章：Kubernetes 架构 – 从容器镜像到运行的 Pods](k8s-bbl-2e_02.md)

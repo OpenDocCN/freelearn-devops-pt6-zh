@@ -1,4 +1,4 @@
-+   [Helm Kubernates 资源管理指南](README.md)
++   [Helm Kubernetes 资源管理指南](README.md)
 +   [前言](mng-k8s-rsrc-helm_00.md)
 +   [第一章：理解 Kubernetes 和 Helm](mng-k8s-rsrc-helm_01.md)
 +   [第二章：准备 Kubernetes 和 Helm 环境](mng-k8s-rsrc-helm_02.md)

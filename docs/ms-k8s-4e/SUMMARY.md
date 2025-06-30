@@ -1,4 +1,4 @@
-+   [精通 Kubernates 第四版](README.md)
++   [精通 Kubernetes 第四版](README.md)
 +   [序言](ms-k8s-4e_00.md)
 +   [第一章：理解 Kubernetes 架构](ms-k8s-4e_01.md)
 +   [第二章：创建 Kubernetes 集群](ms-k8s-4e_02.md)

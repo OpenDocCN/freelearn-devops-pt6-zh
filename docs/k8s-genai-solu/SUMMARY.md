@@ -1,4 +1,4 @@
-+   [Kubernates 生成式人工智能解决方案](README.md)
++   [Kubernetes 生成式人工智能解决方案](README.md)
 +   [前言](k8s-genai-solu_00.md)
 +   [第一章：生成式人工智能基础](k8s-genai-solu_01.md)
 +   [第二章：Kubernetes – 简介及与 GenAI 的集成](k8s-genai-solu_02.md)

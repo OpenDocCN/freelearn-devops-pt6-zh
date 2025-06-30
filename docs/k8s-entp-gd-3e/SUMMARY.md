@@ -1,4 +1,4 @@
-+   [Kubernates 企业级指南第三版](README.md)
++   [Kubernetes 企业级指南第三版](README.md)
 +   [序言](k8s-entp-gd-3e_00.md)
 +   [第一章：Docker 和容器基础](k8s-entp-gd-3e_01.md)
 +   [第二章：使用 KinD 部署 Kubernetes](k8s-entp-gd-3e_02.md)

@@ -1,4 +1,4 @@
-+   [Kubernates 机密手册](README.md)
++   [Kubernetes 机密手册](README.md)
 +   [序言](k8s-sct-hb_00.md)
 +   [第一章：理解 Kubernetes Secrets 管理](k8s-sct-hb_01.md)
 +   [第二章：逐步了解 Kubernetes Secrets 管理概念](k8s-sct-hb_02.md)

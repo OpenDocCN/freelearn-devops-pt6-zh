@@ -1,4 +1,4 @@
-+   [Kubernates 上的机器学习](README.md)
++   [Kubernetes 上的机器学习](README.md)
 +   [第一章：*第二章*：理解 MLOps](ml-k8s_00.md)
 +   [第二章：*第三章*: 探索 Kubernetes](ml-k8s_01.md)
 +   [第二部分：MLOps 平台的构建模块以及如何在 Kubernetes 上构建一个](ml-k8s_02.md)

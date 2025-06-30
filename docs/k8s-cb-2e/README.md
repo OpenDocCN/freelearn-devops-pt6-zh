@@ -1,4 +1,4 @@
-# Kubernates 秘籍第二版
+# Kubernetes 秘籍第二版
 
 > 原文：[`annas-archive.org/md5/54ba67c9642c693082c9f497ccfe7f39`](https://annas-archive.org/md5/54ba67c9642c693082c9f497ccfe7f39)
 > 

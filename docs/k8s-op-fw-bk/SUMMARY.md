@@ -1,4 +1,4 @@
-+   [Kubernates 算子框架之书](README.md)
++   [Kubernetes 算子框架之书](README.md)
 +   [前言](k8s-op-fw-bk_00.md)
 +   [第一部分：Operator 及 Operator 框架的基本知识](k8s-op-fw-bk_01.md)
 +   [第一章：*第一章*：介绍操作符框架](k8s-op-fw-bk_02.md)

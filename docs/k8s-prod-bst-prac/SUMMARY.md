@@ -1,4 +1,4 @@
-+   [Kubernates 生产环境最佳实践](README.md)
++   [Kubernetes 生产环境最佳实践](README.md)
 +   [前言](k8s-prod-bst-prac_00.md)
 +   [第一章：*第一章*：Kubernetes 基础设施与生产就绪简介](k8s-prod-bst-prac_01.md)
 +   [第二章：*第二章*：构建生产级 Kubernetes 基础设施架构](k8s-prod-bst-prac_02.md)

@@ -1,4 +1,4 @@
-+   [Kubernates 秘籍第二版](README.md)
++   [Kubernetes 秘籍第二版](README.md)
 +   [前言](k8s-cb-2e_00.md)
 +   [第一章：构建你自己的 Kubernetes 集群](k8s-cb-2e_01.md)
 +   [第二章：深入了解 Kubernetes 概念](k8s-cb-2e_02.md)

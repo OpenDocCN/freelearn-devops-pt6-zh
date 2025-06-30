@@ -1,4 +1,4 @@
-# Kubernates 机密手册
+# Kubernetes 机密手册
 
 > 原文：[`annas-archive.org/md5/5cc672682018ad75f1f334c1efca7664`](https://annas-archive.org/md5/5cc672682018ad75f1f334c1efca7664)
 > 

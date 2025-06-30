@@ -1,4 +1,4 @@
-# 精通 AWS 上的弹性 Kubernates 服务
+# 精通 AWS 上的弹性 Kubernetes 服务
 
 > 原文：[`annas-archive.org/md5/c0b687c0b1e6556e53c8d2e8ba058190`](https://annas-archive.org/md5/c0b687c0b1e6556e53c8d2e8ba058190)
 > 
