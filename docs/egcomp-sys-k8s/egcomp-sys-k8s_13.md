@@ -1,0 +1,1247 @@
+# 13
+
+# 使用 GPS、NoSQL 和 K3s 集群的地理定位应用
+
+边缘计算的一个日益增长的应用场景是实施一个用于跟踪货物和物流的系统。有时，这种跟踪涉及监控和获取一些可以用来优化包裹配送时间、减少油耗等的指标。您可以用来实现这一目标的一个重要技术是**全球定位系统**（**GPS**）。GPS 可以帮助您在物体实时移动时获取其坐标。结合 Kubernetes 在边缘的应用，形成了强大的技术组合，用于创建地理定位系统，也称为地理跟踪系统。
+
+在本章中，我们将涵盖以下主要内容：
+
++   理解 GPS 如何在地理跟踪系统中被使用
+
++   使用 Redis 存储 GPS 坐标数据
+
++   使用 MongoDB 存储设备的跟踪数据
+
++   创建服务以使用 GPS 实时监控您的设备
+
++   配置您的 Raspberry Pi 以使用 GPS 跟踪您的设备
+
++   使用 Leaflet 库实时可视化您的设备
+
++   部署一个实时地图和报告应用程序来跟踪您的设备
+
+# 技术要求
+
+在本章中部署我们的数据库，您需要以下内容：
+
++   使用 ARM 设备的单节点 K3s 集群。在本例中，我们将使用 8 GB 的 Raspberry Pi 4B 型号。我们将使用没有桌面环境的 Raspberry Pi OS lite（64 位）操作系统。
+
++   多个 VK-162 G-Mouse USB GPS dongle 导航模块，用于您的边缘 Raspberry 设备
+
++   一个电池组和一根 USB 2.0 A-Male 到 USB C 的数据线。您也可以通过汽车的 USB 充电端口为 Raspberry Pi 供电。
+
++   一个托管在您的公共云服务提供商（AWS、Azure 或 GCP）或私有云中的 Kubernetes 集群
+
++   编程基础知识，尤其是 Python 和 JavaScript。
+
++   如果您希望通过 `kubectl apply` 运行 YAML 配置而不是从书中复制代码，请克隆 [`github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch13`](https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/tree/main/ch13) 这个仓库。查看 `code` 目录中的 `python` 目录以及 `ch13` 目录中的 `yaml` 目录，以获取 YAML 配置。
+
+通过这些步骤，您可以开始使用边缘计算实现您的地理定位系统。让我们从第一部分开始了解 GPS 是如何工作的。
+
+# 理解 GPS 如何在地理跟踪系统中被使用
+
+对于本章，我们的目标是构建一个地理定位系统，也称为地理跟踪系统。这意味着我们将构建一个从车辆获取 GPS 坐标或位置的系统。在我们的使用案例中，我们假设我们的车辆将用于配送包裹。我们的车辆将配备树莓派设备和 GPS 模块。这些硬件将收集 GPS 坐标，使用纬度和经度将其发送到云端。然后，我们的应用程序将显示所有车辆的实时位置，并生成报告以显示车辆在日期范围内的行驶路线。总体而言，这就是我们的地理跟踪系统将具备的主要功能：
+
++   一个实时地图，显示所有送货车辆的位置
+
++   显示每辆车附近配送站点的地图
+
++   显示车辆在日期范围内配送路线的报告
+
+该地理跟踪系统通过以下图示表示：
+
+![图 13.1 – 一个地理定位应用的边缘图](img/B16945_13_01.jpg)
+
+图 13.1 – 一个地理定位应用的边缘图
+
+现在，让我们通过描述边缘计算层来解释这个地理跟踪系统是如何实现的：
+
++   **云层**：在这里，我们将会在我们选择的云服务商上安装 Kubernetes 集群。在这个集群中，我们将安装三个主要应用程序。GPS 服务器将接收来自车辆的请求。它还会将收集到的位置保存在 Redis 中，以供实时地图使用，并将日志保存在 MongoDB 中，用于显示配送路线的报告。最后，我们将有一个前端应用程序，包含用于显示实时地图和报告的 Web 应用。
+
++   **近端**：这一层表示所有将通过 LTE 网络从远端移动到近端的信息。这意味着所有的 GPS 信息将通过互联网发送到最终目的地——云层。
+
++   **远端**：在这里，我们将找到配备了树莓派的车辆；该设备将使用 GPS 模块和互联网连接发送 GPS 坐标。我们的树莓派将安装 K3s。在这个 K3s 单节点集群中，我们将找到 GPS 读取器。这个应用程序将读取 GPS 信息并将其发送到云端。然而，您还可以包含其他应用程序以增加更多功能——例如，显示一个带有 GPS 信息或其他处理过的数据（如速度）的 OLED 屏幕，通过 GPS 坐标来计算速度。因此，这部分代表了边缘的本地处理。
+
+要将树莓派连接到互联网，您可以使用 5G 或 4G LTE 模块，或者使用已经包含此类模块的智能手机。为了简化示例，我们将使用智能手机的接入点与树莓派设备共享互联网。
+
++   **Tiny edge**：在这里，我们将找到边缘设备用于获取 GPS 坐标的 GPS 模块。我们的 GPS 模块将使用 **全球导航卫星系统** (**GNSS**)，这是一个全球卫星系统，能够提供 GPS 坐标。这将是我们实现中的主要数据。你还可以使用集成了 GPS 的 LTE 5G/4G 模块来加快 GPS 模块初始化速度，从而更快速地获取 GPS 坐标，但与 VK-162 G-Mouse USB 模块相比，这可能会更昂贵。在这种情况下，我们将使用 VK-162 模块来简化实现并降低该原型实现的成本。
+
+总结来说，我们位于远端的车辆将从微型边缘设备的 GPS 模块读取信息。在读取信息并进行一些处理后，信息将通过近端设备发送到云层。一旦接收到所有信息，这些数据将存储在 Redis 和 Mongo 中，并通过前端应用展示实时地图和报告。
+
+# 使用 Redis 存储 GPS 坐标数据
+
+正如我们在 *第十章* 中解释的，*边缘的 SQL 和 NoSQL 数据库*，Redis 是一个键值数据库，在使用资源时非常轻量。Redis 专门使用 RAM 内存来存储数据，但在使用快照配置时可以持久化数据，这基本上是将数据存储在磁盘上。Redis 还可以存储地理位置数据，存储 GPS 坐标和包含纬度和经度值的元组。Redis 通过字段的纬度、经度和名称来存储这些信息。Redis 还通过 `GEOADD` 和 `GEOSEARCH` 命令来实现我们的地理定位应用程序。但是首先，让我们在云端安装 Redis，以存储一些地理位置信息。为此，请按照以下步骤操作：
+
+1.  首先，让我们为 Redis 创建一个 **PersistentVolumeClaim** 来持久化数据：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: db-pv-claim-1
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 5Gi
+    EOF
+    ```
+
+1.  现在，创建一个 ConfigMap 来配置 Redis 使用认证密码：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: redis-configmap
+    data:
+      redis-config: |
+        dir /data
+        requirepass YOUR_PASSWORD
+    EOF
+    ```
+
+1.  使用之前的 `redis-configmap` 创建 Redis 的部署，并将其挂载为 `redis.conf` 文件。我们还使用 `db-pv-claim-1`，并为部署设置了一些资源限制，包括 CPU 和内存。让我们通过运行以下命令来创建该部署：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: redis
+      name: redis
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: redis
+      strategy: {}
+      template:
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: redis
+    spec: 
+    containers: 
+          - name: redis
+    image: redis:6.2 
+    command: 
+    - redis-server 
+    - /redisconf/redis.conf 
+    ports: 
+    - containerPort: 6379 
+    resources: 
+    limits: 
+                cpu: "0.2"
+    memory: "128Mi" 
+    volumeMounts: 
+    - mountPath: "/data" 
+    name: redis-storage 
+    - mountPath: /redisconf 
+              name: config
+          volumes:
+    - name: config 
+    configMap: 
+    name: redis-configmap 
+    items: 
+    - key: redis-config 
+    path: redis.conf 
+            - name: redis-storage
+    persistentVolumeClaim: 
+                claimName: db-pv-claim-1
+    status: {}
+    EOF
+    ```
+
+这次，我们不打算使用 ARM 64 位的镜像。
+
+1.  现在，通过打开端口 `6379` 来创建 Redis 服务：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Service
+    metadata:
+      labels:
+        app: redis
+      name: redis
+    spec:
+      ports:
+      - port: 6379
+        protocol: TCP
+        targetPort: 6379
+      selector:
+        app: redis
+      type: ClusterIP
+    EOF
+    ```
+
+现在，我们已经安装了 Redis。接下来，我们来安装 Mongo，用于存储带有这些数据的日志信息。
+
+# 使用 MongoDB 存储设备的追踪数据
+
+MongoDB 是一个文档导向的 NoSQL 数据库，使用 JSON 格式存储信息。它也具备存储位置数据的能力。在这个用例中，我们将使用 MongoDB 来存储我们的地理位置数据；这意味着存储 GPS 在设备上捕获的所有坐标（纬度和经度）以供后续报告。MongoDB 可以对地理位置数据进行一些特殊处理，但在此用例中，我们将仅用它来存储 JSON 格式的数据。要在云中安装 MongoDB，请按照以下步骤操作：
+
+1.  为 MongoDB 创建**PersistentVolumeClaim**以持久化数据：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: db-pv-claim-2
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      #storageClassName: your_driver
+      resources:
+        requests:
+          storage: 5Gi
+    EOF
+    ```
+
+重要提示
+
+如果你安装了 Longhorn 或其他存储驱动，或者使用了云服务提供商提供的存储类，可以更改存储类。只需通过移除`#`字符取消注释`storageClassName`行。
+
+1.  部署你的自定义配置，以便客户端能够连接到 MongoDB：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: mongo-configmap
+    data:
+      mongod-conf: |
+        dbpath=/var/lib/mongodb
+        logpath=/var/log/mongodb/mongodb.log
+        logappend=true
+        bind_ip = 0.0.0.0
+        port = 27017
+        journal=true
+        auth = true
+    EOF
+    ```
+
+这将通过网络暴露 MongoDB 监听端口`27017`。
+
+1.  使用`mongo-configmap`创建部署，我们的`MONGO_INITDB_ROOT_USERNAME`、`MONGO_INITDB_ROOT_PASSWORD`和`MONGO_INITDB_DATABASE`变量设置初始的根用户名、额外的用户及其连接密码，用于连接 MongoDB：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      labels:
+        app: mongo
+      name: mongo
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: mongo
+      template:
+        metadata:
+          labels:
+            app: mongo
+        spec:
+          containers:
+          - name: mongo
+            image: mongo:4.4
+            env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: "admin"
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              value: "YOUR_PASSWORD"
+            - name: MONGO_INITDB_DATABASE
+              value: "mydatabase"
+            ports:
+            - containerPort: 27017
+            resources:
+              limits:
+                cpu: "0.2"
+                memory: "200Mi"
+            volumeMounts:
+            - mountPath: "/data/db"
+              name: mongo-storage
+            - mountPath: /mongoconf
+              name: config
+          volumes:
+            - name: config
+              configMap:
+                name: mongo-configmap
+                items:
+                - key: mongod-conf
+                  path: mongod.conf
+            - name: mongo-storage
+              persistentVolumeClaim:
+                claimName: db-pv-claim-2
+    EOF
+    ```
+
+重要提示
+
+我们直接使用一些值来配置部署，以简化示例。但最佳实践是使用机密来保护敏感数据。你可以查看*第十章*，*边缘的 SQL 和 NoSQL 数据库*，获取更多示例。我们也使用的是 4.4 版本，如果你想在 ARM 设备上安装 MongoDB，请参考此版本。
+
+1.  现在，创建服务，将你的 MongoDB 部署暴露为集群内可访问的服务（MongoDB 使用端口`27017`连接）：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Service
+    metadata:
+      labels:
+        app: mongo
+      name: mongo
+    spec:
+      ports:
+      - port: 27017
+        protocol: TCP
+        targetPort: 27017
+      selector:
+        app: mongo
+      type: ClusterIP
+    EOF
+    ```
+
+现在，你的 MongoDB 数据库已经安装完成。那么，让我们在下一部分部署我们的 GPS 服务器应用程序，存储数据到 Redis 和 MongoDB。
+
+# 创建服务以通过 GPS 实时监控你的设备
+
+在我们的用例中，我们将部署一个服务，将来自边缘设备的数据经过处理后发送到云端。这个用例的目标是为多个运送包裹的车辆提供全球地理定位系统，实时显示它们的位置。为此，我们将创建一个`gps-server`部署，将所有的坐标存储在 Redis 和 Mongo 中。我们将使用 Python 的 Flask 库来创建这个服务。接下来，让我们探索以下包含 Python 的伪代码的主要部分：
+
+```
+<imported libraries>
+<app_initialization>
+<CORS configuration>
+
+def redisCon():
+<return Redis connection object>
+
+@app.route("/client/<cid>/position", methods=["POST"])
+def setPosition(cid):
+   <Call redisCon>
+   <Store of data in a Redis hash data type using 
+    the fields cid,lat,lng
+    in the hash key named client:{cid}:position>
+   <set the expiration of the key>
+   <call the tracking-server in /client/{cid}/position
+    to store the position in Mongo>
+   return  {"client_id":cid,"setPosition":"done"}
+
+@app.route("/clients/positions/unit/<unit>/r/<radius>"
+          ,methods=["GET"])
+def getPositions(unit,radius):
+   <Call redisCon>
+   <Search for client:*:position keys>
+      <Search the near geospacial index for
+       the current position>
+     <Add the position to data Array>
+   <Returns the near positions for each unit in JSON>
+    return jsonify({"clients":data})
+
+@app.route("/client/<cid>/stops", methods=["POST"])
+def setStops(cid):
+   <Call redisCon>
+   <GET json values stops to set>
+   <Store the stops in the key client:{cid}:stops >
+    return jsonify({"setStops":"done"})
+<App initialization in port 3000>
+```
+
+让我们专注于以下功能：
+
++   **redisCon**：此功能设置 Redis 连接。此应用将使用*使用 Redis 存储 GPS 坐标数据*部分中创建的 Redis 服务。
+
++   `/client/<cid>/position` URL，函数将获取 `<cid>` 值，表示向此服务发送信息的连接客户端——在此案例中是我们的配送车辆。每次接收到信息时，它都会存储在 Redis 中以 `client:{cid}:position` 形式命名的键中，并存储纬度为 `lat` 变量，经度为 `lng`，客户端 ID 或车辆编号为 `cid`。它还会设置一个过期时间为 180 秒或 3 分钟。在调用跟踪服务器将该坐标存储到 MongoDB 后，它返回以下 JSON 响应：`{"client_id":cid,"setPosition":"done"}`。
+
++   `/clients/positions/unit/<unit>/r/<radius>` URL，函数连接到 Redis 并获取所有键，其形式为 `client:<cid>:position`，包含每辆车的当前 GPS 位置。然后，通过使用 Redis 命令 `geosearch` 获取靠近该位置的停靠点。返回的 JSON 将如下所示：`{"clients":[{"cid":1,"lat":0.0,"lng":0.0,"near":["stop1"]}]}`。
+
++   `/client/<cid>/stops` URL，函数将获取 `<cid>` 并将所有位置作为地理空间索引存储在以 `client:{cid}:stops` 形式命名的键中。在此键中，每个位置将与通过 `curl` 发送的 JSON 数据中的名称一起存储。这些停靠点默认存储 10 小时，因为停靠点必须在工作日内完成。这些停靠点将靠近具有 `cid` 编号的车辆。
+
+在理解代码后，我们将在下一节部署我们的 GPS 服务器应用程序。
+
+## 部署 gps-server 来存储 GPS 坐标
+
+`gps-server` 应用程序将接收来自您的边缘设备的 GPS 坐标。为此，我们需要部署它并通过负载均衡器公开。要部署 `gps-server` 应用程序，请按照以下步骤操作：
+
+1.  创建 GPS 服务器的部署：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: gps-server
+      name: gps-server
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: gps-server
+      strategy: {}
+      template:
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: gps-server
+        spec:
+          containers:
+          - image: sergioarmgpl/gps_server
+            name: gps-server
+            imagePullPolicy: Always
+            env:
+            - name: REDIS_HOST
+              value: "redis"
+            - name: REDIS_AUTH
+              value: "YOUR_PASSWORD"
+            - name: ENDPOINT
+              value: "http://tracking-server:3000"          
+            resources: {}
+    status: {}
+    EOF
+    ```
+
+此部署使用以下变量：
+
++   **REDIS_HOST**：这是 Redis 服务的名称；此变量可以根据您的需要进行自定义。
+
++   **REDIS_AUTH**：这是连接 Redis 服务的密码。
+
++   `tracking-server` – 在这种情况下，URL 匹配内部的 `tracking-server` 服务，端口为 `3000`。
+
+重要提示
+
+要查看代码并创建自己的容器，请参考此链接：[`github.com/sergioarmgpl/containers/tree/main/gps-server/src`](https://github.com/sergioarmgpl/containers/tree/main/gps-server/src)。
+
+1.  将服务创建为 LoadBalancer；此 IP 地址将在我们的 GPS 读取器服务中用于每个单位或卡车：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Service
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: gps-server
+      name: gps-server-lb
+    spec:
+      ports:
+      - port: 3000
+        protocol: TCP
+        targetPort: 3000
+      selector:
+        app: gps-server
+      type: LoadBalancer
+    status:
+      loadBalancer: {}
+    EOF
+    ```
+
+1.  使用以下命令获取我们 `gps-server` 部署的负载均衡器 IP：
+
+    ```
+    $ GPS_SERVER_IP="$(kubectl get svc gps-server-lb  -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+    ```
+
+您可以通过运行以下命令查看 `GPS_SERVER_IP` 环境变量的值：
+
+```
+$ echo $GPS_SERVER_IP
+```
+
+请注意，在负载均衡器的 IP 地址配置完成后需要一些时间。您可以通过运行以下命令检查服务的状态：
+
+```
+$ kubectl get svc gps-server-lb
+```
+
+等待 `EXTERNAL_IP` 配置完成。同时，注意 `$GPS_SERVER_IP` 的值，这将用于配置每个边缘设备上的 `gps-reader` 应用程序。
+
+现在，你可以为第一个车辆设置停靠点，该车辆用值 `1` 表示。为此，请按照以下步骤操作：
+
+1.  使用 curl 存储停靠点：
+
+    ```
+    $ curl -X POST -H "Accept: application/json" \
+    -H "Content-Type: application/json" \
+    --data '{
+        "stops":[
+        {"name":"stop1","lat":1.633518,"lng": -90.591706},
+        {"name":"stop2","lat":2.631566,"lng": -91.591529},
+        {"name":"stop3","lat":3.635043,"lng": -92.589982}
+        ]
+    }' http://$GPS_SERVER_IP:3000/client/1/stops
+    ```
+
+1.  这将返回以下内容：
+
+    ```
+    {"setStops":"done"}
+    ```
+
+现在，我们已经部署了 `gps-server` 应用程序，并通过负载均衡器对外暴露。接下来，让我们部署我们的 `tracking-server`，即存储接收到的 GPS 位置日志的服务器。
+
+## 创建一个服务来记录 GPS 位置并实现设备的实时追踪
+
+我们的 `tracking-server` 应用程序将负责记录每辆车接收到的所有坐标。该信息将用于在所需的时间范围内，通过 `frontend` 应用程序显示车辆的路线。在部署 `tracking-server` 之前，让我们先了解一下这个应用程序的代码：
+
+```
+<Imported libraries> 
+<Application initialization> 
+<CORS configuration> 
+
+def mongoCon():
+    <return Mongo connection with tracking collection set>  
+
+@app.route("/client/<cid>/position", methods=["POST"]) 
+def storePosition(cid): 
+    <Get the position JSON values to store it 
+     in the tracking collection> 
+    <Get current time and store it using UTC> 
+    <Call MongoCon function>
+    <Store data in the format:
+     {"cid":XX,"lat":XX,"lng":XX,"ts":XXXXXXX,"dtxt":XXXXXX}
+     Inside the tracking collection in the database 
+     called mydatabase> 
+    <return JSON {"client_id":cid,"positionStored":"done"}>
+
+@app.route("/client/<cid>/positions/s/<sdate>/e/<edate>" 
+           ,methods=["GET"]) 
+def getPositions(cid,sdate,edate): 
+    <Get the start date to query in the format
+     dd-mm-yy-HH:MM:SS and convert it into UTC>
+    <get the end date to query in the format
+    dd-mm-yy-HH:MM:SS and convert it into UTC>
+    <Call MongoCon function>
+    <Query the tracking collection to get the
+     tracking data for a unit
+     or truck between the time range> 
+    <Return the positions in an array called data> 
+    return jsonify({"tracking":data}) 
+
+<App initialization in port 3000>
+```
+
+在此代码中，我们可以找到以下功能：
+
++   `tracking` 值。
+
++   在 `/client/<cid>/position` URL 中发送 `POST` 请求，函数将以 `{"cid":1,"lat":0.0,"lng":0.0,"ts":166666666,"dtxt":"01-01-22-23:59:59"}` 格式存储接收到的 GPS 位置。`cid` 表示客户端 ID 或车辆编号，`lat` 和 `lng` 用于存储 GPS 位置，`ts` 表示接收到坐标时生成的时间戳，`dtxt` 是文本格式的日期，以减少从时间戳格式到 UNIX 日期格式的转换时间。将数据存储到数据库后，`mydatabase` 会返回以下 JSON：`{"client_id":cid,"positionStored":"done"}`。
+
++   在 URL 中使用 `GET` 请求，格式为 `/client/<cid>/positions/s/<sdate>/e/<edate>`，它会返回一个 JSON 响应，包含在开始日期 `sdate` 和结束日期 `edate` 之间的所有 GPS 位置。为此，`tracking-server` 会连接到 Mongo 并返回在此时间范围内执行此查询的结果。信息将以以下格式返回：
+
+    ```
+    { 
+        "tracking":[
+            {"lat":0.0,"lng":0.0,"ts":166666666
+            ,"dtxt":"01-01-22-23:59:59"}
+        ] 
+    }
+    ```
+
+现在我们知道了 `tracking-server` 应用程序的工作原理。接下来，让我们在下一节中部署这个应用程序。
+
+## 部署 tracking-server 来存储来自 GPS 坐标的日志，以便用于车辆路线报告
+
+我们的 `tracking-server` 将在我们的 `frontend` 应用程序中使用，以显示车辆在指定时间范围内的路线。让我们通过以下步骤部署我们的应用程序：
+
+1.  通过运行以下命令部署 `tracking-server`：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: tracking-server
+      name: tracking-server
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: tracking-server
+      strategy: {}
+      template:
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: tracking-server
+        spec:
+          containers:
+          - image: sergioarmgpl/tracking_server
+            name: tracking-server
+            imagePullPolicy: Always
+            env:
+            - name: MONGO_URI
+              value: "mongodb://admin:YOUR_PASSWORD@mongo/mydatabase?authSource=admin"
+            - name: MONGO_DB
+              value: "mydatabase"
+            - name: TIMEZONE
+              value: "America/Guatemala"
+            resources: {}
+    status: {}
+    EOF
+    ```
+
+本次部署使用以下环境变量：
+
++   `mongodb://USER:PASWORD@HOST/DATABASE?authSource=admin` 格式。你可以自定义这些凭证，并将 `MONGO_URI` 存储为密钥。
+
++   **MONGO_DB**：这是在 MongoDB 中创建的数据库，用于存储 tracking 集合。
+
++   `tracking` 集合的 MongoDB。请注意，我们的 Python 代码使用了 `pytz` 库和 ISO 3166 国家名称约定。有关如何正确设置国家时区的更多信息，请查阅 *进一步阅读* 部分。在此案例中，我们将国家设置为 `America/Guatemala`。
+
+重要提示
+
+你可以在以下页面了解更多关于 URI 的信息：[`www.mongodb.com/docs/manual/reference/connection-string`](https://www.mongodb.com/docs/manual/reference/connection-string)。记住，我们为了简化示例而使用了硬编码值，但最好使用机密信息。查看*第十章*，*边缘上的 SQL 和 NoSQL 数据库*，了解更多细节。要查看代码并创建你自己的 `tracking-server` 版本，请参考以下链接：[`github.com/sergioarmgpl/containers/tree/main/tracking-server/src`](https://github.com/sergioarmgpl/containers/tree/main/tracking-server/src)。
+
+1.  创建一个 ClusterIP 服务以便在 `gps-server` 内部调用 `tracking-server`：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Service
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: tracking-server
+      name: tracking-server
+    spec:
+      ports:
+      - port: 3000
+        protocol: TCP
+        targetPort: 3000
+      selector:
+        app: tracking-server
+      type: ClusterIP
+    status:
+      loadBalancer: {}
+    EOF
+    ```
+
+1.  创建一个负载均衡器服务，以便在我们的查看应用程序中调用 `tracking-server`，该应用程序可以通过互联网访问：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Service
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: tracking-server
+      name: tracking-server-lb
+    spec:
+      ports:
+      - port: 3000
+        protocol: TCP
+        targetPort: 3000
+      selector:
+        app: tracking-server
+      type: LoadBalancer
+    status:
+      loadBalancer: {}
+    EOF
+    ```
+
+1.  使用以下命令获取我们 `tracking-server` 部署的负载均衡器 IP：
+
+    ```
+    $ TRACKING_SERVER_IP="$(kubectl get svc tracking-server-lb -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+    ```
+
+你可以通过运行以下命令查看 `TRACKING_SERVER_IP` 环境变量的值：
+
+```
+$ echo $TRACKING_SERVER_IP
+```
+
+`tracking-server` 应用程序已部署。现在，让我们配置设备以运行我们的阅读器应用程序。
+
+# 配置你的 Raspberry Pi 以使用 GPS 跟踪你的设备
+
+在你的 Raspberry Pi 上使用 GPS 模块之前，你需要按照以下步骤操作：
+
+1.  在你的设备上安装 Raspberry Pi OS Lite（64 位）；你可以查看*第二章*，*K3s 安装与配置*，了解更多细节。
+
+1.  登录到你的设备并设置一个初始用户名和密码。
+
+1.  使用以下命令运行 `raspi-config`：
+
+    ```
+    $ sudo raspi-config
+    ```
+
+你将看到如下屏幕：
+
+![图 13.2 – raspi-config 主菜单](img/B16945_13_02.jpg)
+
+图 13.2 – raspi-config 主菜单
+
+1.  要配置无线网络，请进入**系统选项** | **无线局域网**菜单。
+
+1.  你会看到一个**选择你 Raspberry Pi 使用的国家**的消息，然后点击**确定**。
+
+1.  之后，**无线局域网国家**的消息将出现。选择你的国家并点击**确定**。
+
+1.  **请输入 SSID**消息将出现。点击**确定**并按**回车**键。
+
+1.  现在，**请输入密码**消息将出现。点击**确定**并按*回车*键。
+
+1.  返回主菜单后，选择**完成**并按*回车*键退出。
+
+1.  启用 SSH，选择**接口选项** | **SSH**菜单。这将显示**是否启用 SSH 服务器？**消息。选择**是**并按*回车*键。之后，**SSH 服务器已启用**消息将出现。
+
+1.  要检查你的 Raspberry Pi 的 IP，请运行以下命令：
+
+    ```
+    $ ifconfig -a
+    ```
+
+输出将如下所示：
+
+![图 13.3 – ifconfig 输出](img/B16945_13_03.jpg)
+
+图 13.3 – ifconfig 输出
+
+请注意 `wlan0` 网络接口旁边的 `inet` 字样的 IP 地址；这将是你 Raspberry Pi 的 IP 地址。
+
+1.  使用前面找到的 IP 地址通过 SSH 登录到您的设备：
+
+    ```
+    $ ssh YOUR_USER@RASPBERRY_IP
+    ```
+
+1.  将以下内核参数添加到 `/boot/cmdline.txt` 文件中以启用容器功能；请记住，您需要 root 权限才能修改此文件：
+
+    ```
+    cgroup_memory=1 cgroup_enable=memory
+    ```
+
+1.  将您的 VK-162 G-Mouse GPS 模块连接到树莓派的一个 USB 端口；几秒钟后，`/dev/ttyACM0` 设备将准备好使用。
+
+1.  重启您的设备以应用这些更改：
+
+    ```
+    $ sudo shutdown -r now
+    ```
+
+1.  (*可选*) 如果您想配置其他功能，请登录到设备并运行以下命令：
+
+    ```
+    $ sudo raspi-config
+    ```
+
+1.  (*可选*) 激活 `raspi-config`。
+
+1.  (*可选*) 然后，弹出对话框会显示 **是否启用 ARM I2C 接口？**。选择 **是** 并按 *Enter*。
+
+1.  (*可选*) 在前一个对话框之后，将显示 **ARM I2C 接口已启用** 信息。按 *Enter* 选择 **确定** 按钮。
+
+1.  (*可选*) 返回主菜单后，选择 **完成** 并按 *Enter* 退出。
+
+1.  最后，让我们通过运行以下命令来安装 K3s：
+
+    ```
+    $ curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644" sh -s -
+    ```
+
+1.  运行以下命令以查看您的 K3s 单节点集群是否正在运行：
+
+    ```
+    $ kubectl get nodes
+    ```
+
+这将显示类似以下内容：
+
+![图 13.4 – kubectl 获取节点输出](img/B16945_13_04.jpg)
+
+图 13.4 – kubectl 获取节点输出
+
+重要提示
+
+您可以通过以下链接了解更多关于如何使用 `raspi-config` 的信息：[`geek-university.com/raspi-config`](https://geek-university.com/raspi-config)。
+
+现在，您的树莓派已经安装了 Raspberry Pi OS Lite，并且可以与您的 GPS 模块一起使用。在下一部分中，我们将开始部署 GPS 读取应用程序。
+
+## 理解 GPS 读取器代码以发送 GPS 坐标
+
+现在，剩下的部分是安装 `gps-reader` 到您 Raspberry 上安装的 K3s 单节点集群中。这个应用程序将作为容器使用 Kubernetes Pods 运行。然而，在安装 `gps-reader` 应用程序之前，让我们先理解一下代码：
+
+```
+<Imported libraries>
+while True:
+   <Set serial Device /dev/ttyACM0 with baud rate 9600>
+   ser=serial.Serial(device, baudrate=9600, timeout=0.5)
+   <Set the PynMEA2 reader>
+   <Read data from the device>
+
+   <Read for GRPMC lines>
+    <Extract latitude, longitude> 
+    <Call /client/{cid}/position from GPS Server
+     To store the position in Redis>
+    <If cannot read data show
+     "No GPS data to send">
+```
+
+上述代码包含一个无限循环，每半秒读取一次 `/dev/ttyACM0` 设备的输出。我们的 VK-162 G-Mouse GPS 模块使用 `GRPMC` 字段通过 `PynMEA2` 库获取纬度和经度坐标。一旦库提取到坐标，它会调用 GPS 服务器端点将当前的 GPS 位置存储到 Redis 中，并记录到 MongoDB。
+
+请注意，GPS 模块在开始接收 GPS 坐标后会有一点延迟。在 GPS 模块开始接收坐标之前，可能需要几分钟时间。
+
+要查看设备正在做什么，请运行 `cat /dev/ttyACM0` 命令。如果模块尚未接收坐标，它将显示类似以下内容：
+
+```
+$GPRMC,052326.00,V,,,,,,,,,,N*7D
+$GPVTG,,,,,,,,,N*30
+$GPGGA,052326.00,,,,,0,00,99.99,,,,,,*66
+$GPGSA,A,1,,,,,,,,,,,,,99.99,99.99,99.99*30
+$GPTXT,01,01,01,NMEA unknown msg*58
+$GPTXT,01,01,01,NMEA unknown msg*58
+$GPGSV,1,1,02,01,,,30,22,,,36*7C
+$GPGLL,,,,,052326.00,V,N*4A
+```
+
+重要提示
+
+当模块尚未接收到坐标时，`GPRMC` 或 `GPGLL` 字段会有空值。这些缺失的值包含 GPS 模块获得的纬度和经度。
+
+当设备开始接收数据时，您将看到类似以下内容：
+
+```
+$GPRMC,054003.00,A,1437.91511,N,09035.52679,W,0.077,,020622,,,D*6D
+$GPVTG,,T,,M,0.077,N,0.142,K,D*21
+$GPGGA,054003.00,1437.91511,N,09035.52679,W,2,06,2.54,1668.7,M,-4.9,M,,0000*68
+$GPGSA,A,3,22,01,48,31,32,21,,,,,,,3.95,2.54,3.02*02
+$GPTXT,01,01,01,NMEA unknown msg*58
+$GPGSV,4,1,13,01,18,301,33,10,49,124,11,16,20,189,12,21,29,276,24*74
+$GPGSV,4,2,13,22,39,008,32,23,18,135,,25,19,052,11,26,47,169,09*79
+$GPGSV,4,3,13,27,02,204,18,31,64,342,30,32,35,037,29,46,43,252,*7A
+$GPGSV,4,4,13,48,47,250,30*40
+$GPGLL,1437.91511,N,09035.52679,W,054003.00,A,D*70
+```
+
+`GPGLL`行包含我们要查找的所有关于纬度和经度的信息。
+
+重要说明
+
+根据设备配置，`GPRMC`行可能包含海拔数据。在之前的输出中，海拔信息未配置，因此该行不会包含这些信息，但设备可以配置以获取海拔信息。
+
+现在，我们知道应用程序如何从 GPS 模块读取信息。让我们使用已安装 K3s 的设备来部署我们的应用程序。
+
+## 部署 gps-reader 将 GPS 坐标发送到云端
+
+使用 K3s 的一个优势是，如果你的应用程序比较复杂，你可以将应用程序分模块或微服务部署，并且可以更新这些模块而不影响其他模块。在这种情况下，我们只使用了一个模块，称为`gps-reader`。这个应用程序通过 Pod 从设备读取 GPS 模块。在这个案例中，我们使用的配置允许我们仅用必要的权限读取设备上的`/dev`文件夹，访问`/dev/ttyACM0`设备，GPS 模块在此设备上显示 GPS 坐标。该设备可能会变化，具体取决于你使用的 GPS 模块。
+
+要在你的设备上创建读卡器，请执行以下步骤：
+
+1.  创建`gps-reader` Pod 以开始从你的模块读取 GPS 坐标：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: gps-reader
+    spec:
+      containers:
+      - image: sergioarmgpl/gps_reader
+        name: gpsreader
+        imagePullPolicy: Always
+        env:
+        - name: DEVICE
+          value: "/dev/ttyACM0"
+        - name: CLIENT_ID
+          value: "1"
+        - name: ENDPOINT
+          value: "http://<GPS_SERVER_IP>:3000"
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["SYS_ADMIN"]
+        volumeMounts:
+        - mountPath: /dev
+          name: dev-volume
+      volumes:
+      - name: dev-volume
+        hostPath:
+          path: /dev
+          type: Directory
+    EOF
+    ```
+
+此 Pod 将使用以下环境变量：
+
++   **DEVICE**：此项包含 GPS 模块监听的虚拟设备。根据你使用的 GPS 模块，可能会有所不同。请参阅*进一步阅读*部分获取更多信息。
+
++   **CLIENT_ID**：这是该读卡器在系统中代表的车辆编号——在此案例中为 1，表示第一辆车。
+
++   `GPS_SERVER_IP`变量在*部署 gps-server 以存储 GPS 坐标*部分中。
+
+重要说明
+
+要查看代码并创建你自己的`gps-reader`容器，请参考以下链接：[`github.com/sergioarmgpl/containers/tree/main/gps-reader/src`](https://github.com/sergioarmgpl/containers/tree/main/gps-reader/src)。如果你想使用 OLED 屏幕显示信息，请参考以下链接：[`github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/blob/main/ch13/code/python/oled.py`](https://github.com/PacktPublishing/Edge-Computing-Systems-with-Kubernetes/blob/main/ch13/code/python/oled.py)。该代码使用树莓派 4B 的 keyestudio Complete RFID Starter 套件中的 OLED 屏幕。
+
+1.  你可以通过运行以下命令检查你的设备是否正在读取信息：
+
+    ```
+    $ kubectl logs pod/gps-reader -f
+    ```
+
+如果你不确定是否可以访问你的设备，可以通过查看前端并检查设备是否出现在地图上来测试。
+
+输出将如下所示：
+
+```
+<Response [200]>
+{'lat': 11.6318615, 'lng': -80.59205166666666, 'cid': '1'}
+```
+
+1.  按*Ctrl* + *C*取消操作。
+
+1.  输入`exit`并按*Enter*退出你的树莓派。
+
+现在，我们已经启动了所有后端服务并接收数据，但我们需要将这些信息可视化。接下来，进入下一部分，部署`frontend`应用程序。
+
+# 使用 Open Street Maps 实时可视化您的设备
+
+我们的应用程序有两个部分，一个是实时可视化车辆的 GPS 坐标及其附近的停靠点，另一个是显示车辆在时间范围内的历史轨迹。因此，让我们首先了解实时显示设备的地理跟踪地图的代码。
+
+## 理解地理跟踪地图可视化代码
+
+让我们从一张显示所有车辆及其坐标和附近停靠点的地图开始。我们使用 HTML、JavaScript、jQuery 和 Leaflet 库来创建这张地图。让我们来看一下地图的代码：
+
+```
+<!DOCTYPE html>
+<html lang="en"> 
+<head> 
+<Load Javascript libraries> 
+<Load page styles>   
+<body>
+    <div id='map'></div> 
+<script> 
+    <Load Map in an initial GPS position>
+    var marker 
+    var markers = [] 
+    var osm = L.tileLayer( 
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {  
+        <Set Open Street Map Initial 
+        Configuration using Leaflet>
+    });  
+
+    osm.addTo(map);     
+    setInterval(() => {  
+        $.getJSON("URL",
+        function(pos) {  
+            <Delete current markers> 
+            <Get current positions for each unit or truck> 
+            <For each position set a marker 
+             in the map calling
+             the function markPosition> 
+        });  
+    }, 5000);  
+
+    function markPosition(cid,lat,lng,near)  
+    {  
+        <Create a maker in the map with 
+        Latitude, Longitude, Unit number and near destinies> 
+    } 
+</script> 
+</body> 
+</html>
+```
+
+我们的页面加载了一些 JavaScript 库和 CSS 样式。之后，它加载了一个初始的 GPS 位置来显示地图。此地图被加载到`<div id='map'></div>`代码中。
+
+该代码中的重要函数如下：
+
++   `gps-server`用于获取所有的 GPS 坐标。为此，`setInterval`函数调用`http://GPS_SERVER_IP:3000/clients/positions/unit/km/r/0.1`网址，该网址返回每个车辆的当前位置和其周围 0.1 公里范围内的停靠点。为此，每隔 5 秒调用`markPosition`函数，并传送客户端 ID 或车辆编号（`cid`）、纬度（`lat`）、经度（`lng`）以及包含停靠点名称的`near`变量。此函数将在地图上创建一个标记对象。
+
++   **markPosition**：该函数在地图上创建一个 Leaflet 标记对象，并在地图上弹出窗口。调用此函数时，还会重置地图。
+
+该应用程序基本上加载所有必要的库，并调用`setInterval`函数，每 5 秒刷新一次地图，通过调用`markPosition`函数。设置初始 GPS 位置以居中地图是非常重要的；这个位置可以在用于部署`frontend`应用程序的 YAML 文件中进行自定义。地图初始化后，5 秒后将显示所有跟踪的对象：
+
+![图 13.5 – 显示两台使用 GPS 的设备的地图](img/B16945_13_05.jpg)
+
+图 13.5 – 显示两台使用 GPS 的设备的地图
+
+如果连接的设备没有向地图发送数据，它将显示一张空白地图；在这种情况下，*图 13.5*显示了两台连接并发送数据的设备。现在，假设我们使用的是设备或车辆编号为 2——在此例中，表示为第二个`CID`（客户端 ID）。如果点击蓝色标记，它将显示当前的`纬度`和`经度`坐标，以及跟踪车辆的附近目的地或停靠点。在这种情况下，我们设置了两个停靠点，`galeno_encinal`和`la_torre_encinal`，它们距离跟踪车辆当前位置 0.1 公里。如果点击蓝色标记，你将看到类似的内容：
+
+![图 13.6 – 点击蓝色标记时显示的附近目的地](img/B16945_13_06.jpg)
+
+图 13.6 – 点击蓝色标记时显示的附近目的地
+
+此信息每 5 秒计算一次，实时更新您被跟踪车辆的最近位置。您可以根据需要定制代码；这只是一个构建使用 GPS 的地理跟踪系统的快速入门示例。让我们看看我们的车辆路线报告如何工作，以显示从跟踪车辆收集的数据。
+
+## 理解车辆路线报告
+
+此应用程序创建一个蓝线，显示存储在 MongoDB 中的跟踪日志。这代表了车辆在特定日期或时间范围内的路线。在我们深入研究其工作原理之前，让我们首先探讨一下本页的代码：
+
+```
+<!DOCTYPE html> 
+<html lang="en">  
+<head>  
+<Load Javascript libraries>  
+<Load page styles>    
+<body>
+    <form>
+        <input id="cid" name="cid"></input>
+        <input id="sdate" name="sdate"></input> 
+        <input id="edate" name="edate"></input> 
+        <button onclick="loadMap()"></button> 
+    </form> 
+    <div id='map'></div> 
+<script>  
+    <Load Map in an initial GPS position> 
+    var tiles = L.tileLayer(  
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', 
+    {   
+        <Set Open Street Map Initial  
+        Configuration using Leaflet> 
+    }).addTo(map);   
+
+    function onEachFeature(feature, layer) { 
+            <Set a popup with the line visualizing the route 
+            of the vehicle> 
+    } 
+
+    var trip;
+
+    function loadMap(){ 
+        $.getJSON(<DYNAMIC_URL>, function(pos) { 
+            var coordinates = [];
+            <Creating an array with the coordinates 
+            between the time range> 
+            this.trip = { 
+            <The array with the coordinates and fields 
+            to visualize in the map> 
+            }; 
+            var tripLayer = L.geoJSON(this.trip, { 
+                <Get the trip data and visualize it 
+                into the map> 
+            }).addTo(map); 
+        }); 
+    } 
+</script>  
+</body> 
+</html>
+```
+
+让我们分析下一个代码段：
+
++   **trip**: 这个变量包含所有坐标，用于在地图上绘制车辆在时间范围内覆盖的路线。
+
++   **form**: 这是一个用于生成动态调用的 HTML 表单，以获取所选时间范围内所有 GPS 位置的工具。
+
++   `tracking-server` 并获取所有 GPS 位置。此 URL 的结构如下：`http://TRACKING_SERVER_IP:3000/client/2/positions/s/25-05-22-04:39:58/e/25-05-22-04:40:00`。
+
++   **onEachFeature**: 这是一个创建包含车辆 GPS 位置的线的函数。
+
++   **LoadMap**: 这是一个在点击表单加载按钮后调用的函数，用于显示车辆在时间范围内覆盖的路线。
+
+总的来说，当单击**显示路线历史**按钮时，会生成此报告页面，显示地图上车辆的路线如下：
+
+![图 13.7 – 车辆路线报告](img/B16945_13_07.jpg)
+
+图 13.7 – 车辆路线报告
+
+我们的 `tracking-server` 服务配置为在不同国家使用本地化时间和 UTC 时存储和查询车辆跟踪信息的日志。这是一个基本的车辆路线报告的实现，您可以根据需要进行定制。
+
+重要提示
+
+要了解更多关于 UTC 时间的信息，请查看以下链接：[`www.timeanddate.com/time/aboututc.html`](https://www.timeanddate.com/time/aboututc.html)。
+
+此地图的另一个功能是，当您单击地图时，它可以显示一些信息。在这种情况下，我们显示了一个示例消息，但您可以根据需要进行定制，例如显示车辆在特定位置的时间：
+
+![图 13.8 – 点击地图时车辆路线信息](img/B16945_13_08.jpg)
+
+图 13.8 – 点击地图时车辆路线信息
+
+要重置报告，您需要重新加载页面。通过这样做，我们准备部署包含实时地图和此报告的前端应用程序，最终可以访问最终应用程序。为此，让我们继续下一节。
+
+# 部署实时地图和报告应用程序来跟踪您的设备。
+
+现在我们已经准备好所有东西，所以我们需要部署包含实时地图和报告页面的前端应用。为此，我们使用一个简单的 Flask 应用，结合 Python 和模板；以下是代码：
+
+```
+<imported libraries>
+<app_initialization>
+<CORS configuration>
+@app.route("/")
+def map():
+   return render_template(<Render map.html
+                           Using environment variables) 
+@app.route("/report")
+def report():
+   return render_template(<Render report.html
+                           using environment variables>)
+<Starting the application on port 3000>
+```
+
+该应用呈现 `map.html` 页面，加载 Leaflet 库以显示地图，使用初始的纬度和经度变量。它还设置了 `gps-server` 的端点，该端点在此静态页面中被调用。要部署此应用，请按以下步骤操作：
+
+1.  通过运行以下命令创建部署：
+
+    ```
+    $ cat <<EOF | kubectl apply -f - 
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: frontend
+      name: frontend
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: frontend
+      strategy: {}
+      template:
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: frontend
+        spec:
+          containers:
+          - image: sergioarmgpl/frontend
+            name: tracking-server
+            imagePullPolicy: Always
+            env:
+            - name: LATITUDE
+              value: "<YOUR_LATITUDE_COORDINATE>"
+            - name: LONGITUDE
+              value: "<YOUR_LONGITUDE_COORDINATE>"
+            - name: GPS_SERVER
+              value: "<YOUR_GPS_SERVER_IP>"
+            - name: TRACKING_SERVER
+              value: "<YOUR_TRACKING_SERVER_IP>"
+            resources: {}
+    status: {}
+    EOF
+    ```
+
+此部署包含以下环境变量：
+
++   **纬度**: 用于定位地图中心的初始 GPS 纬度坐标
+
++   **经度**: 用于定位地图中心的初始 GPS 经度坐标
+
++   `gps-server` 应用。
+
++   `tracking-server` 应用。
+
+通过这些变量，你可以配置初始加载的 GPS 坐标以定位地图中心，并设置页面调用的端点，显示 `frontend` 应用的报告路线实时地图。
+
+重要说明
+
+要查看代码并创建你自己的 `frontend` 容器，请参阅以下链接：[`github.com/sergioarmgpl/containers/tree/main/frontend/src`](https://github.com/sergioarmgpl/containers/tree/main/frontend/src)。要获取加载时地图中心的初始 GPS 坐标，请访问此网站：[`www.gps-coordinates.net`](https://www.gps-coordinates.net)。
+
+1.  为你的应用创建负载均衡器服务：
+
+    ```
+    $ cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Service
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: frontend
+      name: frontend-lb
+    spec:
+      ports:
+      - port: 3000
+        protocol: TCP
+        targetPort: 3000
+      selector:
+        app: frontend
+      type: LoadBalancer
+    status:
+    loadBalancer: {} 
+    EOF
+    ```
+
+1.  使用以下命令获取 `frontend` 部署的负载均衡器 IP：
+
+    ```
+    $ FRONTEND_IP="$(kubectl get svc frontend-lb  -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+    ```
+
+你可以通过运行以下命令查看 `FRONTEND_IP` 环境变量的值：
+
+```
+$ echo $FRONTEND_IP
+```
+
+重要说明
+
+我们使用了 `LoadBalancer` 服务类型来简化实现，但一种更便宜的解决方案是使用 Ingress 定义来暴露应用程序。你可以通过以下链接获取更多信息：[`kubernetes.io/docs/concepts/services-networking/ingress`](https://kubernetes.io/docs/concepts/services-networking/ingress)。
+
+1.  现在，在浏览器中访问 `http://<FRONTEND_IP>:3000`，以下是 URL 的重要端点：
+
+    +   `http://<FRONTEND_IP>:3000`
+
+    +   `http://<FRONTEND_IP>:3000/report`
+
+1.  现在，在你的车辆中打开 Raspberry Pi 设备，并等待直到设备开始发送 GPS 坐标。别忘了为每个设备设置停靠点。几秒钟或几分钟后，你的地图将开始实时显示设备的位置。
+
+1.  通过在装备了 Raspberry Pi 设备的车辆中驾驶并记录一些数据，随后测试你的报告。
+
+现在，我们的简单地理定位系统已经准备就绪并开始运行。在完成本章内容后，重要的是要提到，这只是一个基本示例，你可以根据需求进行扩展。现在，是时候回顾我们所学到的内容了。
+
+# 概要
+
+在本章中，我们学习了如何利用 MongoDB 和 Redis 存储和查询 GPS 坐标，以构建一个基础的地理定位系统。我们还学习了如何将 GPS 模块集成到边缘设备中，并将信息发送到云端，最终在地图上实时可视化车辆的移动，展示圆形区域内的附近停靠点，从而模拟一个基础的跟踪配送系统。这展示了如何使用地理定位实现一个简单的应用案例，以及边缘设备在实时移动中如何在地理定位系统中互动。在下一章中，我们将学习如何使用机器学习和计算机视觉创建一个小型智能交通项目。
+
+# 问题
+
+下面是一些问题，用于验证你新的知识：
+
++   如何使用 GPS 技术创建一个地理定位系统？
+
++   如何使用 Redis 存储 GPS 坐标并对这些数据进行查询？
+
++   如何使用 MongoDB 存储地理定位系统的日志？
+
++   如何设计一个实时应用，展示移动车辆的 GPS 位置？
+
++   如何使用边缘计算和 K3s 创建一个分布式系统来跟踪车辆？
+
+# 进一步阅读
+
+你可以参考以下资料，了解本章涵盖的主题：
+
++   VK-162 G-Mouse GPS 模块： [`www.amazon.com/Navigation-External-Receiver-Raspberry-Geekstory/dp/B078Y52FGQ`](https://www.amazon.com/Navigation-External-Receiver-Raspberry-Geekstory/dp/B078Y52FGQ)
+
++   Redis 空间索引命令： [`redis.io/commands/?group=geo`](https://redis.io/commands/?group=geo)
+
++   空间数据： [`www.mongodb.com/docs/manual/geospatial-queries`](https://www.mongodb.com/docs/manual/geospatial-queries)
+
++   *定位芯片和模块*： [`www.u-blox.com/en/positioning-chips-and-modules`](https://www.u-blox.com/en/positioning-chips-and-modules)
+
++   *哈希表基础*： [`www.hackerearth.com/practice/data-structures/hash-tables/basics-of-hash-tables/tutorial`](https://www.hackerearth.com/practice/data-structures/hash-tables/basics-of-hash-tables/tutorial)
+
++   *在 Windows、Mac 和 Linux 上查找 Arduino 端口*： [`www.mathworks.com/help/supportpkg/arduinoio/ug/find-arduino-port-on-windows-mac-and-linux.html`](https://www.mathworks.com/help/supportpkg/arduinoio/ug/find-arduino-port-on-windows-mac-and-linux.html)
+
++   raspi-config： [`geek-university.com/raspi-config`](https://geek-university.com/raspi-config)
+
++   *GPS – NMEA 语句信息*： [`aprs.gids.nl/nmea`](http://aprs.gids.nl/nmea)
+
++   *Leaflet – 一个开源的 JavaScript 库，用于移动友好的互动地图*： [`leafletjs.com`](https://leafletjs.com)
+
++   *GPS 坐标*： [`www.gps-coordinates.net`](https://www.gps-coordinates.net)
+
++   *Epoch 和 Unix 时间戳转换工具*： [`www.epochconverter.com`](https://www.epochconverter.com)
+
++   pytz 时区库： [`pypi.org/project/pytz`](https://pypi.org/project/pytz)
+
++   国家代码：[`www.iban.com/country-codes`](https://www.iban.com/country-codes)

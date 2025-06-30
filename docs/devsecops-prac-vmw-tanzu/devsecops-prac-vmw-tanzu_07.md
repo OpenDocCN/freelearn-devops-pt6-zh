@@ -1,0 +1,990 @@
+# 7
+
+# 使用 Tanzu Kubernetes Grid 在云之间编排容器
+
+在上一章中，我们了解了作为 Tanzu 产品包一部分的容器注册中心 Harbor。通过了解如何使用 Harbor 托管容器镜像，接下来我们将在本章学习如何使用 Tanzu Kubernetes Grid（Tanzu 的多云且企业级的 Kubernetes 分发版）将它们部署到 Kubernetes 上。近年来，Kubernetes 已经广泛被接受，成为行业运行容器的默认规范。根据**Cloud Native Computing Foundation**（**CNCF**）的最新调查，96%的受访组织要么正在评估，要么已经在使用 Kubernetes（来源：[`www.cncf.io/wp-content/uploads/2022/02/CNCF-Annual-Survey-2021.pdf`](https://www.cncf.io/wp-content/uploads/2022/02/CNCF-Annual-Survey-2021.pdf)）！此外，许多受访者在不同的云平台上使用 Kubernetes，原因包括风险缓解、避免厂商锁定以及提高运营支出效率。但在一个或多个云上运营大型 Kubernetes 平台是一个复杂的任务，原因多种多样。每个云平台都有各自的 API 和管理 Kubernetes 服务的独特方式。当组织还需要在本地运行 Kubernetes 服务时，复杂性会进一步增加。对于这种本地 Kubernetes 部署，许多企业会使用自定义自动化构建自己的平台。虽然使用开源工具构建这样的自定义平台可以带来初期的成本节省，但当最初构建平台的人离开组织后，长期维护这些平台将变得非常困难。相比之下，组织可以更好地利用其人才，使用**Tanzu Kubernetes Grid**（**TKG**）这样的企业级产品，专注于构建更多具有收入创造潜力的定制应用程序，而不是为这些低价值的工作分心。
+
+TKG 是 VMware 的 Kubernetes 发行版，提供了部署企业级容器平台所需的一切功能，适用于基于 vSphere 的本地数据中心、**Amazon Web Services**（**AWS**）和 Azure 公有云基础设施。在本章中，我们将详细了解此产品，并涵盖以下主题：
+
++   **为什么选择 Tanzu Kubernetes Grid？**：深入了解 TKG 的功能和能力
+
++   **开箱 Tanzu Kubernetes Grid**：详细概述 TKG 的组件和概念
+
++   **开始使用 Tanzu Kubernetes Grid**：学习如何安装和配置 TKG
+
++   **Tanzu Kubernetes Grid 的常见日常操作**：学习如何使用 TKG 执行各种集群生命周期活动
+
+让我们从了解 Tanzu Kubernetes Grid 的背景开始。
+
+# 为什么选择 Tanzu Kubernetes Grid？
+
+简而言之，TKG 是企业支持的开源 Kubernetes 平台的一个版本。与其他许多发行版一样，TKG 使用上游 Kubernetes 发行版，而不修改开源代码库。然而，有几个充分的理由使得企业更倾向于使用 TKG 而非开源社区的 *原生* Kubernetes 发行版。我们将在本节中探讨这些原因。
+
+## 多云应用部署
+
+根据 Gartner 的一项调查（[`www.gartner.com/smarterwithgartner/why-organizations-choose-a-multicloud-strategy`](https://www.gartner.com/smarterwithgartner/why-organizations-choose-a-multicloud-strategy)），超过 81% 的受访者表示他们有多云部署或策略。企业采用多云策略的原因包括避免供应商锁定，并使用各个云服务提供商提供的最佳服务。此外，企业有些应用程序可能无法部署在公共云平台上，因此选择在本地部署。Kubernetes 提供了一个很好的选项，允许在多云和混合云平台上部署应用程序。一旦应用程序准备好在 Kubernetes 中运行并包装在容器中，它就可以部署到任何符合上游标准的 Kubernetes 平台，不论是在任何云环境还是数据中心中。Kubernetes 使得应用程序的多云部署几乎变得轻而易举。Kubernetes 可以很好地管理容器化应用程序，但从本质上讲，它并不懂得如何管理其所部署的基础设施。这使得平台和基础设施的管理成为一个外部问题。所有主要的云服务提供商除了提供 Kubernetes 作为服务之外，还提供仅使用其基础设施来部署自我管理 Kubernetes 平台的选项。然而，每个平台都有其独特的接口，因此用户体验也各不相同。此外，每个平台在操作系统、网络、存储和计算等方面都有各自的差异。管理大型 Kubernetes 平台本身就是一个难题，当我们需要管理一个多云环境时，这个问题会更加复杂。虽然学习一个云平台的细节并不复杂，但现在，基础设施和平台团队如果计划以多云方式部署 Kubernetes，就需要学习多个云平台的相同内容。由于这些原因和所涉及的复杂性，许多企业尽管使用单一平台所带来的风险较高，仍然避免走向多云。
+
+TKG 通过提供统一的体验来解决这些挑战，使得在 vSphere（用于本地部署）、AWS 和 Azure 云平台上操作 Kubernetes 成为可能。TKG 的核心组件之一是集群 API（[`cluster-api.sigs.k8s.io/`](https://cluster-api.sigs.k8s.io/)），这是一个由 CNCF 维护的开源项目，提供了一个基础设施之上的抽象层。集群 API 部署并管理 Kubernetes 节点，确保所选云平台所需的存储和网络配置。此外，TKG 通过 `tanzu` CLI 来暴露其接口，提供相同的用户界面来执行不同的 Kubernetes 集群生命周期操作，无论基础设施提供商是什么。TKG 还为三大支持的云提供商捆绑了 VMware 支持的操作系统层。凭借这些特性，TKG 提供了一个易于使用的多云 Kubernetes 平台。
+
+## 开源对齐
+
+使用 TKG 的另一个主要好处是，它使用了适用于不同用例的开源工具。作为其核心组件，TKG 使用由 CNCF 社区维护的上游开源 Kubernetes 发行版。TKG 并没有从任何开源组件中派生代码并加入自己的定制特性。这一特点为 TKG 用户提供了使用开源软件的所有好处，包括通过可移植性避免厂商锁定，并通过开源贡献为其需求丰富功能的途径。
+
+考虑到这些好处，近年来所有企业都希望尽可能使用开源解决方案。然而，云原生生态系统中充满了许多开源产品，这些产品解决相似的问题，并且在生产环境中使用时成熟度不同。*图 7.1* 是一张来自 CNCF 官网的截图（[`landscape.cncf.io/`](https://landscape.cncf.io/)），展示了一个非常拥挤的空间，里面有许多解决不同问题的工具，运行容器化应用程序。为特定问题选择合适的工具，并且该工具具有可接受的成熟度、活跃的社区和企业级支持，是一项具有挑战性的任务。而且，这个生态系统在不断变化，新解决方案频繁地被添加到列表中。更复杂的是，一个工具与另一个工具的兼容性并不总是能得到保证。因此，解决这个问题有三种可能的方案：
+
+1.  企业通过仔细评估这个多样化且竞争激烈的生态系统中的各项选择，运行长期的概念验证项目来缩小选择范围，从而构建定制的容器平台。虽然这种方式能提供完全的控制权和可能的短期成本优势，但这种方法也有一些相当大的缺点。其中之一是，企业可能需要花费大量的工程师时间来构建定制的容器平台。从市场上找到合适的人才并在内部培养所需的技能是一个艰难且昂贵的挑战。此外，这些技能人才在市场上需求旺盛，可能无法长时间留在企业内支持他们所构建的系统。最终，这些定制构建的解决方案很快就会成为企业的一项昂贵的负担。
+
+1.  企业可以选择由云服务提供商提供的所有解决方案，在这种方式下，企业不再需要花时间选择工具，也不必担心这些工具的支持和兼容性。通过这种方式，企业可以使用 AWS、Azure 或 Google Cloud Platform 等单一云服务商提供的所有服务来构建一个强大且符合生产要求的容器平台。然而，这种方法可能会导致潜在的厂商锁定问题。长期来看，*脱离*将非常痛苦，而且这将成为与一个云服务商的昂贵的*婚姻*：
+
+![图 7.1 – CNCF 生态图](img/B18145_07_01.jpg)
+
+图 7.1 – CNCF 生态图
+
+1.  企业可以选择像 Tanzu 这样的多云平台，它可以抽象化基础设施提供商，从而使部署在平台上的工作负载具备可移植性。与前两种方式类似，这种方式也有缺点。使用这种多云平台可能会导致多云平台提供商本身的厂商锁定问题。在使用任何第三方产品时，避免厂商锁定没有万无一失的解决方案。然而，如果第三方解决方案完全由开源组件支持，这种风险可能会在一定程度上得到缓解，而 TKG 恰好就是这种情况。
+
+TKG 是许多流行的开源项目的集合，包括作为容器运行时的 Kubernetes、用于 Kubernetes 集群生命周期管理的 Cluster API、用于容器覆盖网络的 Antrea、作为节点操作系统的 Ubuntu 和 Photon、用于日志记录的 Fluent Bit、用于监控的 Prometheus 和 Grafana 等。我们将在下一部分详细介绍它们。VMware 为所有这些开源工具提供签名的二进制文件，这些工具会协同工作并适用于特定版本的 TKG。通过这种方式，TKG 帮助企业避免了痛苦的工具选择过程，使工具能够协同工作，获得支持，并在很大程度上避免了厂商锁定。
+
+至此，我们已经回答了*为什么选择 Tanzu Kubernetes Grid？*的问题。现在，让我们了解 TKG 包中包含的内容及其核心概念。
+
+# 解开 Tanzu Kubernetes Grid
+
+在本节中，我们将回顾 TKG 的所有构建模块，包括其接口、核心组件和扩展组件。之后，我们将理解该平台的核心概念，从而理解其工作原理。我们还有很长的路要走，所以让我们开始吧。
+
+## Tanzu Kubernetes Grid 的构建模块
+
+正如上一节所提到的，TKG 是由许多开源工具集合而成，这些工具分别解决不同的问题，共同构建出一个企业级的 Kubernetes 平台。我们可以将这些组件分为三类——接口、核心和扩展——如*图 7.2*所示：
+
+![图 7.2 – Tanzu Kubernetes Grid 包](img/B18145_07_02.jpg)
+
+图 7.2 – Tanzu Kubernetes Grid 包
+
+让我们回顾这些组件，了解它们在 TKG 包中的角色。
+
+### Tanzu Kubernetes Grid 的接口组件
+
+正如其名称所示，这些组件包括 TKG 与用户及基础设施提供者（包括 vSphere、AWS 和 Azure）之间的接口。接下来的章节将更详细地说明这些工具。
+
+#### Tanzu 命令行界面（CLI）
+
+与 Tanzu 产品组合中的其他一些产品类似，TKG 也使用 `tanzu` CLI 作为其主要用户界面。`tanzu` CLI 采用插件结构，允许不同的 Tanzu 产品使用相同的界面。TKG 使用 `tanzu` CLI 执行所有集群操作，例如查看、创建、扩展、删除和升级 TKG 集群。我们将在下一节中使用这个 CLI 设置我们的 TKG 基础平台。`tanzu` CLI 是名为 Tanzu Framework 的更广泛开源项目的一部分（[`github.com/vmware-tanzu/tanzu-framework`](https://github.com/vmware-tanzu/tanzu-framework)）。你可以在这里了解更多关于该 CLI 的信息：[`github.com/vmware-tanzu/tanzu-framework/tree/main/docs/cli`](https://github.com/vmware-tanzu/tanzu-framework/tree/main/docs/cli)。
+
+除了这个 CLI，Tanzu 产品组合还包括一个名为 **Tanzu Mission Control** 的图形用户界面（**GUI**）工具，用于所有 TKG 集群操作。我们将在*第九章*《使用 Tanzu Mission Control 管理和控制 Kubernetes 集群》中详细了解这个工具。
+
+#### Tanzu Kubernetes Grid 安装程序
+
+TKG 安装程序是一个图形用户界面组件，提供了一个向导，用于在选定的基础设施上安装 TKG，撰写时该基础设施可以是 vSphere、AWS 或 Azure。在 TKG 的初始设置过程中，一个非常小的引导 Kubernetes 集群会被部署在操作员的工作站上（也称为**引导机器**）。TKG 安装程序 Pod 会在该本地 Kubernetes 集群上部署，以部署并启动引导机器上的图形用户界面。然后，操作员使用本地运行的 TKG 安装程序图形用户界面，在目标云基础设施上部署实际的 TKG 基础平台。这看起来可能会让人困惑，因为在这里，TKG 使用一个（小型）Kubernetes 平台来部署一个（大型）Kubernetes 平台。在下一节的 TKG 安装步骤中，我们将使用这个图形用户界面。
+
+值得注意的是，TKG 还提供了一种使用 `tanzu` CLI 安装基础设施的方法，同时也提供了图形用户界面（GUI）体验。然而，建议在第一次安装时使用 GUI，因为 GUI 中使用的向导会生成一个安装配置文件，该文件可以稍作修改后用于通过 `tanzu` CLI 快速安装其他类似的 TKG 基础设施。
+
+#### kind
+
+**kind** 代表 **Kubernetes inside Docker**。kind 是一个在 Kubernetes **特殊兴趣小组** (**SIGs**) 旗下的开源项目 ([`kind.sigs.k8s.io/`](https://kind.sigs.k8s.io/))，它允许你在 Docker 环境中运行一个非常小型的 Kubernetes 集群。kind 是一个符合 CNCF 标准的 Kubernetes 安装工具，通常部署在本地桌面环境中，用于部署一个小型的 Kubernetes 集群。TKG 安装器 Pods 仅在 kind 集群中用于引导目的。一旦实际的 TKG 基础设施安装完成，kind 集群以及运行的安装器组件会被销毁，因为它们的用途已经结束。
+
+#### Cluster API
+
+Kubernetes 包含一个名为 **Kubeadm** 的工具 ([`kubernetes.io/docs/reference/setup-tools/kubeadm/`](https://kubernetes.io/docs/reference/setup-tools/kubeadm/))，该工具帮助配置服务器，将其转换为 Kubernetes 集群节点。它通过安装所需的 Kubernetes 特定组件来实现这一目标。Kubeadm 有助于节点以最佳实践 *快速路径* 的方式加入集群，用于创建 Kubernetes 集群。然而，Kubeadm 并不知道如何为特定云提供商配置所需的基础设施。Kubeadm 需要在将服务器转换为 Kubernetes 节点之前，先确保服务器已经创建并配置了所需的计算、存储和网络环境。Kubeadm 在基础设施管理方面的这一空白由 **Cluster API** 填补。
+
+TKG 用户通常不会直接使用 Cluster API，但它是 TKG 中最重要的构建模块之一，它与底层云基础设施进行交互并进行抽象。**API** 这个术语代表 **应用程序编程接口**，这是计算机编程领域中一个广为人知的术语。Cluster API 也是一个 SIG 项目 ([`cluster-api.sigs.k8s.io/`](https://cluster-api.sigs.k8s.io/))。该项目的目的是为像 TKG 这样的平台提供一个接口层，以执行各种 Kubernetes 生命周期操作，包括集群配置、升级和运行。正如我们所知，不同的云提供商在操作其基础设施方面有不同的方式。在 vSphere 中，虚拟机称为 EC2 机器，而在 AWS 中，它则是 EC2 机器。在 AWS 中，虚拟网络边界称为 **虚拟私有云** (**VPC**)，但在 Azure 中则称为 **虚拟网络** (**VNet**)。Cluster API 接口的实现通过抽象这些云特定的术语和操作差异来进行统一。
+
+为了提供完全自动化的 Kubernetes 集群生命周期管理，TKG 使用了 Cluster API；Cluster API 内部使用 Kubeadm。通过这种方式，TKG 完全利用不同的开源项目，提供统一的多云 Kubernetes 集群管理体验。
+
+#### Carvel
+
+**Carvel** ([`carvel.dev/`](https://carvel.dev/)) 是 TKG 用于安装自身及其他可选包的一个额外开源包管理工具包。Carvel 是一个非常强大且灵活的 Kubernetes 部署打包工具。Carvel 包含多个用于不同包管理和部署任务的工具，如下所列：
+
++   *kapp-controller*：以 GitOps 方式提供 Kubernetes 集群中应用和包的持续交付
+
++   *ytt*：用于创建和使用模板化的 YAML 配置文件进行包部署，允许在 Kubernetes 集群安装时自定义包配置
+
++   *kapp*：将多个 Kubernetes 资源捆绑为一个可以作为整体安装、升级或删除的应用包
+
++   *kbld*：以不可变的方式构建或引用 Kubernetes 资源配置中使用的容器镜像
+
++   *imgpkg*：用于打包、分发和重新定位 Kubernetes 配置及相关的容器镜像作为一个整体
+
++   *vendir*：声明目录的内容
+
++   *secretgen-controller*：用于管理包所使用的各种类型的秘密
+
+在了解了与 TKG 相关的接口组件后，我们现在来回顾一下 TKG 的核心组件。
+
+### Tanzu Kubernetes Grid 的核心组件
+
+除了之前看到的接口组件，TKG 还包含了一组核心组件，它们是 Kubernetes 平台最基本的构建模块。让我们在这里了解它们。
+
+#### 操作系统
+
+使用 TKG 的众多优势之一是，您可以获得来自 VMware 的 Kubernetes 节点支持和加固的操作系统。TKG 支持基于 Photon 和 Ubuntu Linux 的操作系统。此外，TKG 还允许您在支持的几种 Linux 和 Windows 操作系统中构建，并提供一定的自定义功能。
+
+#### Kubernetes
+
+Kubernetes 是 TKG 的主要组成部分。每个版本的 TKG 包括一个或多个上游开源 Kubernetes 发行版，且没有任何修改。这个组件是主要的 Kubernetes 平台，包含了构建该平台的主要工具集。它包括以下工具：
+
++   *kube-apiserver*：Kubernetes 控制平面的 API 接口
+
++   *etcd*：一个键值存储，用于持久化 Kubernetes 集群的状态及其工作负载配置
+
++   *kube-scheduler*：根据各种选择标准将新创建的 pod 安排到节点上
+
++   *kube-controller-manager*：运行不同的控制过程来管理节点、任务、服务端点和服务账户
+
++   *cloud-controller-manager*：运行不同的云/基础设施特定进程，以管理节点健康检查、路由和云特定的服务负载均衡器
+
++   *kubelet*：一种驻留在节点上的代理，确保 Pod 的运行状态并将其报告给控制平面
+
++   *kube-proxy*：一种驻留在节点上的网络代理，确保服务路由到运行在节点上的终端 Pod
+
++   *容器运行时*：一种驻留在节点上的软件（在 TKG 中是**containerd**），用于运行和管理容器
+
+除了 Kubernetes 的核心组件外，还有一些 TKG 包含的其他核心组件，平台需要这些组件才能正常运行。让我们来看看。
+
+#### 指标服务器
+
+指标服务器聚合 Kubernetes 集群中容器、节点 CPU 和内存使用等资源使用数据，并通过 Kubernetes 中定义的指标 API 提供这些数据。在使用`kubectl top node`或`kubectl top` `pod`命令后，需要此组件来获取详细信息。
+
+#### 容器存储接口（CSI）
+
+**容器存储接口**（**CSI**）是一个 Kubernetes 规范，要求存储基础设施提供商进行实现。它将在 Kubernetes 平台中用于为需要持久存储的工作负载提供持久卷。它为 Kubernetes 用户提供了更多不同存储解决方案的选择。一个 Kubernetes 集群可以拥有不同类型的存储，包括**固态硬盘**（**SSDs**）、**机械硬盘**（**HDDs**）以及其他提供不同数据输入和输出速率的变种。TKG 使用专门针对 vSphere、AWS 或 Azure 的存储驱动程序。
+
+#### CoreDNS
+
+**CoreDNS**（[`coredns.io/`](https://coredns.io/)）是一个开源 DNS 服务器，用于提供 Kubernetes 服务名称解析。开源的 Kubernetes 为此目的安装了 kube-dns，但允许您用 CoreDNS 替换 kube-dns，CoreDNS 是一个更为增强的 DNS 服务器。TKG 集群默认部署 CoreDNS。
+
+#### 容器网络接口（CNI）
+
+根据 Kubernetes 网络规范，集群中的每个 Pod 应具有唯一的 IP 地址，并且应能够与集群中任何其他节点上的其他 Pod 进行通信，而无需进行**网络地址转换**（**NAT**）。此外，运行在节点上的所有代理，例如 kubelet，应该能够与其各自节点上运行的每个 Pod 进行通信。这些要求确保同一集群上部署的应用程序之间的顺畅通信。然而，我们需要一个特定的网络配置来实现这一规范。这就是 CNI 实现，也称为 Kubernetes 集群的覆盖网络。有许多 CNI 实现可供选择用于 Kubernetes 集群，其中 TKG 支持**Antrea**（[`antrea.io/`](https://antrea.io/)）和**Calico**（[`www.tigera.io/project-calico/`](https://www.tigera.io/project-calico/)），我们可以在平台设置期间选择其中之一。
+
+#### 控制平面负载均衡器
+
+TKG 可以创建多主节点的 Kubernetes 集群，以实现 Kubernetes 集群控制平面对象的高可用性。这类集群通常有三个 Kubernetes 控制平面（主节点）节点，负责处理 Kubernetes API 流量并执行重要的工作负载管理活动。对于 AWS 和 Azure 上的 TKG 部署，TKG 会创建各自的虚拟负载均衡器对象，将其置于这些控制平面节点前面，用于分配 API 服务器流量。对于 vSphere，TKG 包含了**NSX 高级负载均衡器**（[`www.vmware.com/products/nsx-advanced-load-balancer.html`](https://www.vmware.com/products/nsx-advanced-load-balancer.html)）来为同一目的创建虚拟负载均衡器。然而，如果 TKG 在 vSphere 上没有配置 NSX 高级负载均衡器，它会使用一个名为 **kube-vip** 的开源轻量级虚拟负载均衡器（[`kube-vip.io/`](https://kube-vip.io/)）。kube-vip 也是一个 CNCF 监管的项目。
+
+### Tanzu Kubernetes Grid 的扩展包
+
+开源的 Kubernetes 发行版包括部署 Kubernetes 平台所需的最小组件。然而，要部署一个生产级的 Kubernetes 环境，我们还需要一些其他的功能，例如日志记录、监控、访问控制、备份和恢复等。由于 TKG 是一个企业级的 Kubernetes 发行版，它还附带了许多这样的开源扩展包，并提供 VMware 签名的二进制文件。让我们来了解这些组件。
+
+#### 日志记录
+
+**Fluent Bit** （[`fluentbit.io/`](https://fluentbit.io/)）是一个高性能的开源日志转发工具，支持不同版本的 Linux 和 Windows 操作系统。Fluent Bit 也是一个 CNCF 子项目。该工具的目的是处理从 Kubernetes 节点和工作负载 Pod 发出的日志，并可以配置将其转发到多种日志聚合目的地，包括 Splunk、Elasticsearch、Amazon CloudWatch、Kafka 等。
+
+#### Ingress 控制器
+
+TKG 提供了 **Contour** （[`projectcontour.io/`](https://projectcontour.io/)）二进制文件，作为扩展包提供用于部署在 Kubernetes 集群上的面向外部服务的入口路由。Contour 是一个开源项目，属于 CNCF 旗下，内部使用 **Envoy 代理**（[`www.envoyproxy.io/`](https://www.envoyproxy.io/)），这是另一个 CNCF 开源项目。结合 Envoy（作为数据平面）和 Contour（作为控制平面），提供了入口控制器所需的实现，通过 Kubernetes 的入口资源定义提供 HTTP 层（网络层 7）服务路由。
+
+#### 身份验证与认证
+
+TKG 还包括了**Pinniped**（[`pinniped.dev/`](https://pinniped.dev/)），另一个由 VMware 支持的 CNCF 开源项目，用于提供 Kubernetes 集群用户身份和认证管理的便捷按钮。上游 Kubernetes 发行版不包含任何身份验证机制，仅提供授权配置。因此，TKG 提供了 Pinniped 作为一个扩展包，允许集群用户使用基于**轻量级目录访问协议**（**LDAP**）服务器或**Open ID Connect**（**OIDC**）的现有身份提供者进行认证。
+
+#### 可观测性
+
+对于集群的可观测性，TKG 还提供了**Prometheus**（[`prometheus.io/`](https://prometheus.io/)）和**Grafana**（[`github.com/grafana/grafana`](https://github.com/grafana/grafana)）的签名二进制文件，这两个在 Kubernetes 生态系统中非常流行的开源监控工具。在这里，Prometheus 是一个指标聚合引擎，而 Grafana 是用于可视化的指标渲染工具。除了这些*内置的*监控工具外，TKG 还支持与 VMware Aria Operations for Applications 进行一流集成，这是 VMware 组合中的**软件即服务**（**SaaS**）平台，提供更多关于扩展、功能和全栈可观测性的能力。我们将在*第十章**，使用 VMware Aria Operations 实现全栈可见性* *详细介绍此产品*。
+
+#### 容器注册表
+
+TKG 还包含了**Harbor**，一个专为容器注册表的定制扩展包，如果需要，可以在集群中安装。我们在*第六章**，使用 Harbor 管理容器镜像* *详细介绍了 Harbor*。
+
+#### 备份和恢复
+
+灾难恢复是支持生产应用的平台中非常重要的一个方面。Kubernetes 集群运行关键生产工作负载时也不例外。然而，Kubernetes 本身并未包含任何用于备份和恢复其集群中工作负载状态的工具。为填补这一空白，TKG 在捆绑包中包含了**Velero**（[`velero.io/`](https://velero.io/)），作为一个扩展包。Velero 也是一个 CNCF 项目下的开源项目。Velero 提供了在集群级别、Kubernetes 命名空间级别或基于附加元数据的特定工作负载级别进行备份和稍后恢复的方法。Velero 还可以对包含有状态应用数据的持久卷进行备份和在需要时进行恢复。这是在 Tanzu Mission Control 中用于备份和恢复功能的工具。我们将在*第九章*详细介绍，*使用 Tanzu 管理和控制 Kubernetes 集群*。
+
+#### ExternalDNS
+
+TKG 还提供了**ExternalDNS** ([`github.com/kubernetes-sigs/external-dns`](https://github.com/kubernetes-sigs/external-dns))，这是一个开源的 Kubernetes SIG 项目，作为扩展包使用。ExternalDNS 允许你动态控制集群中部署的外部服务的 DNS 记录，使用 Kubernetes 资源定义文件的方式，独立于 DNS 提供商。运行在 Kubernetes 集群上的外部服务可以通过 ExternalDNS 在连接的 DNS 服务器（如 AWS Route53 或 Google Cloud DNS）上处理所需的 DNS 记录绑定。可以说，它提供了一种使用 Kubernetes 资源定义来控制外部 DNS 配置的方式。
+
+#### cert-manager
+
+**cert-manager** ([`cert-manager.io/`](https://cert-manager.io/)) 是另一个 CNCF 开源项目，TKG 将其作为扩展包来管理 Kubernetes 集群中使用的 X.509（身份）证书。cert-manager 从多种配置的证书颁发机构获取证书，确保证书的有效性，并在证书到期前尝试自动续期。
+
+现在我们已经了解了 TKG 包含的组件，接下来我们来学习这个平台的一些重要概念。
+
+## Tanzu Kubernetes Grid 的重要概念
+
+TKG 是一个分布式系统，包含多个组成部分。为了理解 TKG 的工作原理，我们需要了解这个系统的一些概念。让我们来看看。
+
+### 启动集群
+
+如本章前面所述，TKG 使用一个 kind 集群在选定的基础设施上部署 TKG 基础平台。这个 kind 集群非常小，运行在操作员的工作站中的 Docker 容器里，通常是个人电脑。这个 kind 集群包含所需的设备，包括 Tanzu 安装门户和其他帮助启动 TKG 基础平台的组件。正因为如此，这个 kind 集群也被称为启动集群（bootstrap cluster）。
+
+### Tanzu Kubernetes 版本（TKrs）
+
+TKG 部署可能支持多个不同版本的 Kubernetes。TKr 是 TKG 下的一个自定义资源定义，包含一个 Kubernetes 版本的引用，TKG 可以部署和管理该版本。TKr 包括组件，如 Antrea 及其与给定 Kubernetes 版本相关的版本定义。TKG 的管理集群运行一个 TKr 控制器，持续检查公共注册表中是否有新的 Kubernetes 版本可用。一旦新版本可用，TKr 控制器会在 TKG 管理集群中下载所需的工件，以供使用。通过这种方式，一个 TKG 管理集群可以部署和管理多个 Kubernetes 版本，这些版本都在该 TKG 版本下受到支持。这样的安排为不同的团队提供了灵活性，允许他们在不同版本的 Kubernetes 上运行自己的应用，同时仍由同一个 TKG 控制平面进行管理。
+
+### 管理集群
+
+每个 TKG 基础设施都有一个管理集群。管理集群仅仅是一个运行特定工作负载的 Kubernetes 集群，用于管理其他 Kubernetes 集群的生命周期。一个 TKG 基础设施及其管理集群是与基础设施相关的。因此，如果我们想在所有平台上部署 TKG 集群，我们需要为 vSphere、AWS 和 Azure 各自配置一个管理集群。这是因为管理集群包含底层特定云平台的集群 API 配置。通过这种方式，管理集群可以在其部署的同一云平台上创建多个 Kubernetes 工作负载集群。除了创建、扩展、升级和删除 Kubernetes 集群之外，管理集群还会跟踪 Kubernetes 集群节点的实际状态与期望状态之间的差异（如果配置了此功能）。管理集群会重启或重新创建它所管理的集群中的不健康或丢失的节点。管理集群只是一个正常的 Kubernetes 集群，也可以运行任何自定义应用，但它应该仅用于其主要目的，即操作大量的 Kubernetes 集群。考虑到它对其他 Kubernetes 集群的管理权限，管理集群的访问权限应该严格限制在 TKG 平台操作团队中。TKG 平台操作人员可以通过在管理集群下使用 Kubernetes 命名空间来授予管理集群有限的访问权限。这样，不同的团队可以使用相同的管理集群来管理与特定命名空间关联的 Kubernetes 集群的生命周期。除了上游 Kubernetes 组件外，TKG 管理集群还部署了以下 TKG 特定组件：
+
++   集群 API 组件
+
++   cert-manager
+
++   secretgen-controller
+
++   kapp-controller
+
++   tkr-controller
+
+### 工作负载集群
+
+工作负载集群是由管理集群创建的正常 Kubernetes 集群。工作负载集群是我们部署应用程序的地方。根据组织的实践和规模，不同的团队及其应用环境可能会使用独立的工作负载集群。工作负载集群的节点数量仅受基础设施可用性的限制。然而，建议将集群规模保持尽可能小，以减少出现问题时的影响范围，并加快维护时间。TKG 使得管理多个 Kubernetes 集群变得非常简单。正如我们之前讨论的那样，管理集群下的工作负载集群可能会根据使用它们的团队的需求，支持不同版本的 Kubernetes。
+
+### 节点池
+
+一个 TKG 集群可能有不同类型的工作节点，这些节点具有不同的配置和附加的资源。这样的异构节点类型使得不同类型的工作负载可以根据特定的资源需求或仅为了隔离目的来利用它们。例如，一个工作负载集群可能有一些带有可用 **图形处理单元**（**GPU**）的节点，这些节点可以被极度依赖计算的机器学习工作负载使用。我们可以通过 TKG 中的 **节点池** 将这些不同类型的节点添加到工作负载集群中。之后，我们可以配置这些节点的污点和容忍度，以便只允许需要使用某些类型节点的工作负载进行调度。
+
+### 部署拓扑
+
+TKG 支持两种不同的部署拓扑，用于创建管理集群和工作负载集群：
+
+1.  **开发计划**：在此拓扑中，TKG 创建一个控制平面节点和所需数量的工作节点。此计划用于非关键性部署，可以容忍 Kubernetes API 服务器、etcd 和其他控制平面功能的不可用。该拓扑需要较少的资源，通常用于实验环境。
+
+1.  **生产计划**：在此拓扑中，TKG 创建三个控制平面节点，并通过负载均衡器将其前置，提供高可用的 Kubernetes 控制平面。如其名所示，它用于承载关键工作负载的集群，并且不能容忍任何控制平面停机。
+
+*图 7.3* 显示了 TKG 在高层次上的工作原理。如图所示，操作员使用 `tanzu` CLI 或 TKG 引导 UI 提供基础设施所需的配置。一旦管理集群创建完成，操作员可以直接使用它来创建所需数量的工作负载集群：
+
+![图 7.3 – TKG 布局](img/B18145_07_03.jpg)
+
+图 7.3 – TKG 布局
+
+在下一节中，我们将学习如何在 AWS 上创建 TKG 管理集群，并详细了解操作流程。
+
+# 开始使用 Tanzu Kubernetes Grid
+
+作为一个多云解决方案，TKG 可以安装在基于 vSphere 的本地环境中，或者在 Microsoft Azure 和 **亚马逊 Web 服务**（**AWS**）等公有云平台上。为了保持本章的长度适中，我们将仅介绍如何在 AWS 上安装和配置 TKG 基础设施。您可以在此链接中找到更多 TKG 安装和配置的详细信息：[`docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/1.5/vmware-tanzu-kubernetes-grid-15/GUID-mgmt-clusters-prepare-deployment.html`](https://docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/1.5/vmware-tanzu-kubernetes-grid-15/GUID-mgmt-clusters-prepare-deployment.html)。
+
+在本节中，我们将执行以下任务：
+
++   配置引导机器 —— 安装将从中触发的操作员工作站
+
++   部署 TKG 管理集群
+
++   使用管理集群创建 TKG 工作负载集群
+
++   获取访问工作负载集群的权限
+
+但在我们开始之前，我们需要确保满足以下前提条件，以完成这些任务。
+
+## 前提条件
+
+以下是遵循本节中 TKG 安装说明的前提条件：
+
++   一个 AWS 账户，包含以下内容：
+
+    +   一个访问密钥和访问密钥的秘密
+
+    +   注册了用于 TKG 安装区域的 SSH 密钥对
+
+    +   有权限创建一个 CloudFormation 堆栈，该堆栈定义了**身份与访问管理**（**IAM**）资源及其权限
+
+    +   足够的资源配额，允许在选定区域中创建两个**虚拟私有云**（**VPC**）、九个子网（每个可用区两个互联网-facing 和一个内部）、四个 EC2 安全组、两个互联网网关、三个 NAT 网关和三个弹性 IP 地址用于 TKG 部署
+
++   一台运行以下配置的 Linux 或 Mac 工作站：
+
+    +   互联网访问
+
+    +   命令行访问
+
+    +   Web 浏览器访问
+
+    +   所有 EC2 实例对端口`6443`的访问权限，以访问 Kubernetes APIs
+
+    +   已安装并运行 Docker Desktop，分配了 6 GB 内存
+
+    +   2 核 CPU
+
+    +   kubectl CLI v1.22 或更高版本
+
++   访问**网络时间协议**（**NTP**）服务器
+
++   访问 [`my.vmware.com/`](https://my.vmware.com/) 并设置账户以下载所需的二进制文件
+
+让我们从第一个任务开始，那就是准备将用于此安装的引导机器。在开始安装之前，我们需要一些工具和环境配置。
+
+## 配置引导机器
+
+以下子任务为 AWS 上的 TKG 安装准备一个配置了所需工具和设置的引导机器。
+
+### 安装 Tanzu 和 Kubectl CLI
+
+按照以下步骤操作：
+
+1.  在本地计算机上创建一个目录，用于存储所需的文件：
+
+    ```
+    $ mkdir $HOME/tkg-154
+    ```
+
+1.  访问 [`my.vmware.com/`](https://my.vmware.com/) 并使用您的 My VMware 凭证登录。
+
+1.  访问 [`customerconnect.vmware.com/downloads/details?downloadGroup=TKG-154&productId=1162`](https://customerconnect.vmware.com/downloads/details?downloadGroup=TKG-154&productId=1162) 下载所需的文件。
+
+1.  确保下拉菜单中选择的版本是**1.5.4**：
+
+![图 7.4 – 选择下载版本](img/B18145_07_04.jpg)
+
+图 7.4 – 选择下载版本
+
+1.  在**产品下载**标签下，滚动至**VMware Tanzu CLI 1.5.4**部分并下载适用于您操作系统的二进制文件。请注意，本章所采用的操作步骤是在 macOS 机器上进行的。虽然本章中列出的大多数命令在其他平台上也应有效，但可能会有一些小的差异：
+
+![图 7.5 – 下载适当的 Tanzu CLI](img/B18145_07_05.jpg)
+
+图 7.5 – 下载适当的 Tanzu CLI
+
+1.  接受最终用户许可协议：
+
+![图 7.6 – 接受最终用户许可协议](img/B18145_07_06.jpg)
+
+图 7.6 – 接受最终用户许可协议
+
+1.  将二进制文件下载到我们在 *第 1 步* 中创建的 `$HOME/tkg-154` 目录。
+
+1.  现在，在你下载二进制文件的同一页面，进入 **Kubectl 1.22.9 for VMware Tanzu Kubernetes Grid** **1.5.4** 部分：
+
+![图 7.7 – 下载适当的 Kubectl CLI](img/B18145_07_07.jpg)
+
+图 7.7 – 下载适当的 Kubectl CLI
+
+1.  将二进制文件下载到相同的 `$``HOME/tkg-154` 目录。
+
+1.  进入 `$HOME/tkg-154` 目录，并解压你之前下载的 CLI 二进制文件。运行以下命令进行此操作：
+
+    ```
+    $ cd $HOME/tkg-154
+    ```
+
+    ```
+    $ tar -xvf tanzu-cli-bundle-darwin-amd64.tar.gz
+    ```
+
+    ```
+    $ gunzip -dvf kubectl-mac-v1.22.9+vmware.1.gz
+    ```
+
+1.  在本地系统上安装 Tanzu CLI：
+
+    ```
+    $ sudo install cli/core/v0.11.6/tanzu-core-darwin_amd64 /usr/local/bin/tanzu
+    ```
+
+1.  通过运行以下命令验证安装：
+
+    ```
+    $ tanzu version
+    ```
+
+你应该在输出中看到版本 0.11.6。
+
+1.  初始化 Tanzu CLI：
+
+    ```
+    $ tanzu init
+    ```
+
+1.  清理任何现有的 Tanzu 插件，以便从头开始：
+
+    ```
+    $ tanzu plugin clean
+    ```
+
+1.  确保你在 `$HOME/tkg-154` 目录下，该目录包含解压的 `cli` 目录：
+
+    ```
+    $ cd $HOME/tkg-154/
+    ```
+
+1.  运行以下命令安装此 TKG 版本所需的所有插件：
+
+    ```
+    $ tanzu plugin sync
+    ```
+
+你应该能够看到以下命令执行的输出：
+
+```
+Checking for required plugins...
+Installing plugin 'cluster:v0.11.6'
+Installing plugin 'kubernetes-release:v0.11.6'
+Installing plugin 'login:v0.11.6'
+Installing plugin 'management-cluster:v0.11.6'
+Installing plugin 'package:v0.11.6'
+Installing plugin 'pinniped-auth:v0.11.6'
+Installing plugin 'secret:v0.11.6'
+Successfully installed all required plugins
+  Done
+```
+
+1.  通过运行以下命令验证插件的安装状态：
+
+    ```
+    $ tanzu plugin list
+    ```
+
+你应该能够看到所有插件列出，包括它们的版本和状态，如下图所示：
+
+![图 7.8 – 已安装的 TKG 插件列表](img/B18145_07_08.jpg)
+
+图 7.8 – 已安装的 TKG 插件列表
+
+现在，让我们安装 Kubectl CLI。
+
+1.  从 `$HOME/tkg-154` 目录运行以下命令，这里是我们下载并解压 Kubectl CLI 的地方：
+
+    ```
+    $ chmod ugo+x kubectl-mac-v1.22.9+vmware.1
+    ```
+
+    ```
+    $ sudo install kubectl-mac-v1.22.9+vmware.1 /usr/local/bin/kubectl
+    ```
+
+1.  通过运行 `kubectl version` 命令验证安装。你应该看到客户端版本为 v1.22.9+vmware.1。
+
+### 安装 Carvel 工具
+
+正如我们在上一节中讨论的，TKG 使用 Carvel 工具包进行打包和安装。因此，我们需要在引导机上安装一些 Carvel 工具的 CLI 二进制文件。我们之前下载并解压的 Tanzu CLI 包含了所有这些工具。以下步骤描述了安装这些工具的过程：
+
+1.  进入 `$HOME/tkg-154` 下的 `cli` 目录：
+
+    ```
+    $ cd $HOME/tkg-154/cli
+    ```
+
+1.  使用以下命令安装 **ytt**：
+
+    ```
+    $ gunzip ytt-darwin-amd64-v0.37.0+vmware.1.gz
+    ```
+
+    ```
+    $ chmod ugo+x ytt-darwin-amd64-v0.37.0+vmware.1
+    ```
+
+    ```
+    $ mv ./ytt-darwin-amd64-v0.37.0+vmware.1 /usr/local/bin/ytt
+    ```
+
+1.  验证 `ytt --``version` 命令。
+
+1.  使用以下命令安装 **kapp**：
+
+    ```
+    $ gunzip kapp-darwin-amd64-v0.42.0+vmware.2.gz
+    ```
+
+    ```
+    $ chmod ugo+x kapp-darwin-amd64-v0.42.0+vmware.2
+    ```
+
+    ```
+    $ mv ./kapp-darwin-amd64-v0.42.0+vmware.2 /usr/local/bin/kapp
+    ```
+
+1.  验证 `kapp --``version` 命令。
+
+1.  使用以下命令安装 **kbld**：
+
+    ```
+    $ gunzip kbld-darwin-amd64-v0.31.0+vmware.1.gz
+    ```
+
+    ```
+    $ chmod ugo+x kbld-darwin-amd64-v0.31.0+vmware.1
+    ```
+
+    ```
+    $ mv ./kbld-darwin-amd64-v0.31.0+vmware.1 /usr/local/bin/kbld
+    ```
+
+1.  验证 `kbld --``version` 命令。
+
+1.  使用以下命令安装 **imgpkg**：
+
+    ```
+    $ gunzip imgpkg-darwin-amd64-v0.22.0+vmware.1.gz
+    ```
+
+    ```
+    $ chmod ugo+x imgpkg-darwin-amd64-v0.22.0+vmware.1
+    ```
+
+    ```
+    $ mv ./imgpkg-darwin-amd64-v0.22.0+vmware.1 /usr/local/bin/imgpkg
+    ```
+
+1.  验证 `imgpkg --``version` 命令。
+
+### 安装 AWS 特定工具
+
+在 AWS 平台上部署 TKG 基础设施需要在引导机上安装 **aws** CLI。让我们进行配置：
+
+1.  使用以下说明安装 **aws** CLI：[`docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html`](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)。
+
+1.  通过运行以下命令验证 **aws** CLI 的安装：
+
+    ```
+    $ aws –version
+    ```
+
+你应该能够看到 CLI 版本，如下所示的输出。版本可能会有所不同，取决于安装时的时间，但应该是 v2.x 版本：
+
+```
+aws-cli/2.5.3 Python/3.9.11 Darwin/21.4.0 exe/x86_64 prompt/off
+```
+
+1.  运行以下命令，配置你的 AWS 账户访问配置文件，以便用于此次安装，且具有先前定义的权限和配额：
+
+    ```
+    $ aws configure –profile tkg
+    ```
+
+1.  提供访问密钥、秘密访问密钥、区域和命令输出格式的值，如下所示的代码：
+
+    ```
+    AWS Access Key ID [None]: ********************
+    ```
+
+    ```
+    AWS Secret Access Key [None]: ****************************************
+    ```
+
+    ```
+    Default region name [None]: us-east-1
+    ```
+
+    ```
+    Default output format [None]: text
+    ```
+
+在这里，你可以将 `us-east-1` 替换为任何其他符合先前列出要求的 AWS 区域。
+
+1.  运行以下命令，确保你能看到该区域中列出的现有 SSH 密钥对，如先前要求中所列：
+
+    ```
+    $ aws ec2 describe-key-pairs --profile tkg
+    ```
+
+此命令的输出应至少显示列出的一个密钥对。
+
+现在我们已经在引导机器上配置了所有所需的工具，可以开始安装 TKG 管理集群了。让我们开始吧。
+
+## 安装管理集群
+
+在本节中，我们将使用 Tanzu 安装程序 UI 在配置好的 AWS 账户上部署管理集群。
+
+重要提示
+
+默认情况下，上游 Kubernetes 发行版不包含用户身份验证功能，并且允许用户拥有管理员级别的访问权限。为了填补这一空白，TKG 配备了 Pinniped，用于集成外部 LDAP 或 OIDC 身份提供者。为了简化安装前提条件和复杂度，我们将不使用此类集成，因为它需要预先配置好的 LDAP 或 OIDC 设置访问。现实中的 TKG 集群绝不应在没有外部身份提供者集成的情况下配置。你可以在此了解更多相关内容：[`docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/1.5/vmware-tanzu-kubernetes-grid-15/GUID-iam-configure-id-mgmt.html`](https://docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/1.5/vmware-tanzu-kubernetes-grid-15/GUID-iam-configure-id-mgmt.html)。
+
+此外，尽管旨在最小化复杂性和基础设施占用，但遵循此**在 AWS 上配置 TKG 会产生云服务使用费用**，因为它将使用不符合免费额度资格的 EC2 实例类型，并且还会使用一些其他收费服务，如 Elastic IP、NAT 网关、EBS 卷、Elastic Load Balancer 等。如果你计划按照本指南在 AWS 上安装 TKG，建议你在本章稍后的过程中清理资源，并手动检查以验证所有配置的资源已被移除。
+
+以下步骤概述了安装过程：
+
+1.  确保本地的 Docker 守护进程正在运行，以便在引导机器上部署和运行容器。
+
+1.  运行以下命令以在引导工作站的默认浏览器窗口中启动安装程序 UI。此 UI 支持 Chrome、Safari、Firefox、Internet Explorer 和 Edge，以及它们的较新版本：
+
+    ```
+    $ tanzu mc create --ui
+    ```
+
+此命令应自动打开浏览器窗口并运行 UI。否则，可以通过 `http://127.0.0.1:8080/` 访问。
+
+1.  点击**Amazon Web Services**下的**DEPLOY**按钮，如下图所示：
+
+![图 7.9 – 选择用于部署的 Amazon Web Services](img/B18145_07_09.jpg)
+
+图 7.9 – 选择用于部署的 Amazon Web Services
+
+1.  按照以下子步骤选择必要的 AWS 账户详细信息；这些已在下图中突出显示：
+
+    1.  将**AWS CREDENTIAL TYPE**设置为**Credential Profile**。
+
+    1.  从 **AWS CREDENTIAL PROFILE** 下拉菜单中选择 **tkg**，并选择我们在本章 **aws** CLI 配置期间配置的相关 **REGION**。
+
+    1.  点击**CONNECT**按钮，以确保 UI 能通过先前创建的配置连接到选定的 AWS 账户。
+
+    1.  点击**NEXT**按钮进入下一个配置部分：
+
+![图 7.10 – 选择用于安装的 AWS 账户](img/B18145_07_10.jpg)
+
+图 7.10 – 选择用于安装的 AWS 账户
+
+1.  点击**NEXT**按钮选择默认的 VPC 配置，如下图所示：
+
+![图 7.11 – 选择默认 VPC 配置](img/B18145_07_11.jpg)
+
+图 7.11 – 选择默认 VPC 配置
+
+1.  将管理集群部署计划设置为**开发**，并将**实例类型**设置为**t3.large**。此实例类型具有 2 个 vCPU 和 8 GiB 内存，足够用于实验室级别的设置：
+
+![图 7.12 – 选择管理集群的部署计划和实例类型](img/B18145_07_12.jpg)
+
+图 7.12 – 选择管理集群的部署计划和实例类型
+
+1.  输入管理集群的其他详细信息，如下述子步骤所示，并在下图中显示：
+
+    1.  在 `tkg-aws-mgmt-cluster` 下输入一个简短的名称。
+
+    1.  输入在 **aws** CLI 配置的**步骤 5**中获得的 SSH 密钥对名称，在**EC2** **KEY PAIR**下提供。
+
+    1.  保持复选框选项的默认选择不变。
+
+    1.  从所选区域的 **AVAILABILITY ZONE 1** 下拉菜单中选择一个可用区以部署管理集群。对于**生产**部署计划，我们需要为管理集群的三个控制平面节点选择三个可用区。
+
+    1.  从 **AZ1 WORKER NODE INSTANCE** **TYPE** 下拉菜单中选择**t3.large**作为工作节点实例类型。
+
+    1.  点击**NEXT**按钮继续：
+
+![图 7.13 – 输入管理集群的详细信息](img/B18145_07_13.jpg)
+
+图 7.13 – 输入管理集群的详细信息
+
+1.  可选地，输入管理集群的元数据并点击**NEXT**按钮：
+
+![图 7.14 – 输入管理集群的元数据](img/B18145_07_14.jpg)
+
+图 7.14 – 输入管理集群的元数据
+
+1.  保持默认的 Kubernetes 容器网络配置不变，并点击**NEXT**按钮：
+
+![图 7.15 – 保持默认的 Kubernetes 网络配置不变](img/B18145_07_15.jpg)
+
+图 7.15 – 保持默认的 Kubernetes 网络配置不变
+
+1.  禁用身份管理设置后，点击**下一步**按钮：
+
+![图 7.16 – 禁用身份管理设置](img/B18145_07_16.jpg)
+
+图 7.16 – 禁用身份管理设置
+
+1.  选择管理集群的操作系统镜像，如截图所示，然后点击**下一步**按钮：
+
+![图 7.17 – 选择管理集群的操作系统](img/B18145_07_17.jpg)
+
+图 7.17 – 选择管理集群的操作系统
+
+1.  可选地，选择参与 VMware 的**客户体验改进计划**（**CEIP**），然后点击**下一步**按钮：
+
+![图 7.18 – 选择参与客户体验改进计划](img/B18145_07_18.jpg)
+
+图 7.18 – 选择参与客户体验改进计划
+
+1.  点击**审查配置**按钮，验证输入后再触发 AWS 上的管理集群创建：
+
+![图 7.19 – 打开配置摘要进行审查](img/B18145_07_19.jpg)
+
+图 7.19 – 打开配置摘要进行审查
+
+1.  以下截图显示了验证摘要页面的底部。所显示的命令可以在未来用于通过 Tanzu CLI 重新触发相同的部署。右下角的**导出配置**链接允许我们将此配置导出为文件，以便作为参考，在 AWS 上部署其他管理集群并进行必要的修改。最后，点击**部署管理集群**按钮以触发部署：
+
+![图 7.20 – 启动管理集群的部署](img/B18145_07_20.jpg)
+
+图 7.20 – 启动管理集群的部署
+
+1.  您将看到各种部署日志及其安装状态，如下图所示。如日志中所示，Cluster API 正在创建所需的基础设施组件，以便在 AWS 上部署管理集群：
+
+![图 7.21 – 部署状态及日志](img/B18145_07_21.jpg)
+
+图 7.21 – 部署状态及日志
+
+1.  安装应该在大约 10 到 15 分钟内完成，您应该会看到一个成功消息，如下图所示。如图中所示，日志还显示了如何从引导机访问管理集群并执行不同的 TKG 操作。您还应该能够在运行 `tanzu mc create --ui` 命令的命令行中看到这些日志，这个命令会弹出安装浏览器窗口：
+
+![图 7.22 – 成功安装管理集群](img/B18145_07_22.jpg)
+
+图 7.22 – 成功安装管理集群
+
+现在我们已经完成了管理集群的安装，让我们来学习如何使用它创建第一个 TKG 工作负载集群。
+
+## 创建工作负载集群
+
+以下步骤概述了如何使用从安装管理集群时启动的引导机器访问新创建的 TKG 管理集群。作为安装步骤的一部分，TKG 将`kubeconfig`详细信息添加到引导机器，以便允许管理员级别访问管理集群，从而使 Tanzu CLI 指向管理集群。让我们使用管理集群和 Tanzu CLI 创建我们的第一个工作负载集群。以下步骤将在引导机器上执行：
+
+1.  运行以下命令设置指向新创建的 TKG 管理集群的 kubectl 上下文：
+
+    ```
+    $ kubectl config use-context tkg-aws-mgmt-cluster-admin@tkg-aws-mgmt-cluster
+    ```
+
+1.  运行` tanzu mc get`命令查看管理集群的详细信息。该命令将显示管理集群已创建一个控制平面和一个工作节点：
+
+![图 7.23 – 管理集群详细信息](img/B18145_07_23.jpg)
+
+图 7.23 – 管理集群详细信息
+
+要创建工作负载集群，我们需要将工作负载集群配置文件提供给管理集群。该文件包含以下详细信息：
+
++   集群名称
+
++   集群部署计划（开发或生产）
+
++   工作节点数量
+
++   工作节点 EC2 类型
+
++   AWS 特定配置，如区域、可用区、网络和 SSH 密钥
+
++   节点操作系统
+
++   节点健康检查配置
+
++   节点级别自动扩展配置
+
+我们不需要在配置文件中包含所有属性，只需要指定必需的属性。有关配置文件的更多属性列表，请访问[`docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/1.5/vmware-tanzu-kubernetes-grid-15/GUID-tanzu-k8s-clusters-aws.html#tanzu-kubernetes-cluster-template-0`](https://docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/1.5/vmware-tanzu-kubernetes-grid-15/GUID-tanzu-k8s-clusters-aws.html#tanzu-kubernetes-cluster-template-0)。
+
+我们将从本书的 GitHub 仓库下载一个预配置文件，并使用它来创建工作负载集群。
+
+1.  使用以下命令将工作负载集群配置文件复制到引导机器：
+
+    ```
+    $ curl https://raw.githubusercontent.com/PacktPublishing/DevSecOps-in-Practice-with-VMware-Tanzu/main/chapter-07/tkg-workload-cluster-config.yaml -o $HOME/tkg-154/tkg-workload-cluster-config.yaml
+    ```
+
+1.  配置文件应位于`$HOME/tkg-154/`目录中，并命名为`tkg-workload-cluster-config.yaml`。使用您选择的编辑器打开该文件，并更新以下参数值：
+
+    1.  如果您使用的 AWS 区域不是**us-east-1**，请根据所选区域更新**AWS_NODE_AZ**、**AWS_NODE_AZ_1**和**AWS_NODE_AZ_2**。
+
+    1.  如果适用，请根据您的**AWS_PROFILE**配置更新**AWS_REGION**。
+
+    1.  更新**AWS_SSH_KEY_NAME**以使用选定区域中您 AWS 帐户的 SSH 密钥。这是必须更改的。
+
+1.  运行以下命令使用我们在上一步中准备的配置文件创建工作负载集群。这里，我们使用`--tkr`选项创建一个 Kubernetes v1.21.11 的集群，以便我们稍后学习如何将集群升级到 v1.22.9：
+
+    ```
+    $ tanzu cluster create --file $HOME/tkg-154/tkg-workload-cluster-config.yaml --tkr v1.21.11---vmware.1-tkg.3
+    ```
+
+如果所有配置更改都正确完成，工作负载集群应在大约 10 到 15 分钟内创建完成。
+
+1.  使用以下命令验证集群的创建状态：
+
+    ```
+    $ tanzu cluster list
+    ```
+
+您应该看到集群正在运行，如下面的截图所示：
+
+![图 7.24 – 验证工作负载集群的创建](img/B18145_07_24.jpg)
+
+图 7.24 – 验证工作负载集群的创建
+
+到此，TKG 工作负载集群已创建。现在，让我们访问工作负载集群。
+
+1.  运行以下命令获取工作负载集群的 `kubeconfig`：
+
+    ```
+    $ tanzu cluster kubeconfig get tkg-aws-workload-cluster  --admin
+    ```
+
+1.  运行以下命令切换 `kubectl` 上下文，使其指向工作负载集群：
+
+    ```
+    $ kubectl config use-context tkg-aws-workload-cluster-admin@tkg-aws-workload-cluster
+    ```
+
+1.  运行以下命令列出工作负载集群的节点以确保连通性：
+
+    ```
+    $ kubectl get nodes
+    ```
+
+您应该能够看到 Kubernetes 节点列表，如下面的截图所示：
+
+![图 7.25 – 验证工作负载集群的连通性](img/B18145_07_25.jpg)
+
+图 7.25 – 验证工作负载集群的连通性
+
+到此，我们已经完成了开始使用 TKG 所需的所有任务。我们从引导机器的配置开始，安装了所有必需的工具和 CLI。然后，我们使用 Tanzu 安装器 UI 在 AWS 上创建了一个 TKG 管理集群。最后，我们使用我们创建的管理集群创建了一个 TKG 工作负载集群。值得注意的是，一个引导机器可能会引用多个 TKG 管理集群。操作员可以通过切换 `kubectl` 上下文到适当的管理集群配置，然后使用 `tanzu login` 命令进行管理集群的身份验证，来管理其下的工作负载集群。现在，在本章的下一部分也是最后一部分中，我们将学习关于 TKG 周围一些最常见的 Day-2 活动。
+
+# 与 Tanzu Kubernetes Grid 的常见 Day-2 操作
+
+现在我们在 AWS 上有一个完全配置和运行的 TKG 基础设施，让我们学习如何在其上执行一些 Day-2 操作。TKG 通过在幕后执行所有繁重的工作使这些操作变得非常简单：
+
++   缩放集群以添加或移除节点
+
++   升级集群以提升 Kubernetes 版本
+
++   删除一个集群
+
++   删除整个 TKG 基础设施
+
+让我们开始扩展工作负载集群，使其具有三个工作节点，而不仅仅是一个。
+
+## 缩放 Tanzu Kubernetes Grid 集群
+
+运行以下命令以扩展我们创建的工作负载集群：
+
+1.  切换 `kubectl` 上下文，使其指向我们之前创建的管理集群，该集群用于创建工作负载集群：
+
+    ```
+    $ kubectl config use-context tkg-aws-mgmt-cluster-admin@tkg-aws-mgmt-cluster
+    ```
+
+1.  通过运行以下命令确保工作负载集群仅有一个工作节点：
+
+    ```
+    $ tanzu cluster list
+    ```
+
+您应该看到以下输出，显示 1/1 个工作节点：
+
+![图 7.26 – 确保工作节点计数](img/B18145_07_26.jpg)
+
+图 7.26 – 确保工作节点计数
+
+1.  运行以下命令添加两个工作节点，将总数增加到三：
+
+    ```
+    $ tanzu cluster scale tkg-aws-workload-cluster -w 3
+    ```
+
+你应该看到以下消息，显示扩展正在进行中：
+
+![图 7.27 – 工作节点扩展进行中](img/B18145_07_27.jpg)
+
+图 7.27 – 工作节点扩展进行中
+
+1.  运行以下集群列出命令来验证扩展是否已完成：
+
+    ```
+    $ tanzu cluster list
+    ```
+
+现在你应该在输出中看到 3/3 个工作节点：
+
+![图 7.28 – 确认集群扩展已完成](img/B18145_07_28.jpg)
+
+图 7.28 – 确认集群扩展已完成
+
+这些步骤展示了如何扩展 TKG 集群。相同的过程也适用于缩减集群。`scale` 命令的 `-w` 选项声明了所需的工作节点数量。根据所需数量的变化，TKG 会添加或删除工作节点。扩展命令还提供了扩展控制平面节点或特定节点池节点的选项。你可以通过运行 `tanzu cluster scale --help` 命令了解更多关于扩展的信息。
+
+## 升级 Tanzu Kubernetes Grid 集群
+
+现在我们已经完成扩展，让我们学习如何将 TKG 工作负载集群升级到部署一个更新版本的 Kubernetes。TKG 允许在管理集群下按需升级选定集群。在这里，集群的所有者可以选择他们需要的 Kubernetes 版本，以便有足够的时间准备升级他们的工作负载集群。以下步骤概述了升级过程：
+
+1.  切换 `kubectl` 上下文，使其指向我们之前创建的管理集群，该集群用于创建工作负载集群：
+
+    ```
+    $ kubectl config use-context tkg-aws-mgmt-cluster-admin@tkg-aws-mgmt-cluster
+    ```
+
+1.  使用以下命令确保工作负载集群部署的是 Kubernetes v1.21.11：
+
+    ```
+    $ tanzu cluster list
+    ```
+
+你应该看到以下输出，显示集群已部署 Kubernetes 版本 1.21.11：
+
+![图 7.29 – 检查集群当前的 Kubernetes 版本](img/B18145_07_29.jpg)
+
+图 7.29 – 检查集群当前的 Kubernetes 版本
+
+1.  运行以下命令检查可用的 Kubernetes 版本以进行升级：
+
+    ```
+    $ tanzu kubernetes-release get
+    ```
+
+你应该看到以下输出，显示 v1.22.9 作为升级 v1.21.11 的选项，如下图所示：
+
+![图 7.30 – 检查可用的版本升级选项](img/B18145_07_30.jpg)
+
+图 7.30 – 检查可用的版本升级选项
+
+1.  运行以下命令将工作负载集群升级到 Kubernetes 版本 1.22.9：
+
+    ```
+    $ tanzu cluster upgrade tkg-aws-workload-cluster --tkr v1.22.9---vmware.1-tkg.1
+    ```
+
+`--tkr` 选项指定了我们从之前步骤中可用版本列表中选择的升级目标版本。此命令将以滚动方式升级工作负载集群，一次升级一个节点，以最大程度减少工作负载停机时间。运行多个 Pod 的应用程序在这种滚动升级过程中不会面临任何停机。执行上述命令后，你应该在大约 15 到 20 分钟后看到以下确认消息：
+
+![图 7.31 – 集群升级日志](img/B18145_07_31.jpg)
+
+图 7.31 – 集群升级日志
+
+以下截图显示了在 AWS EC2 控制台上回收工作负载集群节点以创建新版本的过程。这里可以看到，旧节点已被终止，新的版本节点已创建并替换它们：
+
+![图 7.32 – 在 AWS EC2 控制台上回收集群节点](img/B18145_07_32.jpg)
+
+图 7.32 – 在 AWS EC2 控制台上回收集群节点
+
+1.  运行以下命令确保工作负载集群正在使用较新的 Kubernetes 版本：
+
+    ```
+    $ tanzu cluster list
+    ```
+
+以下截图显示工作负载集群正在运行 Kubernetes 版本 1.22.9：
+
+![图 7.33 – 确认工作负载集群的升级](img/B18145_07_33.jpg)
+
+图 7.33 – 确认工作负载集群的升级
+
+除了允许 Kubernetes 版本进行升级，`tanzu cluster upgrade`命令还允许你升级特定操作系统及其版本的集群。运行`tanzu cluster upgrade –help`命令了解更多信息。除了为了这些原因升级 TKG 集群外，还有一个升级维度——升级 TKG 版本本身。升级 TKG 版本（从 TKG v1.5.x 到 v1.5.y 或从 v1.4.x 到 v1.5.y）超出了本书的范围。然而，你可以在这里了解更多：[`docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/1.5/vmware-tanzu-kubernetes-grid-15/GUID-upgrade-tkg-index.html`](https://docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/1.5/vmware-tanzu-kubernetes-grid-15/GUID-upgrade-tkg-index.html)。
+
+## 删除 Tanzu Kubernetes Grid 工作负载集群
+
+毁灭总是比建设容易。这对于 TKG 工作负载集群也是如此。以下简单步骤概述了删除本章中我们使用过的 TKG 工作负载集群的过程：
+
+1.  切换`kubectl`上下文，使其指向我们之前创建的管理集群，该集群用于创建工作负载集群：
+
+    ```
+    $ kubectl config use-context tkg-aws-mgmt-cluster-admin@tkg-aws-mgmt-cluster
+    ```
+
+1.  运行以下命令删除工作负载集群及其在 AWS 账户上的资源：
+
+    ```
+    $ tanzu cluster delete tkg-aws-workload-cluster
+    ```
+
+你应该在控制台看到以下确认信息，表示集群删除正在进行中：
+
+![图 7.34 – 集群删除进行中](img/B18145_07_34.jpg)
+
+图 7.34 – 集群删除进行中
+
+以下来自 AWS EC2 控制台的截图显示，所有工作负载集群的节点已被终止：
+
+![图 7.35 – 在 AWS EC2 控制台上终止的集群节点](img/B18145_07_35.jpg)
+
+图 7.35 – 在 AWS EC2 控制台上终止的集群节点
+
+除了 EC2 实例外，TKG（借助 Cluster API）还会删除在你的 AWS 账户中为已删除集群创建的其他网络资源。正如你可能已经猜到的，删除 Kubernetes 集群是一个非常敏感的操作，可能会导致正在运行的应用程序长时间停机。因此，应采取广泛的措施，防止在实验环境之外的其他环境访问此类操作。现在，让我们看一个更具破坏性的操作：删除整个 TKG 基础设施，包括管理集群。
+
+## 删除 Tanzu Kubernetes Grid 基础设施
+
+除非在这样的实验环境中，否则你很少需要从根本上删除 TKG 基础设施。不过，我们将会在本章中讲解这一 TKG 生命周期活动。要删除一个 TKG 基础设施，我们只需要删除为其创建的管理集群。和删除工作负载集群一样，删除管理集群也是一个简单但高度破坏性的过程。以下步骤概述了这一过程：
+
+1.  通过运行以下命令，确保你指向的是正确的 Kubernetes 集群的 `kubectl` 上下文：
+
+    ```
+    $ kubectl config use-context tkg-aws-mgmt-cluster-admin@tkg-aws-mgmt-cluster
+    ```
+
+1.  运行以下命令删除管理集群及其在 AWS 账户中的资源：
+
+    ```
+    $ AWS_REGION=us-east-1 tanzu mc delete --verbose 5
+    ```
+
+根据管理集群的部署区域，你可能需要在命令中替换区域名称。执行命令后，你应该在控制台上看到如下日志，这表明由于 `--verbose` 选项，集群删除正在进行，并随后显示日志的详细级别。此命令的日志详细级别从 0 到 9，9 表示最详细的日志：
+
+![图 7.36 – 管理集群删除日志](img/B18145_07_36.jpg)
+
+图 7.36 – 管理集群删除日志
+
+你可能从日志中了解到，TKG 在引导机器上创建了一个 kind 集群，以执行所有必要的清理操作，将 TKG 基础设施从 AWS 账户中删除。这与我们在本章早些时候看到的 TKG 创建管理集群时使用的方法相同。
+
+至此，我们已经完成了关于 TKG 集群的一些重要的第 2 天活动。现在，让我们通过快速总结一下我们所学到的内容来结束这一章节。
+
+# 总结
+
+在本章的开始，我们讨论了 TKG 作为基于 Kubernetes 的容器平台可能是一个不错选择的一些原因。正如我们在动手实践中所看到的，TKG 通过提供统一的接口——Tanzu CLI，使 Kubernetes 平台的部署和管理变得非常简便且在操作上高效。在本章中我们执行的所有基于 Tanzu CLI 的操作都是基础设施无关的，提供了所需的多云操作简便性。
+
+由于本书中 TKG 的范围有限，我们无法安装和使用 TKG 提供的所有可选扩展，但我们简要介绍了它们，以便了解它们的应用。我们看到 TKG 如何广泛使用来自 CNCF 生态系统的各种精心挑选的开源工具。通过这种方式，TKG 成为一个完全由开源社区支持的解决方案。
+
+最后，我们了解了在 TKG 平台上的常见第 1 天和第 2 天活动，从在 AWS 上安装平台并创建工作负载集群以托管实际应用容器开始。接下来，我们学习了如何通过按需扩展为该工作负载集群增加更多容量。我们还了解了如何轻松地升级集群以应对不同的需求，最后还学会了如何在需要时删除集群及其基础设施。
+
+如你所料，为了使本章的内容简洁，我们并未涵盖关于该主题的许多内容。然而，我们将在*第九章《使用 Tanzu Mission Control 管理和控制 Kubernetes 集群》*中学习关于 TKG 集群的备份与恢复、合规性扫描和治理策略配置，Tanzu Mission Control 是一个控制数百个 Kubernetes 集群的单一视图平台。
+
+TKG 是 VMware 提供的商业许可软件。在下一章中，我们将深入探讨与**Tanzu** **应用平台**相关的 Tanzu 开发者体验。
