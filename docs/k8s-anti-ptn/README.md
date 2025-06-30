@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# Kubernetes 反模式
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/773995e1545197e72705eb87c853d8eb`](https://annas-archive.org/md5/773995e1545197e72705eb87c853d8eb)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 

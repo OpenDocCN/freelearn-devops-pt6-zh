@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# Kubernates 企业级指南第三版
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/be4cfce1594e9ca80fd4440d730d03e6`](https://annas-archive.org/md5/be4cfce1594e9ca80fd4440d730d03e6)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 

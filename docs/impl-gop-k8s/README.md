@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# Kubernetes GitOps 实现指南
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/f6f117c1e7c6b5c4adc43265af5cd587`](https://annas-archive.org/md5/f6f117c1e7c6b5c4adc43265af5cd587)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 

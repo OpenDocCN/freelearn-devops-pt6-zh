@@ -1,4 +1,4 @@
-# Github DevOps 加速指南
+# Kubernates 上的机器学习
 
 > 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
 > 
