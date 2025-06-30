@@ -1,0 +1,6 @@
++   [Kubernates 设计模式与最佳实践](README.md)
++   [前言](k8s-dsn-ptn-bst-prac_0.md)
++   [第一章：Kubernetes 设计模式](k8s-dsn-ptn-bst-prac_1.md)
++   [第二章：Kubernetes 客户端库](k8s-dsn-ptn-bst-prac_2.md)
++   [第三章：Kubernetes 扩展](k8s-dsn-ptn-bst-prac_3.md)
++   [第四章：解决方案](k8s-dsn-ptn-bst-prac_4.md)
